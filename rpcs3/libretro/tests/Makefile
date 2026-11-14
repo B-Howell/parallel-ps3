@@ -638,6 +638,9 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -o $@ test_audio_mix.c ../../Emu/Cell/Modules/cellAudio_mix.c $(LDFLAGS) $(LDLIBS)
 
 # The core's own code, searched for host clocks and sleeps
+# std::lock_guard left in the core's own code (falls with each patch)
+LOCK_GUARD_MAX := 979
+
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
 # Each test also writes what the new code produces, for the reference
@@ -708,6 +711,12 @@ check: all
 	@if grep -nE "named_thread|thread_ctrl::wait_for|get_system_time[ ]*\(" ../../Emu/Cell/lv2/sys_game.cpp; then echo "sys_game: the watchdog is a thread on the host's clock again - retro_run looks at it on the guest's (lv2_watchdog_tick)"; exit 1; else echo "sys_game: the watchdog goes by the guest's clock, no thread"; fi
 	@# The P2P streams' retransmits: no lock and no clock of the host's
 	@if awk '/^class tcp_timeout_monitor/,/^u16 u2s_tcp_checksum/' ../../Emu/Cell/lv2/sys_net/lv2_socket_p2ps.cpp | grep -nE "steady_clock|shared_mutex|std::mutex|lock_guard|atomic_wait_timeout|wakey|get_system_time[ ]*\("; then echo "p2ps: the TCP timeout monitor locks or times on the host's clock again - it takes what changed on an mpsc_stack and waits on the guest's clock"; exit 1; else echo "p2ps: the TCP timeout monitor has no lock and goes by the guest's clock"; fi
+	@# std::lock_guard is going from the core's own code: the count may only
+	@# fall. Each patch that takes some out lowers LOCK_GUARD_MAX with it
+	@n=$$(grep -rho "std::lock_guard" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities | wc -l); \
+	if [ $$n -gt $(LOCK_GUARD_MAX) ]; then echo "std::lock_guard: $$n in the core, more than the $(LOCK_GUARD_MAX) left - the locks are going, not coming (AGENTS.md)"; exit 1; \
+	elif [ $$n -lt $(LOCK_GUARD_MAX) ]; then echo "std::lock_guard: $$n in the core, fewer than LOCK_GUARD_MAX ($(LOCK_GUARD_MAX)): lower it to $$n"; exit 1; \
+	else echo "std::lock_guard: $$n left in the core"; fi
 	@# The pads take no lock: pad::g_pad_mutex is gone, and a merge of
 	@# upstream's code that takes it does not bring it back
 	@if grep -rn "g_pad_mutex" ../../Emu ../../Input ../*.cpp ../*.h ../*.c; then echo "pads: pad::g_pad_mutex is back - the pads take no lock (AGENTS.md)"; exit 1; else echo "pads: no pad lock"; fi
