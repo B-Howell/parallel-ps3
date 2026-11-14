@@ -22,7 +22,6 @@ void skylander::save()
 
 void sky_portal::activate()
 {
-	std::lock_guard lock(sky_mutex);
 	if (activated)
 	{
 		// If the portal was already active no change is needed
@@ -44,7 +43,6 @@ void sky_portal::activate()
 
 void sky_portal::deactivate()
 {
-	std::lock_guard lock(sky_mutex);
 
 	for (auto& s : skylanders)
 	{
@@ -63,7 +61,6 @@ void sky_portal::deactivate()
 
 void sky_portal::set_leds(u8 r, u8 g, u8 b)
 {
-	std::lock_guard lock(sky_mutex);
 	this->r = r;
 	this->g = g;
 	this->b = b;
@@ -71,7 +68,6 @@ void sky_portal::set_leds(u8 r, u8 g, u8 b)
 
 void sky_portal::get_status(u8* reply_buf)
 {
-	std::lock_guard lock(sky_mutex);
 
 	u16 status = 0;
 
@@ -98,7 +94,6 @@ void sky_portal::get_status(u8* reply_buf)
 
 void sky_portal::query_block(u8 sky_num, u8 block, u8* reply_buf)
 {
-	std::lock_guard lock(sky_mutex);
 
 	const auto& thesky = skylanders[sky_num];
 
@@ -117,7 +112,6 @@ void sky_portal::query_block(u8 sky_num, u8 block, u8* reply_buf)
 
 void sky_portal::write_block(u8 sky_num, u8 block, const u8* to_write_buf, u8* reply_buf)
 {
-	std::lock_guard lock(sky_mutex);
 
 	auto& thesky = skylanders[sky_num];
 
@@ -138,7 +132,6 @@ void sky_portal::write_block(u8 sky_num, u8 block, const u8* to_write_buf, u8* r
 
 bool sky_portal::remove_skylander(u8 sky_num)
 {
-	std::lock_guard lock(sky_mutex);
 	auto& thesky = skylanders[sky_num];
 
 	if (thesky.status & 1)
@@ -155,7 +148,6 @@ bool sky_portal::remove_skylander(u8 sky_num)
 
 u8 sky_portal::load_skylander(const std::array<u8, 0x40 * 0x10>& data, fs::file in_file)
 {
-	std::lock_guard lock(sky_mutex);
 
 	const u32 sky_serial = read_from_ptr<le_t<u32>>(data);
 	u8 found_slot  = 0xFF;

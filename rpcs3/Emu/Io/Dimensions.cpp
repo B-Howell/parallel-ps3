@@ -287,7 +287,6 @@ void dimensions_toypad::get_challenge_response(const u8* buf, u8 sequence, std::
 
 void dimensions_toypad::query_block(u8 index, u8 page, std::array<u8, 32>& reply_buf, u8 sequence)
 {
-	std::lock_guard lock(m_dimensions_mutex);
 
 	reply_buf[0] = 0x55;
 	reply_buf[1] = 0x12;
@@ -310,7 +309,6 @@ void dimensions_toypad::query_block(u8 index, u8 page, std::array<u8, 32>& reply
 
 void dimensions_toypad::write_block(u8 index, u8 page, const u8* to_write_buf, std::array<u8, 32>& reply_buf, u8 sequence)
 {
-	std::lock_guard lock(m_dimensions_mutex);
 
 	reply_buf[0] = 0x55;
 	reply_buf[1] = 0x02;
@@ -362,12 +360,8 @@ void dimensions_toypad::get_model(const u8* buf, u8 sequence, std::array<u8, 32>
 	reply_buf[12] = generate_checksum(reply_buf, 12);
 }
 
-u32 dimensions_toypad::load_figure(const std::array<u8, 0x2D * 0x04>& buf, fs::file in_file, u8 pad, u8 index, bool lock)
+u32 dimensions_toypad::load_figure(const std::array<u8, 0x2D * 0x04>& buf, fs::file in_file, u8 pad, u8 index)
 {
-	if (lock)
-	{
-		m_dimensions_mutex.lock();
-	}
 
 	const u32 id = get_figure_id(buf);
 
@@ -384,14 +378,10 @@ u32 dimensions_toypad::load_figure(const std::array<u8, 0x2D * 0x04>& buf, fs::f
 	figure_change_response[13] = generate_checksum(figure_change_response, 13);
 	ensure(dimensions_replies_push_back_growing(&m_figure_added_removed_responses, &figure_change_response));
 
-	if (lock)
-	{
-		m_dimensions_mutex.unlock();
-	}
 	return id;
 }
 
-bool dimensions_toypad::remove_figure(u8 pad, u8 index, bool full_remove, bool lock)
+bool dimensions_toypad::remove_figure(u8 pad, u8 index, bool full_remove)
 {
 	dimensions_figure& figure = get_figure_by_index(index);
 	if (figure.index == 255)
@@ -399,10 +389,6 @@ bool dimensions_toypad::remove_figure(u8 pad, u8 index, bool full_remove, bool l
 		return false;
 	}
 
-	if (lock)
-	{
-		m_dimensions_mutex.lock();
-	}
 
 	// When a figure is removed from the toypad, respond to the game with the pad they were removed from, their index,
 	// the direction (0x01 in byte 6 for removed) and their UID
@@ -421,16 +407,11 @@ bool dimensions_toypad::remove_figure(u8 pad, u8 index, bool full_remove, bool l
 	figure.pad = 255;
 	figure.id = 0;
 
-	if (lock)
-	{
-		m_dimensions_mutex.unlock();
-	}
 	return true;
 }
 
 bool dimensions_toypad::temp_remove(u8 index)
 {
-	std::lock_guard lock(m_dimensions_mutex);
 
 	const dimensions_figure& figure = get_figure_by_index(index);
 	if (figure.index == 255)
@@ -450,7 +431,6 @@ bool dimensions_toypad::temp_remove(u8 index)
 
 bool dimensions_toypad::cancel_remove(u8 index)
 {
-	std::lock_guard lock(m_dimensions_mutex);
 
 	dimensions_figure& figure = get_figure_by_index(index);
 	if (figure.index == 255)
@@ -476,19 +456,18 @@ bool dimensions_toypad::move_figure(u8 pad, u8 index, u8 old_pad, u8 old_index)
 		return true;
 	}
 
-	std::lock_guard lock(m_dimensions_mutex);
 
 	// When moving figures between spaces on the toypad, remove any figure from the space they are moving to,
 	// then remove them from their current space, then load them to the space they are moving to
-	remove_figure(pad, index, true, false);
+	remove_figure(pad, index, true);
 
 	dimensions_figure& figure = get_figure_by_index(old_index);
 	const std::array<u8, 0x2D * 0x04> data = figure.data;
 	fs::file in_file = std::move(figure.dim_file);
 
-	remove_figure(old_pad, old_index, false, false);
+	remove_figure(old_pad, old_index, false);
 
-	load_figure(data, std::move(in_file), pad, index, false);
+	load_figure(data, std::move(in_file), pad, index);
 
 	return true;
 }
@@ -540,7 +519,6 @@ std::array<u8, 4> dimensions_toypad::pwd_generate(const std::array<u8, 7>& uid)
 
 std::optional<std::array<u8, 32>> dimensions_toypad::pop_added_removed_response()
 {
-	std::lock_guard lock(m_dimensions_mutex);
 
 	if (dimensions_replies_empty(&m_figure_added_removed_responses))
 		return std::nullopt;

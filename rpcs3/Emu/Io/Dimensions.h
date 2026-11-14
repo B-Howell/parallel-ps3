@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Emu/Io/usb_device.h"
-#include "Utilities/mutex.h"
 #include <array>
 #include <optional>
 #include <queues/retro_deque.h>
@@ -33,15 +32,16 @@ public:
 	void get_model(const u8* buf, u8 sequence, std::array<u8, 32>& reply_buf);
 	std::optional<std::array<u8, 32>> pop_added_removed_response();
 
-	bool remove_figure(u8 pad, u8 index, bool full_remove, bool lock);
+	bool remove_figure(u8 pad, u8 index, bool full_remove);
 	bool temp_remove(u8 index);
 	bool cancel_remove(u8 index);
-	u32 load_figure(const std::array<u8, 0x2D * 0x04>& buf, fs::file in_file, u8 pad, u8 index, bool lock);
+	u32 load_figure(const std::array<u8, 0x2D * 0x04>& buf, fs::file in_file, u8 pad, u8 index);
 	bool move_figure(u8 pad, u8 index, u8 old_pad, u8 old_index);
 	static bool create_blank_character(std::array<u8, 0x2D * 0x04>& buf, u16 id);
 
 protected:
-	shared_mutex m_dimensions_mutex;
+	// The portal is the USB thread's alone: sys_usbd runs every transfer of
+	// its device there (usb_handler_thread::on_thread), so nothing is locked
 	std::array<dimensions_figure, dimensions_figure_count> m_figures{};
 
 private:

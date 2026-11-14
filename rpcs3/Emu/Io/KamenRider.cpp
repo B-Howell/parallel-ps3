@@ -47,7 +47,6 @@ void rider_gate::get_blank_response(std::array<u8, 64>& reply_buf, u8 command, u
 
 void rider_gate::wake_rider_gate(std::array<u8, 64>& reply_buf, u8 command, u8 sequence)
 {
-	std::lock_guard lock(kamen_mutex);
 
 	m_is_awake = true;
 	reply_buf = {0x55, 0x1a, command, sequence, 0x00, 0x07, 0x00, 0x03, 0x02,
@@ -57,7 +56,6 @@ void rider_gate::wake_rider_gate(std::array<u8, 64>& reply_buf, u8 command, u8 s
 
 void rider_gate::get_list_tags(std::array<u8, 64>& reply_buf, u8 command, u8 sequence)
 {
-	std::lock_guard lock(kamen_mutex);
 
 	reply_buf = {0x55, 0x02, command, sequence};
 	u8 index = 4;
@@ -76,7 +74,6 @@ void rider_gate::get_list_tags(std::array<u8, 64>& reply_buf, u8 command, u8 seq
 
 void rider_gate::query_block(std::array<u8, 64>& reply_buf, u8 command, u8 sequence, const u8* uid, u8 sector, u8 block)
 {
-	std::lock_guard lock(kamen_mutex);
 
 	reply_buf = {0x55, 0x13, command, sequence, 0x00};
 
@@ -95,7 +92,6 @@ void rider_gate::query_block(std::array<u8, 64>& reply_buf, u8 command, u8 seque
 
 void rider_gate::write_block(std::array<u8, 64>& reply_buf, u8 command, u8 sequence, const u8* uid, u8 sector, u8 block, const u8* to_write_buf)
 {
-	std::lock_guard lock(kamen_mutex);
 
 	const std::array<u8, 7> uid_array = {uid[0], uid[1], uid[2], uid[3], uid[4], uid[5], uid[6]};
 
@@ -113,7 +109,6 @@ void rider_gate::write_block(std::array<u8, 64>& reply_buf, u8 command, u8 seque
 
 std::optional<std::array<u8, 64>> rider_gate::pop_added_removed_response()
 {
-	std::lock_guard lock(kamen_mutex);
 
 	if (kamen_replies_empty(&m_figure_added_removed_responses))
 	{
@@ -127,7 +122,6 @@ std::optional<std::array<u8, 64>> rider_gate::pop_added_removed_response()
 
 bool rider_gate::remove_figure(u8 index)
 {
-	std::lock_guard lock(kamen_mutex);
 
 	auto& figure = figures[index];
 
@@ -152,7 +146,6 @@ bool rider_gate::remove_figure(u8 index)
 
 u8 rider_gate::load_figure(const std::array<u8, 0x14 * 0x10>& buf, fs::file in_file)
 {
-	std::lock_guard lock(kamen_mutex);
 
 	u8 found_slot = 0xFF;
 

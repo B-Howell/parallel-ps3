@@ -639,7 +639,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 
 # The core's own code, searched for host clocks and sleeps
 # std::lock_guard left in the core's own code (falls with each patch)
-LOCK_GUARD_MAX := 955
+LOCK_GUARD_MAX := 928
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -717,6 +717,8 @@ check: all
 	if [ $$n -gt $(LOCK_GUARD_MAX) ]; then echo "std::lock_guard: $$n in the core, more than the $(LOCK_GUARD_MAX) left - the locks are going, not coming (AGENTS.md)"; exit 1; \
 	elif [ $$n -lt $(LOCK_GUARD_MAX) ]; then echo "std::lock_guard: $$n in the core, fewer than LOCK_GUARD_MAX ($(LOCK_GUARD_MAX)): lower it to $$n"; exit 1; \
 	else echo "std::lock_guard: $$n left in the core"; fi
+	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
+	@if grep -nE "mutex|lock_guard|unique_lock|reader_lock" ../../Emu/Io/Skylander.cpp ../../Emu/Io/Skylander.h ../../Emu/Io/Infinity.cpp ../../Emu/Io/Infinity.h ../../Emu/Io/Dimensions.cpp ../../Emu/Io/Dimensions.h ../../Emu/Io/KamenRider.cpp ../../Emu/Io/KamenRider.h; then echo "portals: a lock is back - the portals are the USB thread's, sys_usbd runs their transfers there"; exit 1; else echo "portals: no lock, the USB thread's"; fi
 	@# The pads take no lock: pad::g_pad_mutex is gone, and a merge of
 	@# upstream's code that takes it does not bring it back
 	@if grep -rn "g_pad_mutex" ../../Emu ../../Input ../*.cpp ../*.h ../*.c; then echo "pads: pad::g_pad_mutex is back - the pads take no lock (AGENTS.md)"; exit 1; else echo "pads: no pad lock"; fi

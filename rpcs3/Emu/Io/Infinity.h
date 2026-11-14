@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Emu/Io/usb_device.h"
-#include "Utilities/mutex.h"
 #include <array>
 #include <optional>
 #include <queues/retro_deque.h>
@@ -34,7 +33,8 @@ public:
 	u32 load_figure(const std::array<u8, 0x14 * 0x10>& buf, fs::file in_file, u8 position);
 
 protected:
-	shared_mutex infinity_mutex;
+	// The portal is the USB thread's alone: sys_usbd runs every transfer of
+	// its device there (usb_handler_thread::on_thread), so nothing is locked
 	std::array<infinity_figure, 9> figures;
 
 private:

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Emu/Io/usb_device.h"
-#include "Utilities/mutex.h"
 #include <array>
 #include <queues/retro_deque.h>
 
@@ -39,7 +38,8 @@ public:
 	u8 load_skylander(const std::array<u8, 0x40 * 0x10>& data, fs::file in_file);
 
 protected:
-	shared_mutex sky_mutex;
+	// The portal is the USB thread's alone: sys_usbd runs every transfer of
+	// its device there (usb_handler_thread::on_thread), so nothing is locked
 
 	bool activated       = true;
 	u8 interrupt_counter = 0;

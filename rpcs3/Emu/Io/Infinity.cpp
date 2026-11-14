@@ -204,7 +204,6 @@ u8 infinity_base::derive_figure_position(u8 position)
 
 void infinity_base::query_block(u8 fig_num, u8 block, std::array<u8, 32>& reply_buf, u8 sequence)
 {
-	std::lock_guard lock(infinity_mutex);
 
 	infinity_figure& figure = get_figure_by_order(fig_num);
 
@@ -223,7 +222,6 @@ void infinity_base::query_block(u8 fig_num, u8 block, std::array<u8, 32>& reply_
 void infinity_base::write_block(u8 fig_num, u8 block, const u8* to_write_buf,
 	std::array<u8, 32>& reply_buf, u8 sequence)
 {
-	std::lock_guard lock(infinity_mutex);
 
 	infinity_figure& figure = get_figure_by_order(fig_num);
 
@@ -242,7 +240,6 @@ void infinity_base::write_block(u8 fig_num, u8 block, const u8* to_write_buf,
 
 void infinity_base::get_figure_identifier(u8 fig_num, u8 sequence, std::array<u8, 32>& reply_buf)
 {
-	std::lock_guard lock(infinity_mutex);
 
 	infinity_figure& figure = get_figure_by_order(fig_num);
 
@@ -260,7 +257,6 @@ void infinity_base::get_figure_identifier(u8 fig_num, u8 sequence, std::array<u8
 
 std::optional<std::array<u8, 32>> infinity_base::pop_added_removed_response()
 {
-	std::lock_guard lock(infinity_mutex);
 
 	if (infinity_replies_empty(&m_figure_added_removed_responses))
 		return std::nullopt;
@@ -272,7 +268,6 @@ std::optional<std::array<u8, 32>> infinity_base::pop_added_removed_response()
 
 bool infinity_base::remove_figure(u8 position)
 {
-	std::lock_guard lock(infinity_mutex);
 	infinity_figure& figure = figures[position];
 
 	if (!figure.present)
@@ -299,7 +294,6 @@ bool infinity_base::remove_figure(u8 position)
 
 u32 infinity_base::load_figure(const std::array<u8, 0x14 * 0x10>& buf, fs::file in_file, u8 position)
 {
-	std::lock_guard lock(infinity_mutex);
 	u8 order_added;
 
 	std::vector<u8> sha1_calc = {SHA1_CONSTANT.begin(), SHA1_CONSTANT.end() - 1};
