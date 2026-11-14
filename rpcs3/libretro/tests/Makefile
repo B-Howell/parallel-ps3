@@ -639,7 +639,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 
 # The core's own code, searched for host clocks and sleeps
 # std::lock_guard left in the core's own code (falls with each patch)
-LOCK_GUARD_MAX := 973
+LOCK_GUARD_MAX := 955
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 

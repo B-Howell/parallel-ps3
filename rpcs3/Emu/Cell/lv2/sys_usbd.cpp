@@ -15,6 +15,9 @@
 
 #include <rthreads/retro_waitaddr.h>
 
+#include <optional>
+#include <type_traits>
+
 #include "Emu/Io/usb_device.h"
 #include "Emu/Io/usb_microphone.h"
 #include "Emu/Io/usb_vfs.h"
@@ -162,7 +165,13 @@ public:
 	std::map<u32, std::pair<UsbInternalDevice, std::shared_ptr<usb_device>>> handled_devices;
 	std::map<u8, std::pair<input::product_type, std::shared_ptr<usb_device>>> pad_to_usb;
 
-	shared_mutex mutex;
+	// The lists above, the pipes, the drivers and the devices are the USB
+	// thread's alone: a syscall, the pad thread or anyone else runs what
+	// touches them on it (on_thread) and waits for it there, so nothing is
+	// locked. libusb's callbacks run on it, and on it on_thread runs at once.
+	template <typename F>
+	auto on_thread(F&& f) -> decltype(f());
+
 	retro_atomic_int_t is_init{};
 
 	// sys_usbd_receive_event PPU Threads
@@ -300,8 +309,40 @@ private:
 	std::vector<UsbTransfer*> fake_transfers;
 
 public:
-	// Woken: a fake transfer handed over, or the thread stopping
+	// Woken: a fake transfer or a request handed over, or the thread stopping
 	retro_atomic_int_t wake_word{};
+
+	// A call of on_thread's waiting for the thread: on the caller's stack
+	struct request
+	{
+		mpsc_stack_node_t node; // first: the stack's link
+		void (*run)(void*);
+		void* call;
+		retro_atomic_int_t done;
+	};
+
+	mpsc_stack_t requests{};
+
+	// Callers in on_thread now; the top bit set once the thread takes no more
+	// (it runs the last ones it has, then stops). One word, so a caller and
+	// the thread's end cannot miss each other
+	static constexpr int requests_closed = int{1} << 30;
+	retro_atomic_int_t requesting{};
+
+	static thread_local bool on_usb_thread;
+
+	// The thread's: what was asked of it, in order
+	void take_requests()
+	{
+		for (mpsc_stack_node_t* node = mpsc_stack_reverse(mpsc_stack_drain(&requests)); node;)
+		{
+			request* const req = reinterpret_cast<request*>(node);
+			node = node->next;
+			req->run(req->call);
+			retro_atomic_store_release_int(&req->done, 1);
+			retro_waitaddr_notify_all(&req->done);
+		}
+	}
 
 	void wake()
 	{
@@ -685,17 +726,78 @@ usb_handler_thread::~usb_handler_thread()
 		libusb_exit(ctx);
 }
 
+thread_local bool usb_handler_thread::on_usb_thread = false;
+
+template <typename F>
+auto usb_handler_thread::on_thread(F&& f) -> decltype(f())
+{
+	using result_t = decltype(f());
+
+	if (on_usb_thread)
+	{
+		return f();
+	}
+
+	if (retro_atomic_fetch_add_int(&requesting, 1) & requests_closed)
+	{
+		// The thread is gone: nothing else runs its part any more
+		retro_atomic_fetch_sub_int(&requesting, 1);
+		wake();
+		return f();
+	}
+
+	struct call_t
+	{
+		F* f;
+		std::conditional_t<std::is_void_v<result_t>, char, std::optional<result_t>> result;
+	} call{&f, {}};
+
+	request req{{}, [](void* p)
+	{
+		call_t* const c = static_cast<call_t*>(p);
+
+		if constexpr (std::is_void_v<result_t>)
+		{
+			(*c->f)();
+		}
+		else
+		{
+			c->result.emplace((*c->f)());
+		}
+	}, &call, {}};
+
+	mpsc_stack_push(&requests, &req.node);
+	wake();
+
+	while (!retro_atomic_load_acquire_int(&req.done))
+	{
+		const retro_waitaddr_t until_done{&req.done, 0};
+		retro_waitaddr_wait(&until_done, 1, -1);
+	}
+
+	retro_atomic_fetch_sub_int(&requesting, 1);
+	wake();
+
+	if constexpr (!std::is_void_v<result_t>)
+	{
+		return std::move(*call.result);
+	}
+}
+
 void usb_handler_thread::operator()()
 {
+	on_usb_thread = true;
+
 	timeval lusb_tv{0, 0};
 	if (!retro_atomic_load_acquire_int(&hotplug_supported))
 	{
 		retro_atomic_store_release_64(&usb_hotplug_timeout, get_guest_system_time() + 4'000'000ull);
 	}
-	while (ctx && thread_ctrl::state() != thread_state::aborting)
+	while (thread_ctrl::state() != thread_state::aborting)
 	{
 		// Before what was handed over is taken up: a later hand-over wakes
 		const int wake = retro_atomic_load_acquire_int(&wake_word);
+		take_requests();
 
 		for (mpsc_stack_node_t* node = mpsc_stack_reverse(mpsc_stack_drain(&fake_handed)); node;)
 		{
@@ -715,7 +817,10 @@ void usb_handler_thread::operator()()
 		}
 
 		// Process asynchronous requests that are pending
-		libusb_handle_events_timeout_completed(ctx, &lusb_tv, nullptr);
+		if (ctx)
+		{
+			libusb_handle_events_timeout_completed(ctx, &lusb_tv, nullptr);
+		}
 
 		u64 delay = 1'000;
 
@@ -766,6 +871,23 @@ void usb_handler_thread::operator()()
 		};
 
 		retro_waitaddr_wait(list, 2, static_cast<s64>(libretro_guest_wait_as_host(handled_devices.empty() ? 500'000 : delay)));
+	}
+
+	// Stopping: no more requests, and those already made are run
+	retro_atomic_fetch_or_int(&requesting, requests_closed);
+
+	for (;;)
+	{
+		const int wake = retro_atomic_load_acquire_int(&wake_word);
+		take_requests();
+
+		if (!(retro_atomic_load_acquire_int(&requesting) & ~requests_closed))
+		{
+			break;
+		}
+
+		const retro_waitaddr_t list{&wake_word, static_cast<u32>(wake)};
+		retro_waitaddr_wait(&list, 1, -1);
 	}
 }
 
@@ -1092,34 +1214,38 @@ void usb_handler_thread::disconnect_usb_device(std::shared_ptr<usb_device> dev, 
 
 void usb_handler_thread::reconnect_usb_device(u32 assigned_number)
 {
-	std::lock_guard lock(mutex);
-	ensure(assigned_number != 0);
-	for (const auto& dev : usb_devices)
+	return on_thread([&]()
 	{
-		if (dev->assigned_number == assigned_number)
+		ensure(assigned_number != 0);
+		for (const auto& dev : usb_devices)
 		{
-			disconnect_usb_device(dev, false);
-			connect_usb_device(dev, false);
-			break;
+			if (dev->assigned_number == assigned_number)
+			{
+				disconnect_usb_device(dev, false);
+				connect_usb_device(dev, false);
+				break;
+			}
 		}
-	}
+	});
 }
 
 void usb_handler_thread::set_usb_device_attached(usb_device* raw_dev, bool attached)
 {
-	std::lock_guard lock(mutex);
-	for (const auto& dev : usb_devices)
+	return on_thread([&]()
 	{
-		if (dev.get() != raw_dev)
-			continue;
+		for (const auto& dev : usb_devices)
+		{
+			if (dev.get() != raw_dev)
+				continue;
 
-		if (attached && !dev->assigned_number)
-			connect_usb_device(dev, false);
-		else if (!attached && dev->assigned_number)
-			disconnect_usb_device(dev, false);
+			if (attached && !dev->assigned_number)
+				connect_usb_device(dev, false);
+			else if (!attached && dev->assigned_number)
+				disconnect_usb_device(dev, false);
 
-		break;
-	}
+			break;
+		}
+	});
 }
 
 void connect_usb_controller(u8 index, input::product_type type)
@@ -1130,82 +1256,86 @@ void connect_usb_controller(u8 index, input::product_type type)
 		return;
 	}
 
-	bool already_connected = false;
-
-	if (const auto it = usbh->pad_to_usb.find(index); it != usbh->pad_to_usb.end())
+	// The pad thread's call: the devices are the USB thread's
+	usbh->on_thread([&]()
 	{
-		if (it->second.first == type)
-		{
-			already_connected = true;
-		}
-		else
-		{
-			usbh->disconnect_usb_device(it->second.second, true);
-			usbh->pad_to_usb.erase(it->first);
-		}
-	}
+		bool already_connected = false;
 
-	if (!already_connected)
-	{
-		switch (type)
+		if (const auto it = usbh->pad_to_usb.find(index); it != usbh->pad_to_usb.end())
 		{
-		case input::product_type::guncon_3:
-		{
-			if (!g_cfg_guncon3.load())
+			if (it->second.first == type)
 			{
-				sys_usbd.notice("Could not load GunCon3 config. Using defaults.");
+				already_connected = true;
 			}
-
-			sys_usbd.success("Adding emulated GunCon3 (controller %d)", index);
-			std::shared_ptr<usb_device> dev = std::make_shared<usb_device_guncon3>(index, usbh->get_new_location());
-			usbh->connect_usb_device(dev, true);
-			usbh->pad_to_usb.emplace(index, std::pair(type, dev));
-
-			sys_usbd.notice("GunCon3 config=\n", g_cfg_guncon3.to_string());
-			break;
-		}
-		case input::product_type::top_shot_elite:
-		{
-			if (!g_cfg_topshotelite.load())
+			else
 			{
-				sys_usbd.notice("Could not load Top Shot Elite config. Using defaults.");
+				usbh->disconnect_usb_device(it->second.second, true);
+				usbh->pad_to_usb.erase(it->first);
 			}
-
-			sys_usbd.success("Adding emulated Top Shot Elite (controller %d)", index);
-			std::shared_ptr<usb_device> dev = std::make_shared<usb_device_topshotelite>(index, usbh->get_new_location());
-			usbh->connect_usb_device(dev, true);
-			usbh->pad_to_usb.emplace(index, std::pair(type, dev));
-
-			sys_usbd.notice("Top shot elite config=\n", g_cfg_topshotelite.to_string());
-			break;
 		}
-		case input::product_type::top_shot_fearmaster:
+
+		if (!already_connected)
 		{
-			if (!g_cfg_topshotfearmaster.load())
+			switch (type)
 			{
-				sys_usbd.notice("Could not load Top Shot Fearmaster config. Using defaults.");
+			case input::product_type::guncon_3:
+			{
+				if (!g_cfg_guncon3.load())
+				{
+					sys_usbd.notice("Could not load GunCon3 config. Using defaults.");
+				}
+
+				sys_usbd.success("Adding emulated GunCon3 (controller %d)", index);
+				std::shared_ptr<usb_device> dev = std::make_shared<usb_device_guncon3>(index, usbh->get_new_location());
+				usbh->connect_usb_device(dev, true);
+				usbh->pad_to_usb.emplace(index, std::pair(type, dev));
+
+				sys_usbd.notice("GunCon3 config=\n", g_cfg_guncon3.to_string());
+				break;
 			}
+			case input::product_type::top_shot_elite:
+			{
+				if (!g_cfg_topshotelite.load())
+				{
+					sys_usbd.notice("Could not load Top Shot Elite config. Using defaults.");
+				}
 
-			sys_usbd.success("Adding emulated Top Shot Fearmaster (controller %d)", index);
-			std::shared_ptr<usb_device> dev = std::make_shared<usb_device_topshotfearmaster>(index, usbh->get_new_location());
-			usbh->connect_usb_device(dev, true);
-			usbh->pad_to_usb.emplace(index, std::pair(type, dev));
+				sys_usbd.success("Adding emulated Top Shot Elite (controller %d)", index);
+				std::shared_ptr<usb_device> dev = std::make_shared<usb_device_topshotelite>(index, usbh->get_new_location());
+				usbh->connect_usb_device(dev, true);
+				usbh->pad_to_usb.emplace(index, std::pair(type, dev));
 
-			sys_usbd.notice("Top shot fearmaster config=\n", g_cfg_topshotfearmaster.to_string());
-			break;
+				sys_usbd.notice("Top shot elite config=\n", g_cfg_topshotelite.to_string());
+				break;
+			}
+			case input::product_type::top_shot_fearmaster:
+			{
+				if (!g_cfg_topshotfearmaster.load())
+				{
+					sys_usbd.notice("Could not load Top Shot Fearmaster config. Using defaults.");
+				}
+
+				sys_usbd.success("Adding emulated Top Shot Fearmaster (controller %d)", index);
+				std::shared_ptr<usb_device> dev = std::make_shared<usb_device_topshotfearmaster>(index, usbh->get_new_location());
+				usbh->connect_usb_device(dev, true);
+				usbh->pad_to_usb.emplace(index, std::pair(type, dev));
+
+				sys_usbd.notice("Top shot fearmaster config=\n", g_cfg_topshotfearmaster.to_string());
+				break;
+			}
+			case input::product_type::udraw_gametablet:
+			{
+				sys_usbd.success("Adding emulated uDraw GameTablet (controller %d)", index);
+				std::shared_ptr<usb_device> dev = std::make_shared<usb_device_gametablet>(index, usbh->get_new_location());
+				usbh->connect_usb_device(dev, true);
+				usbh->pad_to_usb.emplace(index, std::pair(type, dev));
+				break;
+			}
+			default:
+				break;
+			}
 		}
-		case input::product_type::udraw_gametablet:
-		{
-			sys_usbd.success("Adding emulated uDraw GameTablet (controller %d)", index);
-			std::shared_ptr<usb_device> dev = std::make_shared<usb_device_gametablet>(index, usbh->get_new_location());
-			usbh->connect_usb_device(dev, true);
-			usbh->pad_to_usb.emplace(index, std::pair(type, dev));
-			break;
-		}
-		default:
-			break;
-		}
-	}
+	});
 }
 
 void reconnect_usb(u32 assigned_number)
@@ -1236,7 +1366,7 @@ void handle_hotplug_event(bool connected, bool source_is_libusb)
 
 		sys_usbd.notice("handle_hotplug_event: connected=%d", connected);
 
-		retro_atomic_store_release_64(&usbh->usb_hotplug_timeout, get_system_time() + (connected ? 1'000'000ull : 0));
+		retro_atomic_store_release_64(&usbh->usb_hotplug_timeout, get_guest_system_time() + (connected ? 1'000'000ull : 0));
 	}
 }
 
@@ -1248,12 +1378,8 @@ error_code sys_usbd_initialize(ppu_thread& ppu, vm::ptr<u32> handle)
 
 	auto& usbh = g_fxo->get<named_thread<usb_handler_thread>>();
 
-	{
-		std::lock_guard lock(usbh.mutex);
-
-		// Must not occur (lv2 allows multiple handles, cellUsbd does not)
-		ensure(!retro_atomic_exchange_int(&usbh.is_init, 1));
-	}
+	// Must not occur (lv2 allows multiple handles, cellUsbd does not)
+	ensure(!retro_atomic_exchange_int(&usbh.is_init, 1));
 
 	ppu.check_state();
 	*handle = 0x115B;
@@ -1270,21 +1396,23 @@ error_code sys_usbd_finalize(ppu_thread& ppu, u32 handle)
 
 	auto& usbh = g_fxo->get<named_thread<usb_handler_thread>>();
 
-	std::lock_guard lock(usbh.mutex);
-	retro_atomic_store_release_int(&usbh.is_init, 0);
-
-	// Forcefully awake all waiters
-	while (auto cpu = lv2_obj::schedule<ppu_thread>(usbh.sq, SYS_SYNC_FIFO))
+	return usbh.on_thread([&]() -> error_code
 	{
-		// Special termination signal value
-		cpu->gpr[4] = 4;
-		cpu->gpr[5] = 0;
-		cpu->gpr[6] = 0;
-		lv2_obj::awake(cpu);
-	}
+		retro_atomic_store_release_int(&usbh.is_init, 0);
 
-	// TODO
-	return CELL_OK;
+		// Forcefully awake all waiters
+		while (auto cpu = lv2_obj::schedule<ppu_thread>(usbh.sq, SYS_SYNC_FIFO))
+		{
+			// Special termination signal value
+			cpu->gpr[4] = 4;
+			cpu->gpr[5] = 0;
+			cpu->gpr[6] = 0;
+			lv2_obj::awake(cpu);
+		}
+
+		// TODO
+		return CELL_OK;
+	});
 }
 
 error_code sys_usbd_get_device_list(ppu_thread& ppu, u32 handle, vm::ptr<UsbInternalDevice> device_list, u32 max_devices)
@@ -1295,23 +1423,25 @@ error_code sys_usbd_get_device_list(ppu_thread& ppu, u32 handle, vm::ptr<UsbInte
 
 	auto& usbh = g_fxo->get<named_thread<usb_handler_thread>>();
 
-	std::lock_guard lock(usbh.mutex);
-	if (!retro_atomic_load_acquire_int(&usbh.is_init))
-		return CELL_EINVAL;
-
-	// TODO: was std::min<s32>
-	const u32 i_tocopy = std::min<u32>(max_devices, ::size32(usbh.handled_devices));
-	u32 index = 0;
-
-	for (const auto& [_, device] : usbh.handled_devices)
+	return usbh.on_thread([&]() -> error_code
 	{
-		if (index == i_tocopy)
-			break;
-		
-		device_list[index++] = device.first;
-	}
+		if (!retro_atomic_load_acquire_int(&usbh.is_init))
+			return CELL_EINVAL;
 
-	return not_an_error(i_tocopy);
+		// TODO: was std::min<s32>
+		const u32 i_tocopy = std::min<u32>(max_devices, ::size32(usbh.handled_devices));
+		u32 index = 0;
+
+		for (const auto& [_, device] : usbh.handled_devices)
+		{
+			if (index == i_tocopy)
+				break;
+		
+			device_list[index++] = device.first;
+		}
+
+		return not_an_error(i_tocopy);
+	});
 }
 
 error_code sys_usbd_register_extra_ldd(ppu_thread& ppu, u32 handle, vm::cptr<char> s_product, u16 slen_product, u16 id_vendor, u16 id_product_min, u16 id_product_max)
@@ -1322,16 +1452,18 @@ error_code sys_usbd_register_extra_ldd(ppu_thread& ppu, u32 handle, vm::cptr<cha
 
 	auto& usbh = g_fxo->get<named_thread<usb_handler_thread>>();
 
-	std::lock_guard lock(usbh.mutex);
-	if (!retro_atomic_load_acquire_int(&usbh.is_init))
-		return CELL_EINVAL;
+	return usbh.on_thread([&]() -> error_code
+	{
+		if (!retro_atomic_load_acquire_int(&usbh.is_init))
+			return CELL_EINVAL;
 
-	std::string_view product{s_product.get_ptr(), slen_product};
+		std::string_view product{s_product.get_ptr(), slen_product};
 
-	if (usbh.add_ldd(product, id_vendor, id_product_min, id_product_max))
-		return CELL_OK;
+		if (usbh.add_ldd(product, id_vendor, id_product_min, id_product_max))
+			return CELL_OK;
 
-	return CELL_EEXIST;
+		return CELL_EEXIST;
+	});
 }
 
 error_code sys_usbd_unregister_extra_ldd(ppu_thread& ppu, u32 handle, vm::cptr<char> s_product, u16 slen_product)
@@ -1342,16 +1474,18 @@ error_code sys_usbd_unregister_extra_ldd(ppu_thread& ppu, u32 handle, vm::cptr<c
 
 	auto& usbh = g_fxo->get<named_thread<usb_handler_thread>>();
 
-	std::lock_guard lock(usbh.mutex);
-	if (!retro_atomic_load_acquire_int(&usbh.is_init))
-		return CELL_EINVAL;
+	return usbh.on_thread([&]() -> error_code
+	{
+		if (!retro_atomic_load_acquire_int(&usbh.is_init))
+			return CELL_EINVAL;
 
-	std::string_view product{s_product.get_ptr(), slen_product};
+		std::string_view product{s_product.get_ptr(), slen_product};
 
-	if (usbh.remove_ldd(product))
-		return CELL_OK;
+		if (usbh.remove_ldd(product))
+			return CELL_OK;
 
-	return CELL_ESRCH;
+		return CELL_ESRCH;
+	});
 }
 
 error_code sys_usbd_get_descriptor_size(ppu_thread& ppu, u32 handle, u32 device_handle)
@@ -1362,14 +1496,15 @@ error_code sys_usbd_get_descriptor_size(ppu_thread& ppu, u32 handle, u32 device_
 
 	auto& usbh = g_fxo->get<named_thread<usb_handler_thread>>();
 
-	std::lock_guard lock(usbh.mutex);
-
-	if (!retro_atomic_load_acquire_int(&usbh.is_init) || !usbh.handled_devices.count(device_handle))
+	return usbh.on_thread([&]() -> error_code
 	{
-		return CELL_EINVAL;
-	}
+		if (!retro_atomic_load_acquire_int(&usbh.is_init) || !usbh.handled_devices.count(device_handle))
+		{
+			return CELL_EINVAL;
+		}
 
-	return not_an_error(usbh.handled_devices[device_handle].second->device.get_size());
+		return not_an_error(usbh.handled_devices[device_handle].second->device.get_size());
+	});
 }
 
 error_code sys_usbd_get_descriptor(ppu_thread& ppu, u32 handle, u32 device_handle, vm::ptr<void> descriptor, u32 desc_size)
@@ -1385,21 +1520,22 @@ error_code sys_usbd_get_descriptor(ppu_thread& ppu, u32 handle, u32 device_handl
 
 	auto& usbh = g_fxo->get<named_thread<usb_handler_thread>>();
 
-	std::lock_guard lock(usbh.mutex);
-
-	if (!retro_atomic_load_acquire_int(&usbh.is_init) || !usbh.handled_devices.count(device_handle))
+	return usbh.on_thread([&]() -> error_code
 	{
-		return CELL_EINVAL;
-	}
+		if (!retro_atomic_load_acquire_int(&usbh.is_init) || !usbh.handled_devices.count(device_handle))
+		{
+			return CELL_EINVAL;
+		}
 
-	if (!desc_size)
-	{
-		return CELL_ENOMEM;
-	}
+		if (!desc_size)
+		{
+			return CELL_ENOMEM;
+		}
 
-	usbh.handled_devices[device_handle].second->device.write_data(reinterpret_cast<u8*>(descriptor.get_ptr()), desc_size);
+		usbh.handled_devices[device_handle].second->device.write_data(reinterpret_cast<u8*>(descriptor.get_ptr()), desc_size);
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 // This function is used for psp(cellUsbPspcm), ps3 arcade usj io(PS3A-USJ), ps2 cam(eyetoy), generic usb camera?(sample_usb2cam)
@@ -1448,14 +1584,15 @@ error_code sys_usbd_open_pipe(ppu_thread& ppu, u32 handle, u32 device_handle, u3
 
 	auto& usbh = g_fxo->get<named_thread<usb_handler_thread>>();
 
-	std::lock_guard lock(usbh.mutex);
-
-	if (!retro_atomic_load_acquire_int(&usbh.is_init) || !usbh.handled_devices.count(device_handle))
+	return usbh.on_thread([&]() -> error_code
 	{
-		return CELL_EINVAL;
-	}
+		if (!retro_atomic_load_acquire_int(&usbh.is_init) || !usbh.handled_devices.count(device_handle))
+		{
+			return CELL_EINVAL;
+		}
 
-	return not_an_error(usbh.open_pipe(device_handle, static_cast<u8>(endpoint)));
+		return not_an_error(usbh.open_pipe(device_handle, static_cast<u8>(endpoint)));
+	});
 }
 
 error_code sys_usbd_open_default_pipe(ppu_thread& ppu, u32 handle, u32 device_handle)
@@ -1466,14 +1603,15 @@ error_code sys_usbd_open_default_pipe(ppu_thread& ppu, u32 handle, u32 device_ha
 
 	auto& usbh = g_fxo->get<named_thread<usb_handler_thread>>();
 
-	std::lock_guard lock(usbh.mutex);
-
-	if (!retro_atomic_load_acquire_int(&usbh.is_init) || !usbh.handled_devices.count(device_handle))
+	return usbh.on_thread([&]() -> error_code
 	{
-		return CELL_EINVAL;
-	}
+		if (!retro_atomic_load_acquire_int(&usbh.is_init) || !usbh.handled_devices.count(device_handle))
+		{
+			return CELL_EINVAL;
+		}
 
-	return not_an_error(usbh.open_pipe(device_handle, 0));
+		return not_an_error(usbh.open_pipe(device_handle, 0));
+	});
 }
 
 error_code sys_usbd_close_pipe(ppu_thread& ppu, u32 handle, u32 pipe_handle)
@@ -1484,16 +1622,17 @@ error_code sys_usbd_close_pipe(ppu_thread& ppu, u32 handle, u32 pipe_handle)
 
 	auto& usbh = g_fxo->get<named_thread<usb_handler_thread>>();
 
-	std::lock_guard lock(usbh.mutex);
-
-	if (!retro_atomic_load_acquire_int(&usbh.is_init) || !usbh.is_pipe(pipe_handle))
+	return usbh.on_thread([&]() -> error_code
 	{
-		return CELL_EINVAL;
-	}
+		if (!retro_atomic_load_acquire_int(&usbh.is_init) || !usbh.is_pipe(pipe_handle))
+		{
+			return CELL_EINVAL;
+		}
 
-	usbh.close_pipe(pipe_handle);
+		usbh.close_pipe(pipe_handle);
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 // From RE:
@@ -1601,74 +1740,75 @@ error_code sys_usbd_transfer_data(ppu_thread& ppu, u32 handle, u32 id_pipe, vm::
 
 	auto& usbh = g_fxo->get<named_thread<usb_handler_thread>>();
 
-	std::lock_guard lock(usbh.mutex);
-
-	if (!retro_atomic_load_acquire_int(&usbh.is_init) || !usbh.is_pipe(id_pipe))
+	return usbh.on_thread([&]() -> error_code
 	{
-		return CELL_EINVAL;
-	}
-
-	const auto& pipe               = usbh.get_pipe(id_pipe);
-	auto&& [transfer_id, transfer] = usbh.get_free_transfer();
-
-	transfer.assigned_number = pipe.device->assigned_number;
-
-	// Default endpoint is control endpoint
-	if (pipe.endpoint == 0)
-	{
-		if (!request)
+		if (!retro_atomic_load_acquire_int(&usbh.is_init) || !usbh.is_pipe(id_pipe))
 		{
-			sys_usbd.error("Tried to use control pipe without proper request pointer");
 			return CELL_EINVAL;
 		}
 
-		// Claiming interface
-		switch (request->bmRequestType)
+		const auto& pipe               = usbh.get_pipe(id_pipe);
+		auto&& [transfer_id, transfer] = usbh.get_free_transfer();
+
+		transfer.assigned_number = pipe.device->assigned_number;
+
+		// Default endpoint is control endpoint
+		if (pipe.endpoint == 0)
 		{
-		case 0U /*silences warning*/ | LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_STANDARD | LIBUSB_RECIPIENT_DEVICE:
-		{
-			switch (request->bRequest)
+			if (!request)
 			{
-			case LIBUSB_REQUEST_SET_CONFIGURATION:
+				sys_usbd.error("Tried to use control pipe without proper request pointer");
+				return CELL_EINVAL;
+			}
+
+			// Claiming interface
+			switch (request->bmRequestType)
 			{
-				pipe.device->set_configuration(static_cast<u8>(+request->wValue));
-				pipe.device->set_interface(0, 0);
+			case 0U /*silences warning*/ | LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_STANDARD | LIBUSB_RECIPIENT_DEVICE:
+			{
+				switch (request->bRequest)
+				{
+				case LIBUSB_REQUEST_SET_CONFIGURATION:
+				{
+					pipe.device->set_configuration(static_cast<u8>(+request->wValue));
+					pipe.device->set_interface(0, 0);
+					break;
+				}
+				default: break;
+				}
+				break;
+			}
+			case 0U /*silences warning*/ | LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_STANDARD | LIBUSB_RECIPIENT_DEVICE:
+			{
+				if (!buf)
+				{
+					sys_usbd.error("Invalid buffer for control_transfer");
+					return CELL_EFAULT;
+				}
 				break;
 			}
 			default: break;
 			}
-			break;
+
+			pipe.device->control_transfer(request->bmRequestType, request->bRequest, request->wValue, request->wIndex, request->wLength, buf_size, buf.get_ptr(), &transfer);
 		}
-		case 0U /*silences warning*/ | LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_STANDARD | LIBUSB_RECIPIENT_DEVICE:
+		else
 		{
-			if (!buf)
-			{
-				sys_usbd.error("Invalid buffer for control_transfer");
-				return CELL_EFAULT;
-			}
-			break;
-		}
-		default: break;
+			// If output endpoint
+			if (!(pipe.endpoint & 0x80))
+				sys_usbd.trace("Write Int(s: %d):\n%s", buf_size, fmt::buf_to_hexstring(buf.get_ptr(), buf_size));
+
+			pipe.device->interrupt_transfer(buf_size, buf.get_ptr(), pipe.endpoint, &transfer);
 		}
 
-		pipe.device->control_transfer(request->bmRequestType, request->bRequest, request->wValue, request->wIndex, request->wLength, buf_size, buf.get_ptr(), &transfer);
-	}
-	else
-	{
-		// If output endpoint
-		if (!(pipe.endpoint & 0x80))
-			sys_usbd.trace("Write Int(s: %d):\n%s", buf_size, fmt::buf_to_hexstring(buf.get_ptr(), buf_size));
+		if (transfer.fake)
+		{
+			usbh.push_fake_transfer(&transfer);
+		}
 
-		pipe.device->interrupt_transfer(buf_size, buf.get_ptr(), pipe.endpoint, &transfer);
-	}
-
-	if (transfer.fake)
-	{
-		usbh.push_fake_transfer(&transfer);
-	}
-
-	// returns an identifier specific to the transfer
-	return not_an_error(transfer_id);
+		// returns an identifier specific to the transfer
+		return not_an_error(transfer_id);
+	});
 }
 
 error_code sys_usbd_isochronous_transfer_data(ppu_thread& ppu, u32 handle, u32 id_pipe, vm::ptr<UsbDeviceIsoRequest> iso_request)
@@ -1679,33 +1819,34 @@ error_code sys_usbd_isochronous_transfer_data(ppu_thread& ppu, u32 handle, u32 i
 
 	auto& usbh = g_fxo->get<named_thread<usb_handler_thread>>();
 
-	std::lock_guard lock(usbh.mutex);
-
-	if (!retro_atomic_load_acquire_int(&usbh.is_init) || !usbh.is_pipe(id_pipe))
+	return usbh.on_thread([&]() -> error_code
 	{
-		return CELL_EINVAL;
-	}
+		if (!retro_atomic_load_acquire_int(&usbh.is_init) || !usbh.is_pipe(id_pipe))
+		{
+			return CELL_EINVAL;
+		}
 
-	const auto& pipe               = usbh.get_pipe(id_pipe);
-	auto&& [transfer_id, transfer] = usbh.get_free_transfer();
+		const auto& pipe               = usbh.get_pipe(id_pipe);
+		auto&& [transfer_id, transfer] = usbh.get_free_transfer();
 
-	transfer.iso_request.buf = iso_request->buf;
-	transfer.iso_request.start_frame = iso_request->start_frame;
-	transfer.iso_request.num_packets = iso_request->num_packets;
-	for (u32 index = 0; index < iso_request->num_packets; index++)
-	{
-		::at32(transfer.iso_request.packets, index) = ::at32(iso_request->packets, index);
-	}
+		transfer.iso_request.buf = iso_request->buf;
+		transfer.iso_request.start_frame = iso_request->start_frame;
+		transfer.iso_request.num_packets = iso_request->num_packets;
+		for (u32 index = 0; index < iso_request->num_packets; index++)
+		{
+			::at32(transfer.iso_request.packets, index) = ::at32(iso_request->packets, index);
+		}
 
-	pipe.device->isochronous_transfer(&transfer);
+		pipe.device->isochronous_transfer(&transfer);
 
-	if (transfer.fake)
-	{
-		usbh.push_fake_transfer(&transfer);
-	}
+		if (transfer.fake)
+		{
+			usbh.push_fake_transfer(&transfer);
+		}
 
-	// returns an identifier specific to the transfer
-	return not_an_error(transfer_id);
+		// returns an identifier specific to the transfer
+		return not_an_error(transfer_id);
+	});
 }
 
 error_code sys_usbd_get_transfer_status(ppu_thread& ppu, u32 handle, u32 id_transfer, u32 unk1, vm::ptr<u32> result, vm::ptr<u32> count)
@@ -1716,16 +1857,17 @@ error_code sys_usbd_get_transfer_status(ppu_thread& ppu, u32 handle, u32 id_tran
 
 	auto& usbh = g_fxo->get<named_thread<usb_handler_thread>>();
 
-	std::lock_guard lock(usbh.mutex);
+	return usbh.on_thread([&]() -> error_code
+	{
+		if (!retro_atomic_load_acquire_int(&usbh.is_init) || id_transfer >= MAX_SYS_USBD_TRANSFERS)
+			return CELL_EINVAL;
 
-	if (!retro_atomic_load_acquire_int(&usbh.is_init) || id_transfer >= MAX_SYS_USBD_TRANSFERS)
-		return CELL_EINVAL;
+		const auto status = usbh.get_transfer_status(id_transfer);
+		*result           = status.first;
+		*count            = status.second;
 
-	const auto status = usbh.get_transfer_status(id_transfer);
-	*result           = status.first;
-	*count            = status.second;
-
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code sys_usbd_get_isochronous_transfer_status(ppu_thread& ppu, u32 handle, u32 id_transfer, u32 unk1, vm::ptr<UsbDeviceIsoRequest> request, vm::ptr<u32> result)
@@ -1736,17 +1878,18 @@ error_code sys_usbd_get_isochronous_transfer_status(ppu_thread& ppu, u32 handle,
 
 	auto& usbh = g_fxo->get<named_thread<usb_handler_thread>>();
 
-	std::lock_guard lock(usbh.mutex);
+	return usbh.on_thread([&]() -> error_code
+	{
+		if (!retro_atomic_load_acquire_int(&usbh.is_init) || id_transfer >= MAX_SYS_USBD_TRANSFERS)
+			return CELL_EINVAL;
 
-	if (!retro_atomic_load_acquire_int(&usbh.is_init) || id_transfer >= MAX_SYS_USBD_TRANSFERS)
-		return CELL_EINVAL;
+		const auto status = usbh.get_isochronous_transfer_status(id_transfer);
 
-	const auto status = usbh.get_isochronous_transfer_status(id_transfer);
+		*result  = status.first;
+		*request = status.second;
 
-	*result  = status.first;
-	*request = status.second;
-
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code sys_usbd_get_device_location(ppu_thread& ppu, u32 handle, u32 device_handle, vm::ptr<u8> location)
@@ -1757,14 +1900,15 @@ error_code sys_usbd_get_device_location(ppu_thread& ppu, u32 handle, u32 device_
 
 	auto& usbh = g_fxo->get<named_thread<usb_handler_thread>>();
 
-	std::lock_guard lock(usbh.mutex);
+	return usbh.on_thread([&]() -> error_code
+	{
+		if (!retro_atomic_load_acquire_int(&usbh.is_init) || !usbh.handled_devices.count(device_handle))
+			return CELL_EINVAL;
 
-	if (!retro_atomic_load_acquire_int(&usbh.is_init) || !usbh.handled_devices.count(device_handle))
-		return CELL_EINVAL;
+		usbh.handled_devices[device_handle].second->get_location(location.get_ptr());
 
-	usbh.handled_devices[device_handle].second->get_location(location.get_ptr());
-
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code sys_usbd_send_event(ppu_thread& ppu)
@@ -1783,14 +1927,15 @@ error_code sys_usbd_event_port_send(ppu_thread& ppu, u32 handle, u64 arg1, u64 a
 
 	auto& usbh = g_fxo->get<named_thread<usb_handler_thread>>();
 
-	std::lock_guard lock(usbh.mutex);
+	return usbh.on_thread([&]() -> error_code
+	{
+		if (!retro_atomic_load_acquire_int(&usbh.is_init))
+			return CELL_EINVAL;
 
-	if (!retro_atomic_load_acquire_int(&usbh.is_init))
-		return CELL_EINVAL;
+		usbh.add_event(arg1, arg2, arg3);
 
-	usbh.add_event(arg1, arg2, arg3);
-
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code sys_usbd_allocate_memory(ppu_thread& ppu)

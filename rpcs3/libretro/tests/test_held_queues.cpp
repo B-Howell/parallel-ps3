@@ -306,6 +306,78 @@ int main()
 			retro_atomic_load_acquire_int(&s_taken7), retro_atomic_load_acquire_int(&s_bad7), retro_atomic_load_acquire_int(&s_torn7));
 	}
 
+	// sys_usbd's calls on the USB thread (on_thread), from four threads at
+	// once as from several PPU threads and the pad thread: each runs on the
+	// USB thread, one at a time, and returns what it gave there; after the
+	// thread stops taking calls, they run where they are made
+	{
+		static usb_handler_thread usbh2;
+		static retro_atomic_int_t s_stop8, s_elsewhere8, s_wrong8;
+		static u32 s_plain8; // not atomic: only one thread at a time may add
+		static std::thread::id s_usb_id;
+
+		std::thread usb([]
+		{
+			usb_handler_thread::on_usb_thread = true;
+			s_usb_id = std::this_thread::get_id();
+			while (!retro_atomic_load_acquire_int(&s_stop8))
+			{
+				const int wake = retro_atomic_load_acquire_int(&usbh2.wake_word);
+				usbh2.take_requests();
+				const retro_waitaddr_t w{&usbh2.wake_word, static_cast<u32>(wake)};
+				retro_waitaddr_wait(&w, 1, 1000);
+			}
+			retro_atomic_fetch_or_int(&usbh2.requesting, usb_handler_thread::requests_closed);
+			while (retro_atomic_load_acquire_int(&usbh2.requesting) & ~usb_handler_thread::requests_closed)
+				usbh2.take_requests();
+			usbh2.take_requests();
+		});
+
+		while (s_usb_id == std::thread::id{})
+			std::this_thread::yield();
+
+		std::thread callers[4];
+		for (u32 t = 0; t < 4; t++)
+		{
+			callers[t] = std::thread([t]
+			{
+				for (u32 n = 0; n < 20000; n++)
+				{
+					const error_code got = usbh2.on_thread([&]() -> error_code
+					{
+						if (std::this_thread::get_id() != s_usb_id)
+							retro_atomic_fetch_add_int(&s_elsewhere8, 1);
+						const u32 was = s_plain8;
+						for (int spin = 0; spin < 8; spin++)
+							(void)retro_atomic_load_relaxed_int(&s_stop8);
+						s_plain8 = was + 1;
+						return not_an_error(t * 100000 + n);
+					});
+
+					if (static_cast<u32>(+got) != t * 100000 + n)
+						retro_atomic_fetch_add_int(&s_wrong8, 1);
+				}
+			});
+		}
+
+		for (auto& c : callers)
+			c.join();
+		retro_atomic_store_release_int(&s_stop8, 1);
+		usbh2.wake();
+		usb.join();
+
+		// Stopped: a call runs where it is made
+		bool here = false;
+		usbh2.on_thread([&]() { here = std::this_thread::get_id() != s_usb_id; });
+
+		CHECK(s_plain8 == 80000);
+		CHECK(retro_atomic_load_acquire_int(&s_elsewhere8) == 0);
+		CHECK(retro_atomic_load_acquire_int(&s_wrong8) == 0);
+		CHECK(here);
+		std::printf("test_held_queues: USB calls: %u of 80000 from 4 threads counted, %d run elsewhere, %d wrong results\n",
+			s_plain8, retro_atomic_load_acquire_int(&s_elsewhere8), retro_atomic_load_acquire_int(&s_wrong8));
+	}
+
 	// cellVoice's queues to notify, in a savestate
 	{
 		typedef std::unordered_map<u64, std::deque<u64>> as_map;
