@@ -142,7 +142,7 @@ void fmt_class_string<lv2_dir>::format(std::string& out, u64 arg)
 {
 	const auto& dir = get_object(arg);
 
-	fmt::append(out, u8"Directory, '%s', Entries: %u/%u", dir.name.data(), std::min<u64>(dir.pos, dir.entries.size()), dir.entries.size());
+	fmt::append(out, u8"Directory, '%s', Entries: %u/%u", dir.name.data(), std::min<u64>(static_cast<u64>(retro_atomic_load_acquire_64(&dir.pos)), dir.entries.size()), dir.entries.size());
 }
 
 bool has_fs_write_rights(std::string_view vpath)
@@ -827,7 +827,9 @@ lv2_file::lv2_file(utils::serial& ar)
 {
 	[[maybe_unused]] const s32 version = GET_SERIALIZATION_VERSION(lv2_fs);
 
-	ar(lock);
+	u32 lock_saved = 0;
+	ar(lock_saved);
+	retro_atomic_store_release_int(&lock, static_cast<int>(lock_saved));
 
 	be_t<u64> arg = 0;
 	u64 size = 0;
@@ -881,7 +883,7 @@ lv2_file::lv2_file(utils::serial& ar)
 void lv2_file::save(utils::serial& ar)
 {
 	USING_SERIALIZATION_VERSION(lv2_fs);
-	ar(name, mode, flags, type, lock, ensure(vfs::retrieve(real_path), FN(!x.empty())));
+	ar(name, mode, flags, type, static_cast<u32>(retro_atomic_load_acquire_int(&lock)), ensure(vfs::retrieve(real_path), FN(!x.empty())));
 
 	if (type == lv2_file_type::edata)
 	{
@@ -968,7 +970,7 @@ lv2_dir::lv2_dir(utils::serial& ar)
 
 		return entries;
 	}())
-	, pos(ar.pop<u64>())
+	, pos{static_cast<s64>(ar.pop<u64>())}
 {
 	// Every lv2_dir carries . and .., so supply the ones the saved listing lacks
 	// Taken in reverse, because each one is pushed to the front and . has to end up ahead of ..
@@ -981,9 +983,9 @@ lv2_dir::lv2_dir(utils::serial& ar)
 			entry.is_directory = true;
 
 			// Each insertion shifts every index, so an enumeration already under way follows along
-			if (pos.raw())
+			if (retro_atomic_load_relaxed_64(&pos))
 			{
-				pos.raw()++;
+				retro_atomic_fetch_add_64(&pos, 1);
 			}
 		}
 	}
@@ -1002,7 +1004,7 @@ void lv2_dir::save(utils::serial& ar)
 		ar(entry.name, static_cast<const fs::stat_t&>(entry));
 	}
 
-	ar(pos);
+	ar(static_cast<u64>(retro_atomic_load_acquire_64(&pos)));
 }
 
 loaded_npdrm_keys::loaded_npdrm_keys(utils::serial& ar)
@@ -1543,7 +1545,7 @@ error_code sys_fs_read(ppu_thread& ppu, u32 fd, vm::ptr<void> buf, u64 nbytes, v
 	if (!nbytes)
 	{
 		// Whole function is skipped, only EBADF and EBUSY are checked
-		if (file->lock == 1)
+		if (retro_atomic_load_acquire_int(&file->lock) == 1)
 		{
 			nread.try_write(0);
 			return CELL_EBUSY;
@@ -1575,7 +1577,7 @@ error_code sys_fs_read(ppu_thread& ppu, u32 fd, vm::ptr<void> buf, u64 nbytes, v
 		return CELL_EBADF;
 	}
 
-	if (file->lock == 2)
+	if (retro_atomic_load_acquire_int(&file->lock) == 2)
 	{
 		file->io_end();
 		nread.try_write(0);
@@ -1634,7 +1636,7 @@ error_code sys_fs_write(ppu_thread& ppu, u32 fd, vm::cptr<void> buf, u64 nbytes,
 	if (!nbytes)
 	{
 		// Whole function is skipped, only EBADF and EBUSY are checked
-		if (file->lock == 1)
+		if (retro_atomic_load_acquire_int(&file->lock) == 1)
 		{
 			nwrite.try_write(0);
 			return CELL_EBUSY;
@@ -1663,9 +1665,9 @@ error_code sys_fs_write(ppu_thread& ppu, u32 fd, vm::cptr<void> buf, u64 nbytes,
 		return CELL_EBADF;
 	}
 
-	if (file->lock)
+	if (retro_atomic_load_acquire_int(&file->lock))
 	{
-		if (file->lock == 2)
+		if (retro_atomic_load_acquire_int(&file->lock) == 2)
 		{
 			nwrite.try_write(0);
 			return CELL_EIO;
@@ -1760,7 +1762,7 @@ error_code sys_fs_close(ppu_thread& ppu, u32 fd)
 		return {};
 	}));
 
-	if (file->lock == 1)
+	if (retro_atomic_load_acquire_int(&file->lock) == 1)
 	{
 		return {CELL_EBUSY, fd};
 	}
@@ -2160,7 +2162,7 @@ error_code sys_fs_fstat(ppu_thread& ppu, u32 fd, vm::ptr<CellFsStat> sb)
 		return CELL_EBADF;
 	}
 
-	if (file->lock == 2)
+	if (retro_atomic_load_acquire_int(&file->lock) == 2)
 	{
 		return CELL_EIO;
 	}
@@ -2596,12 +2598,12 @@ error_code sys_fs_fcntl(ppu_thread& ppu, u32 fd, u32 op, vm::ptr<void> _arg, u32
 			return CELL_EBADF;
 		}
 
-		if (file->lock == 2)
+		if (retro_atomic_load_acquire_int(&file->lock) == 2)
 		{
 			return CELL_EIO;
 		}
 
-		if (op == 0x8000000b && file->lock)
+		if (op == 0x8000000b && retro_atomic_load_acquire_int(&file->lock))
 		{
 			return CELL_EBUSY;
 		}
@@ -3437,12 +3439,12 @@ error_code sys_fs_ftruncate(ppu_thread& ppu, u32 fd, u64 size)
 		return CELL_EBADF;
 	}
 
-	if (file->lock == 2)
+	if (retro_atomic_load_acquire_int(&file->lock) == 2)
 	{
 		return CELL_EIO;
 	}
 
-	if (file->lock)
+	if (retro_atomic_load_acquire_int(&file->lock))
 	{
 		return CELL_EBUSY;
 	}
@@ -3734,7 +3736,7 @@ error_code sys_fs_lsn_lock(ppu_thread&, u32 fd)
 	}
 
 	std::lock_guard lock(file->mp->mutex);
-	file->lock.compare_and_swap(0, 1);
+	retro_atomic_cas_int(&file->lock, 0, 1);
 	return CELL_OK;
 }
 
@@ -3757,7 +3759,7 @@ error_code sys_fs_lsn_unlock(ppu_thread&, u32 fd)
 
 	// Unlock unconditionally
 	std::lock_guard lock(file->mp->mutex);
-	file->lock.compare_and_swap(1, 0);
+	retro_atomic_cas_int(&file->lock, 1, 0);
 	return CELL_OK;
 }
 

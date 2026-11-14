@@ -525,7 +525,36 @@ private:
 
 	std::shared_ptr<AudioBackend> backend{};
 	backend_config backend_current_cfg{ {}, new_emu_cfg.avport };
-	atomic_t<callback_config> callback_cfg{};
+	// 16 bytes, changed as one with a 128-bit compare-and-swap
+	mutable retro_atomic_128_t callback_cfg = cfg_word(callback_config{});
+
+	static retro_atomic_128_t cfg_word(const callback_config& cfg)
+	{
+		retro_atomic_128_t word;
+		retro_atomic_128_init(&word, std::bit_cast<retro_u128_t>(cfg));
+		return word;
+	}
+
+	callback_config callback_cfg_now() const
+	{
+		return std::bit_cast<callback_config>(retro_atomic_load_acquire_128(&callback_cfg));
+	}
+
+	// Gives the config as changed
+	template <typename F>
+	callback_config change_callback_cfg(F&& f)
+	{
+		for (retro_u128_t seen = retro_atomic_load_acquire_128(&callback_cfg);;)
+		{
+			callback_config cfg = std::bit_cast<callback_config>(seen);
+			f(cfg);
+
+			if (retro_atomic_cas_seen_128(&callback_cfg, &seen, std::bit_cast<retro_u128_t>(cfg)))
+			{
+				return cfg;
+			}
+		}
+	}
 	bool backend_error_occured = false;
 	bool backend_device_changed = false;
 

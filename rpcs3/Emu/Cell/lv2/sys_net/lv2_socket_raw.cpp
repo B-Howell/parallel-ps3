@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <retro_atomic.h>
 #include "lv2_socket_raw.h"
 #include "Emu/NP/vport0.h"
 
@@ -12,11 +13,11 @@ struct socket_raw_logging
 	socket_raw_logging(const socket_raw_logging&) = delete;
 	socket_raw_logging& operator=(const socket_raw_logging&) = delete;
 
-	atomic_t<bool> logged = false;
+	retro_atomic_int_t logged{};
 };
 
 #define LOG_ONCE(raw_var, message)                                              \
-	if (!g_fxo->get<socket_raw_logging<class raw_var>>().logged.exchange(true)) \
+	if (!retro_atomic_exchange_int(&g_fxo->get<socket_raw_logging<class raw_var>>().logged, 1)) \
 	{                                                                           \
 		sys_net.todo(message);                                                  \
 	}

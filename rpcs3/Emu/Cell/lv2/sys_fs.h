@@ -291,7 +291,7 @@ struct lv2_file final : lv2_fs_object
 	u32 ct_id{}, ct_used{};
 
 	// Stream lock
-	atomic_t<u32> lock{0};
+	retro_atomic_int_t lock{}; // 0, 1 locked by sys_fs_lsn_lock, 2 gone with its cache
 
 	// Reads at an offset use the host's handle with no lock: one count of
 	// the reads in flight, on the file's own line, where every such read
@@ -443,7 +443,7 @@ struct lv2_dir final : lv2_fs_object
 	std::vector<fs::dir_entry> entries;
 
 	// Current reading position
-	atomic_t<u64> pos{0};
+	retro_atomic_64_t pos{};
 
 	lv2_dir(std::string_view filename, std::vector<fs::dir_entry>&& entries)
 		: lv2_fs_object(filename)
@@ -457,14 +457,20 @@ struct lv2_dir final : lv2_fs_object
 	// Read next
 	const fs::dir_entry* dir_read()
 	{
-		const u64 old_pos = pos;
-
-		if (const u64 cur = (old_pos < entries.size() ? pos++ : old_pos); cur < entries.size())
+		for (;;)
 		{
-			return &entries[cur];
-		}
+			const s64 cur = retro_atomic_load_acquire_64(&pos);
 
-		return nullptr;
+			if (static_cast<u64>(cur) >= entries.size())
+			{
+				return nullptr;
+			}
+
+			if (retro_atomic_cas_64(&pos, cur, cur + 1))
+			{
+				return &entries[static_cast<usz>(cur)];
+			}
+		}
 	}
 };
 

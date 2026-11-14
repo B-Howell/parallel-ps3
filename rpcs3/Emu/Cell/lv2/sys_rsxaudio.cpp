@@ -1317,7 +1317,7 @@ rsxaudio_backend_thread::rsxaudio_backend_thread()
 
 	const f32 new_vol = audio::get_volume();
 
-	callback_cfg.atomic_op([&](callback_config& val)
+	change_callback_cfg([&](callback_config& val)
 	{
 		val.target_volume = static_cast<u16>(new_vol * callback_config::VOL_NOMINAL);
 		val.initial_volume = val.current_volume;
@@ -1369,7 +1369,7 @@ void rsxaudio_backend_thread::update_emu_cfg()
 	const emu_audio_cfg _new_emu_cfg = get_emu_cfg();
 	const f32 new_vol = audio::get_volume();
 
-	callback_cfg.atomic_op([&](callback_config& val)
+	change_callback_cfg([&](callback_config& val)
 	{
 		val.target_volume = static_cast<u16>(new_vol * callback_config::VOL_NOMINAL);
 		val.initial_volume = val.current_volume;
@@ -1386,12 +1386,12 @@ void rsxaudio_backend_thread::update_emu_cfg()
 
 u32 rsxaudio_backend_thread::get_sample_rate() const
 {
-	return callback_cfg.load().freq;
+	return callback_cfg_now().freq;
 }
 
 u8 rsxaudio_backend_thread::get_channel_count() const
 {
-	return callback_cfg.load().input_ch_cnt;
+	return callback_cfg_now().input_ch_cnt;
 }
 
 rsxaudio_backend_thread::emu_audio_cfg rsxaudio_backend_thread::get_emu_cfg()
@@ -1473,7 +1473,7 @@ void rsxaudio_backend_thread::operator()()
 				// Emulated state changed
 				if (ra_state_changed)
 				{
-					const callback_config cb_cfg = callback_cfg.observe();
+					const callback_config cb_cfg = callback_cfg_now();
 					ra_state_changed = false;
 					ra_state = new_ra_state;
 
@@ -1481,7 +1481,7 @@ void rsxaudio_backend_thread::operator()()
 					{
 						should_update_backend = true;
 						checkDefaultDevice = false;
-						callback_cfg.atomic_op([&](callback_config& val)
+						change_callback_cfg([&](callback_config& val)
 						{
 							val.cfg_changed = false; // Acknowledge cfg update
 						});
@@ -1631,7 +1631,7 @@ void rsxaudio_backend_thread::set_new_stream_param(const std::array<port_config,
 	const auto new_mute_state = gen_mute_state(muted_avports);
 	const bool should_update = backend_current_cfg.cfg != cfg[static_cast<u8>(backend_current_cfg.avport)];
 
-	callback_cfg.atomic_op([&](callback_config& val)
+	change_callback_cfg([&](callback_config& val)
 	{
 		val.mute_state = new_mute_state;
 
@@ -1655,7 +1655,7 @@ void rsxaudio_backend_thread::set_mute_state(avport_bit muted_avports)
 {
 	const auto new_mute_state = gen_mute_state(muted_avports);
 
-	callback_cfg.atomic_op([&](callback_config& val)
+	change_callback_cfg([&](callback_config& val)
 	{
 		val.mute_state = new_mute_state;
 	});
@@ -1682,7 +1682,7 @@ void rsxaudio_backend_thread::add_data(rsxaudio_data_container& cont)
 		return;
 	}
 
-	const callback_config cb_cfg = callback_cfg.observe();
+	const callback_config cb_cfg = callback_cfg_now();
 	if (!cb_cfg.ready || !cb_cfg.callback_active)
 	{
 		return;
@@ -1781,7 +1781,7 @@ void rsxaudio_backend_thread::backend_init(const rsxaudio_state& ra_state, const
 		callback_tmp_buf.resize(static_cast<usz>((cb_frame_len + _10ms) * static_cast<u32>(AudioSampleSize::FLOAT) * static_cast<u32>(port_cfg.ch_cnt) * static_cast<u32>(port_cfg.freq)));
 	}
 
-	callback_cfg.atomic_op([&](callback_config& val)
+	change_callback_cfg([&](callback_config& val)
 	{
 		val.callback_active = false; // Backend may take some time to activate. This prevents overflows on input side.
 
@@ -1825,7 +1825,7 @@ void rsxaudio_backend_thread::backend_stop()
 	}
 
 	backend->Pause();
-	callback_cfg.atomic_op([&](callback_config& val)
+	change_callback_cfg([&](callback_config& val)
 	{
 		val.callback_active = false;
 	});
@@ -1843,7 +1843,7 @@ bool rsxaudio_backend_thread::backend_playing()
 
 u32 rsxaudio_backend_thread::write_data_callback(u32 bytes, void* buf)
 {
-	const callback_config cb_cfg = callback_cfg.atomic_op([&](callback_config& val)
+	const callback_config cb_cfg = change_callback_cfg([&](callback_config& val)
 	{
 		val.callback_active = true;
 		return val;
@@ -1923,7 +1923,7 @@ u32 rsxaudio_backend_thread::fill_from_ring(const callback_config& cb_cfg, u32 b
 			};
 
 			const u16 new_vol = static_cast<u16>(std::round(AudioBackend::apply_volume(param, sample_cnt_out, callback_tmp_buf.data(), callback_tmp_buf.data()) * callback_config::VOL_NOMINAL));
-			callback_cfg.atomic_op([&](callback_config& val)
+			change_callback_cfg([&](callback_config& val)
 			{
 				if (val.target_volume != cb_cfg.target_volume)
 				{

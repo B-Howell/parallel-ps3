@@ -103,7 +103,7 @@ struct syscache_info
 			{
 				if (file.file && file.mp->flags & lv2_mp_flag::cache)
 				{
-					file.lock = 2;
+					retro_atomic_store_release_int(&file.lock, 2);
 				}
 			});
 		}

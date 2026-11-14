@@ -13,6 +13,8 @@
 #include "Emu/Cell/timers.hpp"
 #include "sys_game.h"
 
+#include <retro_atomic.h>
+
 LOG_CHANNEL(sys_game);
 
 struct system_sw_version
@@ -22,7 +24,7 @@ struct system_sw_version
 		f64 version_f = 0;
 		if (!try_to_float(&version_f, utils::get_firmware_version(), 0.0f, 99.9999f))
 			sys_game.error("Error parsing firmware version");
-		version = static_cast<usz>(version_f * 10000);
+		retro_atomic_store_release_64(&version, static_cast<s64>(version_f * 10000));
 	}
 
 	system_sw_version(const system_sw_version&) = delete;
@@ -31,7 +33,7 @@ struct system_sw_version
 
 	~system_sw_version() = default;
 
-	atomic_t<u64> version;
+	retro_atomic_64_t version{};
 };
 
 struct board_storage
@@ -42,7 +44,7 @@ public:
 		if (!buffer)
 			return false;
 
-		const auto data = storage.load();
+		const retro_u128_t data = retro_atomic_load_acquire_128(&storage);
 		memcpy(buffer, &data, size);
 
 		return true;
@@ -53,17 +55,22 @@ public:
 		if (!buffer)
 			return false;
 
-		storage.store(read_from_ptr_unsafe<be_t<v128>>(buffer));
-		written = true;
+		// The bytes as they are, as the big-endian v128 kept them
+		retro_u128_t data;
+		memcpy(&data, buffer, size);
+		retro_atomic_store_release_128(&storage, data);
+		retro_atomic_store_release_int(&written, 1);
 
 		return true;
 	}
 
 	board_storage()
 	{
-		memset(&storage.raw(), -1, size);
+		retro_u128_t data;
+		memset(&data, -1, size);
 		if (fs::file file; file.open(file_path, fs::read))
-			file.read(&storage.raw(), std::min(file.size(), size));
+			file.read(&data, std::min(file.size(), size));
+		retro_atomic_128_init(&storage, data);
 	}
 
 	board_storage(const board_storage&) = delete;
@@ -72,19 +79,20 @@ public:
 
 	~board_storage()
 	{
-		if (written)
+		if (retro_atomic_load_acquire_int(&written))
 		{
 			if (fs::file file; file.open(file_path, fs::create + fs::write + fs::lock))
 			{
-				file.write(&storage.raw(), size);
+				const retro_u128_t data = retro_atomic_load_acquire_128(&storage);
+				file.write(&data, size);
 				file.trunc(size);
 			}
 		}
 	}
 
 private:
-	atomic_be_t<v128> storage;
-	bool written = false;
+	retro_atomic_128_t storage; // the 16 bytes as the guest wrote them
+	retro_atomic_int_t written{};
 	const std::string file_path = rpcs3::utils::get_hdd1_dir() + "/caches/board_storage.bin";
 	static constexpr u64 size = sizeof(v128);
 };
@@ -238,7 +246,7 @@ error_code _sys_game_set_system_sw_version(u64 version)
 	if (!g_ps3_process_info.has_root_perm())
 		return CELL_ENOSYS;
 
-	g_fxo->get<system_sw_version>().version = version;
+	retro_atomic_store_release_64(&g_fxo->get<system_sw_version>().version, static_cast<s64>(version));
 
 	return CELL_OK;
 }
@@ -247,7 +255,7 @@ u64 _sys_game_get_system_sw_version()
 {
 	sys_game.trace("sys_game_get_system_sw_version()");
 
-	return g_fxo->get<system_sw_version>().version;
+	return static_cast<u64>(retro_atomic_load_acquire_64(&g_fxo->get<system_sw_version>().version));
 }
 
 error_code _sys_game_board_storage_read(vm::ptr<u8> buffer, vm::ptr<u8> status)

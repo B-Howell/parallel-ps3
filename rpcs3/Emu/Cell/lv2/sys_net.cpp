@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <retro_atomic.h>
 #include "sys_net.h"
 
 #include "Emu/IdManager.h"
@@ -1286,7 +1287,7 @@ error_code sys_net_bnet_poll(ppu_thread& ppu, vm::ptr<sys_net_pollfd> fds, s32 n
 		return not_an_error(0);
 	}
 
-	atomic_t<s32> signaled{0};
+	retro_atomic_int_t signaled{};
 	bool has_sockets = false;
 	u64 timeout = ms < 0 ? 0 : ms * 1000ull;
 
@@ -1351,17 +1352,17 @@ error_code sys_net_bnet_poll(ppu_thread& ppu, vm::ptr<sys_net_pollfd> fds, s32 n
 
 			if (fds_buf[i].revents)
 			{
-				signaled++;
+				retro_atomic_fetch_add_int(&signaled, 1);
 			}
 		}
 
-		if (ms == 0 || signaled)
+		if (ms == 0 || retro_atomic_load_acquire_int(&signaled))
 		{
 			inside.clear();
 			p2p_lock.unlock();
 			nw_lock.unlock();
 			std::memcpy(fds.get_ptr(), fds_buf.data(), nfds * sizeof(sys_net_pollfd));
-			return not_an_error(signaled);
+			return not_an_error(retro_atomic_load_acquire_int(&signaled));
 		}
 
 		for (s32 i = 0; i < nfds; i++)
@@ -1399,7 +1400,7 @@ error_code sys_net_bnet_poll(ppu_thread& ppu, vm::ptr<sys_net_pollfd> fds, s32 n
 							if (events & selected & lv2_socket::poll_t::error)
 								fds_buf[i].revents |= SYS_NET_POLLERR;
 
-							signaled++;
+							retro_atomic_fetch_add_int(&signaled, 1);
 							sock->queue_wake(&ppu);
 							return true;
 						}
@@ -1449,14 +1450,14 @@ error_code sys_net_bnet_poll(ppu_thread& ppu, vm::ptr<sys_net_pollfd> fds, s32 n
 		}
 	}
 
-	if (!has_timedout && !signaled)
+	if (!has_timedout && !retro_atomic_load_acquire_int(&signaled))
 	{
 		return -SYS_NET_EINTR;
 	}
 
 	std::memcpy(fds.get_ptr(), fds_buf.data(), nfds * sizeof(fds[0]));
 
-	return not_an_error(signaled);
+	return not_an_error(retro_atomic_load_acquire_int(&signaled));
 }
 
 error_code sys_net_bnet_select(ppu_thread& ppu, s32 nfds, vm::ptr<sys_net_fd_set> readfds, vm::ptr<sys_net_fd_set> writefds, vm::ptr<sys_net_fd_set> exceptfds, vm::ptr<sys_net_timeval> _timeout)
@@ -1465,16 +1466,16 @@ error_code sys_net_bnet_select(ppu_thread& ppu, s32 nfds, vm::ptr<sys_net_fd_set
 
 	sys_net.trace("sys_net_bnet_select(nfds=%d, readfds=*0x%x, writefds=*0x%x, exceptfds=*0x%x, timeout=*0x%x(%d:%d))", nfds, readfds, writefds, exceptfds, _timeout, _timeout ? _timeout->tv_sec.value() : 0, _timeout ? _timeout->tv_usec.value() : 0);
 
-	atomic_t<s32> signaled{0};
+	retro_atomic_int_t signaled{};
 
 	if (exceptfds)
 	{
 		struct log_t
 		{
-			atomic_t<bool> logged = false;
+			retro_atomic_int_t logged{};
 		};
 
-		if (!g_fxo->get<log_t>().logged.exchange(true))
+		if (!retro_atomic_exchange_int(&g_fxo->get<log_t>().logged, 1))
 		{
 			sys_net.error("sys_net_bnet_select(): exceptfds not implemented");
 		}
@@ -1535,7 +1536,7 @@ error_code sys_net_bnet_select(ppu_thread& ppu, s32 nfds, vm::ptr<sys_net_fd_set
 
 				if (read_set || write_set || except_set)
 				{
-					signaled++;
+					retro_atomic_fetch_add_int(&signaled, 1);
 				}
 
 				if (read_set)
@@ -1578,11 +1579,11 @@ error_code sys_net_bnet_select(ppu_thread& ppu, s32 nfds, vm::ptr<sys_net_fd_set
 
 			if (sig)
 			{
-				signaled++;
+				retro_atomic_fetch_add_int(&signaled, 1);
 			}
 		}
 
-		if ((_timeout && !timeout) || signaled)
+		if ((_timeout && !timeout) || retro_atomic_load_acquire_int(&signaled))
 		{
 			if (readfds)
 				*readfds = rread;
@@ -1590,7 +1591,7 @@ error_code sys_net_bnet_select(ppu_thread& ppu, s32 nfds, vm::ptr<sys_net_fd_set
 				*writefds = rwrite;
 			if (exceptfds)
 				*exceptfds = rexcept;
-			return not_an_error(signaled);
+			return not_an_error(retro_atomic_load_acquire_int(&signaled));
 		}
 
 		for (s32 i = 0; i < nfds; i++)
@@ -1631,7 +1632,7 @@ error_code sys_net_bnet_select(ppu_thread& ppu, s32 nfds, vm::ptr<sys_net_fd_set
 							// if (events & (selected & lv2_socket::poll::error))
 						    //	rexcept.set(i);
 
-							signaled++;
+							retro_atomic_fetch_add_int(&signaled, 1);
 							sock->queue_wake(&ppu);
 							return true;
 						}
@@ -1689,7 +1690,7 @@ error_code sys_net_bnet_select(ppu_thread& ppu, s32 nfds, vm::ptr<sys_net_fd_set
 		}
 	}
 
-	if (!has_timedout && !signaled)
+	if (!has_timedout && !retro_atomic_load_acquire_int(&signaled))
 	{
 		return -SYS_NET_EINTR;
 	}
@@ -1701,7 +1702,7 @@ error_code sys_net_bnet_select(ppu_thread& ppu, s32 nfds, vm::ptr<sys_net_fd_set
 	if (exceptfds)
 		*exceptfds = rexcept;
 
-	return not_an_error(signaled);
+	return not_an_error(retro_atomic_load_acquire_int(&signaled));
 }
 
 error_code _sys_net_open_dump(ppu_thread& ppu, s32 len, s32 flags)

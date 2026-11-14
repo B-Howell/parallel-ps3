@@ -727,6 +727,45 @@ int main()
 		g_fxo->reset();
 		CHECK(vfs::mount("/dev_hdd0", std::string(dir) + "/"));
 		g_fxo->init<lv2_fs_mount_info_map>();
+
+		// A directory read from four threads at once, as sys_fs_readdir on one
+		// descriptor from several PPU threads: every entry is given once
+		{
+			std::vector<fs::dir_entry> list(20000);
+			for (usz i = 0; i < list.size(); i++)
+				list[i].name = std::to_string(i);
+
+			static lv2_dir* s_dir;
+			lv2_dir dir("/dev_hdd0/test_dir", std::move(list));
+			s_dir = &dir;
+			static retro_atomic_int_t s_seen6[20000], s_read6;
+
+			std::thread readers[4];
+			for (auto& r : readers)
+			{
+				r = std::thread([]
+				{
+					while (const fs::dir_entry* entry = s_dir->dir_read())
+					{
+						retro_atomic_fetch_add_int(&s_seen6[entry - s_dir->entries.data()], 1);
+						retro_atomic_fetch_add_int(&s_read6, 1);
+					}
+				});
+			}
+
+			for (auto& r : readers)
+				r.join();
+
+			int twice = 0;
+			for (auto& seen : s_seen6)
+				twice += retro_atomic_load_acquire_int(&seen) != 1;
+
+			CHECK(twice == 0);
+			CHECK(retro_atomic_load_acquire_int(&s_read6) == 20000);
+			CHECK(!s_dir->dir_read());
+			std::printf("  directory: %d entries read by 4 threads, %d not read once\n", retro_atomic_load_acquire_int(&s_read6), twice);
+		}
+
 		{
 			lv2_file file("/dev_hdd0/reads.bin", fs::file(path), 0, 0, path);
 			CHECK(!!file.file);
