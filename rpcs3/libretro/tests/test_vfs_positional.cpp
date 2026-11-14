@@ -1347,7 +1347,9 @@ int main()
 		// A memory container's take and free from four threads, as
 		// sys_memory_allocate and sys_memory_free from several PPU threads:
 		// what is taken never adds up to more than the container, and all of
-		// it comes back
+		// it comes back. Thread 0 takes it for other containers, as
+		// sys_memory_container_create and _destroy: one load always sees what
+		// was given to them as part of what is used
 		{
 			static lv2_memory_container ct(0x20000);
 			static retro_atomic_int_t s_held, s_bad5, s_taken5, s_refused5;
@@ -1364,7 +1366,9 @@ int main()
 						x = x * 1664525u + 1013904223u;
 						const u32 amount = (1 + ((x >> 16) & 15)) * 0x1000;
 
-						if (!ct.take(amount))
+						const bool lent = t == 0;
+
+						if (!ct.take(amount, lent))
 						{
 							retro_atomic_fetch_add_int(&s_refused5, 1);
 							continue;
@@ -1375,7 +1379,11 @@ int main()
 							retro_atomic_fetch_add_int(&s_bad5, 1);
 						retro_atomic_fetch_sub_int(&s_held, static_cast<int>(amount));
 
-						if (ct.free(amount) != amount)
+						const u64 word = static_cast<u64>(retro_atomic_load_acquire_64(&ct.used));
+						if ((word >> 32) > static_cast<u32>(word))
+							retro_atomic_fetch_add_int(&s_bad5, 1);
+
+						if (ct.free(amount, lent) != amount)
 							retro_atomic_fetch_add_int(&s_bad5, 1);
 					}
 				});
@@ -1385,7 +1393,7 @@ int main()
 				t.join();
 
 			CHECK(retro_atomic_load_acquire_int(&s_bad5) == 0);
-			CHECK(retro_atomic_load_acquire_int(&ct.used) == 0);
+			CHECK(retro_atomic_load_acquire_64(&ct.used) == 0);
 			CHECK(retro_atomic_load_acquire_int(&s_taken5) > 1000);
 			std::printf("  memory container: %d takes, %d refused\n", retro_atomic_load_acquire_int(&s_taken5), retro_atomic_load_acquire_int(&s_refused5));
 		}

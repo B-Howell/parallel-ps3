@@ -87,7 +87,7 @@ CellError lv2_memory::on_id_create()
 {
 	if (!retro_atomic_load_acquire_int(&exists) && !retro_atomic_load_acquire_int(&external_refs) && ct && !ct->take(size))
 	{
-		sys_mmapper.error("lv2_memory::on_id_create(): Cannot allocate 0x%x bytes (0x%x available)", size, ct->size - static_cast<u32>(retro_atomic_load_acquire_int(&ct->used)));
+		sys_mmapper.error("lv2_memory::on_id_create(): Cannot allocate 0x%x bytes (0x%x available)", size, ct->size - ct->used_now());
 		return CELL_ENOMEM;
 	}
 

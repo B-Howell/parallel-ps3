@@ -73,7 +73,10 @@ struct lv2_memory_container
 
 	const u32 size; // Amount of "physical" memory in this container
 	const lv2_mem_container_id id; // ID of the container in if placed at IDM, otherwise SYS_MEMORY_CONTAINER_ID_INVALID
-	retro_atomic_int_t used{}; // Amount of "physical" memory currently used, a u32
+	// Low 32 bits: the amount of "physical" memory currently used. High 32
+	// bits, on the default container: how much of that was given to other
+	// containers. One word, so a reader sees both as one.
+	retro_atomic_64_t used{};
 
 	SAVESTATE_INIT_POS(1);
 
@@ -85,11 +88,22 @@ struct lv2_memory_container
 
 	// Try to get specified amount of "physical" memory
 	// Values greater than UINT32_MAX will fail
-	u32 take(u64 amount)
+	u32 used_now()
+	{
+		return static_cast<u32>(retro_atomic_load_acquire_64(&used));
+	}
+
+	u32 lent_now()
+	{
+		return static_cast<u32>(static_cast<u64>(retro_atomic_load_acquire_64(&used)) >> 32);
+	}
+
+	// lent: the memory is for another container, counted in the high half too
+	u32 take(u64 amount, bool lent = false)
 	{
 		for (;;)
 		{
-			const int seen = retro_atomic_load_acquire_int(&used);
+			const s64 seen = retro_atomic_load_acquire_64(&used);
 			const u32 value = static_cast<u32>(seen);
 
 			if (size - value < amount)
@@ -97,28 +111,32 @@ struct lv2_memory_container
 				return 0;
 			}
 
-			if (retro_atomic_cas_int(&used, seen, static_cast<int>(value + static_cast<u32>(amount))))
+			const u64 add = amount | (lent ? amount << 32 : 0);
+
+			if (retro_atomic_cas_64(&used, seen, static_cast<s64>(static_cast<u64>(seen) + add)))
 			{
 				return static_cast<u32>(amount);
 			}
 		}
 	}
 
-	u32 free(u64 amount)
+	u32 free(u64 amount, bool lent = false)
 	{
 		u32 result = 0;
 
 		for (;;)
 		{
-			const int seen = retro_atomic_load_acquire_int(&used);
+			const s64 seen = retro_atomic_load_acquire_64(&used);
 			const u32 value = static_cast<u32>(seen);
 
-			if (value < amount)
+			if (value < amount || (lent && (static_cast<u64>(seen) >> 32) < amount))
 			{
 				break;
 			}
 
-			if (retro_atomic_cas_int(&used, seen, static_cast<int>(value - static_cast<u32>(amount))))
+			const u64 sub = amount | (lent ? amount << 32 : 0);
+
+			if (retro_atomic_cas_64(&used, seen, static_cast<s64>(static_cast<u64>(seen) - sub)))
 			{
 				result = static_cast<u32>(amount);
 				break;

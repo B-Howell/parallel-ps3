@@ -484,7 +484,7 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 			u32 total_size = 0;
 			idm::select<lv2_memory_container>([&](u32, lv2_memory_container& ctr)
 			{
-				retro_atomic_store_release_int(&ctr.used, 0);
+				retro_atomic_store_release_64(&ctr.used, 0);
 				total_size += ctr.size;
 			});
 
@@ -493,6 +493,9 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 			// 2. If newer SDK version suggests lower memory capacity - it is lowered
 			// And if 2. happens while user memory containers exist, the left space can be spent on user memory containers
 			ensure(g_fxo->init<lv2_memory_container>(std::min(old_size - total_size, sdk_suggested_mem) + total_size));
+
+			// What the kept containers have, as the scan of them counted it
+			retro_atomic_store_release_64(&g_fxo->get<lv2_memory_container>().used, static_cast<s64>(u64{total_size} << 32));
 		};
 
 		Emu.after_kill_callback = [func = std::move(func), argv = std::move(argv), envp = std::move(envp), data = std::move(data),

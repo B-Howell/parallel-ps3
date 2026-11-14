@@ -13,7 +13,6 @@
 LOG_CHANNEL(sys_memory);
 
 //
-static shared_mutex s_memstats_mtx;
 
 // This struct is for reduced logging repetition
 struct last_reported_memory_stats
@@ -24,7 +23,7 @@ struct last_reported_memory_stats
 		u32 prev_avail = umax;
 	};
 
-	atomic_t<inner_body> body{};
+	retro_atomic_64_t body{-1}; // an inner_body
 };
 
 lv2_memory_container::lv2_memory_container(u32 size, bool from_idm) noexcept
@@ -36,7 +35,7 @@ lv2_memory_container::lv2_memory_container(u32 size, bool from_idm) noexcept
 lv2_memory_container::lv2_memory_container(utils::serial& ar, bool from_idm) noexcept
 	: size(ar)
 	, id{from_idm ? idm::last_id() : SYS_MEMORY_CONTAINER_ID_INVALID}
-	, used{ar.pop<s32>()}
+	, used{static_cast<s64>(ar.pop<u32>())}
 {
 }
 
@@ -51,7 +50,7 @@ std::function<void(void*)> lv2_memory_container::load(utils::serial& ar)
 
 void lv2_memory_container::save(utils::serial& ar)
 {
-	ar(size, static_cast<u32>(retro_atomic_load_acquire_int(&used)));
+	ar(size, used_now());
 }
 
 lv2_memory_container* lv2_memory_container::search(u32 id)
@@ -66,9 +65,8 @@ lv2_memory_container* lv2_memory_container::search(u32 id)
 
 struct sys_memory_address_table
 {
-	atomic_t<lv2_memory_container*> addrs[65536]{};
-	std::array<u32, 2> secondary_areas{};
-	std::mutex mutex;
+	retro_atomic_ptr_t addrs[65536]{}; // lv2_memory_container*
+	retro_atomic_int_t secondary_areas[2]{}; // u32 addresses, set once each
 
 	sys_memory_address_table() = default;
 
@@ -78,12 +76,29 @@ struct sys_memory_address_table
 	{
 		// First: address, second: conatiner ID (SYS_MEMORY_CONTAINER_ID_INVALID for global FXO memory container)
 		std::unordered_map<u16, u32> mm;
-		ar(mm, secondary_areas);
+		std::array<u32, 2> areas{};
+		ar(mm, areas);
 
 		for (const auto& [addr, id] : mm)
 		{
-			addrs[addr] = ensure(lv2_memory_container::search(id));
+			retro_atomic_store_release_ptr(&addrs[addr], ensure(lv2_memory_container::search(id)));
 		}
+
+		for (usz i = 0; i < areas.size(); i++)
+		{
+			retro_atomic_store_release_int(&secondary_areas[i], static_cast<int>(areas[i]));
+		}
+
+		// What the containers have of the default one's memory: its saved
+		// use counts them, the count of them is not saved
+		u32 lent = 0;
+		idm::select<lv2_memory_container>([&](u32, lv2_memory_container& ct)
+		{
+			lent += ct.size;
+		});
+
+		auto& dct = g_fxo->get<lv2_memory_container>();
+		retro_atomic_store_release_64(&dct.used, static_cast<s64>(u64{lent} << 32 | dct.used_now()));
 	}
 
 	void save(utils::serial& ar)
@@ -94,13 +109,14 @@ struct sys_memory_address_table
 
 		for (auto& ctr : addrs)
 		{
-			if (const auto ptr = +ctr)
+			if (const auto ptr = static_cast<lv2_memory_container*>(retro_atomic_load_acquire_ptr(&ctr)))
 			{
 				mm[static_cast<u16>(&ctr - addrs)] = ptr->id;
 			}
 		}
 
-		ar(mm, secondary_areas);
+		const std::array<u32, 2> areas{static_cast<u32>(retro_atomic_load_acquire_int(&secondary_areas[0])), static_cast<u32>(retro_atomic_load_acquire_int(&secondary_areas[1]))};
+		ar(mm, areas);
 	}
 
 	u32 allocate(u32 size, u32 align)
@@ -122,7 +138,7 @@ struct sys_memory_address_table
 		}
 
 		// Check if secondary area is mapped already
-		if (u32 base_non0 = atomic_storage<u32>::load(secondary_areas[align == 0x10000 ? 0 : 1]))
+		if (u32 base_non0 = static_cast<u32>(retro_atomic_load_acquire_int(&secondary_areas[align == 0x10000 ? 0 : 1])))
 		{
 			if (u32 addr = ensure(vm::get(vm::any, base_non0))->alloc(size, nullptr, align))
 			{
@@ -137,18 +153,25 @@ struct sys_memory_address_table
 			fmt::throw_exception("Uncharted area of allocations (size=0x%x, align=0x%x)", size, align);
 		}
 
-		std::lock_guard lock(mutex);
+		// No secondary area yet: map one. Two threads here at once both map
+		// one; the one whose address is stored first is kept, the other
+		// unmaps its own
 		auto& base = secondary_areas[align == 0x10000 ? 0 : 1];
-		const auto secondary = base ? vm::get(vm::any, base) : vm::find_map(area_size, _256mb, flags);
+		std::shared_ptr<vm::block_t> secondary;
+
+		if (const u32 kept = static_cast<u32>(retro_atomic_load_acquire_int(&base)))
+		{
+			secondary = vm::get(vm::any, kept);
+		}
+		else if ((secondary = vm::find_map(area_size, _256mb, flags)) && !retro_atomic_cas_int(&base, 0, static_cast<int>(secondary->addr)))
+		{
+			vm::unmap(secondary->addr, true, &secondary);
+			secondary = ensure(vm::get(vm::any, static_cast<u32>(retro_atomic_load_acquire_int(&base))));
+		}
 
 		if (!secondary)
 		{
 			return 0;
-		}
-
-		if (!base)
-		{
-			atomic_storage<u32>::store(base, secondary->addr);
 		}
 
 		if (u32 addr = secondary->alloc(size, nullptr, align))
@@ -201,12 +224,12 @@ error_code sys_memory_allocate(cpu_thread& cpu, u64 size, u64 flags, vm::ptr<u32
 	// Try to get "physical memory"
 	if (!dct.take(size))
 	{
-		return {CELL_ENOMEM, dct.size - static_cast<u32>(retro_atomic_load_acquire_int(&dct.used))};
+		return {CELL_ENOMEM, dct.size - dct.used_now()};
 	}
 
 	if (const u32 addr = allocate_user_memory(static_cast<u32>(size), align))
 	{
-		ensure(!g_fxo->get<sys_memory_address_table>().addrs[addr >> 16].exchange(&dct));
+		ensure(!retro_atomic_exchange_ptr(&g_fxo->get<sys_memory_address_table>().addrs[addr >> 16], &dct));
 
 		if (alloc_addr)
 		{
@@ -271,12 +294,12 @@ error_code sys_memory_allocate_from_container(cpu_thread& cpu, u64 size, u32 cid
 
 	if (ct.ret)
 	{
-		return {ct.ret, ct->size - static_cast<u32>(retro_atomic_load_acquire_int(&ct->used))};
+		return {ct.ret, ct->size - ct->used_now()};
 	}
 
 	if (const u32 addr = allocate_user_memory(static_cast<u32>(size), align))
 	{
-		ensure(!g_fxo->get<sys_memory_address_table>().addrs[addr >> 16].exchange(ct.ptr.get()));
+		ensure(!retro_atomic_exchange_ptr(&g_fxo->get<sys_memory_address_table>().addrs[addr >> 16], ct.ptr.get()));
 
 		if (alloc_addr)
 		{
@@ -302,7 +325,7 @@ error_code sys_memory_free(cpu_thread& cpu, u32 addr)
 
 	sys_memory.warning("sys_memory_free(addr=0x%x)", addr);
 
-	const auto ct = addr % 0x10000 ? nullptr : g_fxo->get<sys_memory_address_table>().addrs[addr >> 16].exchange(nullptr);
+	const auto ct = addr % 0x10000 ? nullptr : static_cast<lv2_memory_container*>(retro_atomic_exchange_ptr(&g_fxo->get<sys_memory_address_table>().addrs[addr >> 16], nullptr));
 
 	if (!ct)
 	{
@@ -386,25 +409,19 @@ error_code sys_memory_get_user_memory_size(cpu_thread& cpu, vm::ptr<sys_memory_i
 	// Get "default" memory container
 	auto& dct = g_fxo->get<lv2_memory_container>();
 
+	// Both from one load: the memory used and how much of it the other
+	// containers have, which a container's create or destroy changes together
+	const u64 word = static_cast<u64>(retro_atomic_load_acquire_64(&dct.used));
+
 	sys_memory_info_t out{};
-	{
-		::reader_lock lock(s_memstats_mtx);
-
-		out.total_user_memory = dct.size;
-		out.available_user_memory = dct.size - static_cast<u32>(retro_atomic_load_acquire_int(&dct.used));
-
-		// Scan other memory containers
-		idm::select<lv2_memory_container>([&](u32, lv2_memory_container& ct)
-		{
-			out.total_user_memory -= ct.size;
-		});
-	}
+	out.total_user_memory = dct.size - static_cast<u32>(word >> 32);
+	out.available_user_memory = dct.size - static_cast<u32>(word);
 
 	typename last_reported_memory_stats::inner_body now;
 	now.prev_total = out.total_user_memory;
 	now.prev_avail = out.available_user_memory;
 
-	now = g_fxo->get<last_reported_memory_stats>().body.exchange(now);
+	now = std::bit_cast<typename last_reported_memory_stats::inner_body>(retro_atomic_exchange_64(&g_fxo->get<last_reported_memory_stats>().body, std::bit_cast<s64>(now)));
 
 	if (now.prev_total != out.total_user_memory || now.prev_avail != out.available_user_memory)
 	{
@@ -446,10 +463,8 @@ error_code sys_memory_container_create(cpu_thread& cpu, vm::ptr<u32> cid, u64 si
 
 	auto& dct = g_fxo->get<lv2_memory_container>();
 
-	std::lock_guard lock(s_memstats_mtx);
-
 	// Try to obtain "physical memory" from the default container
-	if (!dct.take(size))
+	if (!dct.take(size, true))
 	{
 		return CELL_ENOMEM;
 	}
@@ -462,7 +477,7 @@ error_code sys_memory_container_create(cpu_thread& cpu, vm::ptr<u32> cid, u64 si
 		return CELL_OK;
 	}
 
-	dct.free(size);
+	dct.free(size, true);
 	return CELL_EAGAIN;
 }
 
@@ -472,12 +487,10 @@ error_code sys_memory_container_destroy(cpu_thread& cpu, u32 cid)
 
 	sys_memory.warning("sys_memory_container_destroy(cid=0x%x)", cid);
 
-	std::lock_guard lock(s_memstats_mtx);
-
 	const auto ct = idm::withdraw<lv2_memory_container>(cid, [](lv2_memory_container& ct) -> CellError
 	{
 		// Check if some memory is not deallocated (the container cannot be destroyed in this case)
-		if (!retro_atomic_cas_int(&ct.used, 0, static_cast<int>(ct.size)))
+		if (!retro_atomic_cas_64(&ct.used, 0, static_cast<s64>(ct.size)))
 		{
 			return CELL_EBUSY;
 		}
@@ -496,7 +509,7 @@ error_code sys_memory_container_destroy(cpu_thread& cpu, u32 cid)
 	}
 
 	// Return "physical memory" to the default container
-	g_fxo->get<lv2_memory_container>().free(ct->size);
+	g_fxo->get<lv2_memory_container>().free(ct->size, true);
 
 	return CELL_OK;
 }
@@ -516,7 +529,7 @@ error_code sys_memory_container_get_size(cpu_thread& cpu, vm::ptr<sys_memory_inf
 
 	cpu.check_state();
 	mem_info->total_user_memory = ct->size; // Total container memory
-	mem_info->available_user_memory = ct->size - static_cast<u32>(retro_atomic_load_acquire_int(&ct->used)); // Available container memory
+	mem_info->available_user_memory = ct->size - ct->used_now(); // Available container memory
 
 	return CELL_OK;
 }
