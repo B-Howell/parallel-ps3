@@ -706,6 +706,8 @@ check: all
 	@# The game's watchdog has no thread and no clock of the host's: retro_run
 	@# looks at it on the guest's clock (lv2_watchdog_tick)
 	@if grep -nE "named_thread|thread_ctrl::wait_for|get_system_time[ ]*\(" ../../Emu/Cell/lv2/sys_game.cpp; then echo "sys_game: the watchdog is a thread on the host's clock again - retro_run looks at it on the guest's (lv2_watchdog_tick)"; exit 1; else echo "sys_game: the watchdog goes by the guest's clock, no thread"; fi
+	@# The P2P streams' retransmits: no lock and no clock of the host's
+	@if awk '/^class tcp_timeout_monitor/,/^u16 u2s_tcp_checksum/' ../../Emu/Cell/lv2/sys_net/lv2_socket_p2ps.cpp | grep -nE "steady_clock|shared_mutex|std::mutex|lock_guard|atomic_wait_timeout|wakey|get_system_time[ ]*\("; then echo "p2ps: the TCP timeout monitor locks or times on the host's clock again - it takes what changed on an mpsc_stack and waits on the guest's clock"; exit 1; else echo "p2ps: the TCP timeout monitor has no lock and goes by the guest's clock"; fi
 	@# The pads take no lock: pad::g_pad_mutex is gone, and a merge of
 	@# upstream's code that takes it does not bring it back
 	@if grep -rn "g_pad_mutex" ../../Emu ../../Input ../*.cpp ../*.h ../*.c; then echo "pads: pad::g_pad_mutex is back - the pads take no lock (AGENTS.md)"; exit 1; else echo "pads: no pad lock"; fi

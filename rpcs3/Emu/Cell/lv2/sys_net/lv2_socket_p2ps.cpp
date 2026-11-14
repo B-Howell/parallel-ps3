@@ -1,7 +1,11 @@
 #include "stdafx.h"
 
 #include "Utilities/Thread.h"
-#include "util/atomic.hpp"
+#include "Emu/Cell/timers.hpp"
+
+#include <retro_atomic.h>
+#include <queues/mpsc_stack.h>
+#include <rthreads/retro_waitaddr.h>
 #include "lv2_socket_p2ps.h"
 #include "Emu/NP/np_helpers.h"
 #include "nt_p2p_port.h"
@@ -10,182 +14,125 @@
 
 LOG_CHANNEL(sys_net);
 
-// Object in charge of retransmiting packets for STREAM_P2P sockets
+// Object in charge of retransmiting packets for STREAM_P2P sockets.
+//
+// The sockets' threads and the P2P port's hand it what changed (a message
+// sent, data acknowledged, a stream gone) on a lock-free stack; its own
+// thread alone keeps the messages and the round-trip times, so nothing is
+// locked. The retransmits are timed on the guest's clock, slaved to
+// retro_run: the thread waits with retro_waitaddr on its own word (something
+// was handed over) and on the guest clock's (retro_run granted another
+// frame), for as long of the host's time as the guest's should take to the
+// next retransmit. No timed wait on the host's clock, and none of it passes
+// while the frontend is paused.
 class tcp_timeout_monitor
 {
 public:
+	tcp_timeout_monitor()
+	{
+		mpsc_stack_init(&commands);
+	}
+
 	void add_message(s32 sock_id, const sockaddr_in* dst, std::vector<u8> data, u64 seq)
 	{
-		{
-			std::lock_guard lock(data_mutex);
-
-			const auto now = steady_clock::now();
-
-			message msg;
-			msg.dst_addr         = *dst;
-			msg.sock_id          = sock_id;
-			msg.data             = std::move(data);
-			msg.seq              = seq;
-			msg.initial_sendtime = now;
-
-			rtt_info rtt = rtts[sock_id];
-
-			const auto expected_time = now + rtt.rtt_time;
-
-			msgs.emplace(expected_time, std::move(msg));
-		}
-		wakey.release(1);
-		wakey.notify_one(); // TODO: Should be improved to only wake if new timeout < old timeout
+		command* cmd = new command;
+		cmd->kind = command::add;
+		cmd->sock_id = sock_id;
+		cmd->dst_addr = *dst;
+		cmd->data = std::move(data);
+		cmd->seq = seq;
+		hand_over(cmd);
 	}
 
 	void confirm_data_received(s32 sock_id, u64 ack)
 	{
-		std::lock_guard lock(data_mutex);
-		rtts[sock_id].num_retries = 0;
-
-		const auto now = steady_clock::now();
-
-		for (auto it = msgs.begin(); it != msgs.end();)
-		{
-			auto& msg = it->second;
-			if (msg.sock_id == sock_id && msg.seq < ack)
-			{
-				// Decreases RTT if msg is early
-				if (now < it->first)
-				{
-					const auto actual_rtt = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second.initial_sendtime);
-					const auto cur_rtt    = rtts[sock_id].rtt_time;
-					if (cur_rtt > actual_rtt)
-					{
-						rtts[sock_id].rtt_time = std::max((actual_rtt + cur_rtt) / 2, 1ms);
-					}
-				}
-				it = msgs.erase(it);
-				continue;
-			}
-			it++;
-		}
+		command* cmd = new command;
+		cmd->kind = command::confirm;
+		cmd->sock_id = sock_id;
+		cmd->seq = ack;
+		hand_over(cmd);
 	}
 
 	void clear_all_messages(s32 sock_id)
 	{
-		std::lock_guard lock(data_mutex);
-
-		for (auto it = msgs.begin(); it != msgs.end();)
-		{
-			auto& msg = it->second;
-
-			if (msg.sock_id == sock_id)
-			{
-				it = msgs.erase(it);
-				continue;
-			}
-			it++;
-		}
+		command* cmd = new command;
+		cmd->kind = command::clear;
+		cmd->sock_id = sock_id;
+		hand_over(cmd);
 	}
 
 	void operator()()
 	{
-		atomic_wait_timeout timeout = atomic_wait_timeout::inf;
-
 		while (thread_ctrl::state() != thread_state::aborting)
 		{
-			if (!wakey)
-			{
-				wakey.wait(0, timeout);
-			}
-
-			wakey = 0;
-
-			if (thread_ctrl::state() == thread_state::aborting)
-				return;
+			// Before what was handed over is taken up: a later hand-over wakes
+			const int wake = retro_atomic_load_acquire_int(&wake_word);
+			take_up_commands();
 
 			std::vector<s32> streams_to_close;
+			const u64 now = get_guest_system_time();
 
+			// Check for messages that haven't been acked
+			std::set<s32> rtt_increased;
+			for (auto it = msgs.begin(); it != msgs.end();)
 			{
-				std::lock_guard lock(data_mutex);
+				if (it->first > now)
+					break;
 
-				const auto now = steady_clock::now();
-				// Check for messages that haven't been acked
-				std::set<s32> rtt_increased;
-				for (auto it = msgs.begin(); it != msgs.end();)
+				// reply is late, increases rtt
+				auto& msg       = it->second;
+				rtt_info rtt    = rtts[msg.sock_id];
+				// Only increases rtt once per loop(in case a big number of packets are sent at once)
+				if (!rtt_increased.count(msg.sock_id))
 				{
-					if (it->first > now)
-						break;
+					rtt.num_retries += 1;
+					// Increases current rtt by 10%
+					rtt.rtt_us += (rtt.rtt_us / 10);
+					rtts[msg.sock_id] = rtt;
 
-					// reply is late, increases rtt
-					auto& msg       = it->second;
-					rtt_info rtt    = rtts[msg.sock_id];
-					// Only increases rtt once per loop(in case a big number of packets are sent at once)
-					if (!rtt_increased.count(msg.sock_id))
-					{
-						rtt.num_retries += 1;
-						// Increases current rtt by 10%
-						rtt.rtt_time += (rtt.rtt_time / 10);
-						rtts[msg.sock_id] = rtt;
+					rtt_increased.emplace(msg.sock_id);
+				}
 
-						rtt_increased.emplace(msg.sock_id);
-					}
-
-					if (rtt.num_retries >= 10)
-					{
-						// Too many retries, need to notify the socket that the connection is dead
-						sys_net.error("[P2PS] Too many retries, closing the stream");
-						streams_to_close.push_back(msg.sock_id);
-						it = msgs.erase(it);
-						continue;
-					}
-
-					// resend the message
-					const auto res = idm::check_entered<lv2_socket>(msg.sock_id, [&](lv2_socket& sock) -> bool
-						{
-							ensure(sock.get_type() == SYS_NET_SOCK_STREAM_P2P);
-							auto& sock_p2ps = reinterpret_cast<lv2_socket_p2ps&>(sock);
-
-							while (np::sendto_possibly_ipv6(sock_p2ps.get_socket(), reinterpret_cast<const char*>(msg.data.data()), ::size32(msg.data), &msg.dst_addr, 0) == -1)
-							{
-								const sys_net_error err = get_last_error(false);
-								// concurrency on the socket(from a sendto for example) can result in EAGAIN error in which case we try again
-								if (err == SYS_NET_EAGAIN)
-								{
-									continue;
-								}
-
-								sys_net.error("[P2PS] Resending the packet failed(%s), closing the stream", err);
-								streams_to_close.push_back(msg.sock_id);
-								return false;
-							}
-							return true;
-						});
-
-					if (!res || !res.ret)
-					{
-						it = msgs.erase(it);
-						continue;
-					}
-
-					// Update key timeout
-					msgs.insert(std::make_pair(now + rtt.rtt_time, std::move(msg)));
+				if (rtt.num_retries >= 10)
+				{
+					// Too many retries, need to notify the socket that the connection is dead
+					sys_net.error("[P2PS] Too many retries, closing the stream");
+					streams_to_close.push_back(msg.sock_id);
 					it = msgs.erase(it);
+					continue;
 				}
 
-				if (!msgs.empty())
-				{
-					const auto current_timepoint = steady_clock::now();
-					const auto expected_timepoint = msgs.begin()->first;
-					if (current_timepoint > expected_timepoint)
+				// resend the message
+				const auto res = idm::check_entered<lv2_socket>(msg.sock_id, [&](lv2_socket& sock) -> bool
 					{
-						wakey = 1;
-					}
-					else
-					{
-						timeout = static_cast<atomic_wait_timeout>(std::chrono::duration_cast<std::chrono::nanoseconds>(expected_timepoint - current_timepoint).count());
-					}
-				}
-				else
+						ensure(sock.get_type() == SYS_NET_SOCK_STREAM_P2P);
+						auto& sock_p2ps = reinterpret_cast<lv2_socket_p2ps&>(sock);
+
+						while (np::sendto_possibly_ipv6(sock_p2ps.get_socket(), reinterpret_cast<const char*>(msg.data.data()), ::size32(msg.data), &msg.dst_addr, 0) == -1)
+						{
+							const sys_net_error err = get_last_error(false);
+							// concurrency on the socket(from a sendto for example) can result in EAGAIN error in which case we try again
+							if (err == SYS_NET_EAGAIN)
+							{
+								continue;
+							}
+
+							sys_net.error("[P2PS] Resending the packet failed(%s), closing the stream", err);
+							streams_to_close.push_back(msg.sock_id);
+							return false;
+						}
+						return true;
+					});
+
+				if (!res || !res.ret)
 				{
-					timeout = atomic_wait_timeout::inf;
+					it = msgs.erase(it);
+					continue;
 				}
+
+				// Update key timeout
+				msgs.insert(std::make_pair(now + rtt.rtt_us, std::move(msg)));
+				it = msgs.erase(it);
 			}
 
 			for (const s32 sock_id : streams_to_close)
@@ -197,13 +144,33 @@ public:
 						sock_p2ps.close_stream();
 					});
 			}
+
+			// Until the next retransmit is due on the guest's clock, or
+			// something is handed over; with none to send, only the latter
+			const retro_atomic_int_t* clock_word = static_cast<const retro_atomic_int_t*>(libretro_guest_clock_word());
+			const retro_waitaddr_t list[2] =
+			{
+				{&wake_word, static_cast<u32>(wake)},
+				{clock_word, static_cast<u32>(retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(clock_word)))},
+			};
+
+			if (msgs.empty())
+			{
+				retro_waitaddr_wait(list, 1, -1);
+			}
+			else if (const u64 due = msgs.begin()->first, at = get_guest_system_time(); due > at)
+			{
+				retro_waitaddr_wait(list, 2, static_cast<s64>(libretro_guest_wait_as_host(due - at)));
+			}
 		}
+
+		// The thread is going: what is still handed over goes with it
+		take_up_commands();
 	}
 
 	tcp_timeout_monitor& operator=(thread_state)
 	{
-		wakey.release(1);
-		wakey.notify_one();
+		wake();
 		return *this;
 	}
 
@@ -211,23 +178,116 @@ public:
 	static constexpr auto thread_name = "Tcp Over Udp Timeout Manager Thread"sv;
 
 private:
-	atomic_t<u32> wakey = 0;
-	shared_mutex data_mutex;
-	// List of outgoing messages
+	struct command
+	{
+		mpsc_stack_node_t node{}; // first: the stack's link
+		enum : u8 { add, confirm, clear } kind = add;
+		s32 sock_id = 0;
+		::sockaddr_in dst_addr{};
+		std::vector<u8> data;
+		u64 seq = 0; // the ack, for confirm
+		u64 time_us = 0; // the guest's time it was handed over at
+	};
+
+	void wake()
+	{
+		retro_atomic_fetch_add_int(&wake_word, 1);
+		retro_waitaddr_notify_all(&wake_word);
+	}
+
+	void hand_over(command* cmd)
+	{
+		cmd->time_us = get_guest_system_time();
+		mpsc_stack_push(&commands, &cmd->node);
+		wake();
+	}
+
+	// The thread's: what was handed over, in the order it was
+	void take_up_commands()
+	{
+		for (mpsc_stack_node_t* node = mpsc_stack_reverse(mpsc_stack_drain(&commands)); node;)
+		{
+			command* cmd = reinterpret_cast<command*>(node);
+			node = node->next;
+
+			switch (cmd->kind)
+			{
+			case command::add:
+			{
+				message msg;
+				msg.dst_addr         = cmd->dst_addr;
+				msg.sock_id          = cmd->sock_id;
+				msg.data             = std::move(cmd->data);
+				msg.seq              = cmd->seq;
+				msg.initial_sendtime = cmd->time_us;
+
+				const rtt_info rtt = rtts[cmd->sock_id];
+				msgs.emplace(cmd->time_us + rtt.rtt_us, std::move(msg));
+				break;
+			}
+			case command::confirm:
+			{
+				rtts[cmd->sock_id].num_retries = 0;
+
+				for (auto it = msgs.begin(); it != msgs.end();)
+				{
+					auto& msg = it->second;
+					if (msg.sock_id == cmd->sock_id && msg.seq < cmd->seq)
+					{
+						// Decreases RTT if msg is early
+						if (cmd->time_us < it->first)
+						{
+							const u64 actual_rtt = cmd->time_us - std::min(cmd->time_us, msg.initial_sendtime);
+							const u64 cur_rtt    = rtts[cmd->sock_id].rtt_us;
+							if (cur_rtt > actual_rtt)
+							{
+								rtts[cmd->sock_id].rtt_us = std::max<u64>((actual_rtt + cur_rtt) / 2, 1000);
+							}
+						}
+						it = msgs.erase(it);
+						continue;
+					}
+					it++;
+				}
+				break;
+			}
+			case command::clear:
+			{
+				for (auto it = msgs.begin(); it != msgs.end();)
+				{
+					if (it->second.sock_id == cmd->sock_id)
+					{
+						it = msgs.erase(it);
+						continue;
+					}
+					it++;
+				}
+				break;
+			}
+			}
+
+			delete cmd;
+		}
+	}
+
+	mpsc_stack_t commands;
+	retro_atomic_int_t wake_word{};
+
+	// The thread's alone: the outgoing messages
 	struct message
 	{
 		s32 sock_id = 0;
 		::sockaddr_in dst_addr{};
 		std::vector<u8> data;
 		u64 seq = 0;
-		steady_clock::time_point initial_sendtime{};
+		u64 initial_sendtime = 0; // the guest's us
 	};
-	std::multimap<steady_clock::time_point, message> msgs; // (wakeup time, msg)
+	std::multimap<u64, message> msgs; // (guest's us due, msg)
 	// List of rtts
 	struct rtt_info
 	{
-		unsigned long num_retries          = 0;
-		std::chrono::milliseconds rtt_time = 50ms;
+		unsigned long num_retries = 0;
+		u64 rtt_us = 50'000;
 	};
 	std::unordered_map<s32, rtt_info> rtts; // (sock_id, rtt)
 };
