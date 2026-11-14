@@ -399,33 +399,78 @@ struct limits_data
 	u32 raw_limit = umax;
 };
 
+// The SPU limits and what is in use, as one 64-bit word, so that a check
+// and the change it allows are one compare-and-swap - nothing is locked:
+//   bits  0-2   physical SPUs the groups without a scheduler (and the
+//               cooperating groups' all but one) have
+//   bits  3-4   groups cooperating with the system
+//   bits  5-7   raw SPUs
+//   bits  8-10  max_raw, bits 11-13 max_spu (sys_spu_initialize's)
+//   bits 14-61  the groups with a scheduler, counted by their size: 8 bits
+//               for each of 1 to 6 threads (a larger one never passes)
+// The groups' part is what the scan of every group made of them before.
 struct spu_limits_t
 {
-	u32 max_raw = 0;
-	u32 max_spu = 6;
-	shared_mutex mutex;
+	retro_atomic_64_t word{static_cast<s64>(u64{6} << 11)};
+
+	static u32 get(u64 w, u32 shift, u32 bits) { return static_cast<u32>(w >> shift) & ((1u << bits) - 1); }
+	static u64 put(u32 v, u32 shift) { return u64{v} << shift; }
+	static constexpr u32 sched_shift(u32 num) { return 14 + 8 * (num - 1); }
 
 	spu_limits_t() = default;
 
 	spu_limits_t(utils::serial& ar) noexcept
 	{
+		u32 max_raw = 0, max_spu = 0;
 		ar(max_raw, max_spu);
+		retro_atomic_store_release_64(&word, static_cast<s64>(put(max_raw, 8) | put(max_spu, 11)));
+
+		// What is in use: counted once every group and raw SPU is loaded
+		Emu.PostponeInitCode([this]()
+		{
+			u64 in_use = put(std::min<u32>(spu_thread::g_raw_spu_ctr, 7), 5);
+
+			idm::select<lv2_spu_group>([&](u32, lv2_spu_group& group)
+			{
+				in_use += group_part(group.type, group.has_scheduler_context, group.max_num);
+			});
+
+			retro_atomic_fetch_add_64(&word, static_cast<s64>(in_use));
+		});
 	}
 
 	void save(utils::serial& ar)
 	{
-		ar(max_raw, max_spu);
+		const u64 w = static_cast<u64>(retro_atomic_load_acquire_64(&word));
+		ar(get(w, 8, 3), get(w, 11, 3));
 	}
 
 	SAVESTATE_INIT_POS(47);
 
+	// What a group adds to the word
+	static u64 group_part(u32 type, bool use_scheduler, u32 num)
+	{
+		if (type & SYS_SPU_THREAD_GROUP_TYPE_COOPERATE_WITH_SYSTEM)
+		{
+			return put(1, 3) + put(num - 1, 0);
+		}
+
+		if (use_scheduler)
+		{
+			return num >= 1 && num <= 6 ? put(1, sched_shift(num)) : 0;
+		}
+
+		return put(num, 0);
+	}
+
 	bool check_valid(const limits_data& init) const
 	{
+		const u64 w = static_cast<u64>(retro_atomic_load_acquire_64(const_cast<retro_atomic_64_t*>(&word)));
 		const u32 physical_spus_count = init.physical;
 		const u32 controllable_spu_count = init.controllable;
 
-		const u32 spu_limit = init.spu_limit != umax ? init.spu_limit : max_spu;
-		const u32 raw_limit = init.raw_limit != umax ? init.raw_limit : max_raw;
+		const u32 spu_limit = init.spu_limit != umax ? init.spu_limit : get(w, 11, 3);
+		const u32 raw_limit = init.raw_limit != umax ? init.raw_limit : get(w, 8, 3);
 
 		if (spu_limit + raw_limit > 6 || physical_spus_count > spu_limit || controllable_spu_count > spu_limit)
 		{
@@ -435,35 +480,30 @@ struct spu_limits_t
 		return true;
 	}
 
-	bool check_busy(const limits_data& init) const
+	// The check the scan of every group made, on the word @w
+	static bool check_busy(u64 w, const limits_data& init)
 	{
-		u32 physical_spus_count = init.physical;
-		u32 raw_spu_count = init.raw_spu;
+		u32 physical_spus_count = init.physical + get(w, 0, 3);
+		u32 raw_spu_count = init.raw_spu + get(w, 5, 3);
 		u32 controllable_spu_count = init.controllable;
-		u32 system_coop = init.controllable != 0 && init.physical != 0 ? 1 : 0;
+		u32 system_coop = (init.controllable != 0 && init.physical != 0 ? 1 : 0) + get(w, 3, 2);
 
-		const u32 spu_limit = init.spu_limit != umax ? init.spu_limit : max_spu;
-		const u32 raw_limit = init.raw_limit != umax ? init.raw_limit : max_raw;
-
-		idm::select<lv2_spu_group>([&](u32, lv2_spu_group& group)
+		if (get(w, 3, 2))
 		{
-			if (group.type & SYS_SPU_THREAD_GROUP_TYPE_COOPERATE_WITH_SYSTEM)
-			{
-				system_coop++;
-				controllable_spu_count = std::max<u32>(controllable_spu_count, 1);
-				physical_spus_count += group.max_num - 1;
-			}
-			else if (group.has_scheduler_context)
-			{
-				controllable_spu_count = std::max<u32>(controllable_spu_count, group.max_num);
-			}
-			else
-			{
-				physical_spus_count += group.max_num;
-			}
-		});
+			controllable_spu_count = std::max<u32>(controllable_spu_count, 1);
+		}
 
-		raw_spu_count += spu_thread::g_raw_spu_ctr;
+		for (u32 num = 6; num >= 1; num--)
+		{
+			if (get(w, sched_shift(num), 8))
+			{
+				controllable_spu_count = std::max<u32>(controllable_spu_count, num);
+				break;
+			}
+		}
+
+		const u32 spu_limit = init.spu_limit != umax ? init.spu_limit : get(w, 11, 3);
+		const u32 raw_limit = init.raw_limit != umax ? init.raw_limit : get(w, 8, 3);
 
 		// physical_spus_count >= spu_limit returns EBUSY, not EINVAL!
 		if (spu_limit + raw_limit > 6 || raw_spu_count > raw_limit || physical_spus_count >= spu_limit || controllable_spu_count > spu_limit)
@@ -479,7 +519,51 @@ struct spu_limits_t
 
 		return true;
 	}
+
+	// When check_busy passes, @add and @set (the bits @set_mask) are made in
+	// the same compare-and-swap
+	bool take(const limits_data& init, u64 add, u64 set = 0, u64 set_mask = 0)
+	{
+		for (;;)
+		{
+			const s64 seen = retro_atomic_load_acquire_64(&word);
+			const u64 w = static_cast<u64>(seen);
+
+			if (!check_busy(w, init))
+			{
+				return false;
+			}
+
+			if (retro_atomic_cas_64(&word, seen, static_cast<s64>(((w & ~set_mask) | set) + add)))
+			{
+				return true;
+			}
+		}
+	}
+
+	void give_back(u64 part)
+	{
+		retro_atomic_fetch_sub_64(&word, static_cast<s64>(part));
+	}
 };
+
+// A raw SPU gone (spu_thread::cleanup): its place in the limits. Saturating:
+// an SPU made without sys_raw_spu_create (spu_load_exec) never took one
+void lv2_spu_limits_raw_gone()
+{
+	if (auto limits = g_fxo->try_get<spu_limits_t>())
+	{
+		for (;;)
+		{
+			const s64 seen = retro_atomic_load_acquire_64(&limits->word);
+
+			if (!spu_limits_t::get(static_cast<u64>(seen), 5, 3) || retro_atomic_cas_64(&limits->word, seen, seen - static_cast<s64>(spu_limits_t::put(1, 5))))
+			{
+				break;
+			}
+		}
+	}
+}
 
 error_code sys_spu_initialize(ppu_thread& ppu, u32 max_usable_spu, u32 max_raw_spu)
 {
@@ -497,15 +581,13 @@ error_code sys_spu_initialize(ppu_thread& ppu, u32 max_usable_spu, u32 max_raw_s
 	// NOTE: This value can be changed by VSH in theory
 	max_usable_spu = 6;
 
-	std::lock_guard lock(limits.mutex);
-
-	if (!limits.check_busy(limits_data{.spu_limit = max_usable_spu - max_raw_spu, .raw_limit = max_raw_spu}))
+	// Checked against what is in use and set in one compare-and-swap
+	if (!limits.take(limits_data{.spu_limit = max_usable_spu - max_raw_spu, .raw_limit = max_raw_spu}, 0,
+		spu_limits_t::put(max_raw_spu, 8) | spu_limits_t::put(max_usable_spu - max_raw_spu, 11), spu_limits_t::put(7, 8) | spu_limits_t::put(7, 11)))
 	{
 		return CELL_EBUSY;
 	}
 
-	limits.max_raw = max_raw_spu;
-	limits.max_spu = max_usable_spu - max_raw_spu;
 	return CELL_OK;
 }
 
@@ -1109,8 +1191,6 @@ error_code sys_spu_thread_group_create(ppu_thread& ppu, vm::ptr<u32> id, u32 num
 
 	auto& limits = g_fxo->get<spu_limits_t>();
 
-	std::unique_lock lock(limits.mutex);
-
 	limits_data group_limits{};
 
 	if (is_system_coop)
@@ -1133,7 +1213,10 @@ error_code sys_spu_thread_group_create(ppu_thread& ppu, vm::ptr<u32> id, u32 num
 		return CELL_EINVAL;
 	}
 
-	if (!limits.check_busy(group_limits))
+	// Checked against every group there is and taken in one compare-and-swap
+	const u64 group_part = spu_limits_t::group_part(type, use_scheduler, num);
+
+	if (!limits.take(group_limits, group_part))
 	{
 		ct->free(mem_size);
 		return CELL_EBUSY;
@@ -1143,11 +1226,11 @@ error_code sys_spu_thread_group_create(ppu_thread& ppu, vm::ptr<u32> id, u32 num
 
 	if (!group)
 	{
+		limits.give_back(group_part);
 		ct->free(mem_size);
 		return CELL_EAGAIN;
 	}
 
-	lock.unlock();
 	sys_spu.warning("sys_spu_thread_group_create(): Thread group \"%s\" created (id=0x%x)", group->name, idm::last_id());
 
 	ppu.check_state();
@@ -1162,8 +1245,6 @@ error_code sys_spu_thread_group_destroy(ppu_thread& ppu, u32 id)
 	sys_spu.warning("sys_spu_thread_group_destroy(id=0x%x)", id);
 
 	auto& limits = g_fxo->get<spu_limits_t>();
-
-	std::lock_guard lock(limits.mutex);
 
 	const auto group = idm::withdraw<lv2_spu_group>(id, [](lv2_spu_group& group) -> CellError
 	{
@@ -1195,6 +1276,9 @@ error_code sys_spu_thread_group_destroy(ppu_thread& ppu, u32 id)
 	{
 		return group.ret;
 	}
+
+	// Its place in the limits, now that it is gone
+	limits.give_back(spu_limits_t::group_part(group->type, group->has_scheduler_context, group->max_num));
 
 	group->mutex.lock_unlock();
 
@@ -2512,15 +2596,15 @@ error_code sys_raw_spu_create(ppu_thread& ppu, vm::ptr<u32> id, vm::ptr<void> at
 
 	auto& limits = g_fxo->get<spu_limits_t>();
 
-	std::lock_guard lock(limits.mutex);
-
-	if (!limits.check_busy(limits_data{.raw_spu = 1}))
+	// A raw SPU's place: given back when it is gone (lv2_spu_limits_raw_gone)
+	if (!limits.take(limits_data{.raw_spu = 1}, spu_limits_t::put(1, 5)))
 	{
 		return CELL_EAGAIN;
 	}
 
 	if (!spu_thread::g_raw_spu_ctr.try_inc(5))
 	{
+		limits.give_back(spu_limits_t::put(1, 5));
 		return CELL_EAGAIN;
 	}
 
@@ -2568,15 +2652,15 @@ error_code sys_isolated_spu_create(ppu_thread& ppu, vm::ptr<u32> id, vm::ptr<voi
 
 	auto& limits = g_fxo->get<spu_limits_t>();
 
-	std::lock_guard lock(limits.mutex);
-
-	if (!limits.check_busy(limits_data{.raw_spu = 1}))
+	// A raw SPU's place: given back when it is gone (lv2_spu_limits_raw_gone)
+	if (!limits.take(limits_data{.raw_spu = 1}, spu_limits_t::put(1, 5)))
 	{
 		return CELL_EAGAIN;
 	}
 
 	if (!spu_thread::g_raw_spu_ctr.try_inc(5))
 	{
+		limits.give_back(spu_limits_t::put(1, 5));
 		return CELL_EAGAIN;
 	}
 
@@ -2670,10 +2754,6 @@ error_code raw_spu_destroy(ppu_thread& ppu, u32 id)
 	}
 
 	(*thread)();
-
-	auto& limits = g_fxo->get<spu_limits_t>();
-
-	std::lock_guard lock(limits.mutex);
 
 	if (auto ret = idm::withdraw<named_thread<spu_thread>>(idm_id, [&](spu_thread& spu) -> CellError
 	{

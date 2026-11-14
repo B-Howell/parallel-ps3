@@ -1741,6 +1741,8 @@ struct raw_spu_cleanup
 	}
 };
 
+void lv2_spu_limits_raw_gone(); // sys_spu.cpp
+
 void spu_thread::cleanup()
 {
 	// Deallocate local storage
@@ -1751,6 +1753,7 @@ void spu_thread::cleanup()
 	{
 		g_raw_spu_id[index] = 0;
 		g_raw_spu_ctr--;
+		lv2_spu_limits_raw_gone();
 	}
 
 	// Free range lock (and signals cleanup was called to the destructor)

@@ -25,6 +25,7 @@
 
 #include "../../Emu/Cell/lv2/sys_timer.cpp"
 #include "../../Emu/Cell/lv2/sys_usbd.cpp"
+#include "../../Emu/Cell/lv2/sys_spu.cpp"
 #include "Emu/Cell/Modules/cellVoice.h"
 #include "Emu/NP/np_dnshook.h"
 #include "Emu/RSX/Overlays/overlay_message.h"
@@ -376,6 +377,136 @@ int main()
 		CHECK(here);
 		std::printf("test_held_queues: USB calls: %u of 80000 from 4 threads counted, %d run elsewhere, %d wrong results\n",
 			s_plain8, retro_atomic_load_acquire_int(&s_elsewhere8), retro_atomic_load_acquire_int(&s_wrong8));
+	}
+
+	// The SPU limits as one word: the same answers as the scan of every
+	// group they replace, for random sets of groups; and from four threads at
+	// once, two groups that do not both fit are never both taken
+	{
+		struct group_model { u32 type; bool sched; u32 num; };
+
+		// The old check: every group scanned
+		const auto old_check = [](const std::vector<group_model>& groups, u32 raw, u32 max_raw, u32 max_spu, const limits_data& init)
+		{
+			u32 physical_spus_count = init.physical;
+			u32 raw_spu_count = init.raw_spu;
+			u32 controllable_spu_count = init.controllable;
+			u32 system_coop = init.controllable != 0 && init.physical != 0 ? 1 : 0;
+			const u32 spu_limit = init.spu_limit != umax ? init.spu_limit : max_spu;
+			const u32 raw_limit = init.raw_limit != umax ? init.raw_limit : max_raw;
+			for (const auto& g : groups)
+			{
+				if (g.type & SYS_SPU_THREAD_GROUP_TYPE_COOPERATE_WITH_SYSTEM)
+				{
+					system_coop++;
+					controllable_spu_count = std::max<u32>(controllable_spu_count, 1);
+					physical_spus_count += g.num - 1;
+				}
+				else if (g.sched)
+					controllable_spu_count = std::max<u32>(controllable_spu_count, g.num);
+				else
+					physical_spus_count += g.num;
+			}
+			raw_spu_count += raw;
+			if (spu_limit + raw_limit > 6 || raw_spu_count > raw_limit || physical_spus_count >= spu_limit || controllable_spu_count > spu_limit)
+				return false;
+			return system_coop <= 1;
+		};
+
+		usz differ = 0, taken = 0;
+		for (u32 round = 0; round < 2000; round++)
+		{
+			spu_limits_t limits;
+			const u32 max_raw = rnd() % 3;
+			const u32 max_spu = 6 - max_raw - rnd() % 2;
+			retro_atomic_store_release_64(&limits.word, static_cast<s64>(spu_limits_t::put(max_raw, 8) | spu_limits_t::put(max_spu, 11)));
+			std::vector<group_model> groups;
+			u32 raw = 0;
+
+			for (u32 step = 0; step < 40; step++)
+			{
+				const u32 kind = rnd() % 4;
+				if (kind == 3 && !groups.empty())
+				{
+					// Destroyed
+					const usz i = rnd() % groups.size();
+					limits.give_back(spu_limits_t::group_part(groups[i].type, groups[i].sched, groups[i].num));
+					groups.erase(groups.begin() + i);
+					continue;
+				}
+
+				group_model g{};
+				limits_data init{};
+				g.num = 1 + rnd() % 6;
+				if (kind == 0)
+				{
+					g.type = SYS_SPU_THREAD_GROUP_TYPE_COOPERATE_WITH_SYSTEM;
+					init.controllable = 1;
+					init.physical = g.num - 1;
+				}
+				else if (kind == 1)
+				{
+					g.sched = true;
+					init.controllable = g.num;
+				}
+				else
+				{
+					init.physical = g.num;
+				}
+
+				const bool want = old_check(groups, raw, max_raw, max_spu, init);
+				const bool got = limits.take(init, spu_limits_t::group_part(g.type, g.sched, g.num));
+				differ += want != got;
+				if (got)
+				{
+					groups.push_back(g);
+					taken++;
+				}
+
+				// A raw SPU now and then
+				if (rnd() % 4 == 0)
+				{
+					const bool want_raw = old_check(groups, raw, max_raw, max_spu, limits_data{.raw_spu = 1});
+					const bool got_raw = limits.take(limits_data{.raw_spu = 1}, spu_limits_t::put(1, 5));
+					differ += want_raw != got_raw;
+					raw += got_raw;
+				}
+			}
+		}
+		CHECK(differ == 0);
+		CHECK(taken > 1000);
+
+		static spu_limits_t s_limits;
+		static retro_atomic_int_t s_holding, s_bad9, s_stop9, s_got9;
+		retro_atomic_store_release_64(&s_limits.word, static_cast<s64>(spu_limits_t::put(6, 11)));
+
+		std::thread groupers[4];
+		for (auto& g : groupers)
+		{
+			g = std::thread([]
+			{
+				// Groups of 3 physical SPUs: one fits, two do not (3 + 3 >= 6)
+				const u64 part = spu_limits_t::group_part(0, false, 3);
+				for (int n = 0; n < 100000; n++)
+				{
+					if (!s_limits.take(limits_data{.physical = 3}, part))
+						continue;
+					if (retro_atomic_fetch_add_int(&s_holding, 1) != 0)
+						retro_atomic_fetch_add_int(&s_bad9, 1);
+					retro_atomic_fetch_add_int(&s_got9, 1);
+					retro_atomic_fetch_sub_int(&s_holding, 1);
+					s_limits.give_back(part);
+				}
+			});
+		}
+		for (auto& g : groupers)
+			g.join();
+
+		CHECK(retro_atomic_load_acquire_int(&s_bad9) == 0);
+		CHECK(retro_atomic_load_acquire_int(&s_got9) > 1000);
+		CHECK(retro_atomic_load_acquire_64(&s_limits.word) == static_cast<s64>(spu_limits_t::put(6, 11)));
+		std::printf("test_held_queues: SPU limits: %zu answers differ from the scan's (%zu groups taken); %d taken from 4 threads, %d when another held it\n",
+			differ, taken, retro_atomic_load_acquire_int(&s_got9), retro_atomic_load_acquire_int(&s_bad9));
 	}
 
 	// cellVoice's queues to notify, in a savestate
