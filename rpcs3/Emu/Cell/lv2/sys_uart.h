@@ -1,5 +1,7 @@
 #pragma once
 
+#include <retro_atomic.h>
+
 #include "Emu/Memory/vm_ptr.h"
 #include "Utilities/mutex.h"
 #include "Utilities/cond.h"
@@ -304,7 +306,7 @@ public:
 	vuart_av_thread(const vuart_av_thread&) = delete;
 	vuart_av_thread& operator=(const vuart_av_thread&) = delete;
 
-	atomic_t<bool> initialized{};
+	retro_atomic_int_t initialized{};
 
 	shared_mutex rx_mutex{};
 	shared_mutex tx_mutex{};

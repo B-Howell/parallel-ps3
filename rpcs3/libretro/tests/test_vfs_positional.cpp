@@ -26,6 +26,7 @@
 #include "Emu/Cell/lv2/sys_lwcond.h"
 #include "Emu/Cell/lv2/sys_event.h"
 #include "Emu/Cell/lv2/sys_cond.h"
+#include "Emu/Cell/lv2/sys_memory.h"
 #include "Emu/IdManager.h"
 #include "Emu/VFS.h"
 #include "Emu/vfs_config.h"
@@ -1341,6 +1342,52 @@ int main()
 			CHECK(retro_atomic_load_acquire_int(&s_queued4) > 100);
 			std::printf("  ids: %d lwmutex waits entered, %d refused, %d destroys\n", retro_atomic_load_acquire_int(&s_queued4),
 				retro_atomic_load_acquire_int(&s_refused4), retro_atomic_load_acquire_int(&s_destroyed4));
+		}
+
+		// A memory container's take and free from four threads, as
+		// sys_memory_allocate and sys_memory_free from several PPU threads:
+		// what is taken never adds up to more than the container, and all of
+		// it comes back
+		{
+			static lv2_memory_container ct(0x20000);
+			static retro_atomic_int_t s_held, s_bad5, s_taken5, s_refused5;
+
+			std::thread takers[4];
+			for (u32 t = 0; t < 4; t++)
+			{
+				takers[t] = std::thread([t]
+				{
+					u32 x = t * 2654435761u + 7;
+
+					for (int n = 0; n < 200000; n++)
+					{
+						x = x * 1664525u + 1013904223u;
+						const u32 amount = (1 + ((x >> 16) & 15)) * 0x1000;
+
+						if (!ct.take(amount))
+						{
+							retro_atomic_fetch_add_int(&s_refused5, 1);
+							continue;
+						}
+
+						retro_atomic_fetch_add_int(&s_taken5, 1);
+						if (static_cast<u32>(retro_atomic_fetch_add_int(&s_held, static_cast<int>(amount))) + amount > ct.size)
+							retro_atomic_fetch_add_int(&s_bad5, 1);
+						retro_atomic_fetch_sub_int(&s_held, static_cast<int>(amount));
+
+						if (ct.free(amount) != amount)
+							retro_atomic_fetch_add_int(&s_bad5, 1);
+					}
+				});
+			}
+
+			for (auto& t : takers)
+				t.join();
+
+			CHECK(retro_atomic_load_acquire_int(&s_bad5) == 0);
+			CHECK(retro_atomic_load_acquire_int(&ct.used) == 0);
+			CHECK(retro_atomic_load_acquire_int(&s_taken5) > 1000);
+			std::printf("  memory container: %d takes, %d refused\n", retro_atomic_load_acquire_int(&s_taken5), retro_atomic_load_acquire_int(&s_refused5));
 		}
 
 		// Two IDs at once, as _sys_lwcond_queue_wait has them: a thread

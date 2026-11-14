@@ -34,7 +34,7 @@ lv2_cond::lv2_cond(u64 key, u64 name, u32 mtx_id, shared_ptr<lv2_obj> mutex0) no
 
 CellError lv2_cond::on_id_create()
 {
-	exists++;
+	retro_atomic_fetch_add_int(&exists, 1);
 
 	static auto do_it = [](lv2_cond* _this) -> CellError
 	{

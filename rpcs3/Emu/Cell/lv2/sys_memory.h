@@ -1,5 +1,7 @@
 #pragma once
 
+#include <retro_atomic.h>
+
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/Cell/ErrorCodes.h"
 
@@ -71,7 +73,7 @@ struct lv2_memory_container
 
 	const u32 size; // Amount of "physical" memory in this container
 	const lv2_mem_container_id id; // ID of the container in if placed at IDM, otherwise SYS_MEMORY_CONTAINER_ID_INVALID
-	atomic_t<u32> used{}; // Amount of "physical" memory currently used
+	retro_atomic_int_t used{}; // Amount of "physical" memory currently used, a u32
 
 	SAVESTATE_INIT_POS(1);
 
@@ -85,32 +87,43 @@ struct lv2_memory_container
 	// Values greater than UINT32_MAX will fail
 	u32 take(u64 amount)
 	{
-		auto [_, result] = used.fetch_op([&](u32& value) -> u32
+		for (;;)
 		{
-			if (size - value >= amount)
+			const int seen = retro_atomic_load_acquire_int(&used);
+			const u32 value = static_cast<u32>(seen);
+
+			if (size - value < amount)
 			{
-				value += static_cast<u32>(amount);
-				return static_cast<u32>(amount);
+				return 0;
 			}
 
-			return 0;
-		});
-
-		return result;
+			if (retro_atomic_cas_int(&used, seen, static_cast<int>(value + static_cast<u32>(amount))))
+			{
+				return static_cast<u32>(amount);
+			}
+		}
 	}
 
 	u32 free(u64 amount)
 	{
-		auto [_, result] = used.fetch_op([&](u32& value) -> u32
+		u32 result = 0;
+
+		for (;;)
 		{
-			if (value >= amount)
+			const int seen = retro_atomic_load_acquire_int(&used);
+			const u32 value = static_cast<u32>(seen);
+
+			if (value < amount)
 			{
-				value -= static_cast<u32>(amount);
-				return static_cast<u32>(amount);
+				break;
 			}
 
-			return 0;
-		});
+			if (retro_atomic_cas_int(&used, seen, static_cast<int>(value - static_cast<u32>(amount))))
+			{
+				result = static_cast<u32>(amount);
+				break;
+			}
+		}
 
 		// Sanity check
 		ensure(result == amount);

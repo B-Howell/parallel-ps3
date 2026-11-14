@@ -36,7 +36,7 @@ lv2_memory_container::lv2_memory_container(u32 size, bool from_idm) noexcept
 lv2_memory_container::lv2_memory_container(utils::serial& ar, bool from_idm) noexcept
 	: size(ar)
 	, id{from_idm ? idm::last_id() : SYS_MEMORY_CONTAINER_ID_INVALID}
-	, used(ar.pop<s32>())
+	, used{ar.pop<s32>()}
 {
 }
 
@@ -51,7 +51,7 @@ std::function<void(void*)> lv2_memory_container::load(utils::serial& ar)
 
 void lv2_memory_container::save(utils::serial& ar)
 {
-	ar(size, used);
+	ar(size, static_cast<u32>(retro_atomic_load_acquire_int(&used)));
 }
 
 lv2_memory_container* lv2_memory_container::search(u32 id)
@@ -201,7 +201,7 @@ error_code sys_memory_allocate(cpu_thread& cpu, u64 size, u64 flags, vm::ptr<u32
 	// Try to get "physical memory"
 	if (!dct.take(size))
 	{
-		return {CELL_ENOMEM, dct.size - dct.used};
+		return {CELL_ENOMEM, dct.size - static_cast<u32>(retro_atomic_load_acquire_int(&dct.used))};
 	}
 
 	if (const u32 addr = allocate_user_memory(static_cast<u32>(size), align))
@@ -271,7 +271,7 @@ error_code sys_memory_allocate_from_container(cpu_thread& cpu, u64 size, u32 cid
 
 	if (ct.ret)
 	{
-		return {ct.ret, ct->size - ct->used};
+		return {ct.ret, ct->size - static_cast<u32>(retro_atomic_load_acquire_int(&ct->used))};
 	}
 
 	if (const u32 addr = allocate_user_memory(static_cast<u32>(size), align))
@@ -391,7 +391,7 @@ error_code sys_memory_get_user_memory_size(cpu_thread& cpu, vm::ptr<sys_memory_i
 		::reader_lock lock(s_memstats_mtx);
 
 		out.total_user_memory = dct.size;
-		out.available_user_memory = dct.size - dct.used;
+		out.available_user_memory = dct.size - static_cast<u32>(retro_atomic_load_acquire_int(&dct.used));
 
 		// Scan other memory containers
 		idm::select<lv2_memory_container>([&](u32, lv2_memory_container& ct)
@@ -477,7 +477,7 @@ error_code sys_memory_container_destroy(cpu_thread& cpu, u32 cid)
 	const auto ct = idm::withdraw<lv2_memory_container>(cid, [](lv2_memory_container& ct) -> CellError
 	{
 		// Check if some memory is not deallocated (the container cannot be destroyed in this case)
-		if (!ct.used.compare_and_swap_test(0, ct.size))
+		if (!retro_atomic_cas_int(&ct.used, 0, static_cast<int>(ct.size)))
 		{
 			return CELL_EBUSY;
 		}
@@ -516,7 +516,7 @@ error_code sys_memory_container_get_size(cpu_thread& cpu, vm::ptr<sys_memory_inf
 
 	cpu.check_state();
 	mem_info->total_user_memory = ct->size; // Total container memory
-	mem_info->available_user_memory = ct->size - ct->used; // Available container memory
+	mem_info->available_user_memory = ct->size - static_cast<u32>(retro_atomic_load_acquire_int(&ct->used)); // Available container memory
 
 	return CELL_OK;
 }

@@ -22,6 +22,21 @@ extern void dump_executable(std::span<const u8> data, const ppu_module<lv2_obj>*
 
 extern shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object&, bool virtual_load, const std::string&, s64, utils::serial* = nullptr);
 extern void ppu_unload_prx(const lv2_prx& prx);
+
+// Swap the state from one value to another; gives the value it saw, as
+// compare_and_swap did
+static u32 prx_state_swap(retro_atomic_int_t& state, u32 from, u32 to)
+{
+	for (;;)
+	{
+		const u32 seen = static_cast<u32>(retro_atomic_load_acquire_int(&state));
+
+		if (seen != from || retro_atomic_cas_int(&state, static_cast<int>(from), static_cast<int>(to)))
+		{
+			return seen;
+		}
+	}
+}
 extern bool ppu_initialize(const ppu_module<lv2_obj>&, bool check_only = false, u64 file_size = 0);
 extern void ppu_finalize(const ppu_module<lv2_obj>& info, bool force_mem_release = false);
 extern void ppu_manual_load_imports_exports(u32 imports_start, u32 imports_size, u32 exports_start, u32 exports_size, std::basic_string<char>& loaded_flags);
@@ -395,7 +410,7 @@ std::function<void(void*)> lv2_prx::load(utils::serial& ar)
 		hle_load();
 	}
 
-	prx->state = state;
+	retro_atomic_store_release_int(&prx->state, static_cast<int>(state));
 
 	return [prx](void* storage)
 	{
@@ -409,7 +424,8 @@ void lv2_prx::save(utils::serial& ar)
 
 	const std::string vpath = vfs::retrieve(path);
 
-	ar(vpath, offset, state, hle_data);
+	const u32 state_now = static_cast<u32>(retro_atomic_load_acquire_int(&state));
+	ar(vpath, offset, state_now, hle_data);
 
 	// Save segments count
 	ar.serialize_vle(segs.size());
@@ -431,7 +447,7 @@ void lv2_prx::save(utils::serial& ar)
 		}
 	}
 
-	(vpath.empty() ? sys_prx.error : sys_prx.success)("lv2_prx::save(): vpath='%s', offset=0x%x, state=%x, segments:%s", vpath, offset, +state, segments);
+	(vpath.empty() ? sys_prx.error : sys_prx.success)("lv2_prx::save(): vpath='%s', offset=0x%x, state=%x, segments:%s", vpath, offset, state_now, segments);
 }
 
 error_code sys_prx_get_ppu_guid(ppu_thread& ppu)
@@ -573,9 +589,9 @@ error_code _sys_prx_start_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sys
 	{
 		std::lock_guard lock(prx->mutex);
 
-		if (!prx->state.compare_and_swap_test(PRX_STATE_INITIALIZED, PRX_STATE_STARTING))
+		if (!retro_atomic_cas_int(&prx->state, PRX_STATE_INITIALIZED, PRX_STATE_STARTING))
 		{
-			if (prx->state == PRX_STATE_DESTROYED)
+			if (static_cast<u32>(retro_atomic_load_acquire_int(&prx->state)) == PRX_STATE_DESTROYED)
 			{
 				return CELL_ESRCH;
 			}
@@ -593,7 +609,7 @@ error_code _sys_prx_start_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sys
 		case SYS_PRX_RESIDENT:
 		{
 			// No error code on invalid state, so throw on unexpected state
-			ensure(prx->state.compare_and_swap_test(PRX_STATE_STARTING, PRX_STATE_STARTED));
+			ensure(retro_atomic_cas_int(&prx->state, PRX_STATE_STARTING, PRX_STATE_STARTED));
 			return CELL_OK;
 		}
 		default:
@@ -604,7 +620,7 @@ error_code _sys_prx_start_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sys
 				sys_prx.warning("_sys_prx_start_module(): Start entry function returned SYS_PRX_NO_RESIDENT (res=0x%llx)", res);
 
 				// Thread-safe if called from liblv2.sprx, due to internal lwmutex lock before it
-				prx->state = PRX_STATE_STOPPED;
+				retro_atomic_store_release_int(&prx->state, PRX_STATE_STOPPED);
 				prx->unload_exports();
 				_sys_prx_unload_module(ppu, id, 0, vm::null);
 
@@ -665,7 +681,7 @@ error_code _sys_prx_stop_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sys_
 	{
 	case 1:
 	{
-		switch (const auto old = prx->state.compare_and_swap(PRX_STATE_STARTED, PRX_STATE_STOPPING))
+		switch (const u32 old = prx_state_swap(prx->state, PRX_STATE_STARTED, PRX_STATE_STOPPING))
 		{
 		case PRX_STATE_INITIALIZED: return CELL_PRX_ERROR_NOT_STARTED;
 		case PRX_STATE_STOPPED: return CELL_PRX_ERROR_ALREADY_STOPPED;
@@ -690,11 +706,11 @@ error_code _sys_prx_stop_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sys_
 		{
 			// No error code on invalid state, so throw on unexpected state
 			std::lock_guard lock(prx->mutex);
-			ensure(prx->exports_end <= prx->exports_start || (prx->state == PRX_STATE_STOPPING));
+			ensure(prx->exports_end <= prx->exports_start || (static_cast<u32>(retro_atomic_load_acquire_int(&prx->state)) == PRX_STATE_STOPPING));
 
 			prx->unload_exports();
 
-			ensure(prx->state.compare_and_swap_test(PRX_STATE_STOPPING, PRX_STATE_STOPPED));
+			ensure(retro_atomic_cas_int(&prx->state, PRX_STATE_STOPPING, PRX_STATE_STOPPED));
 			return CELL_OK;
 		}
 		case 1:
@@ -709,7 +725,7 @@ error_code _sys_prx_stop_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sys_
 	case 4: // Get start entry and stop functions
 	case 8: // Disable stop function execution
 	{
-		switch (const auto old = +prx->state)
+		switch (const u32 old = static_cast<u32>(retro_atomic_load_acquire_int(&prx->state)))
 		{
 		case PRX_STATE_INITIALIZED: return CELL_PRX_ERROR_NOT_STARTED;
 		case PRX_STATE_STOPPED: return CELL_PRX_ERROR_ALREADY_STOPPED;
@@ -748,16 +764,19 @@ error_code _sys_prx_unload_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sy
 	// Get the PRX, free the used memory and delete the object and its ID
 	const auto prx = idm::withdraw<lv2_obj, lv2_prx>(id, [](lv2_prx& prx) -> CellPrxError
 	{
-		switch (prx.state.fetch_op([](u32& value)
-		{
-			if (value == PRX_STATE_INITIALIZED || value == PRX_STATE_STOPPED)
-			{
-				value = PRX_STATE_DESTROYED;
-				return true;
-			}
+		u32 old;
 
-			return false;
-		}).first)
+		for (;;)
+		{
+			old = static_cast<u32>(retro_atomic_load_acquire_int(&prx.state));
+
+			if ((old != PRX_STATE_INITIALIZED && old != PRX_STATE_STOPPED) || retro_atomic_cas_int(&prx.state, static_cast<int>(old), PRX_STATE_DESTROYED))
+			{
+				break;
+			}
+		}
+
+		switch (old)
 		{
 		case PRX_STATE_INITIALIZED:
 		case PRX_STATE_STOPPED:
@@ -937,7 +956,7 @@ error_code _sys_prx_register_library(ppu_thread& ppu, vm::ptr<void> library)
 	{
 		const bool success = idm::select<lv2_obj, lv2_prx>([&](u32 /*id*/, lv2_prx& prx)
 		{
-			if (prx.state == PRX_STATE_INITIALIZED)
+			if (static_cast<u32>(retro_atomic_load_acquire_int(&prx.state)) == PRX_STATE_INITIALIZED)
 			{
 				for (u32 lib_addr = prx.exports_start, index = 0; lib_addr < prx.exports_end; index++, lib_addr += vm::read8(lib_addr) ? vm::read8(lib_addr) : sizeof_lib)
 				{

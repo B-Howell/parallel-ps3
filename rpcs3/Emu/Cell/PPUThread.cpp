@@ -4850,7 +4850,7 @@ extern void ppu_initialize()
 				// Fixup for compatibility with old savestates
 				if (Emu.DeserialManager() && ptr->name == "liblv2.sprx")
 				{
-					static_cast<lv2_prx*>(ptr)->state = PRX_STATE_STARTED;
+					retro_atomic_store_release_int(&static_cast<lv2_prx*>(ptr)->state, PRX_STATE_STARTED);
 					static_cast<lv2_prx*>(ptr)->load_exports();
 				}
 			}

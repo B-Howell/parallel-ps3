@@ -68,7 +68,7 @@ int main()
 	const u32 id = idm::make<lv2_obj, lv2_event_queue>(SYS_SYNC_PRIORITY, SYS_PPU_QUEUE, 127, 0x1234, 0);
 	const auto queue = idm::get_unlocked<lv2_obj, lv2_event_queue>(id);
 	CHECK(!!queue);
-	queue->exists++; // as sys_event_queue_create leaves it
+	retro_atomic_fetch_add_int(&queue->exists, 1); // as sys_event_queue_create leaves it
 
 	// As many as its size, and no more
 	for (u64 n = 0; n < 127; n++)
@@ -157,7 +157,7 @@ int main()
 	{
 		const u32 small_id = idm::make<lv2_obj, lv2_event_queue>(SYS_SYNC_PRIORITY, SYS_PPU_QUEUE, 1, 0, 0);
 		const auto small = idm::get_unlocked<lv2_obj, lv2_event_queue>(small_id);
-		small->exists++;
+		retro_atomic_fetch_add_int(&small->exists, 1);
 		CHECK(small->send(event_of(7)) == CellError{});
 		CHECK(small->send(event_of(8)) == CELL_EBUSY);
 		CHECK(take(*small, got) && got == event_of(7));

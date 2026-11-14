@@ -188,7 +188,7 @@ CellError lv2_event_queue::send(lv2_event event, bool* notified_thread, lv2_even
 
 	std::lock_guard lock(mutex);
 
-	if (!exists)
+	if (!retro_atomic_load_acquire_int(&exists))
 	{
 		return CELL_ENOTCONN;
 	}
@@ -483,7 +483,7 @@ error_code sys_event_queue_tryreceive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sy
 
 	std::unique_lock lock(queue->mutex);
 
-	if (!queue->exists)
+	if (!retro_atomic_load_acquire_int(&queue->exists))
 	{
 		return CELL_ESRCH;
 	}

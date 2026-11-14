@@ -1,5 +1,7 @@
 #pragma once
 
+#include <retro_atomic.h>
+
 #include "sys_sync.h"
 
 #include "Emu/Memory/vm_ptr.h"
@@ -29,7 +31,7 @@ struct lv2_memory : lv2_obj
 	u32 system_handle = 0; // stands in for the vsh handle
 	atomic_ptr<std::shared_ptr<utils::shm>> shm;
 
-	atomic_t<u32> counter{0};
+	retro_atomic_int_t counter{}; // a u32
 	// the game can drop its handle while audio still needs the buffer
 	retro_atomic_int_t external_refs{}; // a u32
 

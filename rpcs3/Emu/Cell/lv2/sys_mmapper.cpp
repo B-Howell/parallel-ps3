@@ -68,7 +68,7 @@ lv2_memory::lv2_memory(utils::serial& ar)
 	, shm(null_ptr)
 {
 	const u32 addr{ar};
-	counter = ar.pop<u32>();
+	retro_atomic_store_release_int(&counter, static_cast<int>(ar.pop<u32>()));
 	retro_atomic_store_release_int(&external_refs, static_cast<int>(ar.pop<u32>()));
 
 	if (addr)
@@ -85,13 +85,13 @@ lv2_memory::lv2_memory(utils::serial& ar)
 
 CellError lv2_memory::on_id_create()
 {
-	if (!exists && !retro_atomic_load_acquire_int(&external_refs) && ct && !ct->take(size))
+	if (!retro_atomic_load_acquire_int(&exists) && !retro_atomic_load_acquire_int(&external_refs) && ct && !ct->take(size))
 	{
-		sys_mmapper.error("lv2_memory::on_id_create(): Cannot allocate 0x%x bytes (0x%x available)", size, ct->size - ct->used);
+		sys_mmapper.error("lv2_memory::on_id_create(): Cannot allocate 0x%x bytes (0x%x available)", size, ct->size - static_cast<u32>(retro_atomic_load_acquire_int(&ct->used)));
 		return CELL_ENOMEM;
 	}
 
-	exists++;
+	retro_atomic_fetch_add_int(&exists, 1);
 	return {};
 }
 
@@ -102,7 +102,7 @@ CellError lv2_memory::on_id_create(u64 requested_size, u32 requested_align, cons
 		return CELL_EPERM;
 	}
 
-	if (exists > (system_handle ? 1u : 0u))
+	if (static_cast<u32>(retro_atomic_load_acquire_int(&exists)) > (system_handle ? 1u : 0u))
 	{
 		return CELL_EEXIST;
 	}
@@ -124,9 +124,9 @@ std::function<void(void*)> lv2_memory::load(utils::serial& ar)
 		}
 	}
 
-	mem->exists++; // Disable on_id_create()
+	retro_atomic_fetch_add_int(&mem->exists, 1); // Disable on_id_create()
 	auto func = load_func(mem, +mem->pshared);
-	mem->exists--;
+	retro_atomic_fetch_sub_int(&mem->exists, 1);
 	return func;
 }
 
@@ -143,7 +143,7 @@ void lv2_memory::save_data(utils::serial& ar)
 	const auto data = shm.load();
 	const u32 addr = data ? vm::get_shm_addr(*data) : 0;
 	ar(addr);
-	ar(counter, static_cast<u32>(retro_atomic_load_acquire_int(&external_refs)));
+	ar(static_cast<u32>(retro_atomic_load_acquire_int(&counter)), static_cast<u32>(retro_atomic_load_acquire_int(&external_refs)));
 
 	if (!addr)
 	{
@@ -159,7 +159,7 @@ void lv2_memory::save_data(utils::serial& ar)
 void lv2_memory::release_memory()
 {
 	// the caller holds the id manager lock
-	if (exists || retro_atomic_load_acquire_int(&external_refs))
+	if (retro_atomic_load_acquire_int(&exists) || retro_atomic_load_acquire_int(&external_refs))
 	{
 		return;
 	}
@@ -701,7 +701,7 @@ error_code sys_mmapper_free_shared_memory(ppu_thread& ppu, u32 mem_id)
 			return CELL_ESRCH;
 		}
 
-		if (mem.counter)
+		if (retro_atomic_load_acquire_int(&mem.counter))
 		{
 			return CELL_EBUSY;
 		}
@@ -773,7 +773,7 @@ error_code sys_mmapper_map_shared_memory(ppu_thread& ppu, u32 addr, u32 mem_id, 
 			}
 		}
 
-		mem.counter++;
+		retro_atomic_fetch_add_int(&mem.counter, 1);
 		return {};
 	});
 
@@ -791,7 +791,7 @@ error_code sys_mmapper_map_shared_memory(ppu_thread& ppu, u32 addr, u32 mem_id, 
 
 	if (!area->falloc(addr, mem->size, &shm_ptr, mem->align == 0x10000 ? SYS_MEMORY_PAGE_SIZE_64K : SYS_MEMORY_PAGE_SIZE_1M))
 	{
-		mem->counter--;
+		retro_atomic_fetch_sub_int(&mem->counter, 1);
 
 		if (!area->is_valid())
 		{
@@ -848,7 +848,7 @@ error_code sys_mmapper_search_and_map(ppu_thread& ppu, u32 start_addr, u32 mem_i
 			}
 		}
 
-		mem.counter++;
+		retro_atomic_fetch_add_int(&mem.counter, 1);
 		return {};
 	});
 
@@ -868,7 +868,7 @@ error_code sys_mmapper_search_and_map(ppu_thread& ppu, u32 start_addr, u32 mem_i
 
 	if (!addr)
 	{
-		mem->counter--;
+		retro_atomic_fetch_sub_int(&mem->counter, 1);
 
 		if (!area->is_valid())
 		{
@@ -931,7 +931,7 @@ error_code sys_mmapper_unmap_shared_memory(ppu_thread& ppu, u32 addr, vm::ptr<u3
 	*mem_id = mem.ret;
 
 	// Acknowledge
-	mem->counter--;
+	retro_atomic_fetch_sub_int(&mem->counter, 1);
 
 	return CELL_OK;
 }

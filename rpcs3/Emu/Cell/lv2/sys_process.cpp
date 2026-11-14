@@ -484,7 +484,7 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 			u32 total_size = 0;
 			idm::select<lv2_memory_container>([&](u32, lv2_memory_container& ctr)
 			{
-				ctr.used = 0;
+				retro_atomic_store_release_int(&ctr.used, 0);
 				total_size += ctr.size;
 			});
 

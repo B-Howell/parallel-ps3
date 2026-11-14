@@ -744,7 +744,7 @@ void spu_int_ctrl_t::set(u64 ints)
 		idm::check_entered<lv2_obj, lv2_int_tag>(id, [&](lv2_int_tag& found)
 		{
 			// The ID may have gone to another tag since
-			if (&found != retro_atomic_load_acquire_ptr(&tag_obj) || !found.exists)
+			if (&found != retro_atomic_load_acquire_ptr(&tag_obj) || !retro_atomic_load_acquire_int(&found.exists))
 			{
 				return;
 			}
@@ -6690,7 +6690,7 @@ bool spu_thread::stop_and_signal(u32 code)
 				continue;
 			}
 
-			if (!queue->exists)
+			if (!retro_atomic_load_acquire_int(&queue->exists))
 			{
 				return ch_in_mbox.set_values(1, CELL_EINVAL), true;
 			}
@@ -6805,7 +6805,7 @@ bool spu_thread::stop_and_signal(u32 code)
 			}
 		}
 
-		if (!queue->exists)
+		if (!retro_atomic_load_acquire_int(&queue->exists))
 		{
 			return ch_in_mbox.set_values(1, CELL_EINVAL), true;
 		}

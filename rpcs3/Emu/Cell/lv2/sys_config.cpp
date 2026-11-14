@@ -72,7 +72,7 @@ void dump_buffer(std::string& out, const std::vector<u8>& buffer)
 // LV2 Config
 void lv2_config::initialize()
 {
-	if (m_state || !m_state.compare_and_swap_test(0, 1))
+	if (retro_atomic_load_acquire_int(&m_state) || !retro_atomic_cas_int(&m_state, 0, 1))
 	{
 		return;
 	}

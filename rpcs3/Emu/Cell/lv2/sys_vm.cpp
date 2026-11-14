@@ -11,22 +11,22 @@ sys_vm_t::sys_vm_t(u32 _addr, u32 vsize, lv2_memory_container* ct, u32 psize)
 	: ct(ct)
 	, addr(_addr)
 	, size(vsize)
-	, psize(psize)
+	, psize{static_cast<int>(psize)}
 {
 	// Write ID
-	g_ids[addr >> 28].release(idm::last_id());
+	retro_atomic_store_release_int(&g_ids[addr >> 28], static_cast<int>(idm::last_id()));
 }
 
 void sys_vm_t::save(utils::serial& ar)
 {
 	USING_SERIALIZATION_VERSION(lv2_vm);
-	ar(ct->id, addr, size, psize);
+	ar(ct->id, addr, size, static_cast<u32>(retro_atomic_load_acquire_int(&psize)));
 }
 
 sys_vm_t::~sys_vm_t()
 {
 	// Free ID
-	g_ids[addr >> 28].release(id_manager::id_traits<sys_vm_t>::invalid);
+	retro_atomic_store_release_int(&g_ids[addr >> 28], static_cast<int>(id_manager::id_traits<sys_vm_t>::invalid));
 }
 
 LOG_CHANNEL(sys_vm);
@@ -40,9 +40,9 @@ sys_vm_t::sys_vm_t(utils::serial& ar)
 	: ct(lv2_memory_container::search(ar.pop<u32>()))
 	, addr(ar)
 	, size(ar)
-	, psize(ar.pop<u32>())
+	, psize{static_cast<int>(ar.pop<u32>())}
 {
-	g_ids[addr >> 28].release(idm::last_id());
+	retro_atomic_store_release_int(&g_ids[addr >> 28], static_cast<int>(idm::last_id()));
 	g_fxo->need<sys_vm_global_t>();
 	retro_atomic_fetch_add_int(&g_fxo->get<sys_vm_global_t>().total_vsize, static_cast<int>(size));
 }
@@ -146,7 +146,7 @@ error_code sys_vm_unmap(ppu_thread& ppu, u32 addr)
 		ensure(vm::unmap(addr).second);
 
 		// Return memory
-		vmo.ct->free(vmo.psize);
+		vmo.ct->free(static_cast<u32>(retro_atomic_load_acquire_int(&vmo.psize)));
 		retro_atomic_fetch_add_int(&g_fxo->get<sys_vm_global_t>().total_vsize, -static_cast<int>(vmo.size));
 	});
 
@@ -181,7 +181,7 @@ error_code sys_vm_append_memory(ppu_thread& ppu, u32 addr, u64 size)
 			return CELL_ENOMEM;
 		}
 
-		vmo.psize += static_cast<u32>(size);
+		retro_atomic_fetch_add_int(&vmo.psize, static_cast<int>(size));
 		return {};
 	});
 
@@ -216,16 +216,24 @@ error_code sys_vm_return_memory(ppu_thread& ppu, u32 addr, u64 size)
 			return CELL_EINVAL;
 		}
 
-		auto [_, ok] = vmo.psize.fetch_op([&](u32& value)
+		bool ok = false;
+
+		for (;;)
 		{
+			const int seen = retro_atomic_load_acquire_int(&vmo.psize);
+			const u32 value = static_cast<u32>(seen);
+
 			if (value <= size || value - size < 0x100000ull)
 			{
-				return false;
+				break;
 			}
 
-			value -= static_cast<u32>(size);
-			return true;
-		});
+			if (retro_atomic_cas_int(&vmo.psize, seen, static_cast<int>(value - static_cast<u32>(size))))
+			{
+				ok = true;
+				break;
+			}
+		}
 
 		if (!ok)
 		{
@@ -433,7 +441,7 @@ error_code sys_vm_get_statistics(ppu_thread& ppu, u32 addr, vm::ptr<sys_vm_stati
 	stat->page_fault_spu = 0;
 	stat->page_in = 0;
 	stat->page_out = 0;
-	stat->pmem_total = block->psize;
+	stat->pmem_total = static_cast<u32>(retro_atomic_load_acquire_int(&block->psize));
 	stat->pmem_used = 0;
 	stat->timestamp = get_timebased_time();
 

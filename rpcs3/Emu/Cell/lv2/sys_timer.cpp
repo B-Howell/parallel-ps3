@@ -277,7 +277,7 @@ error_code sys_timer_destroy(ppu_thread& ppu, u32 timer_id)
 			return CELL_EISCONN;
 		}
 
-		timer.exists--;
+		retro_atomic_fetch_sub_int(&timer.exists, 1);
 		return {};
 	});
 

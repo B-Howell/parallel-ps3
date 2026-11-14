@@ -1678,7 +1678,7 @@ error_code sys_uart_initialize(ppu_thread &ppu)
 
 	auto &vuart_thread = g_fxo->get<vuart_av>();
 
-	if (vuart_thread.initialized.test_and_set())
+	if (retro_atomic_exchange_int(&vuart_thread.initialized, 1))
 	{
 		return CELL_EPERM;
 	}
@@ -1707,7 +1707,7 @@ error_code sys_uart_receive(ppu_thread &ppu, vm::ptr<void> buffer, u64 size, u32
 
 	auto &vuart_thread = g_fxo->get<vuart_av>();
 
-	if (!vuart_thread.initialized)
+	if (!retro_atomic_load_acquire_int(&vuart_thread.initialized))
 	{
 		return CELL_ESRCH;
 	}
@@ -1816,7 +1816,7 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 
 	auto &vuart_thread = g_fxo->get<vuart_av>();
 
-	if (!vuart_thread.initialized)
+	if (!retro_atomic_load_acquire_int(&vuart_thread.initialized))
 	{
 		return CELL_ESRCH;
 	}
@@ -1950,7 +1950,7 @@ error_code sys_uart_get_params(vm::ptr<vuart_params> buffer)
 
 	auto &vuart_thread = g_fxo->get<vuart_av>();
 
-	if (!vuart_thread.initialized)
+	if (!retro_atomic_load_acquire_int(&vuart_thread.initialized))
 	{
 		return CELL_ESRCH;
 	}

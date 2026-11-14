@@ -1,5 +1,7 @@
 #pragma once
 
+#include <retro_atomic.h>
+
 #include "Utilities/mutex.h"
 
 #include "Emu/CPU/CPUThread.h"
@@ -81,7 +83,7 @@ private:
 	// Function executed under IDM mutex, error will make the object creation fail and the error will be returned
 	CellError on_id_create()
 	{
-		exists++;
+		retro_atomic_fetch_add_int(&exists, 1);
 		return {};
 	}
 
@@ -89,19 +91,19 @@ public:
 	SAVESTATE_INIT_POS(4); // Dependency on PPUs
 
 	lv2_obj() noexcept = default;
-	lv2_obj(u32 i) noexcept : exists{ i } {}
-	lv2_obj(lv2_obj&& rhs) noexcept : exists{ +rhs.exists } {}
+	lv2_obj(u32 i) noexcept : exists{ static_cast<int>(i) } {}
+	lv2_obj(lv2_obj&& rhs) noexcept : exists{ retro_atomic_load_acquire_int(&rhs.exists) } {}
 	lv2_obj(utils::serial&) noexcept {}
-	lv2_obj& operator=(lv2_obj&& rhs) noexcept { exists = +rhs.exists; return *this; }
+	lv2_obj& operator=(lv2_obj&& rhs) noexcept { retro_atomic_store_release_int(&exists, retro_atomic_load_acquire_int(&rhs.exists)); return *this; }
 	void save(utils::serial&) {}
 
 	// Existence validation (workaround for shared-ptr ref-counting)
-	atomic_t<u32> exists = 0;
+	retro_atomic_int_t exists{}; // a u32 count
 
 	template <typename Ptr>
 	static bool check(Ptr&& ptr)
 	{
-		return ptr && ptr->exists;
+		return ptr && retro_atomic_load_acquire_int(&ptr->exists);
 	}
 
 	// wrapper for name64 string formatting
@@ -420,7 +422,7 @@ public:
 			pshared = ipc_key != 0;
 		}
 
-		if (obj.exists-- == 1u && pshared)
+		if (retro_atomic_fetch_sub_int(&obj.exists, 1) == 1 && pshared)
 		{
 			g_fxo->get<ipc_manager<T, u64>>().remove(ipc_key);
 		}

@@ -349,7 +349,7 @@ namespace
 			return;
 		}
 
-		const bool registered = memory->exists || memory->key == SYS_MMAPPER_MIO_SHM_KEY;
+		const bool registered = retro_atomic_load_acquire_int(&memory->exists) || memory->key == SYS_MMAPPER_MIO_SHM_KEY;
 		ar(registered);
 
 		if (registered)

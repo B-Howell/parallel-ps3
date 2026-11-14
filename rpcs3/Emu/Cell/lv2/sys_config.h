@@ -129,7 +129,7 @@ static_assert(sizeof(sys_config_padmanager_data_t) == 26);
 
 class lv2_config
 {
-	atomic_t<u32> m_state = 0;
+	retro_atomic_int_t m_state{};
 
 	// LV2 Config mutex
 	shared_mutex m_mutex;
@@ -354,10 +354,10 @@ class lv2_config_service_event
 	{
 		struct service_event_id
 		{
-			atomic_t<u32> next_id = 0;
+			retro_atomic_int_t next_id{}; // a u32
 		};
 
-		return g_fxo->get<service_event_id>().next_id++;
+		return static_cast<u32>(retro_atomic_fetch_add_int(&g_fxo->get<service_event_id>().next_id, 1));
 	}
 
 	retro_atomic_int_t m_destroyed{};

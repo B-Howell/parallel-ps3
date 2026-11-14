@@ -37,7 +37,7 @@ int main()
 	CHECK(queue_id != 0);
 	const auto queue = idm::get_unlocked<lv2_obj, lv2_event_queue>(queue_id);
 	CHECK(!!queue);
-	queue->exists++; // as sys_event_queue_create leaves it
+	retro_atomic_fetch_add_int(&queue->exists, 1); // as sys_event_queue_create leaves it
 
 	// Not started: nothing sent
 	cfg.queue_id = queue_id;

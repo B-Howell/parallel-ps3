@@ -2811,7 +2811,7 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 				ppu_loader.warning("Loading library: %s", name);
 
 				auto prx = ppu_load_prx(obj, false, lle_dir + name, 0, nullptr);
-				prx->state = PRX_STATE_STARTED;
+				retro_atomic_store_release_int(&prx->state, PRX_STATE_STARTED);
 				prx->load_exports();
 
 				if (prx->funcs.empty())

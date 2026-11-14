@@ -112,7 +112,7 @@ error_code sys_interrupt_tag_destroy(ppu_thread& ppu, u32 intrtag)
 			return CELL_EBUSY;
 		}
 
-		tag.exists.release(0);
+		retro_atomic_store_release_int(&tag.exists, 0);
 		return {};
 	});
 
@@ -213,7 +213,7 @@ error_code _sys_interrupt_thread_disestablish(ppu_thread& ppu, u32 ih, vm::ptr<u
 
 	const auto handler = idm::withdraw<lv2_obj, lv2_int_serv>(ih, [](lv2_obj& obj)
 	{
-		obj.exists.release(0);
+		retro_atomic_store_release_int(&obj.exists, 0);
 	});
 
 	if (!handler)

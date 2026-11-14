@@ -233,7 +233,7 @@ void _sys_rsx_drain_event_queue(rsx::thread* rsxthr, u64 event_flags = umax, u64
 		// First check if the queue is empty. This is the most likely scenario.
 		{
 			std::lock_guard lock(queue->mutex);
-			if (!queue->exists || (lv2_events_empty(&queue->events) && queue->pq))
+			if (!retro_atomic_load_acquire_int(&queue->exists) || (lv2_events_empty(&queue->events) && queue->pq))
 			{
 				break;
 			}

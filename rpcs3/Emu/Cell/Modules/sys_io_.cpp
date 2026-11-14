@@ -145,7 +145,7 @@ void config_event_entry(ppu_thread& ppu)
 		{
 			while (!cellPad_NotifyStateChange(arg2, arg3, false))
 			{
-				if (!queue->exists)
+				if (!retro_atomic_load_acquire_int(&queue->exists))
 				{
 					// Exit condition
 					queue = null_ptr;

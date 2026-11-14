@@ -1,5 +1,7 @@
 #pragma once
 
+#include <retro_atomic.h>
+
 #include "sys_sync.h"
 
 #include "Emu/Cell/PPUAnalyser.h"
@@ -188,7 +190,7 @@ struct lv2_prx final : ppu_module<lv2_obj>
 {
 	static const u32 id_base = 0x23000000;
 
-	atomic_t<u32> state = PRX_STATE_INITIALIZED;
+	retro_atomic_int_t state{PRX_STATE_INITIALIZED}; // a u32
 	shared_mutex mutex;
 	u32 hle_data = 0;
 
