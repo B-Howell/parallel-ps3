@@ -1,5 +1,9 @@
 #pragma once
 
+#include <retro_atomic.h>
+#include <queues/mpsc_stack.h>
+#include <rthreads/retro_seqlock.h>
+
 #include "Emu/Cell/lv2/sys_usbd.h"
 
 #ifdef _MSC_VER
@@ -145,7 +149,20 @@ struct UsbTransfer
 
 	std::vector<u8> setup_buf;
 	libusb_transfer* transfer = nullptr;
-	bool busy                 = false;
+	retro_atomic_int_t busy{}; // claimed with a compare-and-swap, let go when complete
+
+	// The result, count and isochronous packets are written by the USB
+	// thread when the transfer completes and read by sys_usbd's status
+	// syscalls: inside this, which readers retry around
+	retro_seqlock_t status_seq{};
+
+	// The USB thread's list of fake transfers to complete: handed over on its
+	// mpsc_stack with this
+	struct fake_link_t
+	{
+		mpsc_stack_node_t node; // first: the stack's link
+		UsbTransfer* owner;
+	} fake_link{{}, this};
 
 	// For control transfers
 	u8 *control_destbuf = nullptr;

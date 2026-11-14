@@ -24,6 +24,7 @@
 // the core's with this main. Built by `make check`.
 
 #include "../../Emu/Cell/lv2/sys_timer.cpp"
+#include "../../Emu/Cell/lv2/sys_usbd.cpp"
 #include "Emu/Cell/Modules/cellVoice.h"
 #include "Emu/NP/np_dnshook.h"
 #include "Emu/RSX/Overlays/overlay_message.h"
@@ -224,6 +225,85 @@ int main()
 		CHECK(in_list == want && lv2_timers_count(&thread.timers) == want);
 		std::printf("test_held_queues: timers handed over from 4 threads: %zu kept of 2000, %zu wrong\n", in_list, wrong);
 
+	}
+
+	// sys_usbd's transfers, from four threads at once as from several PPU
+	// threads: no transfer is given to two at once, and a status read while
+	// the USB thread writes it is never half old, half new
+	{
+		static usb_handler_thread usbh;
+		static retro_atomic_int_t s_owner[MAX_SYS_USBD_TRANSFERS], s_bad7, s_taken7, s_stop7, s_torn7;
+
+		std::thread takers[4];
+		for (u32 t = 0; t < 4; t++)
+		{
+			takers[t] = std::thread([t]
+			{
+				// Each thread keeps 16 at a time: 64 of the 68 busy, so the
+				// claims meet on the few free ones
+				std::pair<u32, UsbTransfer*> held[16];
+				const auto take = [t](std::pair<u32, UsbTransfer*>& h)
+				{
+					auto&& [id, transfer] = usbh.get_free_transfer();
+					h = {id, &transfer};
+					if (retro_atomic_exchange_int(&s_owner[id], static_cast<int>(t + 1)))
+						retro_atomic_fetch_add_int(&s_bad7, 1);
+				};
+				const auto complete = [](std::pair<u32, UsbTransfer*>& h)
+				{
+					// As the USB thread does
+					retro_atomic_store_release_int(&s_owner[h.first], 0);
+					retro_atomic_store_release_int(&h.second->busy, 0);
+				};
+
+				for (auto& h : held)
+					take(h);
+
+				for (int n = 0; n < 50000; n++)
+				{
+					complete(held[n % 16]);
+					take(held[n % 16]);
+					retro_atomic_fetch_add_int(&s_taken7, 1);
+				}
+
+				for (auto& h : held)
+					complete(h);
+			});
+		}
+
+		for (auto& t : takers)
+			t.join();
+
+		// One transfer's status written over and over, read meanwhile
+		auto&& [id, transfer] = usbh.get_free_transfer();
+		std::thread writer([&transfer = transfer]
+		{
+			for (u32 k = 1; !retro_atomic_load_acquire_int(&s_stop7); k++)
+			{
+				retro_seqlock_write_begin(&transfer.status_seq);
+				transfer.result = static_cast<s32>(k);
+				for (int spin = 0; spin < 4; spin++)
+					(void)retro_atomic_load_relaxed_int(&s_stop7);
+				transfer.count = k;
+				retro_seqlock_write_end(&transfer.status_seq);
+			}
+		});
+
+		for (int n = 0; n < 2000000; n++)
+		{
+			const auto [result, count] = usbh.get_transfer_status(id);
+			if (result != count)
+				retro_atomic_fetch_add_int(&s_torn7, 1);
+		}
+
+		retro_atomic_store_release_int(&s_stop7, 1);
+		writer.join();
+
+		CHECK(retro_atomic_load_acquire_int(&s_bad7) == 0);
+		CHECK(retro_atomic_load_acquire_int(&s_taken7) == 200000);
+		CHECK(retro_atomic_load_acquire_int(&s_torn7) == 0);
+		std::printf("test_held_queues: USB transfers: %d taken by 4 threads, %d given to two at once; %d statuses torn\n",
+			retro_atomic_load_acquire_int(&s_taken7), retro_atomic_load_acquire_int(&s_bad7), retro_atomic_load_acquire_int(&s_torn7));
 	}
 
 	// cellVoice's queues to notify, in a savestate

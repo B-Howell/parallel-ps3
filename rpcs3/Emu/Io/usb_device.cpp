@@ -62,9 +62,11 @@ bool usb_device::set_interface(u8 int_num, u8 alt_num)
 	return true;
 }
 
+// The guest's time, slaved to retro_run: it stops while the frontend is
+// paused, so the fake transfers' delays and the USB thread's waits go by it
 u64 usb_device::get_timestamp()
 {
-	return (get_system_time() - Emu.GetPauseTime());
+	return get_guest_system_time();
 }
 
 //////////////////////////////////////////////////////////////////
@@ -159,7 +161,7 @@ void usb_device_passthrough::send_libusb_transfer(libusb_transfer* transfer)
 			// Mark as a failed fake transfer so the USB manager processes a completion
 			// instead of leaving the request stuck in the busy state forever.
 			UsbTransfer* usbd_transfer = static_cast<UsbTransfer*>(transfer->user_data);
-			usbd_transfer->busy = true;
+			retro_atomic_store_release_int(&usbd_transfer->busy, 1);
 			usbd_transfer->fake = true;
 			usbd_transfer->expected_result = EHCI_CC_HALTED;
 			usbd_transfer->expected_count = 0;

@@ -13,6 +13,8 @@
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Cell/timers.hpp"
 
+#include <rthreads/retro_waitaddr.h>
+
 #include "Emu/Io/usb_device.h"
 #include "Emu/Io/usb_microphone.h"
 #include "Emu/Io/usb_vfs.h"
@@ -183,7 +185,7 @@ private:
 private:
 	// Counters for device IDs, transfer IDs and pipe IDs
 	retro_atomic_int_t dev_counter{1}; // a u8
-	u32 transfer_counter     = 0;
+	retro_atomic_int_t transfer_counter{}; // where the next look for a free transfer starts
 	u32 pipe_counter         = 0x10; // Start at 0x10 only for tracing purposes
 
 	// List of device drivers
@@ -289,10 +291,31 @@ private:
 
 	// List of pipes
 	std::map<u32, UsbPipe> open_pipes;
-	// Transfers infos
-	shared_mutex mutex_transfers;
+	// Transfers infos: each claimed with a compare-and-swap on its busy word,
+	// its status written by the thread in its seqlock
 	std::array<UsbTransfer, MAX_SYS_USBD_TRANSFERS> transfers;
+	// Fake transfers to complete: handed over to the thread on fake_handed;
+	// the list is the thread's alone, with room for every transfer
+	mpsc_stack_t fake_handed{};
 	std::vector<UsbTransfer*> fake_transfers;
+
+public:
+	// Woken: a fake transfer handed over, or the thread stopping
+	retro_atomic_int_t wake_word{};
+
+	void wake()
+	{
+		retro_atomic_fetch_add_int(&wake_word, 1);
+		retro_waitaddr_notify_all(&wake_word);
+	}
+
+	usb_handler_thread& operator=(thread_state)
+	{
+		wake();
+		return *this;
+	}
+
+private:
 
 	// Queue of pending usbd events
 	usbd_events_t usbd_events{};
@@ -456,6 +479,7 @@ void usb_handler_thread::perform_scan()
 usb_handler_thread::usb_handler_thread()
 {
 	ensure(usbd_events_init(&usbd_events, 64));
+	fake_transfers.reserve(MAX_SYS_USBD_TRANSFERS);
 
 #if LIBUSB_API_VERSION >= 0x0100010A
 	libusb_init_option log_lv_opt{};
@@ -666,18 +690,28 @@ void usb_handler_thread::operator()()
 	timeval lusb_tv{0, 0};
 	if (!retro_atomic_load_acquire_int(&hotplug_supported))
 	{
-		retro_atomic_store_release_64(&usb_hotplug_timeout, get_system_time() + 4'000'000ull);
+		retro_atomic_store_release_64(&usb_hotplug_timeout, get_guest_system_time() + 4'000'000ull);
 	}
 	while (ctx && thread_ctrl::state() != thread_state::aborting)
 	{
-		const u64 now = get_system_time();
+		// Before what was handed over is taken up: a later hand-over wakes
+		const int wake = retro_atomic_load_acquire_int(&wake_word);
+
+		for (mpsc_stack_node_t* node = mpsc_stack_reverse(mpsc_stack_drain(&fake_handed)); node;)
+		{
+			UsbTransfer* const transfer = reinterpret_cast<UsbTransfer::fake_link_t*>(node)->owner;
+			node = node->next;
+			fake_transfers.push_back(transfer);
+		}
+
+		const u64 now = get_guest_system_time();
 		if (now > static_cast<u64>(retro_atomic_load_acquire_64(&usb_hotplug_timeout)))
 		{
 			// If we did the hotplug scan each cycle the game performance was significantly degraded, so we only perform this scan
 			// every 4 seconds.
 			// On systems where hotplug is native, we wait a little bit for devices to settle before we start the scan
 			perform_scan();
-			retro_atomic_store_release_64(&usb_hotplug_timeout, retro_atomic_load_acquire_int(&hotplug_supported) ? u64{umax} : (get_system_time() + 4'000'000ull));
+			retro_atomic_store_release_64(&usb_hotplug_timeout, retro_atomic_load_acquire_int(&hotplug_supported) ? u64{umax} : (get_guest_system_time() + 4'000'000ull));
 		}
 
 		// Process asynchronous requests that are pending
@@ -688,14 +722,13 @@ void usb_handler_thread::operator()()
 		// Process fake transfers
 		if (libusbd_active && !fake_transfers.empty())
 		{
-			std::lock_guard lock_tf(mutex_transfers);
-			u64 timestamp = get_system_time() - Emu.GetPauseTime();
+			const u64 timestamp = get_guest_system_time();
 
 			for (auto it = fake_transfers.begin(); it != fake_transfers.end();)
 			{
 				auto transfer = *it;
 
-				ensure(transfer->busy && transfer->fake);
+				ensure(retro_atomic_load_acquire_int(&transfer->busy) && transfer->fake);
 
 				if (transfer->expected_time > timestamp)
 				{
@@ -710,21 +743,29 @@ void usb_handler_thread::operator()()
 					continue;
 				}
 
+				retro_seqlock_write_begin(&transfer->status_seq);
 				transfer->result = transfer->expected_result;
 				transfer->count  = transfer->expected_count;
+				retro_seqlock_write_end(&transfer->status_seq);
 				transfer->fake   = false;
-				transfer->busy   = false;
+				retro_atomic_store_release_int(&transfer->busy, 0);
 
 				send_message(SYS_USBD_TRANSFER_COMPLETE, transfer->transfer_id);
 				it = fake_transfers.erase(it); // if we've processed this, then we erase this entry (replacing the iterator with the new reference)
 			}
 		}
 
-		// If there is no handled devices usb thread is not actively needed
-		if (handled_devices.empty())
-			thread_ctrl::wait_for(500'000);
-		else
-			thread_ctrl::wait_for(delay);
+		// If there is no handled devices usb thread is not actively needed.
+		// The wait is the guest's time, woken early by each frame of it, by a
+		// fake transfer handed over and by the thread stopping
+		const retro_atomic_int_t* clock_word = static_cast<const retro_atomic_int_t*>(libretro_guest_clock_word());
+		const retro_waitaddr_t list[2] =
+		{
+			{&wake_word, static_cast<u32>(wake)},
+			{clock_word, static_cast<u32>(retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(clock_word)))},
+		};
+
+		retro_waitaddr_wait(list, 2, static_cast<s64>(libretro_guest_wait_as_host(handled_devices.empty() ? 500'000 : delay)));
 	}
 }
 
@@ -733,11 +774,12 @@ void usb_handler_thread::send_message(u32 message, u32 tr_id)
 	add_event(message, tr_id, 0x00);
 }
 
+// The USB thread's: libusb calls back from libusb_handle_events_timeout_completed
 void usb_handler_thread::transfer_complete(struct libusb_transfer* transfer)
 {
-	std::lock_guard lock_tf(mutex_transfers);
-
 	UsbTransfer* usbd_transfer = static_cast<UsbTransfer*>(transfer->user_data);
+
+	retro_seqlock_write_begin(&usbd_transfer->status_seq);
 
 	if (transfer->status != 0)
 	{
@@ -794,7 +836,8 @@ void usb_handler_thread::transfer_complete(struct libusb_transfer* transfer)
 		usbd_transfer->control_destbuf = nullptr;
 	}
 
-	usbd_transfer->busy = false;
+	retro_seqlock_write_end(&usbd_transfer->status_seq);
+	retro_atomic_store_release_int(&usbd_transfer->busy, 0);
 
 	send_message(SYS_USBD_TRANSFER_COMPLETE, usbd_transfer->transfer_id);
 
@@ -904,24 +947,22 @@ void usb_handler_thread::add_event(u64 arg1, u64 arg2, u64 arg3)
 
 u32 usb_handler_thread::get_free_transfer_id()
 {
-	u32 num_loops = 0;
-	do
+	// From where the last look ended, the first transfer not busy: claimed
+	// with a compare-and-swap, so two syscalls never take the same one
+	for (u32 num_loops = 1;; num_loops++)
 	{
-		num_loops++;
-		transfer_counter++;
-
-		if (transfer_counter >= MAX_SYS_USBD_TRANSFERS)
-		{
-			transfer_counter = 0;
-		}
+		const u32 id = static_cast<u32>(retro_atomic_fetch_add_int(&transfer_counter, 1) + 1) % MAX_SYS_USBD_TRANSFERS;
 
 		if (num_loops > MAX_SYS_USBD_TRANSFERS)
 		{
 			sys_usbd.fatal("Usb transfers are saturated!");
 		}
-	} while (transfers[transfer_counter].busy);
 
-	return transfer_counter;
+		if (retro_atomic_cas_int(&transfers[id].busy, 0, 1))
+		{
+			return id;
+		}
+	}
 }
 
 UsbTransfer& usb_handler_thread::get_transfer(u32 transfer_id)
@@ -931,39 +972,63 @@ UsbTransfer& usb_handler_thread::get_transfer(u32 transfer_id)
 
 std::pair<u32, UsbTransfer&> usb_handler_thread::get_free_transfer()
 {
-	std::lock_guard lock_tf(mutex_transfers);
+	const u32 transfer_id = get_free_transfer_id();
+	auto& transfer        = get_transfer(transfer_id);
 
-	u32 transfer_id = get_free_transfer_id();
-	auto& transfer  = get_transfer(transfer_id);
-
-	libusb_transfer* const transfer_buf = transfer.transfer;
-	transfer = {.transfer_id = transfer_id, .transfer = transfer_buf, .busy = true};
+	// Claimed (busy): as new, but its libusb transfer and its own words
+	retro_seqlock_write_begin(&transfer.status_seq);
+	transfer.assigned_number = 0;
+	transfer.transfer_id     = transfer_id;
+	transfer.result          = 0;
+	transfer.count           = 0;
+	transfer.iso_request     = {};
+	retro_seqlock_write_end(&transfer.status_seq);
+	transfer.setup_buf.clear();
+	transfer.control_destbuf = nullptr;
+	transfer.fake            = false;
+	transfer.expected_time   = 0;
+	transfer.expected_result = 0;
+	transfer.expected_count  = 0;
 
 	return {transfer_id, transfer};
 }
 
 std::pair<u32, u32> usb_handler_thread::get_transfer_status(u32 transfer_id)
 {
-	std::lock_guard lock_tf(mutex_transfers);
+	auto& transfer = get_transfer(transfer_id);
 
-	const auto& transfer = get_transfer(transfer_id);
+	for (;;)
+	{
+		const int seq = retro_seqlock_read_begin(&transfer.status_seq);
+		const std::pair<u32, u32> status{transfer.result, transfer.count};
 
-	return {transfer.result, transfer.count};
+		if (!retro_seqlock_read_retry(&transfer.status_seq, seq))
+		{
+			return status;
+		}
+	}
 }
 
 std::pair<u32, UsbDeviceIsoRequest> usb_handler_thread::get_isochronous_transfer_status(u32 transfer_id)
 {
-	std::lock_guard lock_tf(mutex_transfers);
+	auto& transfer = get_transfer(transfer_id);
 
-	const auto& transfer = get_transfer(transfer_id);
+	for (;;)
+	{
+		const int seq = retro_seqlock_read_begin(&transfer.status_seq);
+		const std::pair<u32, UsbDeviceIsoRequest> status{transfer.result, transfer.iso_request};
 
-	return {transfer.result, transfer.iso_request};
+		if (!retro_seqlock_read_retry(&transfer.status_seq, seq))
+		{
+			return status;
+		}
+	}
 }
 
 void usb_handler_thread::push_fake_transfer(UsbTransfer* transfer)
 {
-	std::lock_guard lock_tf(mutex_transfers);
-	fake_transfers.push_back(transfer);
+	mpsc_stack_push(&fake_handed, &transfer->fake_link.node);
+	wake();
 }
 
 const std::array<u8, 7>& usb_handler_thread::get_new_location()
