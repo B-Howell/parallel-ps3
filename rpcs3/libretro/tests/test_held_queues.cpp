@@ -34,6 +34,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <thread>
 #include <unordered_map>
 
 static int failures = 0;
@@ -141,6 +142,88 @@ int main()
 		for (const auto& timer : made)
 			wrong += timer.use_count() != held_before;
 		CHECK(wrong == 0);
+	}
+
+	// Timers handed over to the thread from four threads at once, as
+	// sys_timer_create and sys_timer_destroy on several PPU threads while
+	// the thread takes them up: the list ends with exactly the timers not
+	// destroyed, each held once, and nothing destroyed is held - also one
+	// destroyed before its create handed it over
+	{
+		static lv2_timer_thread* s_thread;
+		lv2_timer_thread thread;
+		s_thread = &thread;
+		static retro_atomic_int_t s_done;
+		std::vector<shared_ptr<lv2_timer>> made[4];
+		std::vector<bool> kept[4];
+		static retro_atomic_int_t s_base{-1};
+
+		std::thread takers([]
+		{
+			while (!retro_atomic_load_acquire_int(&s_done))
+				s_thread->take_up();
+		});
+
+		std::thread makers[4];
+		for (u32 t = 0; t < 4; t++)
+		{
+			makers[t] = std::thread([t, &made, &kept]
+			{
+				u32 x = t * 2654435761u + 3;
+				for (u32 n = 0; n < 500; n++)
+				{
+					x = x * 1664525u + 1013904223u;
+					shared_ptr<lv2_timer> timer = idm::make_ptr<lv2_obj, lv2_timer>();
+					made[t].emplace_back(timer);
+					if (n == 0 && t == 0)
+						retro_atomic_store_release_int(&s_base, static_cast<int>(timer.use_count()) - 1); // less the local one
+					const u32 how = (x >> 16) % 3;
+
+					if (how == 2)
+					{
+						// Destroyed before the create's hand-over
+						retro_atomic_fetch_sub_int(&timer->exists, 1);
+						s_thread->hand_over_drop(timer.get());
+						s_thread->hand_over_add(timer);
+						kept[t].push_back(false);
+						continue;
+					}
+
+					s_thread->hand_over_add(timer);
+
+					if (how == 1)
+					{
+						retro_atomic_fetch_sub_int(&timer->exists, 1);
+						s_thread->hand_over_drop(timer.get());
+					}
+
+					kept[t].push_back(how == 0);
+				}
+			});
+		}
+
+		for (auto& m : makers)
+			m.join();
+		retro_atomic_store_release_int(&s_done, 1);
+		takers.join();
+		thread.take_up();
+
+		usz wrong = 0, in_list = 0, want = 0;
+		for (u32 t = 0; t < 4; t++)
+		{
+			for (usz i = 0; i < made[t].size(); i++)
+			{
+				const bool in = thread.find(made[t][i].get()) != lv2_timers_count(&thread.timers);
+				in_list += in;
+				want += kept[t][i];
+				wrong += in != kept[t][i];
+				wrong += made[t][i].use_count() != static_cast<usz>(retro_atomic_load_acquire_int(&s_base)) + kept[t][i]; // and the list's when kept
+			}
+		}
+		CHECK(wrong == 0);
+		CHECK(in_list == want && lv2_timers_count(&thread.timers) == want);
+		std::printf("test_held_queues: timers handed over from 4 threads: %zu kept of 2000, %zu wrong\n", in_list, wrong);
+
 	}
 
 	// cellVoice's queues to notify, in a savestate

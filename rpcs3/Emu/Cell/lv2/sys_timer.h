@@ -3,6 +3,8 @@
 #include "sys_event.h"
 #include "Emu/Memory/vm_ptr.h"
 
+#include <queues/mpsc_stack.h>
+
 
 // Timer State
 enum : u32
@@ -33,6 +35,21 @@ struct lv2_timer : lv2_obj
 
 	retro_atomic_64_t expire{0}; // Next expiration time (a u64)
 	retro_atomic_64_t period{0}; // Period (oneshot if 0) (a u64)
+
+	// The timer thread's list is the thread's alone: sys_timer_create and
+	// sys_timer_destroy hand the timer over to it with one of these, on the
+	// thread's mpsc_stack - each used once in the timer's life, so nothing
+	// is allocated for it
+	struct thread_handover
+	{
+		mpsc_stack_node_t node; // first: the stack's link
+		lv2_timer* timer;
+		bool drop;
+	};
+
+	thread_handover handed_add{{}, this, false};
+	thread_handover handed_drop{{}, this, true};
+	shared_ptr<lv2_timer> for_thread; // the thread's reference, until it takes it up
 
 	u64 check(u64 _now) noexcept;
 	u64 check_unlocked(u64 _now) noexcept;

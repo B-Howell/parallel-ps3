@@ -15,6 +15,8 @@
 #include <thread>
 #include <new>
 #include <queues/retro_deque.h>
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 
 LOG_CHANNEL(sys_timer);
 
@@ -45,10 +47,19 @@ static void timer_drop(lv2_timer_held* held)
 	std::launder(reinterpret_cast<shared_ptr<lv2_timer>*>(held->bytes))->~shared_ptr<lv2_timer>();
 }
 
+// The timer thread. Its list of timers is its own: the syscalls hand a
+// timer over to it on a lock-free stack (hand_over), and it takes them up
+// (take_up) before each look at the timers, so nothing is locked. It waits
+// for the next timer with retro_waitaddr on its own word (a timer handed
+// over or started, or the thread stopping) and on the guest clock's
+// (retro_run granted another frame), for as long of the host's time as the
+// guest's should take to the next expiry - no timed sleep of the host's,
+// and no poll while the emulator is paused: then it waits for the frames.
 struct lv2_timer_thread
 {
-	shared_mutex mutex;
 	lv2_timers_t timers{}; // room for every timer there can be: never grows
+	mpsc_stack_t handed{};
+	retro_atomic_int_t wake_word{};
 
 	lv2_timer_thread();
 	~lv2_timer_thread();
@@ -74,6 +85,67 @@ struct lv2_timer_thread
 		const lv2_timer_held held = timer_hold(std::move(timer));
 		ensure(lv2_timers_push_back(&timers, &held));
 	}
+
+	void wake()
+	{
+		retro_atomic_fetch_add_int(&wake_word, 1);
+		retro_waitaddr_notify_all(&wake_word);
+	}
+
+	// Any thread: @timer into the list (it holds @timer->for_thread till then)
+	void hand_over_add(shared_ptr<lv2_timer> timer)
+	{
+		lv2_timer* const ptr = timer.get();
+		ptr->for_thread = std::move(timer);
+		mpsc_stack_push(&handed, &ptr->handed_add.node);
+		wake();
+	}
+
+	// Any thread: @timer out of the list again
+	void hand_over_drop(lv2_timer* timer)
+	{
+		mpsc_stack_push(&handed, &timer->handed_drop.node);
+		wake();
+	}
+
+	// The thread's: what was handed over, in the order it was
+	void take_up()
+	{
+		for (mpsc_stack_node_t* node = mpsc_stack_reverse(mpsc_stack_drain(&handed)); node;)
+		{
+			// The node is the timer's: read all of it before the timer may go
+			const auto handover = reinterpret_cast<lv2_timer::thread_handover*>(node);
+			lv2_timer* const timer = handover->timer;
+			const bool drop = handover->drop;
+			node = node->next;
+
+			if (!drop)
+			{
+				// Destroyed already (sys_timer_destroy between the ID's making and
+				// this hand-over, its drop before it): not into the list
+				if (retro_atomic_load_acquire_int(&timer->exists))
+				{
+					add(std::move(timer->for_thread));
+				}
+				else
+				{
+					timer->for_thread.reset();
+				}
+			}
+			else if (const usz i = find(timer); i != lv2_timers_count(&timers))
+			{
+				timer_drop(lv2_timers_at(&timers, i));
+				lv2_timers_erase(&timers, i);
+			}
+		}
+	}
+
+	lv2_timer_thread& operator=(thread_state)
+	{
+		wake();
+		return *this;
+	}
+
 	void operator()();
 
 	//SAVESTATE_INIT_POS(46); // FREE SAVESTATE_INIT_POS number
@@ -162,13 +234,16 @@ lv2_timer_thread::lv2_timer_thread()
 	{
 		idm::select<lv2_obj, lv2_timer>([&](u32 id, lv2_timer&)
 		{
-			add(idm::get_unlocked<lv2_obj, lv2_timer>(id));
+			hand_over_add(idm::get_unlocked<lv2_obj, lv2_timer>(id));
 		});
 	});
 }
 
 lv2_timer_thread::~lv2_timer_thread()
 {
+	// What is still handed over: into the list, and let go of with it
+	take_up();
+
 	while (!lv2_timers_empty(&timers))
 	{
 		timer_drop(lv2_timers_front(&timers));
@@ -180,37 +255,33 @@ lv2_timer_thread::~lv2_timer_thread()
 
 void lv2_timer_thread::operator()()
 {
-	u64 sleep_time = 0;
-
 	while (true)
 	{
-		if (sleep_time != umax)
-		{
-			// Scale time
-			sleep_time = std::min(sleep_time, u64{umax} / 100) * 100 / g_cfg.core.clocks_scale;
-			// The guest's time until the next timer: waited for at the pace
-			// retro_run comes
-			sleep_time = libretro_guest_wait_as_host(sleep_time);
-		}
-
-		thread_ctrl::wait_for(sleep_time);
+		// Before what was handed over is taken up: a later hand-over wakes
+		const int wake = retro_atomic_load_acquire_int(&wake_word);
+		take_up();
 
 		if (thread_ctrl::state() == thread_state::aborting)
 		{
 			break;
 		}
 
-		sleep_time = umax;
+		const retro_atomic_int_t* clock_word = static_cast<const retro_atomic_int_t*>(libretro_guest_clock_word());
+		const retro_waitaddr_t list[2] =
+		{
+			{&wake_word, static_cast<u32>(wake)},
+			{clock_word, static_cast<u32>(retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(clock_word)))},
+		};
 
 		if (Emu.IsPausedOrReady())
 		{
-			sleep_time = 10000;
+			// Until the next frame, or a hand-over
+			retro_waitaddr_wait(list, 2, -1);
 			continue;
 		}
 
+		u64 sleep_time = umax;
 		const u64 _now = get_guest_system_time();
-
-		reader_lock lock(mutex);
 
 		for (usz i = 0, count = lv2_timers_count(&timers); i < count; i++)
 		{
@@ -234,6 +305,20 @@ void lv2_timer_thread::operator()()
 				}
 			}
 		}
+
+		if (sleep_time == umax)
+		{
+			// No timer running: until one is started or handed over
+			retro_waitaddr_wait(list, 1, -1);
+		}
+		else if (sleep_time)
+		{
+			// Scale time
+			sleep_time = std::min(sleep_time, u64{umax} / 100) * 100 / g_cfg.core.clocks_scale;
+			// The guest's time until the next timer: waited for at the pace
+			// retro_run comes, and woken early by each frame
+			retro_waitaddr_wait(list, 2, static_cast<s64>(libretro_guest_wait_as_host(sleep_time)));
+		}
 	}
 }
 
@@ -245,16 +330,9 @@ error_code sys_timer_create(ppu_thread& ppu, vm::ptr<u32> timer_id)
 
 	if (auto ptr = idm::make_ptr<lv2_obj, lv2_timer>())
 	{
-		auto& thread = g_fxo->get<named_thread<lv2_timer_thread>>();
-		{
-			std::lock_guard lock(thread.mutex);
-
-			// Theoretically could have been destroyed by sys_timer_destroy by now
-			if (thread.find(ptr.get()) == lv2_timers_count(&thread.timers))
-			{
-				thread.add(std::move(ptr));
-			}
-		}
+		// If sys_timer_destroy gets it first, its drop is handed over after
+		// this, and the thread takes both up in that order
+		g_fxo->get<named_thread<lv2_timer_thread>>().hand_over_add(std::move(ptr));
 
 		ppu.check_state();
 		*timer_id = idm::last_id();
@@ -291,14 +369,7 @@ error_code sys_timer_destroy(ppu_thread& ppu, u32 timer_id)
 		return timer.ret;
 	}
 
-	auto& thread = g_fxo->get<named_thread<lv2_timer_thread>>();
-	std::lock_guard lock(thread.mutex);
-
-	if (const usz i = thread.find(timer.ptr.get()); i != lv2_timers_count(&thread.timers))
-	{
-		timer_drop(lv2_timers_at(&thread.timers, i));
-		lv2_timers_erase(&thread.timers, i);
-	}
+	g_fxo->get<named_thread<lv2_timer_thread>>().hand_over_drop(timer.ptr.get());
 
 	return CELL_OK;
 }
@@ -405,7 +476,7 @@ error_code _sys_timer_start(ppu_thread& ppu, u32 timer_id, u64 base_time, u64 pe
 		return timer.ret;
 	}
 
-	g_fxo->get<named_thread<lv2_timer_thread>>()([]{});
+	g_fxo->get<named_thread<lv2_timer_thread>>().wake();
 
 	return CELL_OK;
 }
