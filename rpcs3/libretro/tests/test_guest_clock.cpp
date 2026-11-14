@@ -307,6 +307,35 @@ int main()
 			had, guest_us / 1000.0, expected, while_paused, static_cast<long long>(took_ms));
 	}
 
+	// The game's watchdog (sys_game_watchdog_start(1), then never cleared):
+	// it runs out after a second of the guest's time - about 60 frames - and
+	// once; with the frontend paused it does not run out at all
+	{
+		retro_atomic_64_t control{}, start{};
+		const s64 started = static_cast<s64>((u64{1000000} << 32) | 3); // active, count from now, 1 s
+
+		retro_atomic_store_release_64(&control, started);
+		int fired_at = -1;
+		for (int f = 0; f < 90 && fired_at < 0; f++)
+		{
+			libretro_guest_clock_grant(kFrame);
+			sleep_ms(17);
+			if (lv2_watchdog_step(&control, &start, 0))
+				fired_at = f;
+		}
+		CHECK(fired_at >= 55 && fired_at <= 66);
+		CHECK(!lv2_watchdog_step(&control, &start, 0));
+
+		retro_atomic_store_release_64(&control, started);
+		libretro_guest_clock_grant(kFrame);
+		CHECK(!lv2_watchdog_step(&control, &start, 0));
+		sleep_ms(1300); // the frontend paused: no retro_run
+		const bool fired_paused = lv2_watchdog_step(&control, &start, 0);
+		CHECK(!fired_paused);
+
+		std::printf("test_guest_clock: watchdog of 1 s ran out at frame %d; %s after 1.3 s paused\n", fired_at, fired_paused ? "ran out" : "not");
+	}
+
 	std::printf("test_guest_clock: paused 120 ms, guest moved %.1f ms; 10 frames at once, %.1f had; "
 		"60 at an uneven pace, %.1f had; %llu reads on 4 threads, %u backwards\n",
 		paused * 1000.0, ff / kFrame, paced / kFrame, static_cast<unsigned long long>(reads.load()), backwards.load());

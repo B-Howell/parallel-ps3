@@ -2,6 +2,8 @@
 
 #include "util/types.hpp"
 
+#include <retro_atomic.h>
+
 u64 convert_to_timebased_time(u64 time);
 u64 get_timebased_time();
 
@@ -13,6 +15,16 @@ u64 get_guest_system_time(u64 time = umax);
 
 // retro_run's thread: one more frame of the guest's time (sys_time.cpp)
 void libretro_guest_clock_grant(double frame_seconds);
+
+// retro_run's thread, once a frame after the grant: the game's watchdog
+// looks at the guest's clock (sys_game.cpp)
+void lv2_watchdog_tick();
+
+// The watchdog's look at the guest's clock, on its two words (sys_game.cpp):
+// @paused_for is how much of the guest's time passed while the emulator was
+// paused (not counted). True when it has run out: then it is given up, and
+// fires no more.
+bool lv2_watchdog_step(retro_atomic_64_t* control, retro_atomic_64_t* start, u64 paused_for);
 
 // The guest's microseconds, unscaled: how much of the guest's time has
 // passed, which stops when retro_run does

@@ -703,6 +703,9 @@ check: all
 	./test_audio_mix
 	./no_host_clock.sh $(CLOCK_FILES)
 	@if grep -rnE "timerfd_|CreateWaitableTimer|SetWaitableTimer|kqueue[ ]*\(|kevent[ ]*\(|epoll_wait|eventfd[ ]*\(" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../../../Utilities | grep -v "^../../../Utilities/Thread.cpp:"; then echo "a timer or event poll of the system's in the core: it waits on the guest's clock and on retro_waitaddr (rsxaudio_periodic_tmr)"; exit 1; else echo "no timer of the system's: only thread_ctrl::wait_for's, in Utilities/Thread.cpp, is left"; fi
+	@# The game's watchdog has no thread and no clock of the host's: retro_run
+	@# looks at it on the guest's clock (lv2_watchdog_tick)
+	@if grep -nE "named_thread|thread_ctrl::wait_for|get_system_time[ ]*\(" ../../Emu/Cell/lv2/sys_game.cpp; then echo "sys_game: the watchdog is a thread on the host's clock again - retro_run looks at it on the guest's (lv2_watchdog_tick)"; exit 1; else echo "sys_game: the watchdog goes by the guest's clock, no thread"; fi
 	@# The pads take no lock: pad::g_pad_mutex is gone, and a merge of
 	@# upstream's code that takes it does not bring it back
 	@if grep -rn "g_pad_mutex" ../../Emu ../../Input ../*.cpp ../*.h ../*.c; then echo "pads: pad::g_pad_mutex is back - the pads take no lock (AGENTS.md)"; exit 1; else echo "pads: no pad lock"; fi

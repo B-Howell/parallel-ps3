@@ -3084,6 +3084,7 @@ void retro_run(void)
     // A frame of the frontend's: one more frame of the guest's time, and
     // what a wait counted in frames waits for
     libretro_guest_clock_grant(1.0 / libretro_frame_rate());
+    lv2_watchdog_tick();
     libretro_event();
 
     if (s_pkg_install_only)

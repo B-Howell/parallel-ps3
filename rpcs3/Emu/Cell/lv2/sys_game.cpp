@@ -8,7 +8,6 @@
 #include "Emu/system_utils.hpp"
 #include "Emu/IdManager.h"
 #include "Utilities/StrUtil.h"
-#include "Utilities/Thread.h"
 
 #include "Emu/Cell/timers.hpp"
 #include "sys_game.h"
@@ -97,82 +96,85 @@ private:
 	static constexpr u64 size = sizeof(v128);
 };
 
+// The game's watchdog: restarts the game when it is not cleared within the
+// timeout. No thread of its own: retro_run looks at it once a frame
+// (lv2_watchdog_tick), on the guest's clock, which stops while the frontend
+// is paused. The syscalls only change its words.
 struct watchdog_t
 {
-	struct alignas(8) control_t
+	// Bit 0: needs restart (start counting again), bit 1: active, bit 2:
+	// given up (the game is exiting); the high 32 bits: the timeout, in us
+	static constexpr s64 needs_restart = 1, active = 2, aborted = 4;
+	retro_atomic_64_t control{};
+
+	// The guest's time the count started at, and retro_run's last look
+	retro_atomic_64_t start{};
+	u64 last_tick = 0;
+};
+
+bool lv2_watchdog_step(retro_atomic_64_t* control, retro_atomic_64_t* start, u64 paused_for)
+{
+	const u64 now = get_guest_system_time();
+	const s64 old = retro_atomic_load_acquire_64(control);
+
+	if ((old & watchdog_t::aborted) || !(old & watchdog_t::active))
 	{
-		bool needs_restart = false;
-		bool active = false;
-		char pad[sizeof(u32) - sizeof(bool) * 2]{};
-		u32 timeout = 0;
-	};
-
-	atomic_t<control_t> control;
-
-	void operator()()
-	{
-		u64 start_time = get_system_time();
-		u64 old_time = start_time;
-		u64 current_time = old_time;
-
-		constexpr u64 sleep_time = 50'000;
-
-		while (thread_ctrl::state() != thread_state::aborting)
-		{
-			if (Emu.GetStatus(false) == system_state::paused)
-			{
-				start_time += current_time - old_time;
-				old_time = current_time;
-				thread_ctrl::wait_for(sleep_time);
-				current_time = get_system_time();
-				continue;
-			}
-
-			old_time = std::exchange(current_time, get_system_time());
-
-			const auto old = control.fetch_op([&](control_t& data)
-			{
-				if (data.needs_restart)
-				{
-					data.needs_restart = false;
-					return true;
-				}
-
-				return false;
-			}).first;
-
-			if (old.active && old.needs_restart)
-			{
-				start_time = current_time;
-				old_time = current_time;
-				continue;
-			}
-
-			if (old.active && current_time - start_time >= old.timeout)
-			{
-				sys_game.success("Watchdog timeout! Restarting the game...");
-
-				Emu.CallFromMainThread([]()
-				{
-					Emu.Restart(false);
-				});
-
-				return;
-			}
-
-			thread_ctrl::wait_for(sleep_time);
-		}
+		return false;
 	}
 
-	static constexpr auto thread_name = "LV2 Watchdog Thread"sv;
-};
+	if (paused_for)
+	{
+		retro_atomic_fetch_add_64(start, static_cast<s64>(paused_for));
+	}
+
+	if (old & watchdog_t::needs_restart)
+	{
+		if (retro_atomic_cas_64(control, old, old & ~watchdog_t::needs_restart))
+		{
+			retro_atomic_store_release_64(start, static_cast<s64>(now));
+		}
+
+		return false;
+	}
+
+	const u64 timeout = static_cast<u64>(old) >> 32;
+
+	return now - static_cast<u64>(retro_atomic_load_acquire_64(start)) >= timeout
+		&& retro_atomic_cas_64(control, old, old | watchdog_t::aborted);
+}
+
+void lv2_watchdog_tick()
+{
+	const auto watchdog = g_fxo->try_get<watchdog_t>();
+
+	if (!watchdog)
+	{
+		return;
+	}
+
+	const u64 now = get_guest_system_time();
+	const u64 last = std::exchange(watchdog->last_tick, now);
+
+	// Paused inside the emulator, not by the frontend: not counted
+	const u64 paused_for = Emu.GetStatus(false) == system_state::paused ? now - std::min(last, now) : 0;
+
+	if (lv2_watchdog_step(&watchdog->control, &watchdog->start, paused_for))
+	{
+		sys_game.success("Watchdog timeout! Restarting the game...");
+
+		Emu.CallFromMainThread([]()
+		{
+			Emu.Restart(false);
+		});
+	}
+}
 
 void abort_lv2_watchdog()
 {
-	if (auto thr = g_fxo->try_get<named_thread<watchdog_t>>())
+	if (auto watchdog = g_fxo->try_get<watchdog_t>())
 	{
-		sys_game.notice("Aborting %s...", thr->thread_name);
-		*thr = thread_state::aborting;
+		sys_game.notice("Aborting the LV2 watchdog...");
+		retro_atomic_fetch_or_64(&watchdog->control, watchdog_t::aborted);
 	}
 }
 
@@ -184,39 +186,31 @@ error_code _sys_game_watchdog_start(u32 timeout)
 	timeout *= 1'000'000;
 	timeout &= -64;
 
-	if (!g_fxo->get<named_thread<watchdog_t>>().control.fetch_op([&](watchdog_t::control_t& data)
+	auto& control = g_fxo->get<watchdog_t>().control;
+
+	for (;;)
 	{
-		if (data.active)
+		const s64 old = retro_atomic_load_acquire_64(&control);
+
+		if (old & watchdog_t::active)
 		{
-			return false;
+			return CELL_EABORT;
 		}
 
-		data.needs_restart = true;
-		data.active = true;
-		data.timeout = timeout;
-		return true;
-	}).second)
-	{
-		return CELL_EABORT;
-	}
+		const s64 next = static_cast<s64>((u64{timeout} << 32) | static_cast<u64>((old & watchdog_t::aborted) | watchdog_t::needs_restart | watchdog_t::active));
 
-	return CELL_OK;
+		if (retro_atomic_cas_64(&control, old, next))
+		{
+			return CELL_OK;
+		}
+	}
 }
 
 error_code _sys_game_watchdog_stop()
 {
 	sys_game.trace("sys_game_watchdog_stop()");
 
-	g_fxo->get<named_thread<watchdog_t>>().control.fetch_op([](watchdog_t::control_t& data)
-	{
-		if (!data.active)
-		{
-			return false;
-		}
-
-		data.active = false;
-		return true;
-	});
+	retro_atomic_fetch_and_64(&g_fxo->get<watchdog_t>().control, ~watchdog_t::active);
 
 	return CELL_OK;
 }
@@ -225,18 +219,17 @@ error_code _sys_game_watchdog_clear()
 {
 	sys_game.trace("sys_game_watchdog_clear()");
 
-	g_fxo->get<named_thread<watchdog_t>>().control.fetch_op([](watchdog_t::control_t& data)
+	auto& control = g_fxo->get<watchdog_t>().control;
+
+	for (;;)
 	{
-		if (!data.active || data.needs_restart)
+		const s64 old = retro_atomic_load_acquire_64(&control);
+
+		if (!(old & watchdog_t::active) || (old & watchdog_t::needs_restart) || retro_atomic_cas_64(&control, old, old | watchdog_t::needs_restart))
 		{
-			return false;
+			return CELL_OK;
 		}
-
-		data.needs_restart = true;
-		return true;
-	});
-
-	return CELL_OK;
+	}
 }
 
 error_code _sys_game_set_system_sw_version(u64 version)
