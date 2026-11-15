@@ -416,6 +416,14 @@ u64 get_guest_system_time(u64 time)
 	return result - systemtime_offset;
 }
 
+// A time of the guest's slaved clock (get_slaved_system_time, which
+// get_hw_clock_time is) as get_guest_system_time gives it: scaled, from the
+// process's start
+u64 get_guest_system_time_of_slaved(u64 slaved)
+{
+	return slaved * g_cfg.core.clocks_scale / 100 - systemtime_offset;
+}
+
 // Functions
 error_code sys_time_set_timezone(s32 timezone, s32 summertime)
 {

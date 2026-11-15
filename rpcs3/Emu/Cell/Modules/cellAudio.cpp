@@ -19,6 +19,8 @@
 #include "util/video_provider.h"
 
 #include <cmath>
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 
 LOG_CHANNEL(cellAudio);
 
@@ -185,9 +187,21 @@ void audio_ringbuffer::backend_state_callback(AudioStateEvent event)
 	}
 }
 
+// The guest's clock, slaved to retro_run: the audio periods come as the
+// guest's time passes - none while the frontend is paused, all of them in
+// fast-forward - as the RSX audio path's do
 u64 audio_ringbuffer::get_timestamp()
 {
-	return get_system_time();
+	return get_hw_clock_time();
+}
+
+// The cellAudio thread's waits: @guest_us of the guest's time, at the pace
+// retro_run comes, woken early by each frame of it. No sleep of the host's
+static void wait_guest(u64 guest_us)
+{
+	const retro_atomic_int_t* clock_word = static_cast<const retro_atomic_int_t*>(libretro_guest_clock_word());
+	const retro_waitaddr_t list{clock_word, static_cast<u32>(retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(clock_word)))};
+	retro_waitaddr_wait(&list, 1, static_cast<s64>(libretro_guest_wait_as_host(guest_us)));
 }
 
 float* audio_ringbuffer::get_current_buffer() const
@@ -836,7 +850,7 @@ void cell_audio_thread::operator()()
 
 	while (Emu.IsPausedOrReady())
 	{
-		thread_ctrl::wait_for(5000);
+		wait_guest(5000);
 	}
 
 	u32 untouched_expected = 0;
@@ -891,7 +905,7 @@ void cell_audio_thread::operator()()
 		{
 			m_audio_should_restart = true;
 			ringbuffer->flush();
-			thread_ctrl::wait_for(10000);
+			wait_guest(10000);
 			continue;
 		}
 
@@ -914,7 +928,7 @@ void cell_audio_thread::operator()()
 			const s64 audio_period_alignment_delta = (timestamp - m_start_time) % cfg.audio_block_period;
 			if (audio_period_alignment_delta > cfg.period_comparison_margin)
 			{
-				thread_ctrl::wait_for(audio_period_alignment_delta - cfg.period_comparison_margin);
+				wait_guest(audio_period_alignment_delta - cfg.period_comparison_margin);
 			}
 
 			if (cfg.buffering_enabled)
@@ -968,7 +982,7 @@ void cell_audio_thread::operator()()
 
 			if (time_left > cfg.period_comparison_margin)
 			{
-				thread_ctrl::wait_for(time_left - cfg.period_comparison_margin);
+				wait_guest(time_left - cfg.period_comparison_margin);
 				continue;
 			}
 		}
@@ -1015,7 +1029,7 @@ void cell_audio_thread::operator()()
 			const s64 time_left = m_dynamic_period - time_since_last_period;
 			if (time_left > cfg.period_comparison_margin)
 			{
-				thread_ctrl::wait_for(time_left - cfg.period_comparison_margin);
+				wait_guest(time_left - cfg.period_comparison_margin);
 				continue;
 			}
 
@@ -1063,7 +1077,7 @@ void cell_audio_thread::operator()()
 				else
 				{
 					cellAudio.trace("waiting: untouched=%u/%u (expected=%u), enqueued_buffers=%llu", untouched, active_ports, untouched_expected, enqueued_buffers);
-					thread_ctrl::wait_for(1000);
+					wait_guest(1000);
 					continue;
 				}
 			}
@@ -1084,7 +1098,7 @@ void cell_audio_thread::operator()()
 			if (!waited_long_enough && in_progress > 0)
 			{
 				cellAudio.trace("waiting: in_progress=%u/%u, enqueued_buffers=%u", in_progress, active_ports, enqueued_buffers);
-				thread_ctrl::wait_for(500);
+				wait_guest(500);
 				continue;
 			}
 
@@ -1572,7 +1586,7 @@ error_code cellAudioPortOpen(ppu_thread& ppu, vm::ptr<CellAudioPortParam> audioP
 	port->cur_pos        = 0;
 	port->global_counter = g_audio.m_counter;
 	port->active_counter = 0;
-	port->timestamp      = get_guest_system_time(g_audio.m_last_period_end);
+	port->timestamp      = get_guest_system_time_of_slaved(g_audio.m_last_period_end);
 
 	if (attr & CELL_AUDIO_PORTATTR_INITLEVEL)
 	{
@@ -1779,7 +1793,7 @@ error_code cellAudioGetPortTimestamp(u32 portNum, u64 tag, vm::ptr<u64> stamp)
 	const u64 delta_tag_stamp = delta_tag * g_audio.cfg.audio_block_period;
 
 	// Apparently no error is returned if stamp is null
-	*stamp = get_guest_system_time(port.timestamp - delta_tag_stamp);
+	*stamp = get_guest_system_time_of_slaved(port.timestamp - delta_tag_stamp);
 
 	return CELL_OK;
 }
@@ -2276,7 +2290,7 @@ error_code cellAudioSendAck(ppu_thread& ppu, u64 data3)
 	{
 		if (k.source == data3)
 		{
-			k.ack_timestamp = get_system_time();
+			k.ack_timestamp = audio_ringbuffer::get_timestamp();
 			break;
 		}
 	}

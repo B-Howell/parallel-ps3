@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Emu/Cell/timers.hpp"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/lv2/sys_sync.h"
 
@@ -656,7 +657,7 @@ s32 cellSurMixerGetTimestamp(u64 tag, vm::ptr<u64> stamp)
 
 	auto& g_audio = g_fxo->get<cell_audio>();
 
-	*stamp = g_audio.m_start_time + tag * AUDIO_BUFFER_SAMPLES * 1'000'000 / g_audio.cfg.audio_sampling_rate;
+	*stamp = get_guest_system_time_of_slaved(g_audio.m_start_time + tag * AUDIO_BUFFER_SAMPLES * 1'000'000 / g_audio.cfg.audio_sampling_rate);
 
 	return CELL_OK;
 }

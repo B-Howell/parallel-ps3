@@ -30,6 +30,9 @@ bool lv2_watchdog_step(retro_atomic_64_t* control, retro_atomic_64_t* start, u64
 // passed, which stops when retro_run does
 u64 get_slaved_system_time();
 
+// A time of the slaved clock as get_guest_system_time gives it (sys_time.cpp)
+u64 get_guest_system_time_of_slaved(u64 slaved);
+
 // How long of the host's time to wait for @guest_us of the guest's to pass
 u64 libretro_guest_wait_as_host(u64 guest_us);
 

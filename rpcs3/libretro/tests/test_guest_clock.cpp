@@ -33,6 +33,7 @@
 #include "Emu/Cell/timers.hpp"
 #include "Emu/Cell/lv2/sys_sync.h"
 #include "Emu/Cell/lv2/sys_rsxaudio.h"
+#include "Emu/Cell/Modules/cellAudio.h"
 #include "Utilities/Thread.h"
 
 #include <algorithm>
@@ -305,6 +306,25 @@ int main()
 
 		std::printf("test_guest_clock: RSX audio periods: %u in %.1f ms of the guest's time (%.1f due), %u while paused 200 ms; a cancelled wait ended in %lld ms\n",
 			had, guest_us / 1000.0, expected, while_paused, static_cast<long long>(took_ms));
+	}
+
+	// cellAudio's periods go by the guest's clock: its ring's time moves a
+	// frame's worth for a frame of retro_run, and not while it is paused
+	{
+		libretro_guest_clock_grant(kFrame);
+		sleep_ms(17);
+		const u64 a = audio_ringbuffer::get_timestamp();
+		for (int f = 0; f < 30; f++)
+		{
+			libretro_guest_clock_grant(kFrame);
+			sleep_ms(17);
+		}
+		const u64 b = audio_ringbuffer::get_timestamp();
+		sleep_ms(300); // the frontend paused
+		const u64 c = audio_ringbuffer::get_timestamp();
+		CHECK(b - a >= 400'000 && b - a <= 620'000); // 30 frames: 500 ms
+		CHECK(c - b <= 20'000);                      // within the frame granted
+		std::printf("test_guest_clock: cellAudio's clock: %.1f ms for 30 frames, %.1f ms while paused 300 ms\n", (b - a) / 1000.0, (c - b) / 1000.0);
 	}
 
 	// The game's watchdog (sys_game_watchdog_start(1), then never cleared):
