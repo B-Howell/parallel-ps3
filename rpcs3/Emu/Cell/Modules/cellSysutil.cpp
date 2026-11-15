@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Emu/Cell/Modules/hle_service.h"
 #include "Emu/System.h"
 #include "Emu/system_config.h"
 #include "Emu/IdManager.h"
@@ -748,7 +749,10 @@ error_code cellSysutilUnregisterCallback(u32 slot)
 
 struct bgm_manager
 {
-	shared_mutex mtx;
+	// The HLE thread's: every call that touches it runs there (hle_call), so it takes no lock
+	bgm_manager(const bgm_manager&) = delete;
+	bgm_manager& operator=(const bgm_manager&) = delete;
+
 	CellSysutilBgmPlaybackExtraParam param{};
 	CellSysutilBgmPlaybackStatus status{};
 
@@ -764,10 +768,12 @@ error_code cellSysutilEnableBgmPlayback()
 	cellSysutil.warning("cellSysutilEnableBgmPlayback()");
 
 	auto& bgm = g_fxo->get<bgm_manager>();
-	std::lock_guard lock(bgm.mtx);
-	bgm.status.enableState = CELL_SYSUTIL_BGMPLAYBACK_STATUS_ENABLE;
+	return hle_call([&]() -> error_code
+	{
+		bgm.status.enableState = CELL_SYSUTIL_BGMPLAYBACK_STATUS_ENABLE;
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellSysutilEnableBgmPlaybackEx(vm::ptr<CellSysutilBgmPlaybackExtraParam> param)
@@ -784,14 +790,16 @@ error_code cellSysutilEnableBgmPlaybackEx(vm::ptr<CellSysutilBgmPlaybackExtraPar
 	}
 
 	auto& bgm = g_fxo->get<bgm_manager>();
-	std::lock_guard lock(bgm.mtx);
-	bgm.param.systemBgmFadeInTime = param->systemBgmFadeInTime;
-	bgm.param.systemBgmFadeOutTime = param->systemBgmFadeOutTime;
-	bgm.param.gameBgmFadeInTime = param->gameBgmFadeInTime;
-	bgm.param.gameBgmFadeOutTime = param->gameBgmFadeOutTime;
-	bgm.status.enableState = CELL_SYSUTIL_BGMPLAYBACK_STATUS_ENABLE;
+	return hle_call([&]() -> error_code
+	{
+		bgm.param.systemBgmFadeInTime = param->systemBgmFadeInTime;
+		bgm.param.systemBgmFadeOutTime = param->systemBgmFadeOutTime;
+		bgm.param.gameBgmFadeInTime = param->gameBgmFadeInTime;
+		bgm.param.gameBgmFadeOutTime = param->gameBgmFadeOutTime;
+		bgm.status.enableState = CELL_SYSUTIL_BGMPLAYBACK_STATUS_ENABLE;
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellSysutilDisableBgmPlayback()
@@ -799,12 +807,14 @@ error_code cellSysutilDisableBgmPlayback()
 	cellSysutil.warning("cellSysutilDisableBgmPlayback()");
 
 	auto& bgm = g_fxo->get<bgm_manager>();
-	std::lock_guard lock(bgm.mtx);
-	bgm.status.enableState = CELL_SYSUTIL_BGMPLAYBACK_STATUS_DISABLE;
+	return hle_call([&]() -> error_code
+	{
+		bgm.status.enableState = CELL_SYSUTIL_BGMPLAYBACK_STATUS_DISABLE;
 
-	// TODO: fade from system bgm to game bgm if necessary
+		// TODO: fade from system bgm to game bgm if necessary
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellSysutilDisableBgmPlaybackEx(vm::ptr<CellSysutilBgmPlaybackExtraParam> param)
@@ -821,16 +831,18 @@ error_code cellSysutilDisableBgmPlaybackEx(vm::ptr<CellSysutilBgmPlaybackExtraPa
 	}
 
 	auto& bgm = g_fxo->get<bgm_manager>();
-	std::lock_guard lock(bgm.mtx);
-	bgm.param.systemBgmFadeInTime = param->systemBgmFadeInTime;
-	bgm.param.systemBgmFadeOutTime = param->systemBgmFadeOutTime;
-	bgm.param.gameBgmFadeInTime = param->gameBgmFadeInTime;
-	bgm.param.gameBgmFadeOutTime = param->gameBgmFadeOutTime;
-	bgm.status.enableState = CELL_SYSUTIL_BGMPLAYBACK_STATUS_DISABLE;
+	return hle_call([&]() -> error_code
+	{
+		bgm.param.systemBgmFadeInTime = param->systemBgmFadeInTime;
+		bgm.param.systemBgmFadeOutTime = param->systemBgmFadeOutTime;
+		bgm.param.gameBgmFadeInTime = param->gameBgmFadeInTime;
+		bgm.param.gameBgmFadeOutTime = param->gameBgmFadeOutTime;
+		bgm.status.enableState = CELL_SYSUTIL_BGMPLAYBACK_STATUS_DISABLE;
 
-	// TODO: fade from system bgm to game bgm if necessary
+		// TODO: fade from system bgm to game bgm if necessary
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellSysutilGetBgmPlaybackStatus(vm::ptr<CellSysutilBgmPlaybackStatus> status)
@@ -843,10 +855,12 @@ error_code cellSysutilGetBgmPlaybackStatus(vm::ptr<CellSysutilBgmPlaybackStatus>
 	}
 
 	auto& bgm = g_fxo->get<bgm_manager>();
-	std::lock_guard lock(bgm.mtx);
-	*status = bgm.status;
+	return hle_call([&]() -> error_code
+	{
+		*status = bgm.status;
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellSysutilGetBgmPlaybackStatus2(vm::ptr<CellSysutilBgmPlaybackStatus2> status2)
@@ -859,11 +873,13 @@ error_code cellSysutilGetBgmPlaybackStatus2(vm::ptr<CellSysutilBgmPlaybackStatus
 	}
 
 	auto& bgm = g_fxo->get<bgm_manager>();
-	std::lock_guard lock(bgm.mtx);
-	status2->playerState = bgm.status.playerState;
-	memset(status2->reserved, 0, sizeof(status2->reserved));
+	return hle_call([&]() -> error_code
+	{
+		status2->playerState = bgm.status.playerState;
+		memset(status2->reserved, 0, sizeof(status2->reserved));
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellSysutilSetBgmPlaybackExtraParam(vm::ptr<CellSysutilBgmPlaybackExtraParam> param)
@@ -880,15 +896,17 @@ error_code cellSysutilSetBgmPlaybackExtraParam(vm::ptr<CellSysutilBgmPlaybackExt
 	}
 
 	auto& bgm = g_fxo->get<bgm_manager>();
-	std::lock_guard lock(bgm.mtx);
-	bgm.param.systemBgmFadeInTime = param->systemBgmFadeInTime;
-	bgm.param.systemBgmFadeOutTime = param->systemBgmFadeOutTime;
-	bgm.param.gameBgmFadeInTime = param->gameBgmFadeInTime;
-	bgm.param.gameBgmFadeOutTime = param->gameBgmFadeOutTime;
+	return hle_call([&]() -> error_code
+	{
+		bgm.param.systemBgmFadeInTime = param->systemBgmFadeInTime;
+		bgm.param.systemBgmFadeOutTime = param->systemBgmFadeOutTime;
+		bgm.param.gameBgmFadeInTime = param->gameBgmFadeInTime;
+		bgm.param.gameBgmFadeOutTime = param->gameBgmFadeOutTime;
 
-	// TODO: apparently you are only able to set this only once and while bgm is enabled
+		// TODO: apparently you are only able to set this only once and while bgm is enabled
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellSysutilRegisterCallbackDispatcher(u32 event_code, u32 func_addr)

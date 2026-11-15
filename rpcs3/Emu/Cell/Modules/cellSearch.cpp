@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Emu/Cell/Modules/hle_service.h"
 #include "Emu/VFS.h"
 #include "Emu/IdManager.h"
 #include "Emu/Cell/PPUModule.h"
@@ -65,7 +66,11 @@ struct search_info
 
 	atomic_t<search_state> state = search_state::not_initialized;
 
-	shared_mutex links_mutex;
+	// The HLE thread's: every call that touches it runs there (hle_call), so it takes no lock
+	search_info() = default;
+	search_info(const search_info&) = delete;
+	search_info& operator=(const search_info&) = delete;
+
 	struct link_data
 	{
 		std::string path;
@@ -101,7 +106,11 @@ struct content_id_map
 {
 	std::unordered_map<u64, shared_ptr<search_content_t>> map;
 
-	shared_mutex mutex;
+	// The HLE thread's: every call that touches it runs there (hle_call), so it takes no lock
+	content_id_map() = default;
+	content_id_map(const content_id_map&) = delete;
+	content_id_map& operator=(const content_id_map&) = delete;
+
 
 	SAVESTATE_INIT_POS(36);
 };
@@ -434,8 +443,10 @@ error_code cellSearchFinalize()
 	sysutil_register_cb([&search](ppu_thread& ppu) -> s32
 	{
 		{
-			std::lock_guard lock(search.links_mutex);
-			search.content_links.clear();
+			hle_call([&]()
+			{
+				search.content_links.clear();
+			});
 		}
 		search.state.store(search_state::not_initialized);
 		search.func(ppu, CELL_SEARCH_EVENT_FINALIZE_RESULT, CELL_OK, vm::null, search.userData);
@@ -586,7 +597,7 @@ error_code cellSearchStartListSearch(CellSearchListSearchType type, CellSearchSo
 						// std::string link = link_base + std::to_string(hash) + item.name.substr(ext_offset);
 						// strcpy_trunc(curr_find->infoPath.contentPath, link);
 
-						// std::lock_guard lock(search.links_mutex);
+						// (the links are the HLE thread's: no lock here)
 						// search.content_links.emplace(std::move(link), search_info::link_data{ .path = item_path, .is_dir = true });
 					}
 					else
@@ -826,8 +837,10 @@ error_code cellSearchStartContentSearchInList(vm::cptr<CellSearchContentId> list
 						std::string link = link_base + std::to_string(hash) + item.name.substr(ext_offset);
 						strcpy_trunc(curr_find->infoPath.contentPath, link);
 
-						std::lock_guard lock(search.links_mutex);
-						search.content_links.emplace(std::move(link), search_info::link_data{ .path = item_path, .is_dir = false });
+						hle_call([&]()
+						{
+							search.content_links.emplace(std::move(link), search_info::link_data{ .path = item_path, .is_dir = false });
+						});
 					}
 					else
 					{
@@ -1067,8 +1080,10 @@ error_code cellSearchStartContentSearch(CellSearchContentSearchType type, CellSe
 						std::string link = link_base + std::to_string(hash) + item.name.substr(ext_offset);
 						strcpy_trunc(curr_find->infoPath.contentPath, link);
 
-						std::lock_guard lock(search.links_mutex);
-						search.content_links.emplace(std::move(link), search_info::link_data{ .path = item_path, .is_dir = false });
+						hle_call([&]()
+						{
+							search.content_links.emplace(std::move(link), search_info::link_data{ .path = item_path, .is_dir = false });
+						});
 					}
 					else
 					{
@@ -1930,14 +1945,16 @@ error_code cellSearchPrepareFile(vm::cptr<char> path)
 		return error;
 	}
 
-	reader_lock lock(search.links_mutex);
-	auto found = search.content_links.find(path.get_ptr());
-	if (found != search.content_links.end())
+	return hle_call([&]() -> error_code
 	{
-		vfs::mount(found->first, vfs::get(found->second.path), found->second.is_dir);
-	}
+		auto found = search.content_links.find(path.get_ptr());
+		if (found != search.content_links.end())
+		{
+			vfs::mount(found->first, vfs::get(found->second.path), found->second.is_dir);
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellSearchGetContentInfoDeveloperData(vm::cptr<CellSearchContentId> contentId, vm::ptr<char> developerData)
@@ -2183,8 +2200,10 @@ error_code music_selection_context::find_content_id(vm::ptr<CellSearchContentId>
 					std::string link = link_base + std::to_string(hash) + entry.name;
 					strcpy_trunc(curr_find->infoPath.contentPath, link);
 
-					std::lock_guard lock(search.links_mutex);
-					search.content_links.emplace(std::move(link), search_info::link_data{ .path = dir_path, .is_dir = true });
+					hle_call([&]()
+					{
+						search.content_links.emplace(std::move(link), search_info::link_data{ .path = dir_path, .is_dir = true });
+					});
 				}
 				else
 				{
@@ -2240,8 +2259,10 @@ error_code music_selection_context::find_content_id(vm::ptr<CellSearchContentId>
 					std::string link = link_base + std::to_string(hash) + item.name.substr(ext_offset);
 					strcpy_trunc(curr_find->infoPath.contentPath, link);
 
-					std::lock_guard lock(search.links_mutex);
-					search.content_links.emplace(std::move(link), search_info::link_data{ .path = file_path, .is_dir = false });
+					hle_call([&]()
+					{
+						search.content_links.emplace(std::move(link), search_info::link_data{ .path = file_path, .is_dir = false });
+					});
 				}
 				else
 				{

@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Emu/Cell/Modules/hle_service.h"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/IdManager.h"
 #include "Emu/Cell/lv2/sys_fs.h"
@@ -102,7 +103,11 @@ using CellPhotoImportFinishCallback = void(s32 result, vm::ptr<CellPhotoImportFi
 
 struct photo_import
 {
-	shared_mutex mutex;
+	// The HLE thread's: every call that touches it runs there (hle_call), so it takes no lock
+	photo_import() = default;
+	photo_import(const photo_import&) = delete;
+	photo_import& operator=(const photo_import&) = delete;
+
 	bool is_busy = false;
 	CellPhotoImportSetParam param{};
 	vm::ptr<CellPhotoImportFinishCallback> func_finish{};
@@ -313,18 +318,19 @@ error_code cellPhotoImport(u32 version, vm::cptr<char> dstHddPath, vm::ptr<CellP
 	}
 
 	auto& pi_manager = g_fxo->get<photo_import>();
-	std::lock_guard lock(pi_manager.mutex);
-
-	if (pi_manager.is_busy)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_PHOTO_IMPORT_ERROR_BUSY;
-	}
+		if (pi_manager.is_busy)
+		{
+			return CELL_PHOTO_IMPORT_ERROR_BUSY;
+		}
 
-	pi_manager.param = *param;
-	pi_manager.func_finish = funcFinish;
-	pi_manager.userdata = userdata;
+		pi_manager.param = *param;
+		pi_manager.func_finish = funcFinish;
+		pi_manager.userdata = userdata;
 
-	return select_photo(dstHddPath.get_ptr());
+		return select_photo(dstHddPath.get_ptr());
+	});
 }
 
 error_code cellPhotoImport2(u32 version, vm::cptr<char> dstHddPath, vm::ptr<CellPhotoImportSetParam> param, vm::ptr<CellPhotoImportFinishCallback> funcFinish, vm::ptr<void> userdata)
@@ -337,18 +343,19 @@ error_code cellPhotoImport2(u32 version, vm::cptr<char> dstHddPath, vm::ptr<Cell
 	}
 
 	auto& pi_manager = g_fxo->get<photo_import>();
-	std::lock_guard lock(pi_manager.mutex);
-
-	if (pi_manager.is_busy)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_PHOTO_IMPORT_ERROR_BUSY;
-	}
+		if (pi_manager.is_busy)
+		{
+			return CELL_PHOTO_IMPORT_ERROR_BUSY;
+		}
 
-	pi_manager.param = *param;
-	pi_manager.func_finish = funcFinish;
-	pi_manager.userdata = userdata;
+		pi_manager.param = *param;
+		pi_manager.func_finish = funcFinish;
+		pi_manager.userdata = userdata;
 
-	return select_photo(dstHddPath.get_ptr());
+		return select_photo(dstHddPath.get_ptr());
+	});
 }
 
 DECLARE(ppu_module_manager::cellPhotoImportUtil)("cellPhotoImportUtil", []()

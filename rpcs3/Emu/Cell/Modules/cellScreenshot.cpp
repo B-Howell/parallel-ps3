@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Emu/Cell/Modules/hle_service.h"
 #include "Emu/System.h"
 #include "Emu/IdManager.h"
 #include "Emu/VFS.h"
@@ -64,26 +65,27 @@ error_code cellScreenShotSetParameter(vm::cptr<CellScreenShotSetParam> param)
 		return CELL_SCREENSHOT_ERROR_PARAM;
 
 	auto& manager = g_fxo->get<screenshot_manager>();
-	std::lock_guard lock(manager.mutex);
+	return hle_call([&]() -> error_code
+	{
+		if (param->photo_title && param->photo_title[0] != '\0')
+			manager.photo_title = std::string(param->photo_title.get_ptr());
+		else
+			manager.photo_title = "";
 
-	if (param->photo_title && param->photo_title[0] != '\0')
-		manager.photo_title = std::string(param->photo_title.get_ptr());
-	else
-		manager.photo_title = "";
+		if (param->game_title && param->game_title[0] != '\0')
+			manager.game_title = std::string(param->game_title.get_ptr());
+		else
+			manager.game_title = "";
 
-	if (param->game_title && param->game_title[0] != '\0')
-		manager.game_title = std::string(param->game_title.get_ptr());
-	else
-		manager.game_title = "";
+		if (param->game_comment && param->game_comment[0] != '\0')
+			manager.game_comment = std::string(param->game_comment.get_ptr());
+		else
+			manager.game_comment = "";
 
-	if (param->game_comment && param->game_comment[0] != '\0')
-		manager.game_comment = std::string(param->game_comment.get_ptr());
-	else
-		manager.game_comment = "";
+		cellScreenshot.notice("cellScreenShotSetParameter(photo_title=%s, game_title=%s, game_comment=%s)", manager.photo_title, manager.game_title, manager.game_comment);
 
-	cellScreenshot.notice("cellScreenShotSetParameter(photo_title=%s, game_title=%s, game_comment=%s)", manager.photo_title, manager.game_title, manager.game_comment);
-
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellScreenShotSetOverlayImage(vm::cptr<char> srcDir, vm::cptr<char> srcFile, s32 offset_x, s32 offset_y)
@@ -102,14 +104,15 @@ error_code cellScreenShotSetOverlayImage(vm::cptr<char> srcDir, vm::cptr<char> s
 	}
 
 	auto& manager = g_fxo->get<screenshot_manager>();
-	std::lock_guard lock(manager.mutex);
+	return hle_call([&]() -> error_code
+	{
+		manager.overlay_dir_name = std::string(srcDir.get_ptr());
+		manager.overlay_file_name = std::string(srcFile.get_ptr());
+		manager.overlay_offset_x = offset_x;
+		manager.overlay_offset_y = offset_y;
 
-	manager.overlay_dir_name = std::string(srcDir.get_ptr());
-	manager.overlay_file_name = std::string(srcFile.get_ptr());
-	manager.overlay_offset_x = offset_x;
-	manager.overlay_offset_y = offset_y;
-
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellScreenShotEnable()
@@ -117,14 +120,15 @@ error_code cellScreenShotEnable()
 	cellScreenshot.trace("cellScreenShotEnable()");
 
 	auto& manager = g_fxo->get<screenshot_manager>();
-	std::lock_guard lock(manager.mutex);
-
-	if (!std::exchange(manager.is_enabled, true))
+	return hle_call([&]() -> error_code
 	{
-		cellScreenshot.warning("cellScreenShotEnable(): Enabled");
-	}
+		if (!std::exchange(manager.is_enabled, true))
+		{
+			cellScreenshot.warning("cellScreenShotEnable(): Enabled");
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellScreenShotDisable()
@@ -132,15 +136,16 @@ error_code cellScreenShotDisable()
 	cellScreenshot.trace("cellScreenShotDisable()");
 
 	auto& manager = g_fxo->get<screenshot_manager>();
-	std::lock_guard lock(manager.mutex);
-
-	if (std::exchange(manager.is_enabled, false))
+	return hle_call([&]() -> error_code
 	{
-		cellScreenshot.warning("cellScreenShotDisable(): Disabled");
-	}
+		if (std::exchange(manager.is_enabled, false))
+		{
+			cellScreenshot.warning("cellScreenShotDisable(): Disabled");
+		}
 
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 DECLARE(ppu_module_manager::cellScreenShot)("cellScreenShotUtility", []()

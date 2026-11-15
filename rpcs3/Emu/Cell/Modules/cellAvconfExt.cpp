@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Emu/Cell/Modules/hle_service.h"
 #include "Emu/system_config.h"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/IdManager.h"
@@ -37,7 +38,7 @@ void fmt_class_string<CellAudioInError>::format(std::string& out, u64 arg)
 
 struct avconf_manager
 {
-	shared_mutex mutex;
+	// The HLE thread's: every call that touches it runs there (hle_call), so it takes no lock
 
 	struct device_info
 	{
@@ -271,14 +272,15 @@ error_code cellAudioInGetDeviceInfo(u32 deviceNumber, u32 deviceIndex, vm::ptr<C
 	}
 
 	auto& av_manager = g_fxo->get<avconf_manager>();
-	std::lock_guard lock(av_manager.mutex);
+	return hle_call([&]() -> error_code
+	{
+		if (deviceNumber >= av_manager.devices.size())
+			return CELL_AUDIO_IN_ERROR_DEVICE_NOT_FOUND;
 
-	if (deviceNumber >= av_manager.devices.size())
-		return CELL_AUDIO_IN_ERROR_DEVICE_NOT_FOUND;
+		av_manager.copy_device_info(deviceNumber, info);
 
-	av_manager.copy_device_info(deviceNumber, info);
-
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 template <bool Is_Float, bool Range_Limited>
@@ -412,25 +414,26 @@ error_code cellAudioInGetAvailableDeviceInfo(u32 count, vm::ptr<CellAudioInDevic
 	}
 
 	auto& av_manager = g_fxo->get<avconf_manager>();
-	std::lock_guard lock(av_manager.mutex);
-
-	u32 num_devices_returned = std::min<u32>(count, ::size32(av_manager.devices));
-
-	for (u32 index = 0; index < num_devices_returned; index++)
+	return hle_call([&]() -> error_code
 	{
-		av_manager.copy_device_info(index, device_info + index);
-	}
+		u32 num_devices_returned = std::min<u32>(count, ::size32(av_manager.devices));
 
-	CellAudioInDeviceInfo disconnected_device{};
-	disconnected_device.state = CELL_AUDIO_OUT_DEVICE_STATE_UNAVAILABLE;
-	disconnected_device.deviceNumber = 0xff;
+		for (u32 index = 0; index < num_devices_returned; index++)
+		{
+			av_manager.copy_device_info(index, device_info + index);
+		}
 
-	for (u32 index = num_devices_returned; index < count; index++)
-	{
-		device_info[index] = disconnected_device;
-	}
+		CellAudioInDeviceInfo disconnected_device{};
+		disconnected_device.state = CELL_AUDIO_OUT_DEVICE_STATE_UNAVAILABLE;
+		disconnected_device.deviceNumber = 0xff;
 
-	return not_an_error(num_devices_returned);
+		for (u32 index = num_devices_returned; index < count; index++)
+		{
+			device_info[index] = disconnected_device;
+		}
+
+		return not_an_error(num_devices_returned);
+	});
 }
 
 error_code cellAudioOutGetAvailableDeviceInfo(u32 count, vm::ptr<CellAudioOutDeviceInfo2> info)
@@ -505,11 +508,12 @@ error_code cellAudioInSetDeviceMode(u32 deviceMode)
 	}
 
 	auto& av_manager = g_fxo->get<avconf_manager>();
-	std::lock_guard lock(av_manager.mutex);
+	return hle_call([&]() -> error_code
+	{
+		av_manager.inDeviceMode = static_cast<CellAudioInDeviceMode>(deviceMode);
 
-	av_manager.inDeviceMode = static_cast<CellAudioInDeviceMode>(deviceMode);
-
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellAudioInRegisterDevice(u64 deviceType, vm::cptr<char> name, vm::ptr<CellAudioInRegistrationOption> option, vm::ptr<CellAudioInDeviceConfiguration> config)
@@ -523,20 +527,21 @@ error_code cellAudioInRegisterDevice(u64 deviceType, vm::cptr<char> name, vm::pt
 	}
 
 	auto& av_manager = g_fxo->get<avconf_manager>();
-	const std::lock_guard lock(av_manager.mutex);
-
-	std::optional<avconf_manager::device_info> device = av_manager.get_device_info(name);
-	if (!device)
+	return hle_call([&]() -> error_code
 	{
-		// TODO
-		return CELL_AUDIO_IN_ERROR_DEVICE_NOT_FOUND;
-	}
+		std::optional<avconf_manager::device_info> device = av_manager.get_device_info(name);
+		if (!device)
+		{
+			// TODO
+			return CELL_AUDIO_IN_ERROR_DEVICE_NOT_FOUND;
+		}
 
-	auto& mic_thr = g_fxo->get<mic_thread>();
-	const std::lock_guard mic_lock(mic_thr.mutex);
-	const u32 device_number = mic_thr.register_device(device->full_device_name);
+		auto& mic_thr = g_fxo->get<mic_thread>();
+		const std::lock_guard mic_lock(mic_thr.mutex);
+		const u32 device_number = mic_thr.register_device(device->full_device_name);
 
-	return not_an_error(device_number);
+		return not_an_error(device_number);
+	});
 }
 
 error_code cellAudioInUnregisterDevice(u32 deviceNumber)

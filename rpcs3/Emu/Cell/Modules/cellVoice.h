@@ -243,7 +243,7 @@ struct voice_manager
 	}
 
 	void reset();
-	shared_mutex mtx;
+	// The HLE thread's: every call that touches it runs there (hle_call), so it takes no lock
 	atomic_t<bool> is_init{ false };
 
 	SAVESTATE_INIT_POS(17);

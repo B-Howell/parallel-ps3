@@ -48,5 +48,9 @@ struct screenshot_info
 
 struct screenshot_manager : public screenshot_info
 {
-	shared_mutex mutex;
+	// The HLE thread's: every call that touches it runs there (hle_call), so it takes no lock
+	screenshot_manager() = default;
+	screenshot_manager(const screenshot_manager&) = delete;
+	screenshot_manager& operator=(const screenshot_manager&) = delete;
+
 };
