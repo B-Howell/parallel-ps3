@@ -1,5 +1,5 @@
 #include "utils.h"
-#include "aes.h"
+#include <crypto/crypto.h>
 #include "key_vault.h"
 #include "util/logs.hpp"
 
@@ -766,7 +766,7 @@ void rap_to_rif(const unsigned char* rap, unsigned char* rif)
 {
 	int i;
 	int round;
-	aes_context aes;
+	aes_ctx aes;
 
 	unsigned char key[0x10];
 	unsigned char iv[0x10];
@@ -774,8 +774,8 @@ void rap_to_rif(const unsigned char* rap, unsigned char* rif)
 	memset(iv, 0, 0x10);
 
 	// Initial decrypt.
-	aes_setkey_dec(&aes, RAP_KEY, 128);
-	aes_crypt_cbc(&aes, AES_DECRYPT, 0x10, iv, rap, key);
+	aes_init(&aes, RAP_KEY, 16);
+	aes_cbc_decrypt(&aes, iv, rap, key, 0x10);
 
 	// rap2rifkey round.
 	for (round = 0; round < 5; ++round)

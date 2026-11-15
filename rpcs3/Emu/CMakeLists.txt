@@ -122,8 +122,6 @@ set_source_files_properties("../../Utilities/JITLLVM.cpp" "../../Utilities/JITAS
 
 # Crypto
 target_sources(rpcs3_emu PRIVATE
-    ../Crypto/aes.cpp
-    ../Crypto/aesni.cpp
     ../Crypto/decrypt_binaries.cpp
     ../Crypto/ec.cpp
     ../Crypto/key_vault.cpp

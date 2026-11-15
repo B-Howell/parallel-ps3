@@ -1,5 +1,5 @@
 #include "stdafx.h"
-#include "aes.h"
+#include <crypto/crypto.h>
 #include "unself.h"
 #include "util/asm.hpp"
 #include "Emu/System.h"
@@ -625,7 +625,7 @@ bool SCEDecrypter::LoadHeaders()
 
 bool SCEDecrypter::LoadMetadata(const u8 erk[32], const u8 riv[16])
 {
-	aes_context aes;
+	aes_ctx aes;
 	std::vector<u8> metadata_info(sizeof(meta_info));
 	constexpr usz sizeof_meta_and_header = sizeof(meta_info) + sizeof(sce_hdr);
 	const usz metadata_offset = static_cast<usz>(sce_hdr.se_meta);
@@ -660,8 +660,8 @@ bool SCEDecrypter::LoadMetadata(const u8 erk[32], const u8 riv[16])
 	if ((sce_hdr.se_flags & 0x8000) != 0x8000)
 	{
 		// Decrypt the metadata info.
-		aes_setkey_dec(&aes, metadata_key, 256);  // AES-256
-		aes_crypt_cbc(&aes, AES_DECRYPT, metadata_info.size(), metadata_iv, metadata_info.data(), metadata_info.data());
+		aes_init(&aes, metadata_key, 32);  // AES-256
+		aes_cbc_decrypt(&aes, metadata_iv, metadata_info.data(), metadata_info.data(), metadata_info.size());
 	}
 
 	// Load the metadata info.
@@ -677,10 +677,8 @@ bool SCEDecrypter::LoadMetadata(const u8 erk[32], const u8 riv[16])
 	}
 
 	// Perform AES-CTR encryption on the metadata headers.
-	usz ctr_nc_off = 0;
-	u8 ctr_stream_block[0x10];
-	aes_setkey_enc(&aes, meta_info.key, 128);
-	aes_crypt_ctr(&aes, metadata_headers.size(), &ctr_nc_off, meta_info.iv, ctr_stream_block, metadata_headers.data(), metadata_headers.data());
+	aes_init(&aes, meta_info.key, 16);
+	aes_ctr128_crypt(&aes, meta_info.iv, metadata_headers.data(), metadata_headers.data(), metadata_headers.size());
 
 	// Load the metadata header.
 	meta_hdr.Load(metadata_headers);
@@ -709,7 +707,7 @@ bool SCEDecrypter::LoadMetadata(const u8 erk[32], const u8 riv[16])
 
 bool SCEDecrypter::DecryptData()
 {
-	aes_context aes;
+	aes_ctx aes;
 	usz data_buf_length = 0;
 
 	// Calculate the total data size.
@@ -726,7 +724,6 @@ bool SCEDecrypter::DecryptData()
 
 	// Tmp buffer
 	std::vector<u8> buf;
-	u8 ctr_stream_block[0x10];
 
 	// Parse the metadata section headers to find the offsets of encrypted data.
 	for (const MetadataSectionHeader& hdr : meta_shdr)
@@ -746,13 +743,9 @@ bool SCEDecrypter::DecryptData()
 				sce_f.seek(hdr.data_offset);
 				sce_f.read(buf.data(), buf.size());
 
-				// Zero out our ctr nonce.
-				std::memset(ctr_stream_block, 0, sizeof(ctr_stream_block));
-
 				// Perform AES-CTR encryption on the data blocks.
-				usz ctr_nc_off = 0;
-				aes_setkey_enc(&aes, data_key.data(), 128);
-				aes_crypt_ctr(&aes, buf.size(), &ctr_nc_off, data_iv.data(), ctr_stream_block, buf.data(), buf.data());
+				aes_init(&aes, data_key.data(), 16);
+				aes_ctr128_crypt(&aes, data_iv.data(), buf.data(), buf.data(), buf.size());
 
 				// Copy the decrypted data.
 				ensure(data_buf.size() >= (buf.size() + data_buf_offset));
@@ -1062,7 +1055,7 @@ void SELFDecrypter::ShowHeaders(bool isElf32)
 
 bool SELFDecrypter::DecryptNPDRM(u8 *metadata, u32 metadata_size)
 {
-	aes_context aes;
+	aes_ctx aes;
 	u8 npdrm_key[0x10];
 	u8 npdrm_iv[0x10];
 
@@ -1105,15 +1098,17 @@ bool SELFDecrypter::DecryptNPDRM(u8 *metadata, u32 metadata_size)
 	}
 
 	// Decrypt our key with NP_KLIC_KEY.
-	aes_setkey_dec(&aes, NP_KLIC_KEY, 128);
-	aes_crypt_ecb(&aes, AES_DECRYPT, npdrm_key, npdrm_key);
+	aes_init(&aes, NP_KLIC_KEY, 16);
+	aes_decrypt_block(&aes, npdrm_key, npdrm_key);
 
 	// IV is empty.
 	std::memset(npdrm_iv, 0, 0x10);
 
 	// Use our final key to decrypt the NPDRM layer.
-	aes_setkey_dec(&aes, npdrm_key, 128);
-	aes_crypt_cbc(&aes, AES_DECRYPT, metadata_size, npdrm_iv, metadata, metadata);
+	aes_init(&aes, npdrm_key, 16);
+	// Whole blocks only, or nothing, as the PolarSSL AES this was done with had it
+	if ((metadata_size % 16) == 0)
+		aes_cbc_decrypt(&aes, npdrm_iv, metadata, metadata, metadata_size);
 
 	return true;
 }
@@ -1134,7 +1129,7 @@ const NPD_HEADER* SELFDecrypter::GetNPDHeader() const
 
 bool SELFDecrypter::LoadMetadata(const u8* klic_key)
 {
-	aes_context aes;
+	aes_ctx aes;
 	std::vector<u8> metadata_info(sizeof(meta_info));
 	constexpr usz sizeof_meta_and_header = sizeof(meta_info) + sizeof(sce_hdr);
 	const usz metadata_offset = static_cast<usz>(sce_hdr.se_meta);
@@ -1180,8 +1175,8 @@ bool SELFDecrypter::LoadMetadata(const u8* klic_key)
 			return false;
 
 		// Decrypt the metadata info.
-		aes_setkey_dec(&aes, metadata_key, 256);  // AES-256
-		aes_crypt_cbc(&aes, AES_DECRYPT, metadata_info.size(), metadata_iv, metadata_info.data(), metadata_info.data());
+		aes_init(&aes, metadata_key, 32);  // AES-256
+		aes_cbc_decrypt(&aes, metadata_iv, metadata_info.data(), metadata_info.data(), metadata_info.size());
 	}
 
 	// Load the metadata info.
@@ -1197,10 +1192,8 @@ bool SELFDecrypter::LoadMetadata(const u8* klic_key)
 	}
 
 	// Perform AES-CTR encryption on the metadata headers.
-	usz ctr_nc_off = 0;
-	u8 ctr_stream_block[0x10];
-	aes_setkey_enc(&aes, meta_info.key, 128);
-	aes_crypt_ctr(&aes, metadata_headers.size(), &ctr_nc_off, meta_info.iv, ctr_stream_block, metadata_headers.data(), metadata_headers.data());
+	aes_init(&aes, meta_info.key, 16);
+	aes_ctr128_crypt(&aes, meta_info.iv, metadata_headers.data(), metadata_headers.data(), metadata_headers.size());
 
 	// Load the metadata header.
 	meta_hdr.Load(metadata_headers);
@@ -1229,7 +1222,7 @@ bool SELFDecrypter::LoadMetadata(const u8* klic_key)
 
 bool SELFDecrypter::DecryptData()
 {
-	aes_context aes;
+	aes_ctx aes;
 	usz data_buf_length = 0;
 
 	// Calculate the total data size.
@@ -1250,7 +1243,6 @@ bool SELFDecrypter::DecryptData()
 
 	// Tmp buffer
 	std::vector<u8> buf;
-	u8 ctr_stream_block[0x10];
 
 	// Parse the metadata section headers to find the offsets of encrypted data.
 	for (const MetadataSectionHeader& hdr : meta_shdr)
@@ -1270,13 +1262,9 @@ bool SELFDecrypter::DecryptData()
 				self_f.seek(hdr.data_offset);
 				self_f.read(buf.data(), buf.size());
 
-				// Zero out our ctr nonce.
-				std::memset(ctr_stream_block, 0, sizeof(ctr_stream_block));
-
 				// Perform AES-CTR encryption on the data blocks.
-				usz ctr_nc_off = 0;
-				aes_setkey_enc(&aes, data_key.data(), 128);
-				aes_crypt_ctr(&aes, buf.size(), &ctr_nc_off, data_iv.data(), ctr_stream_block, buf.data(), buf.data());
+				aes_init(&aes, data_key.data(), 16);
+				aes_ctr128_crypt(&aes, data_iv.data(), buf.data(), buf.data(), buf.size());
 
 				// Copy the decrypted data.
 				ensure(data_buf.size() >= (buf.size() + data_buf_offset));

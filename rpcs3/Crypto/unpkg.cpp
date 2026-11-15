@@ -1,5 +1,5 @@
 #include "stdafx.h"
-#include "aes.h"
+#include <crypto/crypto.h>
 #include <lrc_hash.h>
 #include "key_vault.h"
 #include "util/asm.hpp"
@@ -566,9 +566,9 @@ bool package_reader::set_decryption_key()
 		// PSVita
 		// TODO: Not all the keys seem to match the content types. I was only able to install a dlc (0x16) with PKG_AES_KEY_VITA_1
 
-		aes_context ctx;
-		aes_setkey_enc(&ctx, m_metadata.content_type == 0x15u ? PKG_AES_KEY_VITA_1 : m_metadata.content_type == 0x16u ? PKG_AES_KEY_VITA_2 : PKG_AES_KEY_VITA_3, 128);
-		aes_crypt_ecb(&ctx, AES_ENCRYPT, reinterpret_cast<const uchar*>(&m_header.klicensee), m_dec_key.data());
+		aes_ctx ctx;
+		aes_init(&ctx, m_metadata.content_type == 0x15u ? PKG_AES_KEY_VITA_1 : m_metadata.content_type == 0x16u ? PKG_AES_KEY_VITA_2 : PKG_AES_KEY_VITA_3, 16);
+		aes_encrypt_block(&ctx, reinterpret_cast<const uchar*>(&m_header.klicensee), m_dec_key.data());
 		return true;
 	}
 
@@ -1640,24 +1640,16 @@ usz package_reader::decrypt(u64 offset, u64 size, const uchar* key, std::span<u8
 	}
 	case PKG_RELEASE_TYPE_RELEASE:
 	{
-		aes_context ctx;
+		aes_ctx ctx;
 
 		// Set encryption key for stream cipher
-		aes_setkey_enc(&ctx, key, 128);
+		aes_init(&ctx, key, 16);
 
-		// Initialize stream cipher for start position
+		// The stream position, big-endian, is the counter of AES-CTR: every block is the next one, carried
+		// through the whole 128 bits, and the buffer is decrypted where it lies, several blocks at a time
 		be_t<u128> input = m_header.klicensee.value() + offset / sizeof(u128);
 
-		// Increment stream position for every block
-		for (u64 i = 0; i < blocks; i++, input++)
-		{
-			u128 key;
-
-			aes_crypt_ecb(&ctx, AES_ENCRYPT, reinterpret_cast<const u8*>(&input), reinterpret_cast<u8*>(&key));
-
-			const u128 v = read_from_ptr<u128>(local_buf, i * sizeof(u128));
-			write_to_ptr<u128>(local_buf, i * sizeof(u128), v ^ key);
-		}
+		aes_ctr128_crypt(&ctx, reinterpret_cast<u8*>(&input), local_buf.data(), local_buf.data(), blocks * sizeof(u128));
 
 		break;
 	}

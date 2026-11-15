@@ -3,7 +3,7 @@
 // http://www.gnu.org/licenses/gpl-2.0.txt
 
 #include "utils.h"
-#include "aes.h"
+#include <crypto/crypto.h>
 #include <crypto/kdf.h>
 #include <lrc_hash.h>
 #include "key_vault.h"
@@ -79,9 +79,11 @@ void hex_to_bytes(unsigned char* data, std::string_view hex_str, usz str_length,
 // Crypto functions (AES128-CBC, AES128-ECB, SHA1-HMAC and AES-CMAC).
 void aescbc128_decrypt(const unsigned char *key, unsigned char *iv, const unsigned char *in, unsigned char *out, usz len)
 {
-	aes_context ctx;
-	aes_setkey_dec(&ctx, key, 128);
-	aes_crypt_cbc(&ctx, AES_DECRYPT, len, iv, in, out);
+	aes_ctx ctx;
+	aes_init(&ctx, key, 16);
+	// Whole blocks only, or nothing, as the PolarSSL AES this was done with had it
+	if ((len % 16) == 0)
+		aes_cbc_decrypt(&ctx, iv, in, out, len);
 
 	// Reset the IV.
 	memset(iv, 0, 0x10);
@@ -89,9 +91,10 @@ void aescbc128_decrypt(const unsigned char *key, unsigned char *iv, const unsign
 
 void aescbc128_encrypt(const unsigned char *key, unsigned char *iv, const unsigned char *in, unsigned char *out, usz len)
 {
-	aes_context ctx;
-	aes_setkey_enc(&ctx, key, 128);
-	aes_crypt_cbc(&ctx, AES_ENCRYPT, len, iv, in, out);
+	aes_ctx ctx;
+	aes_init(&ctx, key, 16);
+	if ((len % 16) == 0)
+		aes_cbc_encrypt(&ctx, iv, in, out, len);
 
 	// Reset the IV.
 	memset(iv, 0, 0x10);
@@ -99,18 +102,20 @@ void aescbc128_encrypt(const unsigned char *key, unsigned char *iv, const unsign
 
 void aesecb128_encrypt(const unsigned char *key, const unsigned char *in, unsigned char *out)
 {
-	aes_context ctx;
-	aes_setkey_enc(&ctx, key, 128);
-	aes_crypt_ecb(&ctx, AES_ENCRYPT, in, out);
+	aes_ctx ctx;
+	aes_init(&ctx, key, 16);
+	aes_encrypt_block(&ctx, in, out);
 }
 
+// The MAC goes to the stack: it is taken for every block of an EDAT read, and HMAC-SHA1's is 20 bytes
+// whatever the key's length (a buffer of the key's 16 was written past)
 bool hmac_hash_compare(const unsigned char *key, int key_len, const unsigned char *in, usz in_len, const unsigned char *hash, usz hash_len)
 {
-	const std::unique_ptr<u8[]> out(new u8[key_len]);
+	u8 out[20];
 
-	hmac_sha1(key, key_len, in, in_len, out.get());
+	hmac_sha1(key, key_len, in, in_len, out);
 
-	return std::memcmp(out.get(), hash, hash_len) == 0;
+	return hash_len <= sizeof(out) && std::memcmp(out, hash, hash_len) == 0;
 }
 
 void hmac_hash_forge(const unsigned char *key, int key_len, const unsigned char *in, usz in_len, unsigned char *hash)
@@ -118,22 +123,22 @@ void hmac_hash_forge(const unsigned char *key, int key_len, const unsigned char 
 	hmac_sha1(key, key_len, in, in_len, hash);
 }
 
-bool cmac_hash_compare(const unsigned char *key, int key_len, const unsigned char *in, usz in_len, const unsigned char *hash, usz hash_len)
+bool cmac_hash_compare(const unsigned char *key, int /*key_len*/, const unsigned char *in, usz in_len, const unsigned char *hash, usz hash_len)
 {
-	const std::unique_ptr<u8[]> out(new u8[key_len]);
+	u8 out[16];
 
-	aes_context ctx;
-	aes_setkey_enc(&ctx, key, 128);
-	rpcs3_aes_cmac(&ctx, in_len, in, out.get());
+	aes_ctx ctx;
+	aes_init(&ctx, key, 16);
+	aes_cmac(&ctx, in, in_len, out);
 
-	return std::memcmp(out.get(), hash, hash_len) == 0;
+	return hash_len <= sizeof(out) && std::memcmp(out, hash, hash_len) == 0;
 }
 
 void cmac_hash_forge(const unsigned char *key, int /*key_len*/, const unsigned char *in, usz in_len, unsigned char *hash)
 {
-	aes_context ctx;
-	aes_setkey_enc(&ctx, key, 128);
-	rpcs3_aes_cmac(&ctx, in_len, in, hash);
+	aes_ctx ctx;
+	aes_init(&ctx, key, 16);
+	aes_cmac(&ctx, in, in_len, hash);
 }
 
 char* extract_file_name(std::string_view file_path, char real_file_name[CRYPTO_MAX_PATH])
@@ -168,11 +173,6 @@ std::string sha256_get_hash(const char* data, usz size, bool lower_case)
 	return res_hash_string;
 }
 
-void mbedtls_zeroize(void *v, size_t n)
-{
-	static void *(*const volatile unop_memset)(void *, int, size_t) = &memset;
-	(void)unop_memset(v, 0, n);
-}
 
 
 // SC passphrase crypto
@@ -215,11 +215,12 @@ std::array<u8, PASSPHRASE_KEY_LEN> vtrm_portability_laid_paid()
 
 int sc_decrypt(const u8* sc_key, const std::array<u8, PASSPHRASE_KEY_LEN>& laid_paid, u8* iv, const u8* input, u8* output)
 {
-	aes_context ctx;
+	aes_ctx ctx;
 	u8 key[PASSPHRASE_KEY_LEN];
 	sc_form_key(sc_key, laid_paid, key);
-	aes_setkey_dec(&ctx, key, 128);
-	return aes_crypt_cbc(&ctx, AES_DECRYPT, PASSPHRASE_OUT_LEN, iv, input, output);
+	aes_init(&ctx, key, 16);
+	aes_cbc_decrypt(&ctx, iv, input, output, PASSPHRASE_OUT_LEN);
+	return 0;
 }
 
 int vtrm_decrypt(int type, u8* iv, const u8* input, u8* output)

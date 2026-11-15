@@ -131,7 +131,7 @@ static void reset_iv(std::array<u8, 16>& iv, u32 lba)
 }
 
 // Main function that will decrypt the sector(s)
-static bool decrypt_data(aes_context& aes, u64 offset, const std::span<u8> buffer, const std::span<u8> out_buffer, u64 size)
+static bool decrypt_data(aes_ctx& aes, u64 offset, const std::span<u8> buffer, const std::span<u8> out_buffer, u64 size)
 {
 	// The following preliminary checks are good to be provided.
 	// Commented out to gain a bit of performance, just because we know the caller is providing values in the expected range
@@ -172,11 +172,13 @@ static bool decrypt_data(aes_context& aes, u64 offset, const std::span<u8> buffe
 	cur_size -= cur_offset;
 
 	// Partial (or even full) first sector
-	if (aes_crypt_cbc(&aes, AES_DECRYPT, cur_size, iv.data(), &buffer[cur_offset], &out_buffer[cur_offset]) != 0)
+	if ((cur_size % 16) != 0)
 	{
 		iso_log.error("decrypt_data: Error decrypting data on first sector read");
 		return false;
 	}
+
+	aes_cbc_decrypt(&aes, iv.data(), &buffer[cur_offset], &out_buffer[cur_offset], cur_size);
 
 	if (sector_count < 2) // If no more sector(s)
 	{
@@ -192,11 +194,7 @@ static bool decrypt_data(aes_context& aes, u64 offset, const std::span<u8> buffe
 	{
 		reset_iv(iv, ++cur_sector_lba); // Next sector's IV
 
-		if (aes_crypt_cbc(&aes, AES_DECRYPT, ISO_SECTOR_SIZE, iv.data(), &buffer[cur_offset], &out_buffer[cur_offset]) != 0)
-		{
-			iso_log.error("decrypt_data: Error decrypting data on inner sector(s) read");
-			return false;
-		}
+		aes_cbc_decrypt(&aes, iv.data(), &buffer[cur_offset], &out_buffer[cur_offset], ISO_SECTOR_SIZE);
 
 		cur_offset += ISO_SECTOR_SIZE;
 	}
@@ -204,11 +202,13 @@ static bool decrypt_data(aes_context& aes, u64 offset, const std::span<u8> buffe
 	reset_iv(iv, ++cur_sector_lba); // Next sector's IV
 
 	// Partial (or even full) last sector
-	if (aes_crypt_cbc(&aes, AES_DECRYPT, size - cur_offset, iv.data(), &buffer[cur_offset], &out_buffer[cur_offset]) != 0)
+	if (((size - cur_offset) % 16) != 0)
 	{
 		iso_log.error("decrypt_data: Error decrypting data on last sector read");
 		return false;
 	}
+
+	aes_cbc_decrypt(&aes, iv.data(), &buffer[cur_offset], &out_buffer[cur_offset], size - cur_offset);
 
 	return true;
 }
@@ -292,7 +292,7 @@ static bool is_any_block_encrypted(const std::vector<iso_magic_block>& blocks)
 
 // A key is only the right one once it decrypts every well known file the image holds. Trusting a single one would be
 // far too easy to hit by chance on a magic value as short as the three bytes of an "EBOOT.BIN"
-static bool decrypts_all_blocks(aes_context& aes_ctx, std::vector<iso_magic_block>& blocks)
+static bool decrypts_all_blocks(aes_ctx& aes_ctx, std::vector<iso_magic_block>& blocks)
 {
 	// The plaintext of every block lands here in turn, and always whole: nothing of the previous one is left
 	// behind to be compared by mistake
@@ -305,7 +305,7 @@ static bool decrypts_all_blocks(aes_context& aes_ctx, std::vector<iso_magic_bloc
 	});
 }
 
-iso_type_status iso_file_decryption::get_key(const std::string& key_path, aes_context* aes_ctx)
+iso_type_status iso_file_decryption::get_key(const std::string& key_path, aes_ctx* aes_ctx)
 {
 	fs::file key_file(key_path);
 
@@ -340,7 +340,7 @@ iso_type_status iso_file_decryption::get_key(const std::string& key_path, aes_co
 			}
 		}
 
-		aes_context aes_dec {};
+		struct aes_ctx aes_dec {}; // "struct": the parameter aes_ctx hides the type
 
 		// If "aes_ctx" not requested
 		if (!aes_ctx)
@@ -350,7 +350,7 @@ iso_type_status iso_file_decryption::get_key(const std::string& key_path, aes_co
 
 		// Create the decryption context. If the context is successfully created, fill in "aes_ctx"
 		// (if requested) and return REDUMP_ISO
-		if (aes_setkey_dec(aes_ctx, key.data(), 128) == 0)
+		if (aes_init(aes_ctx, key.data(), 16) == 0)
 		{
 			return iso_type_status::REDUMP_ISO;
 		}
@@ -359,7 +359,7 @@ iso_type_status iso_file_decryption::get_key(const std::string& key_path, aes_co
 	return iso_type_status::ERROR_PROCESSING_KEY;
 }
 
-iso_type_status iso_file_decryption::retrieve_key(iso_archive& archive, std::string& key_path, aes_context& aes_ctx, bool& content_encrypted)
+iso_type_status iso_file_decryption::retrieve_key(iso_archive& archive, std::string& key_path, aes_ctx& aes_ctx, bool& content_encrypted)
 {
 	std::vector<iso_magic_block> blocks;
 
@@ -457,7 +457,7 @@ void iso_file_decryption::verify_key_file(iso_archive& archive)
 	iso_log.error("verify_key_file: The key file found for the image does not decrypt it: '%s'", archive.path());
 }
 
-iso_type_status iso_file_decryption::check_type(const std::string& path, std::string* key_path, aes_context* aes_ctx)
+iso_type_status iso_file_decryption::check_type(const std::string& path, std::string* key_path, aes_ctx* aes_ctx)
 {
 	if (!is_iso_file(path))
 	{
@@ -629,16 +629,15 @@ bool iso_file_decryption::init(const std::string& path, iso_archive* archive)
 			u8 key_d1[] = {0x38, 11, 0xcf, 11, 0x53, 0x45, 0x5b, 60, 120, 0x17, 0xab, 0x4f, 0xa3, 0xba, 0x90, 0xed};
 			u8 iv_d1[] = {0x69, 0x47, 0x47, 0x72, 0xaf, 0x6f, 0xda, 0xb3, 0x42, 0x74, 0x3a, 0xef, 170, 0x18, 0x62, 0x87};
 
-			aes_context aes_d1;
+			aes_ctx aes_d1;
 
-			if (aes_setkey_enc(&aes_d1, key_d1, 128) == 0)
+			if (aes_init(&aes_d1, key_d1, 16) == 0)
 			{
-				if (aes_crypt_cbc(&aes_d1, AES_ENCRYPT, 16, &iv_d1[0], key, key) == 0)
+				aes_cbc_encrypt(&aes_d1, &iv_d1[0], key, key, 16);
+
+				if (aes_init(&m_aes_dec, key, 16) == 0)
 				{
-					if (aes_setkey_dec(&m_aes_dec, key, 128) == 0)
-					{
-						m_enc_type = iso_encryption_type::ENC_3K3Y; // SET ENCRYPTION TYPE: ENC_3K3Y
-					}
+					m_enc_type = iso_encryption_type::ENC_3K3Y; // SET ENCRYPTION TYPE: ENC_3K3Y
 				}
 			}
 
@@ -700,10 +699,14 @@ bool iso_file_decryption::set_key_from_d1(iso_archive& archive, const std::array
 	std::memcpy(key, disc_key.data(), sizeof(key));
 	std::memcpy(iv, iv_d1, sizeof(iv));
 
-	aes_context aes_d1;
+	aes_ctx aes_d1;
 
-	if (aes_setkey_enc(&aes_d1, key_d1, 128) != 0 || aes_crypt_cbc(&aes_d1, AES_ENCRYPT, sizeof(key), iv, key, key) != 0 ||
-		aes_setkey_dec(&m_aes_dec, key, 128) != 0)
+	if (aes_init(&aes_d1, key_d1, 16) == 0)
+	{
+		aes_cbc_encrypt(&aes_d1, iv, key, key, sizeof(key));
+	}
+
+	if (aes_init(&m_aes_dec, key, 16) != 0)
 	{
 		iso_log.error("set_key_from_d1: Failed to derive the decryption key from the disc key");
 		return false;

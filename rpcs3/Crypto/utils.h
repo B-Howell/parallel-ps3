@@ -28,8 +28,7 @@ void aesecb128_encrypt(const unsigned char *key, const unsigned char *in, unsign
 bool hmac_hash_compare(const unsigned char *key, int key_len, const unsigned char *in, usz in_len, const unsigned char *hash, usz hash_len);
 void hmac_hash_forge(const unsigned char *key, int key_len, const unsigned char *in, usz in_len, unsigned char *hash);
 bool cmac_hash_compare(const unsigned char *key, int key_len, const unsigned char *in, usz in_len, const unsigned char *hash, usz hash_len);
-void cmac_hash_forge(const unsigned char *key, int key_len, const unsigned char *in, usz in_len, const unsigned char *hash);
-void mbedtls_zeroize(void *v, size_t n);
+void cmac_hash_forge(const unsigned char *key, int key_len, const unsigned char *in, usz in_len, unsigned char *hash);
 
 // SC passphrase crypto
 

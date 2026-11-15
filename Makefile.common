@@ -199,8 +199,6 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/Utilities/stack_trace.cpp \
 	$(CORE_DIR)/Utilities/stereo_config.cpp \
 	$(CORE_DIR)/Utilities/version.cpp \
-	$(CORE_DIR)/rpcs3/Crypto/aes.cpp \
-	$(CORE_DIR)/rpcs3/Crypto/aesni.cpp \
 	$(CORE_DIR)/rpcs3/Crypto/decrypt_binaries.cpp \
 	$(CORE_DIR)/rpcs3/Crypto/ec.cpp \
 	$(CORE_DIR)/rpcs3/Crypto/key_vault.cpp \

@@ -4,7 +4,7 @@
 
 #include "Utilities/File.h"
 #include "util/types.hpp"
-#include "Crypto/aes.h"
+#include <crypto/crypto.h>
 
 #include <optional>
 #include <span>
@@ -80,7 +80,7 @@ class iso_archive;
 class iso_file_decryption
 {
 private:
-	aes_context m_aes_dec;
+	aes_ctx m_aes_dec;
 	iso_encryption_type m_enc_type = iso_encryption_type::NONE;
 	std::vector<iso_region_info> m_region_info;
 
@@ -88,18 +88,18 @@ private:
 	// image anyway. Nothing but a failing boot ever asks, so a game list scan never pays for the answer
 	std::optional<iso_key_status> m_key_status;
 
-	static iso_type_status get_key(const std::string& key_path, aes_context* aes_ctx = nullptr);
+	static iso_type_status get_key(const std::string& key_path, aes_ctx* aes_ctx = nullptr);
 
 	// "content_encrypted" comes back set when the content turned out to still be encrypted, which the blocks read to
 	// test the keys tell on their own: it spares the caller reading them a second time
-	static iso_type_status retrieve_key(iso_archive& archive, std::string& key_path, aes_context& aes_ctx, bool& content_encrypted);
+	static iso_type_status retrieve_key(iso_archive& archive, std::string& key_path, aes_ctx& aes_ctx, bool& content_encrypted);
 
 	// Tests the key file that was picked up by the name of the image, which nothing has verified yet, and drops it
 	// when the content turns out to need no key at all
 	void verify_key_file(iso_archive& archive);
 
 public:
-	static iso_type_status check_type(const std::string& path, std::string* key_path = nullptr, aes_context* aes_ctx = nullptr);
+	static iso_type_status check_type(const std::string& path, std::string* key_path = nullptr, aes_ctx* aes_ctx = nullptr);
 
 	bool init(const std::string& path, iso_archive* archive = nullptr);
 

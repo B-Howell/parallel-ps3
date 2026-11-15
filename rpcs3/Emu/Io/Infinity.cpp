@@ -3,7 +3,7 @@
 
 #include <bit>
 
-#include "Crypto/aes.h"
+#include <crypto/crypto.h>
 #include <lrc_hash.h>
 
 LOG_CHANNEL(infinity_log, "infinity");
@@ -318,10 +318,10 @@ u32 infinity_base::load_figure(const std::array<u8, 0x14 * 0x10>& buf, fs::file 
 		}
 	}
 
-	aes_context aes;
-	aes_setkey_dec(&aes, key.data(), 128);
+	aes_ctx aes;
+	aes_init(&aes, key.data(), 16);
 	std::array<u8, 16> infinity_decrypted_block{};
-	aes_crypt_ecb(&aes, AES_DECRYPT, &buf[16], infinity_decrypted_block.data());
+	aes_decrypt_block(&aes, &buf[16], infinity_decrypted_block.data());
 
 	u32 number = u32(infinity_decrypted_block[1]) << 16 | u32(infinity_decrypted_block[2]) << 8 |
 	             u32(infinity_decrypted_block[3]);
