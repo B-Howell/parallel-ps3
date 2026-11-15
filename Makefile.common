@@ -605,7 +605,6 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/VKGSRender.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/VKHelpers.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/VKLibretro.cpp \
-	$(CORE_DIR)/rpcs3/Emu/RSX/VK/VKMemAlloc.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/VKOverlays.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/VKPipelineCompiler.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/VKPresent.cpp \
@@ -637,6 +636,7 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/vkutils/image_helpers.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/vkutils/instance.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/vkutils/memory.cpp \
+	$(CORE_DIR)/rpcs3/Emu/RSX/VK/vkutils/vk_heap.c \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/vkutils/sampler.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/vkutils/scratch.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/vkutils/shared.cpp \
@@ -801,7 +801,6 @@ INCLUDES_RPCS3 := \
 	-I$(CORE_DIR)/3rdparty/rtmidi/rtmidi \
 	-isystem $(CORE_DIR)/3rdparty/asmjit/asmjit/src \
 	-isystem $(CORE_DIR)/3rdparty/GL \
-	-isystem $(CORE_DIR)/3rdparty/GPUOpen/VulkanMemoryAllocator/include \
 	-isystem $(CORE_DIR)/3rdparty/Vulkan-Headers/include \
 	-isystem $(CORE_DIR)/3rdparty/volk
 INCLUDES_LIBRETRO := \

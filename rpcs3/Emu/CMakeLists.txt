@@ -634,6 +634,7 @@ if(TARGET 3rdparty_vulkan)
         RSX/VK/vkutils/sync.cpp
         RSX/VK/vkutils/swapchain.cpp
         RSX/VK/vkutils/memory.cpp
+        RSX/VK/vkutils/vk_heap.c
         RSX/VK/vkutils/device.cpp
         RSX/VK/vkutils/sampler.cpp
         RSX/VK/vkutils/shared.cpp
@@ -652,7 +653,6 @@ if(TARGET 3rdparty_vulkan)
         RSX/VK/VKGSRender.cpp
         RSX/VK/VKLibretro.cpp
         RSX/VK/VKHelpers.cpp
-        RSX/VK/VKMemAlloc.cpp
         RSX/VK/VKOverlays.cpp
         RSX/VK/VKPipelineCompiler.cpp
         RSX/VK/VKPresent.cpp
@@ -688,7 +688,6 @@ target_link_libraries(rpcs3_emu
         3rdparty::opengl
         3rdparty::vulkan
         3rdparty::libusb
-        3rdparty::vulkanmemoryallocator
         libretro_common
         Threads::Threads
     PRIVATE

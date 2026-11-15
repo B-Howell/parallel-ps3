@@ -19,7 +19,3 @@
 	path = 3rdparty/fusion/fusion
 	url = ../../xioTechnologies/Fusion.git
 	ignore = dirty
-[submodule "3rdparty/GPUOpen/VulkanMemoryAllocator"]
-	path = 3rdparty/GPUOpen/VulkanMemoryAllocator
-	url = ../../GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
-	ignore = dirty

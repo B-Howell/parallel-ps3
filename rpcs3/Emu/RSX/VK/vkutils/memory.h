@@ -4,15 +4,10 @@
 
 #include "Emu/RSX/Utils/rsx_utils.h"
 
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wnullability-completeness"
-#endif
-#define VMA_VULKAN_VERSION 1002000
-#include <vk_mem_alloc.h>
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
+#include "vk_heap.h"
+#include "Emu/CPU/turn_calls.h"
+
+#include <memory>
 
 namespace vk
 {
@@ -74,86 +69,38 @@ namespace vk
 		vmm_allocation_pool pool = VMM_ALLOCATION_POOL_UNDEFINED;
 		bool throw_on_fail = true;
 		bool recover_vmem_on_fail = true;
+		// A buffer or a linear image; an optimal image is not. The two never
+		// share a block (bufferImageGranularity)
+		bool linear = true;
 	};
 
-	class mem_allocator_base
+	// Device memory: the renderer's own blocks, handed out as offsets in them
+	// (vk_heap.h, in place of the Vulkan Memory Allocator), in the heap's
+	// turn (turn_calls.h): no lock. With "Disable Vulkan Memory Allocator"
+	// every allocation is a VkDeviceMemory of its own, as it was
+	class mem_allocator
 	{
 	public:
-		using mem_handle_t = void*;
+		mem_allocator(const vk::render_device& dev, VkPhysicalDevice pdev);
+		~mem_allocator();
 
-		mem_allocator_base(const vk::render_device& dev, VkPhysicalDevice pdev);
-		virtual ~mem_allocator_base() = default;
+		// out.memory is VK_NULL_HANDLE when there was no memory and the
+		// request does not throw. memory_type is the type it came from
+		void alloc(const memory_allocation_request& request, u32& memory_type, vk_heap_alloc_t& out);
+		void free(const vk_heap_alloc_t& alloc);
 
-		virtual void destroy() = 0;
+		// The fullest driver heap's use of its budget, in percent
+		f32 get_memory_usage();
 
-		// The memory type it came from in memory_type, for the block to account its free with
-		virtual mem_handle_t alloc(const memory_allocation_request& request, u32& memory_type) = 0;
-		virtual void free(mem_handle_t mem_handle) = 0;
-		virtual void* map(mem_handle_t mem_handle, u64 offset, u64 size) = 0;
-		virtual void unmap(mem_handle_t mem_handle) = 0;
-		virtual VkDeviceMemory get_vk_device_memory(mem_handle_t mem_handle) = 0;
-		virtual u64 get_vk_device_memory_offset(mem_handle_t mem_handle) = 0;
-		virtual f32 get_memory_usage() = 0;
-
-		virtual void set_safest_allocation_flags() {}
-		virtual void set_fastest_allocation_flags() {}
-
-	protected:
-		VkDevice m_device;
-		VkFlags  m_allocation_flags;
-	};
-
-
-	// Memory Allocator - Vulkan Memory Allocator
-	// https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
-
-	class mem_allocator_vma : public mem_allocator_base
-	{
-	public:
-		mem_allocator_vma(const vk::render_device& dev, VkPhysicalDevice pdev, VkInstance inst);
-		~mem_allocator_vma() override = default;
-
-		void destroy() override;
-
-		mem_handle_t alloc(const memory_allocation_request& request, u32& memory_type) override;
-
-		void free(mem_handle_t mem_handle) override;
-		void* map(mem_handle_t mem_handle, u64 offset, u64 /*size*/) override;
-		void unmap(mem_handle_t mem_handle) override;
-
-		VkDeviceMemory get_vk_device_memory(mem_handle_t mem_handle) override;
-		u64 get_vk_device_memory_offset(mem_handle_t mem_handle) override;
-		f32 get_memory_usage() override;
-
-		void set_safest_allocation_flags() override;
-		void set_fastest_allocation_flags() override;
+		mem_allocator(const mem_allocator&) = delete;
+		mem_allocator& operator=(const mem_allocator&) = delete;
 
 	private:
-		VmaAllocator m_allocator;
-		std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> stats;
+		VkResult try_alloc(const memory_allocation_request& request, u32& memory_type, vk_heap_alloc_t& out);
+
+		std::unique_ptr<vk_heap_t> m_heap;
+		turn_calls_cpp m_turns;
 		u32 m_rebar_heap_idx = UINT32_MAX;
-	};
-
-
-	// Memory Allocator - built-in Vulkan device memory allocate/free
-
-	class mem_allocator_vk : public mem_allocator_base
-	{
-	public:
-		mem_allocator_vk(const vk::render_device& dev, VkPhysicalDevice pdev) : mem_allocator_base(dev, pdev) {}
-		~mem_allocator_vk() override = default;
-
-		void destroy() override {}
-
-		mem_handle_t alloc(const memory_allocation_request& request, u32& memory_type) override;
-
-		void free(mem_handle_t mem_handle) override;
-		void* map(mem_handle_t mem_handle, u64 offset, u64 size) override;
-		void unmap(mem_handle_t mem_handle) override;
-
-		VkDeviceMemory get_vk_device_memory(mem_handle_t mem_handle) override;
-		u64 get_vk_device_memory_offset(mem_handle_t /*mem_handle*/) override;
-		f32 get_memory_usage() override;
 	};
 
 	struct memory_block
@@ -177,8 +124,8 @@ namespace vk
 
 	private:
 		VkDevice m_device;
-		vk::mem_allocator_base* m_mem_allocator = nullptr;
-		mem_allocator_base::mem_handle_t m_mem_handle;
+		vk::mem_allocator* m_mem_allocator = nullptr;
+		vk_heap_alloc_t m_alloc{};
 		u64 m_size;
 
 		// What the allocation counted against, given back on its free: the
@@ -221,5 +168,5 @@ namespace vk
 	void vmm_notify_object_allocated(vmm_allocation_pool pool);
 	void vmm_notify_object_freed(vmm_allocation_pool pool);
 
-	mem_allocator_base* get_current_mem_allocator();
+	mem_allocator* get_current_mem_allocator();
 }

@@ -16,15 +16,6 @@ endif()
 add_library(3rdparty_dummy_lib INTERFACE)
 
 
-if (USE_SYSTEM_VULKAN_MEMORY_ALLOCATOR)
-	find_package(VulkanMemoryAllocator REQUIRED GLOBAL)
-	add_library(3rdparty::vulkanmemoryallocator ALIAS GPUOpen::VulkanMemoryAllocator)
-else()
-	add_library(3rdparty_vulkanmemoryallocator INTERFACE)
-	target_include_directories(3rdparty_vulkanmemoryallocator SYSTEM INTERFACE GPUOpen/VulkanMemoryAllocator/include)
-	add_library(3rdparty::vulkanmemoryallocator ALIAS 3rdparty_vulkanmemoryallocator)
-endif()
-
 # libusb
 if(CMAKE_SYSTEM_NAME MATCHES "DragonFly|FreeBSD")
 	pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0>=1.0 )

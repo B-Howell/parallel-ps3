@@ -144,7 +144,8 @@ namespace vk
 			.alignment = memory_req.alignment,
 			.memory_type = &allocation_type_info,
 			.pool = allocation_pool,
-			.throw_on_fail = !nullable
+			.throw_on_fail = !nullable,
+			.linear = info.tiling == VK_IMAGE_TILING_LINEAR
 		};
 		memory = std::make_shared<vk::memory_block>(m_device, alloc_request);
 

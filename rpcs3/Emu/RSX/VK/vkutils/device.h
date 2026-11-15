@@ -147,7 +147,7 @@ namespace vk
 		physical_device* pgpu = nullptr;
 		memory_type_mapping memory_map{};
 		gpu_formats_support m_formats_support{};
-		std::unique_ptr<mem_allocator_base> m_allocator;
+		std::unique_ptr<mem_allocator> m_allocator;
 		VkDevice dev = VK_NULL_HANDLE;
 
 		// What was enabled of physical_device::interpreter_dynamic_caps
@@ -213,7 +213,7 @@ namespace vk
 		u32 get_present_queue_family() const { return m_graphics_queue_family; }
 		u32 get_transfer_queue_family() const { return m_transfer_queue_family; }
 
-		mem_allocator_base* get_allocator() const { return m_allocator.get(); }
+		mem_allocator* get_allocator() const { return m_allocator.get(); }
 
 		operator VkDevice() const { return dev; }
 	};

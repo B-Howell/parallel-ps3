@@ -178,16 +178,8 @@ namespace vk
 		const auto vmm_load = get_current_mem_allocator()->get_memory_usage();
 		rsx::problem_severity load_severity = rsx::problem_severity::low;
 
-		// Fragmentation tuning
-		if (vmm_load < 50.f)
+		if (vmm_load > 75.f)
 		{
-			get_current_mem_allocator()->set_fastest_allocation_flags();
-		}
-		else if (vmm_load > 75.f)
-		{
-			// Avoid fragmentation if we can
-			get_current_mem_allocator()->set_safest_allocation_flags();
-
 			if (vmm_load > 95.f)
 			{
 				// Drivers will often crash long before returning OUT_OF_DEVICE_MEMORY errors.

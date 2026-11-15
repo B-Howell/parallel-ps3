@@ -1002,14 +1002,7 @@ namespace vk
 		memory_map = vk::get_memory_mapping(pdev);
 		m_formats_support = vk::get_optimal_tiling_supported_formats(pdev);
 
-		if (g_cfg.video.disable_vulkan_mem_allocator)
-		{
-			m_allocator = std::make_unique<vk::mem_allocator_vk>(*this, pdev);
-		}
-		else
-		{
-			m_allocator = std::make_unique<vk::mem_allocator_vma>(*this, pdev, pdev);
-		}
+		m_allocator = std::make_unique<vk::mem_allocator>(*this, pdev);
 
 		// Useful for debugging different VRAM configurations
 		const u64 vram_allocation_limit = g_cfg.video.vk.vram_allocation_limit * 0x100000ull;
@@ -1025,11 +1018,7 @@ namespace vk
 
 		if (dev && pgpu)
 		{
-			if (m_allocator)
-			{
-				m_allocator->destroy();
-				m_allocator.reset();
-			}
+			m_allocator.reset();
 
 			// The frontend's device: it destroys it itself, after destroy_device.
 			if (!vk::libretro::is_frontend_device(dev))
