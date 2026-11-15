@@ -3689,6 +3689,11 @@ namespace rsx
 				vblank_at_flip = +vblank_count;
 				flip_notification_count = 1;
 				exit = true;
+
+				// In fast-forward retro_run grants the frame it waits for
+				// when it sees this (libretro_guest_frame_due)
+				if (requested_vsync)
+					libretro_guest_flip_waits();
 			}
 
 			if (requested_vsync && (exit || vblank_at_flip == vblank_count))

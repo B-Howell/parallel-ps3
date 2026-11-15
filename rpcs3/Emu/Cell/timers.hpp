@@ -23,6 +23,10 @@ bool libretro_guest_frame_due(double frame_seconds);
 // The RSX thread: the game showed a frame (sys_time.cpp)
 void libretro_guest_flipped();
 
+// The RSX thread: a flip the game asked for waits for the next VBLANK
+// (sys_time.cpp)
+void libretro_guest_flip_waits();
+
 // retro_run's thread, once a frame after the grant: the game's watchdog
 // looks at the guest's clock (sys_game.cpp)
 void lv2_watchdog_tick();

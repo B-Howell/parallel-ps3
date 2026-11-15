@@ -158,11 +158,19 @@ void libretro_guest_clock_grant(double frame_seconds)
 	retro_waitaddr_notify_all(&s_clock_seq);
 }
 
-// The frames the game has shown (libretro_guest_flipped), and the grants
-// since the last of them; retro_run's own
+// The frames the game has shown (libretro_guest_flipped) and the flips it
+// asked for that wait for the next VBLANK (libretro_guest_flip_waits);
+// the rest retro_run's own: the counts it last saw, the grants since the
+// last frame shown, whether one of them came faster than real time, and
+// how many frames the game takes for a picture at the frontend's pace
+// (16ths: 16 at 60 fps, 32 at 30)
 static retro_atomic_int_t s_guest_flips;
+static retro_atomic_int_t s_guest_flip_waits;
 static int s_due_flips;
+static int s_due_waits;
 static int s_grants_since_flip;
+static bool s_fast_since_flip;
+static int s_frames_per_flip16 = 16;
 
 // The RSX thread: the game showed a frame
 void libretro_guest_flipped()
@@ -170,29 +178,54 @@ void libretro_guest_flipped()
 	retro_atomic_inc_int(&s_guest_flips);
 }
 
+// The RSX thread: a flip the game asked for waits for the next VBLANK
+void libretro_guest_flip_waits()
+{
+	retro_atomic_inc_int(&s_guest_flip_waits);
+}
+
 // retro_run's thread, before it grants: whether the guest is owed a frame
-// now. Not when retro_run comes faster than real time (fast-forward) and the
-// game has shown nothing for the last few frames it was given: then the
-// guest's time ran on, every frame retro_run asked for, while its threads
-// did no more than the host let them - a loading screen's timeouts ran out
-// before the loads they waited on, and the game's audio fell periods behind
-// cellAudio's, which never caught up again. So the guest's time goes as fast
-// as the game makes frames, and while it makes none, at most twice real time.
-// At the frontend's pace, or slower, every frame is owed.
+// now. At the frontend's pace, or slower, always. Faster (fast-forward)
+// only as fast as the game makes pictures: the guest's time used to run on
+// a frame every retro_run, whatever the game did, while its threads did no
+// more than the host let them - a loading screen's timeouts ran out before
+// the loads they waited on, and the game's audio fell periods behind
+// cellAudio's for good. A picture of the game's takes as many frames as it
+// took at the frontend's pace - one at 60 fps, two at 30 - and in
+// fast-forward it gets those: all but the last at once after its last
+// picture, the last when its flip waits for that VBLANK. Given all at once
+// (four after each picture, then waiting half a frame for more) they went
+// by while the game drew, the flip still waited for one more, and every
+// picture moved the game on two and a half of its own: choppy, and no
+// faster than a picture every half frame. With nothing to go by (no
+// picture, no flip waiting) at most twice real time.
 bool libretro_guest_frame_due(double frame_seconds)
 {
 	const u64 freq = utils::get_tsc_freq();
 	if (!freq || !(frame_seconds > 0) || !retro_atomic_load_relaxed_size(&s_clock_grant))
 		return true;
+
 	const int flips = retro_atomic_load_acquire_int(&s_guest_flips);
 	if (flips != s_due_flips)
 	{
+		// What a picture took, learnt at the frontend's pace only: in
+		// fast-forward it takes what it is given
+		if (!s_fast_since_flip && s_grants_since_flip >= 1 && s_grants_since_flip <= 4)
+			s_frames_per_flip16 += (s_grants_since_flip * 16 - s_frames_per_flip16) / 4;
 		s_due_flips = flips;
 		s_grants_since_flip = 0;
+		s_fast_since_flip = false;
 	}
+	const int waits = retro_atomic_load_acquire_int(&s_guest_flip_waits);
+	const bool flip_waits = waits != s_due_waits;
+	s_due_waits = waits;
+
 	const u64 frame = static_cast<u64>(frame_seconds * static_cast<double>(freq));
-	if (s_grants_since_flip < 4 || utils::get_tsc() - s_clock_last_grant_tsc >= frame / 2)
+	const bool paced = utils::get_tsc() - s_clock_last_grant_tsc >= frame / 2;
+	const int per_flip = std::clamp((s_frames_per_flip16 + 8) >> 4, 1, 4);
+	if (paced || flip_waits || s_grants_since_flip < per_flip - 1)
 	{
+		s_fast_since_flip |= !paced;
 		s_grants_since_flip++;
 		return true;
 	}

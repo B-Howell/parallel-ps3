@@ -2147,7 +2147,13 @@ bool lv2_obj::wait_timeout(u64 usec, ppu_thread* cpu, bool scale, bool is_usleep
 {
 	static_assert(u64{umax} / max_timeout >= 100, "max timeout is not valid for scaling");
 
-	// The time waited is the guest's, which stops with retro_run
+	// The time waited is the guest's, which stops with retro_run. Its word,
+	// read before each look at the time: a frame granted after the look
+	// ends the wait, which looks again. While the guest's clock stood at the
+	// end of its frame (fast-forward, the game drawing) each wait slept a
+	// millisecond of the host's at least, through the grant
+	const retro_atomic_int_t& clock_word = *static_cast<const retro_atomic_int_t*>(libretro_guest_clock_word());
+	u32 clock_seen = static_cast<u32>(retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&clock_word)));
 	const u64 slaved_start = get_slaved_system_time();
 
 	if (cpu)
@@ -2180,7 +2186,11 @@ bool lv2_obj::wait_timeout(u64 usec, ppu_thread* cpu, bool scale, bool is_usleep
 
 	auto wait_for = [&](u64 timeout)
 	{
-		thread_ctrl::wait_on(state, old_state, timeout);
+		thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+		{
+			list.template set<0>(state, old_state);
+			list.template set<1>(clock_word, clock_seen);
+		}, timeout);
 	};
 
 	for (;; old_state = state)
@@ -2258,6 +2268,7 @@ bool lv2_obj::wait_timeout(u64 usec, ppu_thread* cpu, bool scale, bool is_usleep
 			}
 		}
 
+		clock_seen = static_cast<u32>(retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&clock_word)));
 		passed = get_slaved_system_time() - slaved_start;
 	}
 

@@ -397,29 +397,64 @@ int main()
 		std::printf("test_guest_clock: watchdog of 1 s ran out at frame %d; %s after 1.3 s paused\n", fired_at, fired_paused ? "ran out" : "not");
 	}
 
-	// Fast-forward goes as fast as the game makes frames, no faster:
-	// retro_run as the core runs it (libretro_guest_frame_due, then the
-	// grant), coming every 0.2 ms. The guest's time used to run on a frame
-	// every retro_run, whatever the game did: a loading screen's timeouts
-	// ran out before their loads, and the game's audio fell behind
-	// cellAudio's for good. A game that shows nothing gets at most twice
-	// real time; one that shows a frame for every frame (or every second
-	// one, at 30 fps) gets every frame asked for; at the frontend's own
-	// pace, uneven, every frame is owed even with nothing shown.
+	// Fast-forward goes as fast as the game makes pictures, no faster, and
+	// each picture gets the frames it gets at the frontend's pace: retro_run
+	// as the core runs it (libretro_guest_frame_due, then the grant), every
+	// 0.1 ms, beside a game that takes 1 ms of the host's to draw a picture,
+	// asks for the flip once it has seen all but the last of its frames go
+	// by (one at 60 fps, two at 30), and flips at the next VBLANK, as the RSX
+	// thread does. The guest's time used to run on a frame every retro_run,
+	// whatever the game did: a loading screen's timeouts ran out before
+	// their loads, and the game's audio fell behind cellAudio's for good.
+	// Then it gave four frames after each picture at once, which went by
+	// while the game drew, and the flip waited for half a frame more: five
+	// frames a picture at 30 fps, choppy, and a picture every half frame at
+	// most. A game that shows nothing gets at most twice real time; at the
+	// frontend's own pace, uneven, every frame is owed even with nothing
+	// shown.
 	{
-		const auto run_for = [](int ms, int flip_every, int sleep_us, const int* pattern_ms, int pattern_n) -> std::pair<int, int>
+		struct game_model
+		{
+			int frames = 0;  // a picture's, at the frontend's pace
+			int seen = 0;    // VBLANKs since the last picture
+			bool asked = false;
+			std::chrono::steady_clock::time_point flipped{};
+			int pictures = 0;
+			int vblanks = 0;
+		};
+
+		const auto run_for = [](int ms, game_model* g, int sleep_us, const int* pattern_ms, int pattern_n) -> std::pair<int, int>
 		{
 			int runs = 0, grants = 0;
 			const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
 			while (std::chrono::steady_clock::now() < until)
 			{
 				runs++;
+				// The game, drawn, asks for its flip
+				if (g && !g->asked && g->seen >= g->frames - 1 && std::chrono::steady_clock::now() - g->flipped >= std::chrono::milliseconds(1))
+				{
+					g->asked = true;
+					libretro_guest_flip_waits();
+				}
 				if (libretro_guest_frame_due(kFrame))
 				{
 					libretro_guest_clock_grant(kFrame);
 					grants++;
-					if (flip_every && grants % flip_every == 0)
-						libretro_guest_flipped();
+					if (g)
+					{
+						// The VBLANK: the flip asked for happens at it
+						g->vblanks++;
+						if (g->asked)
+						{
+							g->asked = false;
+							g->seen = 0;
+							g->pictures++;
+							g->flipped = std::chrono::steady_clock::now();
+							libretro_guest_flipped();
+						}
+						else
+							g->seen++;
+					}
 				}
 				if (pattern_n)
 					sleep_ms(pattern_ms[runs % pattern_n]);
@@ -430,28 +465,74 @@ int main()
 		};
 
 		const u64 a = get_slaved_system_time();
-		const auto still = run_for(300, 0, 200, nullptr, 0);
+		const auto still = run_for(300, nullptr, 100, nullptr, 0);
 		const u64 moved = get_slaved_system_time() - a;
-		// Two frames for every frame of real time, the few owed after the
-		// game's last frame, and the scheduler's slack
-		CHECK(still.second <= 300 * 2 * 60 / 1000 + 4 + 6);
+		// Two frames for every frame of real time and the scheduler's slack
+		CHECK(still.second <= 300 * 2 * 60 / 1000 + 6);
 		CHECK(still.second >= 300 * 60 / 1000);
 		CHECK(moved <= 700000);
 
-		// The game shows a frame again
-		libretro_guest_flipped();
-		const auto every = run_for(150, 1, 200, nullptr, 0);
-		CHECK(every.second == every.first);
-		const auto half = run_for(150, 2, 200, nullptr, 0);
-		CHECK(half.second == half.first);
+		const int even[] = {16};
+		const auto fast = [&](int frames, game_model& g)
+		{
+			// Learnt at the frontend's pace first, then fast-forward
+			g.frames = frames;
+			run_for(400, &g, 0, even, 1);
+			g.pictures = g.vblanks = 0;
+			run_for(300, &g, 100, nullptr, 0);
+		};
+		game_model g60, g30;
+		fast(1, g60);
+		fast(2, g30);
+		// Every picture its frames: no more, and none of them waited for.
+		// A picture a millisecond and a bit, where a picture every half
+		// frame was 36 in 300 ms
+		CHECK(g60.pictures >= 100 && g60.vblanks <= g60.pictures + 1);
+		CHECK(g30.pictures >= 100 && g30.vblanks <= 2 * g30.pictures + 2);
 
-		libretro_guest_flipped();
 		const int uneven[] = {16, 10, 23, 16, 12, 20, 16};
-		const auto paced = run_for(400, 0, 0, uneven, 7);
-		CHECK(paced.second == paced.first);
+		const auto paced = run_for(400, nullptr, 0, uneven, 7);
+		// All but the first, which comes right after the fast-forward
+		CHECK(paced.second >= paced.first - 1);
 		std::printf("test_guest_clock: fast-forward, nothing shown: %d of %d runs owed a frame, guest moved %.1f ms in 300 ms; "
-			"a frame shown each: %d of %d; at 30 fps: %d of %d; at the frontend's uneven pace: %d of %d\n",
-			still.second, still.first, moved / 1000.0, every.second, every.first, half.second, half.first, paced.second, paced.first);
+			"at 60 fps %d pictures in 300 ms, %d frames; at 30 fps %d pictures, %d frames; at the frontend's uneven pace: %d of %d owed\n",
+			still.second, still.first, moved / 1000.0, g60.pictures, g60.vblanks, g30.pictures, g30.vblanks, paced.second, paced.first);
+	}
+
+	// A game's timed wait while the guest's clock stands at the end of its
+	// frame (fast-forward, the game drawing) ends soon after the next frame
+	// is granted: lv2_obj::wait_timeout wakes on the grant. It slept a
+	// millisecond of the host's at least, through the grant, on every look.
+	{
+		int quick = 0;
+		u64 worst = 0;
+		for (int t = 0; t < 10; t++)
+		{
+			// Frames every 0.5 ms (a fast-forward at about 33 times), then
+			// the clock at the end of its frame
+			for (int i = 0; i < 4; i++)
+			{
+				libretro_guest_clock_grant(kFrame);
+				std::this_thread::sleep_for(std::chrono::microseconds(500));
+			}
+			sleep_ms(2);
+			std::atomic<u64> ended{0};
+			named_thread waiter("Game", [&]
+			{
+				lv2_obj::wait_timeout(2000, nullptr, false, true);
+				ended = get_system_time();
+			});
+			std::this_thread::sleep_for(std::chrono::microseconds(300));
+			const u64 granted = get_system_time();
+			libretro_guest_clock_grant(kFrame);
+			waiter();
+			const u64 after = ended - granted;
+			worst = std::max(worst, after);
+			if (after < 700)
+				quick++;
+		}
+		CHECK(quick >= 7);
+		std::printf("test_guest_clock: a 2 ms wait with the clock at its frame's end: %d of 10 ended within 0.7 ms of the grant (worst %.2f ms)\n", quick, worst / 1000.0);
 	}
 
 	std::printf("test_guest_clock: paused 120 ms, guest moved %.1f ms; 10 frames at once, %.1f had; "
