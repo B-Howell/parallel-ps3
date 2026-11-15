@@ -22,6 +22,7 @@
 #include "test_common.h"
 
 #include <pthread.h>
+#include <sched.h>
 
 static void *item_of(size_t n) { return (void*)(n + 1); }
 static size_t number_of(void *item) { return (size_t)item - 1; }
@@ -277,6 +278,63 @@ static void churning(void)
    lf_item_pool_free(&shared);
 }
 
+/* Two threads each put an item in, then both take theirs out at once, again
+ * and again. Whichever slot empties last, the limit is back to 0 once both
+ * are out: the top slot coming down must not stop at the one under it while
+ * that one's owner, which looked at the limit before the top came down, is
+ * still giving it up. */
+static retro_atomic_int_t lockstep_phase;
+static retro_atomic_int_t lockstep_low;
+
+#define LOCKSTEP_ROUNDS 50000
+
+static void lockstep_meet(int *seen, int threads)
+{
+   int at = ++*seen * threads;
+   retro_atomic_fetch_add_int(&lockstep_phase, 1);
+   while (retro_atomic_load_acquire_int(&lockstep_phase) < at)
+      sched_yield();
+}
+
+static void *lockstepper(void *arg)
+{
+   size_t t = (size_t)arg;
+   int seen = 0, i;
+   for (i = 0; i < LOCKSTEP_ROUNDS; i++)
+   {
+      if (!lf_item_pool_put(&shared, t, 0, 1, item_of(t)))
+         retro_atomic_fetch_add_int(&bad, 1);
+      lockstep_meet(&seen, 2);
+      if (lf_item_pool_take(&shared, t, 0) != item_of(t))
+         retro_atomic_fetch_add_int(&bad, 1);
+      lockstep_meet(&seen, 2);
+      if (t == 0 && retro_atomic_load_acquire_64(&shared.limit) != 0)
+      {
+         retro_atomic_fetch_add_int(&lockstep_low, 1);
+         /* Back to a clean pool for the next round */
+         retro_atomic_store_release_64(&shared.limit, 0);
+      }
+      lockstep_meet(&seen, 2);
+   }
+   return NULL;
+}
+
+static void lockstep(void)
+{
+   pthread_t p[2];
+   size_t t;
+
+   TEST_CHECK(lf_item_pool_init(&shared, 2));
+   retro_atomic_store_release_int(&bad, 0);
+   for (t = 0; t < 2; t++)
+      pthread_create(&p[t], NULL, lockstepper, (void*)t);
+   for (t = 0; t < 2; t++)
+      pthread_join(p[t], NULL);
+   TEST_CHECK(retro_atomic_load_acquire_int(&bad) == 0);
+   TEST_CHECK(retro_atomic_load_acquire_int(&lockstep_low) == 0);
+   lf_item_pool_free(&shared);
+}
+
 /* Closing while items go in */
 static retro_atomic_int_t taken_in;
 
@@ -329,6 +387,7 @@ int main(void)
    alone();
    together();
    churning();
+   lockstep();
    closing();
    printf("test_lf_item_pool: %s\n", test_failures ? "FAIL" : "ok");
    return test_failures ? 1 : 0;

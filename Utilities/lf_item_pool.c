@@ -70,15 +70,30 @@ static void *lf_pool_empty(struct lf_item_pool *pool, size_t i)
       int lowered = (uint64_t)retro_atomic_load_relaxed_64(&pool->limit) == i + 1
          && retro_atomic_cas_64(&pool->limit, i + 1, i);
 
+      if (!lowered)
+      {
+         /* The slot above may have come down to here since the look at the
+          * limit, and found this one still owned: it stopped there. So,
+          * once given up, look again and come down from here. The exchange
+          * is a full barrier, as is that thread's lowering compare-and-swap
+          * before its own look: one of the two sees the other. */
+         (void)retro_atomic_exchange_64(&pool->keys[i], LF_POOL_EMPTY);
+
+         if ((uint64_t)retro_atomic_load_acquire_64(&pool->limit) != i + 1
+               || !retro_atomic_cas_64(&pool->keys[i], LF_POOL_EMPTY, LF_POOL_OWNED))
+            break;
+
+         continue;
+      }
+
       retro_atomic_store_release_64(&pool->keys[i], LF_POOL_EMPTY);
 
-      if (!lowered || !i)
+      if (!i)
          break;
 
       i--;
 
-      if (retro_atomic_load_relaxed_64(&pool->keys[i]) != LF_POOL_EMPTY
-            || !retro_atomic_cas_64(&pool->keys[i], LF_POOL_EMPTY, LF_POOL_OWNED))
+      if (!retro_atomic_cas_64(&pool->keys[i], LF_POOL_EMPTY, LF_POOL_OWNED))
          break;
    }
 
