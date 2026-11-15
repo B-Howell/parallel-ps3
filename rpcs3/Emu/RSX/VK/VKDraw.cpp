@@ -1248,6 +1248,9 @@ void VKGSRender::begin()
 {
 	// Save shader state now before prefetch and loading happens
 	m_interpreter_state = (m_graphics_state.load() & rsx::pipeline_state::invalidate_pipeline_bits);
+	vk_interp_uploads_changed(&m_interp_uploads,
+		((m_interpreter_state & rsx::pipeline_state::vertex_program_dirty) ? VK_INTERP_VP_DIRTY : 0u) |
+		((m_interpreter_state & rsx::pipeline_state::fragment_program_dirty) ? VK_INTERP_FP_DIRTY : 0u));
 
 	rsx::thread::begin();
 

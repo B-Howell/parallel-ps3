@@ -29,6 +29,7 @@ namespace rsx
 			const u32 load = REGS(ctx)->transform_constant_load();
 
 			REGS(ctx)->transform_constants[load + constant_id][subreg] = arg;
+			RSX(ctx)->m_transform_constants_seq++;
 		}
 
 		void set_transform_constant::batch_decode(context* ctx, u32 reg, const std::span<const u32>& args, const std::function<bool(context*, u32, u32)>& notify)
@@ -40,6 +41,7 @@ namespace rsx
 
 			auto dst = &REGS(ctx)->transform_constants[load + constant_id][subreg];
 			copy_data_swap_u32(dst, args.data(), ::size32(args));
+			RSX(ctx)->m_transform_constants_seq++;
 
 			// Notify
 			const u32 last_constant_id = ((reg + ::size32(args) + 3) - NV4097_SET_TRANSFORM_CONSTANT) / 4; // Aligned div
@@ -118,6 +120,7 @@ namespace rsx
 			{
 				// Minor optimization: don't compare values if we already know we need invalidation
 				copy_data_swap_u32(values, fifo_span.data(), rcount);
+				RSX(ctx)->m_transform_constants_seq++;
 			}
 			else
 			{
@@ -125,6 +128,7 @@ namespace rsx
 				{
 					// Transform constants invalidation is expensive (~8k bytes per update)
 					RSX(ctx)->m_graphics_state |= rsx::pipeline_state::transform_constants_dirty;
+					RSX(ctx)->m_transform_constants_seq++;
 				}
 			}
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "vk_interpreter_uploads.h"
 #include "upscalers/upscaling.h"
 
 #include "vkutils/descriptors.h"
@@ -242,6 +243,12 @@ private:
 
 	vk::shader_interpreter m_shader_interpreter;
 	u32 m_interpreter_state;
+
+	// What the interpreter puts on the GPU again (vk_interpreter_uploads.h)
+	vk_interp_uploads m_interp_uploads{};
+	u64 m_heap_epoch = 0; // Frames whose ring space was given back
+	VkDescriptorBufferInfoEx m_interpreter_xform_info{};
+	u64 m_interpreter_xform_offset = 0;
 
 public:
 	u64 get_cycles() final;

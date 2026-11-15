@@ -620,6 +620,7 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/VKResolveHelper.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/VKResourceManager.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/VKShaderInterpreter.cpp \
+	$(CORE_DIR)/rpcs3/Emu/RSX/VK/vk_interpreter_uploads.c \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/VKTexture.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/VKTextureCache.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/VKVertexBuffers.cpp \

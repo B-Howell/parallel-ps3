@@ -649,6 +649,8 @@ VKGSRender::VKGSRender(utils::serial* ar) noexcept : GSRender(ar)
 
 	vk::get_overlay_pass<vk::ui_overlay_renderer>()->init(*m_current_command_buffer, m_texture_upload_buffer_ring_info);
 
+	vk_interp_uploads_init(&m_interp_uploads);
+
 	if (shadermode == shader_mode::async_with_interpreter || shadermode == shader_mode::interpreter_only)
 	{
 		m_shader_interpreter.init(*m_device);
@@ -1993,7 +1995,7 @@ bool VKGSRender::load_program()
 				current_vertex_program.ctrl,
 				current_fragment_program.ctrl);
 
-			// Program has changed, reupload
+			// Program has changed (what the instruction buffers need is vk_interp_uploads_draw's)
 			m_interpreter_state = rsx::invalidate_pipeline_bits;
 		}
 
@@ -2042,7 +2044,6 @@ void VKGSRender::load_program_env()
 	const bool update_vertex_env = !!(m_graphics_state & rsx::pipeline_state::vertex_state_dirty);
 	const bool update_fragment_env = !!(m_graphics_state & rsx::pipeline_state::fragment_state_dirty);
 	const bool update_fragment_texture_env = !!(m_graphics_state & rsx::pipeline_state::fragment_texture_state_dirty);
-	const bool update_instruction_buffers = (!!m_interpreter_state && is_interpreter);
 	const bool update_raster_env = (ctx->polygon_stipple_enabled() && !!(m_graphics_state & rsx::pipeline_state::polygon_stipple_pattern_dirty));
 	const bool update_instancing_data = ctx->current_draw_clause.is_trivial_instanced_draw;
 
@@ -2093,6 +2094,18 @@ void VKGSRender::load_program_env()
 		m_instancing_indirection_buffer_info = { *m_instancing_buffer_ring_info.heap, indirection_table_offset, indirection_table_buf.size() };
 		m_instancing_constants_array_buffer_info = { *m_instancing_buffer_ring_info.heap, constants_data_table_offset, constants_array_buf.size() };
 	}
+	else if (update_transform_constants &&
+		(is_interpreter || m_vertex_prog->has_indexed_constants) &&
+		vk_interp_xform_reusable(&m_interp_uploads, m_heap_epoch, m_transform_constants_seq,
+			reinterpret_cast<u64>(m_transform_constants_ring_info.heap->value)))
+	{
+		// The whole set is what was last put on the ring for a program that
+		// takes it, and that is still there: a switch between the
+		// interpreter and a compiled program, or a new program, with no
+		// constant written since puts nothing in again
+		m_vertex_constants_buffer_info = m_interpreter_xform_info;
+		m_xform_constants_dynamic_offset = m_interpreter_xform_offset;
+	}
 	else if (update_transform_constants)
 	{
 		// Transform constants
@@ -2113,6 +2126,15 @@ void VKGSRender::load_program_env()
 
 			m_vertex_constants_buffer_info = m_transform_constants_ring_info.window<16>(m_xform_constants_dynamic_offset, io_buf.size(), gpu_limits.maxUniformBufferRange);
 			m_xform_constants_dynamic_offset -= m_vertex_constants_buffer_info.offset;
+
+			if (io_buf.size() == 8192)
+			{
+				// The whole set, kept for the next program that takes it
+				m_interpreter_xform_info = m_vertex_constants_buffer_info;
+				m_interpreter_xform_offset = m_xform_constants_dynamic_offset;
+				vk_interp_xform_put(&m_interp_uploads, m_heap_epoch, m_transform_constants_seq,
+					reinterpret_cast<u64>(m_transform_constants_ring_info.heap->value));
+			}
 		}
 	}
 
@@ -2169,28 +2191,45 @@ void VKGSRender::load_program_env()
 		m_graphics_state.clear(rsx::pipeline_state::polygon_stipple_pattern_dirty);
 	}
 
-	if (update_instruction_buffers)
+	if (is_interpreter)
 	{
-		if (m_interpreter_state & rsx::vertex_program_dirty)
+		// The instruction buffers keep what was last put in them, which is
+		// good until the program or its few words of state change: draws
+		// going back and forth between the interpreter and compiled programs
+		// put nothing in again for the same program
+		const u32 vp_config[4] =
+		{
+			current_vertex_program.base_address,
+			current_vertex_program.entry,
+			current_vertex_program.output_mask,
+			ctx->two_side_light_en() ? 1u : 0u
+		};
+
+		const u32 fp_config[2] =
+		{
+			ctx->shader_control(),
+			current_fragment_program.texture_state.texture_dimensions
+		};
+
+		const unsigned put = vk_interp_uploads_draw(&m_interp_uploads, vp_config, fp_config,
+			reinterpret_cast<u64>(m_vertex_instructions_buffer.heap->value),
+			reinterpret_cast<u64>(m_fragment_instructions_buffer.heap->value));
+
+		if (put & VK_INTERP_VP_DIRTY)
 		{
 			// Attach vertex buffer data
 			const auto vp_block_length = current_vp_metadata.ucode_length + 16;
 			auto vp_mapping = m_vertex_instructions_buffer.alloc<256>(vp_block_length);
 			auto vp_buf = static_cast<u8*>(m_vertex_instructions_buffer.map(vp_mapping, vp_block_length));
 
-			auto vp_config = reinterpret_cast<u32*>(vp_buf);
-			vp_config[0] = current_vertex_program.base_address;
-			vp_config[1] = current_vertex_program.entry;
-			vp_config[2] = current_vertex_program.output_mask;
-			vp_config[3] = ctx->two_side_light_en()? 1u: 0u;
-
+			std::memcpy(vp_buf, vp_config, sizeof(vp_config));
 			std::memcpy(vp_buf + 16, current_vertex_program.data.data(), current_vp_metadata.ucode_length);
 			m_vertex_instructions_buffer.unmap();
 
 			m_vertex_instructions_buffer_info = { *m_vertex_instructions_buffer.heap, vp_mapping, vp_block_length };
 		}
 
-		if (m_interpreter_state & rsx::fragment_program_dirty)
+		if (put & VK_INTERP_FP_DIRTY)
 		{
 			// Attach fragment buffer data
 			const auto fp_block_length = current_fp_metadata.program_ucode_length + 16;
@@ -2198,10 +2237,7 @@ void VKGSRender::load_program_env()
 			auto fp_buf = static_cast<u8*>(m_fragment_instructions_buffer.map(fp_mapping, fp_block_length));
 
 			// Control mask
-			const auto control_masks = reinterpret_cast<u32*>(fp_buf);
-			control_masks[0] = ctx->shader_control();
-			control_masks[1] = current_fragment_program.texture_state.texture_dimensions;
-
+			std::memcpy(fp_buf, fp_config, sizeof(fp_config));
 			std::memcpy(fp_buf + 16, current_fragment_program.get_data(), current_fragment_program.ucode_length);
 			m_fragment_instructions_buffer.unmap();
 

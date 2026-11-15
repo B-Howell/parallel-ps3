@@ -357,6 +357,7 @@ void VKGSRender::frame_context_cleanup(vk::frame_context_t *ctx)
 
 			// Heap cleanup; deallocates memory consumed by the frame if it is still held
 			vk::data_heap_manager::restore_snapshot(ctx->heap_snapshot);
+			m_heap_epoch++;
 		}
 	}
 

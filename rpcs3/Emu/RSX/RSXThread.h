@@ -262,6 +262,9 @@ namespace rsx
 		rsx::atomic_bitmask_t<rsx::eng_interrupt_reason> m_eng_interrupt_mask;
 		rsx::bitmask_t<rsx::pipeline_state> m_graphics_state;
 
+		// Moves on with every write to the transform constants (RSX thread only)
+		u64 m_transform_constants_seq = 0;
+
 		u64 ROP_sync_timestamp = 0;
 
 		program_hash_util::fragment_program_utils::fragment_program_metadata current_fp_metadata = {};

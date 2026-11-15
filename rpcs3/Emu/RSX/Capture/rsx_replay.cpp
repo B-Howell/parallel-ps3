@@ -181,6 +181,7 @@ namespace rsx
 		{
 			// Load registers while the RSX is still idle
 			method_registers = frame->reg_state;
+			get_current_renderer()->m_transform_constants_seq++; // A backend's copy of the constants is old
 			atomic_fence_seq_cst();
 
 			// start up fifo buffer by dumping the put ptr to first stop

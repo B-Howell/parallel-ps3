@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -608,6 +608,14 @@ test_guest_faults: $(GUEST_FAULTS_DEPS)
 test_guest_faults_tsan: $(GUEST_FAULTS_DEPS)
 	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ test_guest_faults.c $(GUEST_FAULTS_SRC) $(LDFLAGS) $(LDLIBS) -lpthread
 
+VK_INTERP_UPLOADS_DEPS := test_vk_interp_uploads.c test_common.h ../../Emu/RSX/VK/vk_interpreter_uploads.c ../../Emu/RSX/VK/vk_interpreter_uploads.h
+
+test_vk_interp_uploads: $(VK_INTERP_UPLOADS_DEPS)
+	@mkdir -p obj
+	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -c -o obj/test_vk_interp_uploads.o test_vk_interp_uploads.c
+	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -c -o obj/vk_interpreter_uploads.o ../../Emu/RSX/VK/vk_interpreter_uploads.c
+	$(CC) $(CFLAGS) $(SANITIZE) -o $@ obj/test_vk_interp_uploads.o obj/vk_interpreter_uploads.o $(LDFLAGS) $(LDLIBS)
+
 GUEST_PAGE_LOCKS_DEPS := test_guest_page_locks.c test_common.h ../../Emu/RSX/Common/guest_page_locks.c ../../Emu/RSX/Common/guest_page_locks.h
 
 test_guest_page_locks: $(GUEST_PAGE_LOCKS_DEPS)
@@ -739,6 +747,7 @@ check: all
 	./test_guest_page_locks_tsan
 	./test_guest_faults
 	./test_guest_faults_tsan
+	./test_vk_interp_uploads
 	./test_eeprom_table
 	./test_eeprom_table_tsan
 	./test_object_pack
