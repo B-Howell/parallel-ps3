@@ -1,7 +1,7 @@
 #pragma once
 
 #include <map>
-#include "Utilities/mutex.h"
+#include "Emu/CPU/turn_calls.h"
 #include "Emu/Cell/Modules/sceNp.h"
 
 template <>
@@ -48,7 +48,8 @@ namespace np
 		error_code get_room_member_list(const SceNpRoomId& room_id, u32 buf_len, vm::ptr<void> data) const;
 
 	private:
-		mutable shared_mutex mutex;
+		// The rooms change in turn (turn_calls.h): no lock
+		mutable turn_calls_cpp m_turns;
 		std::map<SceNpRoomId, gui_room_cache> rooms;
 	};
 } // namespace np
