@@ -1604,8 +1604,7 @@ public:
 			return false;
 
 		auto& g_camera = g_fxo->get<camera_thread>();
-		std::lock_guard lock(g_camera.mutex);
-		m_camera_info = g_camera.info;
+		m_camera_info = camera_call([&]() { return g_camera.info; });
 
 		if (m_camera_info.buffer.addr() != buf.addr() && m_camera_info.pbuf[0].addr() != buf.addr() && m_camera_info.pbuf[1].addr() != buf.addr())
 		{

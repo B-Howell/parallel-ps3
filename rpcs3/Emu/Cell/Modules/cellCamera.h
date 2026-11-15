@@ -3,7 +3,8 @@
 #include "Utilities/Thread.h"
 #include "Emu/Io/camera_handler_base.h"
 #include "Emu/Memory/vm_ptr.h"
-#include "Utilities/mutex.h"
+#include "Emu/Cell/Modules/hle_service.h"
+#include "Emu/IdManager.h"
 
 #include <map>
 
@@ -420,8 +421,9 @@ public:
 
 	std::map<u64, notify_event_data> notify_data_map;
 
-	shared_mutex mutex;
-	shared_mutex mutex_notify_data_map;
+	// The camera's state is the camera thread's: every call that touches it
+	// runs there (camera_call), so nothing is locked
+	owner_calls_t calls{};
 	u64 start_timestamp_us = 0;
 
 	atomic_t<u8> read_mode{CELL_CAMERA_READ_FUNCCALL};
@@ -452,8 +454,9 @@ public:
 
 	SAVESTATE_INIT_POS(16);
 
-	camera_context() = default;
+	camera_context() { owner_calls_init(&calls); }
 	camera_context(utils::serial& ar);
+	camera_context& operator=(thread_state) { owner_calls_wake(&calls); return *this; }
 	void save(utils::serial& ar);
 
 	static constexpr auto thread_name = "Camera Thread"sv;
@@ -468,6 +471,16 @@ public:
 };
 
 using camera_thread = named_thread<camera_context>;
+
+// On the camera thread: where its calls run at once
+inline thread_local bool g_on_camera_thread = false;
+
+// @f run on the camera thread, its result given back
+template <typename F>
+auto camera_call(F&& f) -> decltype(f())
+{
+	return cpu_owner_call(&g_fxo->get<camera_thread>().calls, g_on_camera_thread, std::forward<F>(f));
+}
 
 /// Shared data between cellGem and cellCamera
 struct gem_camera_shared
