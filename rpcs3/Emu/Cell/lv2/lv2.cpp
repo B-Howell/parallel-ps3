@@ -1283,7 +1283,8 @@ std::string ppu_get_syscall_name(u64 code)
 	return fmt::format("syscall_%u", code);
 }
 
-DECLARE(lv2_obj::g_mutex);
+DECLARE(lv2_obj::g_turns);
+DECLARE(lv2_obj::g_caller){};
 DECLARE(lv2_obj::g_ppu){};
 DECLARE(lv2_obj::g_pending){};
 DECLARE(lv2_obj::g_priority_order_tag){};
@@ -1359,6 +1360,11 @@ std::string lv2_obj::name64(u64 name_u64)
 	return str;
 }
 
+lv2_obj::sched_caller lv2_obj::this_caller() noexcept
+{
+	return {cpu_thread::get_current(), &g_to_awake, g_to_notify};
+}
+
 bool lv2_obj::sleep(cpu_thread& cpu, const u64 timeout)
 {
 	// Should already be performed when using this flag
@@ -1397,16 +1403,22 @@ bool lv2_obj::sleep(cpu_thread& cpu, const u64 timeout)
 	bool result = false;
 	const u64 current_time = get_guest_system_time();
 	{
-		std::lock_guard lock{g_mutex};
-		result = sleep_unlocked(cpu, timeout, current_time);
+		const sched_caller me = this_caller();
 
-		if (!g_to_awake.empty())
+		turn_call(&g_turns, [&]
 		{
-			// Schedule pending entries
-			awake_unlocked({});
-		}
+			g_caller = &me;
+			result = sleep_unlocked(cpu, timeout, current_time);
 
-		schedule_all(current_time);
+			if (!me.to_awake->empty())
+			{
+				// Schedule pending entries
+				awake_unlocked({});
+			}
+
+			schedule_all(current_time);
+			g_caller = nullptr;
+		});
 	}
 
 	if (!g_postpone_notify_barrier)
@@ -1447,9 +1459,15 @@ bool lv2_obj::awake(cpu_thread* thread, s32 prio)
 
 	bool result = false;
 	{
-		std::lock_guard lock(g_mutex);
-		result = awake_unlocked(thread, prio);
-		schedule_all();
+		const sched_caller me = this_caller();
+
+		turn_call(&g_turns, [&]
+		{
+			g_caller = &me;
+			result = awake_unlocked(thread, prio);
+			schedule_all();
+			g_caller = nullptr;
+		});
 	}
 
 	if (result)
@@ -1517,7 +1535,7 @@ bool lv2_obj::sleep_unlocked(cpu_thread& thread, u64 timeout, u64 current_time)
 			{
 				if (Emu.IsStarting())
 				{
-					// It uses lv2_obj::g_mutex, run it on main thread
+					// It uses the scheduler's turn, run it on main thread
 					Emu.FinalizeRunRequest();
 				}
 			});
@@ -1656,7 +1674,7 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 		const s64 old_prio = static_cast<ppu_thread*>(cpu)->prio.load().prio;
 
 		// If priority is the same, push ONPROC/RUNNABLE thread to the back of the priority list if it is not the current thread
-		if (old_prio == prio && cpu == cpu_thread::get_current())
+		if (old_prio == prio && cpu == g_caller->current)
 		{
 			set_prio(static_cast<ppu_thread*>(cpu)->prio, prio, false, false);
 			return true;
@@ -1791,7 +1809,7 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 			lowest_new_priority = std::min<s32>(static_cast<ppu_thread*>(cpu)->prio.load().prio, lowest_new_priority);
 		}
 	}
-	else for (const auto _cpu : g_to_awake)
+	else for (const auto _cpu : *g_caller->to_awake)
 	{
 		// Emplace threads from list
 		if (emplace_thread(_cpu))
@@ -1821,7 +1839,7 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 		}
 	}
 
-	const auto current_ppu = cpu_thread::get_current<ppu_thread>();
+	const auto current_ppu = g_caller->current ? g_caller->current->try_get<ppu_thread>() : nullptr;
 
 	// Remove pending if necessary
 	if (current_ppu)
@@ -1879,7 +1897,10 @@ void lv2_obj::cleanup()
 
 void lv2_obj::schedule_all(u64 current_time)
 {
-	auto it = std::find(g_to_notify, std::end(g_to_notify), std::add_pointer_t<const void>{});
+	// The caller's notification slots, not this thread's
+	const auto to_notify = g_caller->to_notify;
+	const auto to_notify_end = to_notify + std::size(g_to_notify);
+	auto it = std::find(to_notify, to_notify_end, std::add_pointer_t<const void>{});
 
 	if (!g_pending && retro_atomic_load_acquire_int(&g_scheduler_ready))
 	{
@@ -1902,7 +1923,7 @@ void lv2_obj::schedule_all(u64 current_time)
 					continue;
 				}
 
-				if (it == std::end(g_to_notify))
+				if (it == to_notify_end)
 				{
 					// Out of notification slots, notify locally (resizable container is not worth it)
 					target->state.notify_one();
@@ -1930,13 +1951,13 @@ void lv2_obj::schedule_all(u64 current_time)
 			const auto target = pair->second;
 			lv2_deadlines_pop_front(&g_waiting);
 
-			if (target != cpu_thread::get_current())
+			if (target != g_caller->current)
 			{
 				// Change cpu_thread::state for the lightweight notification to work
 				ensure(!target->state.test_and_set(cpu_flag::notify));
 
 				// Otherwise notify it to wake itself
-				if (it == std::end(g_to_notify))
+				if (it == to_notify_end)
 				{
 					// Out of notification slots, notify locally (resizable container is not worth it)
 					target->state.notify_one();
@@ -1954,7 +1975,7 @@ void lv2_obj::schedule_all(u64 current_time)
 		}
 	}
 
-	if (it < std::end(g_to_notify))
+	if (it < to_notify_end)
 	{
 		// Null-terminate the list if it ends before last slot
 		*it = nullptr;
@@ -1980,7 +2001,7 @@ void lv2_obj::schedule_all(u64 current_time)
 						cpu = g_ppu;
 					}
 					// TODO: If this case is common enough it may be valuable to iterate over all CPU threads to find a perfect candidate (one without a wait or suspend flag)
-					else if (auto current = cpu_thread::get_current(); current && cpu_flag::suspend - current->state)
+					else if (auto current = g_caller->current; current && cpu_flag::suspend - current->state)
 					{
 						// May be an SPU or RSX thread, use them as a last resort
 						cpu = current;
@@ -2014,11 +2035,11 @@ void lv2_obj::make_scheduler_ready()
 
 std::pair<ppu_thread_status, u32> lv2_obj::ppu_state(ppu_thread* ppu, bool lock_idm, bool lock_lv2)
 {
-	std::optional<reader_lock> opt_lock[2];
+	std::optional<reader_lock> opt_lock;
 
 	if (lock_idm)
 	{
-		opt_lock[0].emplace(id_manager::g_mutex);
+		opt_lock.emplace(id_manager::g_mutex);
 	}
 
 	if (!Emu.IsReady() ? ppu->state.all_of(cpu_flag::stop) : ppu->stop_flag_removal_protection)
@@ -2033,22 +2054,23 @@ std::pair<ppu_thread_status, u32> lv2_obj::ppu_state(ppu_thread* ppu, bool lock_
 	default: break;
 	}
 
-	if (lock_lv2)
+	// Its place in the queue, in the scheduler's turn where asked
+	const auto find = [&]
 	{
-		opt_lock[1].emplace(lv2_obj::g_mutex);
-	}
+		u32 i = 0;
 
-	u32 pos = umax;
-	u32 i = 0;
-
-	for (auto target = +g_ppu; target; target = target->next_ppu, i++)
-	{
-		if (target == ppu)
+		for (auto target = +g_ppu; target; target = target->next_ppu, i++)
 		{
-			pos = i;
-			break;
+			if (target == ppu)
+			{
+				return i;
+			}
 		}
-	}
+
+		return u32{umax};
+	};
+
+	const u32 pos = lock_lv2 ? turn_call(&g_turns, find) : find();
 
 	if (pos == umax)
 	{

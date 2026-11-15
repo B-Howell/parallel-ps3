@@ -5,6 +5,7 @@
 #include "Utilities/mutex.h"
 
 #include "Emu/CPU/CPUThread.h"
+#include "Emu/CPU/turn_calls.h"
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/IdManager.h"
 #include "Emu/IPC.h"
@@ -506,8 +507,19 @@ public:
 		}
 	};
 
-	// Scheduler mutex
-	static shared_mutex g_mutex;
+	// The scheduler's queues change in turn (turn_calls.h): no lock. A turn
+	// may run on another thread than the one whose scheduling it does, so
+	// what the scheduling asks of that thread - which it is, its threads to
+	// wake, its notification slots - is handed to the turn (g_caller) and
+	// read there in place of the running thread's own
+	static turn_calls_cpp g_turns;
+
+	struct sched_caller
+	{
+		cpu_thread* current;
+		std::vector<class cpu_thread*>* to_awake;
+		std::add_pointer_t<const void>* to_notify; // g_to_notify's slots
+	};
 
 	// Proirity tags
 	static retro_atomic_64_t g_priority_order_tag;
@@ -527,6 +539,12 @@ private:
 
 	// If a notify_all_t object exists locally, postpone notifications to the destructor of it (not recursive, notifies on the first destructor for safety)
 	static thread_local bool g_postpone_notify_barrier;
+
+	// Whose scheduling the turn is doing: set and read in the turn alone
+	static const sched_caller* g_caller;
+
+	// This thread, as the turn is to see it
+	static sched_caller this_caller() noexcept;
 
 	static void schedule_all(u64 current_time = 0);
 };
