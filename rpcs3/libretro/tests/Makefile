@@ -779,8 +779,8 @@ check: all
 	@if grep -nE "shared_mutex|lock_guard|reader_lock|\.mtx" ../../Emu/Cell/Modules/cellAudioOut.cpp ../../Emu/Cell/Modules/cellAudioOut.h || grep -n "audio_out_cfg.mtx" ../../Emu/Audio/AudioBackend.cpp; then echo "cellAudioOut: a lock is back - an output's settings are one word (audio_out::change_settings)"; exit 1; else echo "cellAudioOut: no lock"; fi
 	@# cellGame: the disc change state and callbacks are words, the data check's directory the HLE thread's
 	@if grep -nE "std::mutex|shared_mutex|reader_lock|lock\((dcm\.)?mtx\)|lock\(mutex\)" ../../Emu/Cell/Modules/cellGame.cpp ../../Emu/Cell/Modules/cellGame.h; then echo "cellGame: a lock of its own is back - the disc change manager is words, the data check's directory the HLE thread's"; exit 1; else echo "cellGame: no lock of its own"; fi
-	@# cellMusic and cellMusicDecode: their state the HLE thread's (hle_call); the decoder's own m_mtx is the decoder's
-	@if grep -nE "shared_mutex|lock_guard|reader_lock|music\.mtx|dec\.mutex" ../../Emu/Cell/Modules/cellMusic.cpp ../../Emu/Cell/Modules/cellMusicDecode.cpp; then echo "cellMusic: a lock is back - the music state is the HLE thread's (hle_call)"; exit 1; else echo "cellMusic: no lock, its state the HLE thread's"; fi
+	@# cellMusic and cellMusicDecode: no lock; the selection the HLE thread's, the decoding one thread's at a time by a word, the decoder's tracks handed over without a lock
+	@if grep -nE "shared_mutex|lock_guard|reader_lock|scoped_lock|m_mtx|music\\.mtx|dec\\.mutex" ../../Emu/Cell/Modules/cellMusic.cpp ../../Emu/Cell/Modules/cellMusicDecode.cpp ../../util/media_utils.cpp; then echo "cellMusic: a lock is back - the selection is the HLE thread's, the decoding one thread's at a time (music_decode::busy), the decoder's tracks handed over without a lock"; exit 1; else echo "cellMusic: no lock"; fi
 	@# The pads take no lock: pad::g_pad_mutex is gone, and a merge of
 	@# upstream's code that takes it does not bring it back
 	@if grep -rn "g_pad_mutex" ../../Emu ../../Input ../*.cpp ../*.h ../*.c; then echo "pads: pad::g_pad_mutex is back - the pads take no lock (AGENTS.md)"; exit 1; else echo "pads: no pad lock"; fi

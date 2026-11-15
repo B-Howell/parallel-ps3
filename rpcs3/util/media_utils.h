@@ -10,6 +10,7 @@
 #include <deque>
 #include <mutex>
 #include <queues/retro_deque.h>
+#include <retro_atomic.h>
 
 // A decoded block: where it starts in the decoder's data, and its time
 struct media_timestamp
@@ -60,34 +61,71 @@ namespace utils
 		strcpy_trunc(dst, value);
 	};
 
+	// cellMusicDecode's decoder: a thread of its own decodes the playlist a
+	// track at a time, and one consumer at a time reads what it has decoded
+	// (cellMusicDecode's, which sees to the one at a time). No lock: the
+	// decoded bytes go into chunks that never move once made, and the thread
+	// publishes how many there are; a track is the next one (m_track) once
+	// the consumer has said it is done with the last (track_consumed).
 	class audio_decoder
 	{
 	public:
 		audio_decoder();
 		~audio_decoder();
 
+		// With the thread stopped (stop, or not started)
 		void set_context(music_selection_context&& context);
 		void set_swap_endianness(bool swapped);
-		void clear();
 		void stop();
 		void decode();
-		u32 set_next_index(bool next);
 
-		shared_mutex m_mtx;
+		// The consumer's: the bytes of this track decoded so far; whether
+		// all of it is; whether decoding failed
+		u64 decoded_size() const;
+		bool track_decoded() const;
+		bool failed() const;
+		// @size bytes from @pos of this track to @dst, all of them decoded
+		void copy_out(u8* dst, u64 pos, u64 size) const;
+		// The time of the block @pos is in, in milliseconds (0 before any)
+		u64 time_at(u64 pos);
+		// The next or previous track to decode after this one (umax: none),
+		// once this one is all decoded
+		u32 set_next_index(bool next);
+		// Done with this track: the thread goes on to the next
+		void track_consumed();
+
 		static constexpr s32 sample_rate = 48000;
-		std::vector<u8> data;
-		atomic_t<u64> m_size = 0;
-		atomic_t<u32> track_fully_decoded{0};
-		atomic_t<u32> track_fully_consumed{0};
-		atomic_t<bool> has_error{false};
-		media_timestamps_t timestamps_ms{}; // where in data each decoded block starts, and its time
+		static constexpr u64 chunk_size = 1024 * 1024;
+		static constexpr u64 max_chunks = 256; // Don't trust a track blindly: 256 MiB at most
+		static constexpr u64 max_times = 4096;
 
 	private:
+		void clear();
+
 		bool m_swap_endianness = false;
 		music_selection_context m_context{};
 		md_audio* m_md = nullptr; // the decoder, opened over each track in turn
-		std::vector<f32> m_pcm;   // what it hands over, before it goes into data
+		std::vector<f32> m_pcm;   // what it hands over, before it goes into the chunks
+
+		// The thread's, published: the chunks made so far (kept from track
+		// to track), the bytes of the track in them, where each decoded
+		// block starts and its time, and the track's count
+		std::unique_ptr<u8[]> m_chunks[max_chunks];
+		retro_atomic_size_t m_size;
+		media_timestamp m_times[max_times]{};
+		retro_atomic_size_t m_time_count;
+		retro_atomic_int_t m_track;
+		retro_atomic_int_t m_track_decoded;
+		retro_atomic_int_t m_error;
+
+		// The consumer's: the track it is done with, and the time it is at;
+		// to the thread, that it is done
+		int m_consumed_track = 0;
+		u64 m_time_read = 0;
+		retro_atomic_int_t m_consumed;
+
 		std::unique_ptr<named_thread<std::function<void()>>> m_thread;
+		retro_atomic_int_t m_stop;
 	};
 
 	// What cellRec records: util/media_encode on its own thread, fed from

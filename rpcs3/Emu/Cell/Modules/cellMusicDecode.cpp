@@ -13,6 +13,8 @@
 #include "cellSysutil.h"
 #include "util/media_utils.h"
 
+#include <retro_atomic.h>
+
 LOG_CHANNEL(cellMusicDecode);
 
 template<>
@@ -46,16 +48,123 @@ struct music_decode
 {
 	vm::ptr<CellMusicDecodeCallback> func{};
 	vm::ptr<void> userData{};
-	music_selection_context current_selection_context{};
-	s32 decode_status = CELL_MUSIC_DECODE_STATUS_DORMANT;
+	music_selection_context current_selection_context{}; // the HLE thread's (hle_call)
+	retro_atomic_int_t decode_status{CELL_MUSIC_DECODE_STATUS_DORMANT};
+
+	// The decoding - the command, the read position and the decoder - is
+	// one thread's at a time: whichever holds busy, taken by a CAS and never
+	// waited for. A read takes it on the game's own thread (it used to go to
+	// the HLE thread and back, every buffer of music); one that finds it
+	// held - a command running - gives no data that time. A command is
+	// posted to a ring of slots and run by whoever holds busy next: the
+	// thread posting it, at once, unless another holds it, which runs it
+	// before it lets go. Its result goes to the game's callback, as before.
 	s32 decode_command = CELL_MUSIC_DECODE_CMD_STOP;
 	u64 read_pos = 0;
 	utils::audio_decoder decoder{};
 
-	// All of it is the HLE thread's: every call that touches it runs its part
-	// there (hle_call), so nothing is locked. The decoder's own thread and
-	// its m_mtx are the decoder's.
+	static constexpr u32 command_slots = 16;
+	static constexpr s32 command_finalize = 0x100;
+	retro_atomic_int_t busy{0};
+	retro_atomic_int_t commands[command_slots]{}; // the command + 1, 0 while not written
+	retro_atomic_int_t command_head{0}; // busy's holder's
+	retro_atomic_int_t command_tail{0};
 
+	music_decode() = default;
+	music_decode(const music_decode&) = delete;
+	music_decode& operator=(const music_decode&) = delete;
+
+	bool take()
+	{
+		return retro_atomic_cas_int(&busy, 0, 1);
+	}
+
+	// A command written and not yet run
+	bool command_ready()
+	{
+		const int head = retro_atomic_load_acquire_int(&command_head);
+		return head != retro_atomic_load_acquire_int(&command_tail)
+			&& retro_atomic_load_acquire_int(&commands[static_cast<u32>(head) % command_slots]) != 0;
+	}
+
+	// Holding busy: the commands posted, in order
+	void run_commands()
+	{
+		while (command_ready())
+		{
+			const int head = retro_atomic_load_acquire_int(&command_head);
+			retro_atomic_int_t& slot = commands[static_cast<u32>(head) % command_slots];
+			const s32 value = retro_atomic_load_acquire_int(&slot) - 1;
+			retro_atomic_store_release_int(&slot, 0);
+			retro_atomic_store_release_int(&command_head, head + 1);
+			run_command(value);
+		}
+	}
+
+	// Lets go of busy; a command posted meanwhile by a thread that found it
+	// held is run first (both sides fence between their store and their
+	// look at the other's, so one of them sees it)
+	void give_back()
+	{
+		for (;;)
+		{
+			retro_atomic_store_release_int(&busy, 0);
+			retro_atomic_thread_fence_seq_cst();
+			if (!command_ready() || !take())
+				return;
+			run_commands();
+		}
+	}
+
+	// Any thread: false when the slots are full
+	bool post(s32 value)
+	{
+		for (;;)
+		{
+			const int tail = retro_atomic_load_acquire_int(&command_tail);
+			if (static_cast<u32>(tail - retro_atomic_load_acquire_int(&command_head)) >= command_slots)
+				return false;
+			if (retro_atomic_cas_int(&command_tail, tail, tail + 1))
+			{
+				retro_atomic_store_release_int(&commands[static_cast<u32>(tail) % command_slots], value + 1);
+				break;
+			}
+		}
+
+		retro_atomic_thread_fence_seq_cst();
+		if (take())
+		{
+			run_commands();
+			give_back();
+		}
+		return true;
+	}
+
+	void run_command(s32 value)
+	{
+		if (value == command_finalize)
+		{
+			finalize();
+			if (func)
+			{
+				sysutil_register_cb([this](ppu_thread& ppu) -> s32
+				{
+					func(ppu, CELL_MUSIC_DECODE_EVENT_FINALIZE_RESULT, vm::addr_t(CELL_OK), userData);
+					return CELL_OK;
+				});
+			}
+			return;
+		}
+
+		const error_code result = set_decode_command(value);
+		sysutil_register_cb([this, result](ppu_thread& ppu) -> s32
+		{
+			func(ppu, CELL_MUSIC_DECODE_EVENT_SET_DECODE_COMMAND_RESULT, vm::addr_t(s32{result}), userData);
+			return CELL_OK;
+		});
+	}
+
+	// Holding busy
 	error_code set_decode_command(s32 command)
 	{
 		decode_command = command;
@@ -65,18 +174,18 @@ struct music_decode
 		case CELL_MUSIC_DECODE_CMD_STOP:
 		{
 			decoder.stop();
-			decode_status = CELL_MUSIC_DECODE_STATUS_DORMANT;
+			retro_atomic_store_release_int(&decode_status, CELL_MUSIC_DECODE_STATUS_DORMANT);
 			break;
 		}
 		case CELL_MUSIC_DECODE_CMD_START:
 		{
-			decode_status = CELL_MUSIC_DECODE_STATUS_DECODING;
+			retro_atomic_store_release_int(&decode_status, CELL_MUSIC_DECODE_STATUS_DECODING);
 			read_pos = 0;
 
 			// Decode data. The format of the decoded data is 48kHz, float 32bit, 2ch LPCM data interleaved in order from left to right.
-			cellMusicDecode.notice("set_decode_command(START): context: %s", current_selection_context.to_string());
+			music_selection_context context = hle_call([this]() { return current_selection_context; });
+			cellMusicDecode.notice("set_decode_command(START): context: %s", context.to_string());
 
-			music_selection_context context = current_selection_context;
 			context.current_track = context.first_track;
 
 			for (usz i = 0; i < context.playlist.size(); i++)
@@ -85,6 +194,7 @@ struct music_decode
 			}
 
 			// TODO: set speed if small-memory decoding is used (music_decode2)
+			decoder.stop();
 			decoder.set_context(std::move(context));
 			decoder.set_swap_endianness(true);
 			decoder.decode();
@@ -98,7 +208,7 @@ struct music_decode
 
 			if (decoder.set_next_index(command == CELL_MUSIC_DECODE_CMD_NEXT) == umax)
 			{
-				decode_status = CELL_MUSIC_DECODE_STATUS_DORMANT;
+				retro_atomic_store_release_int(&decode_status, CELL_MUSIC_DECODE_STATUS_DORMANT);
 				return CELL_MUSIC_DECODE_ERROR_NO_MORE_CONTENT;
 			}
 
@@ -113,13 +223,13 @@ struct music_decode
 		return CELL_OK;
 	}
 
-	error_code finalize()
+	// Holding busy
+	void finalize()
 	{
 		decoder.stop();
-		decode_status = CELL_MUSIC_DECODE_STATUS_DORMANT;
+		retro_atomic_store_release_int(&decode_status, CELL_MUSIC_DECODE_STATUS_DORMANT);
 		decode_command = CELL_MUSIC_DECODE_CMD_STOP;
 		read_pos = 0;
-		return CELL_OK;
 	}
 };
 
@@ -189,43 +299,52 @@ error_code cell_music_decode_read(vm::ptr<void> buf, vm::ptr<u32> startTime, u64
 	*startTime = 0;
 
 	auto& dec = g_fxo->get<Music_Decode>();
-	return hle_call([&]() -> error_code
-	{
-		std::scoped_lock slock(dec.decoder.m_mtx);
 
-		if (dec.decoder.has_error)
+	// On the game's own thread, unless a command is running this moment
+	if (!dec.take())
+	{
+		return { CELL_MUSIC_DECODE_ERROR_NO_LPCM_DATA, "a command is running" };
+	}
+
+	dec.run_commands();
+
+	const error_code result = [&]() -> error_code
+	{
+		if (dec.decoder.failed())
 		{
 			return CELL_MUSIC_DECODE_ERROR_DECODE_FAILURE;
 		}
 
-		if (dec.decoder.m_size == 0)
+		const u64 decoded = dec.decoder.decoded_size();
+
+		if (decoded == 0)
 		{
 			return { CELL_MUSIC_DECODE_ERROR_NO_LPCM_DATA, "m_size == 0" };
 		}
 
-		ensure(dec.decoder.m_size >= dec.read_pos);
-		const u64 size_left = dec.decoder.m_size - dec.read_pos;
+		ensure(decoded >= dec.read_pos);
+		const u64 size_left = decoded - dec.read_pos;
 
 		if (dec.read_pos == 0)
 		{
-			cellMusicDecode.trace("cell_music_decode_read: position=CELL_MUSIC_DECODE_POSITION_START, read_pos=%d, reqSize=%d, m_size=%d", dec.read_pos, reqSize, dec.decoder.m_size.load());
+			cellMusicDecode.trace("cell_music_decode_read: position=CELL_MUSIC_DECODE_POSITION_START, read_pos=%d, reqSize=%d, m_size=%d", dec.read_pos, reqSize, decoded);
 			*position = CELL_MUSIC_DECODE_POSITION_START;
 		}
-		else if (!dec.decoder.track_fully_decoded || size_left > reqSize) // track_fully_decoded is not guarded by a mutex, but since it is set to true after the decode, it should be fine.
+		else if (!dec.decoder.track_decoded() || size_left > reqSize)
 		{
-			cellMusicDecode.trace("cell_music_decode_read: position=CELL_MUSIC_DECODE_POSITION_MID, read_pos=%d, reqSize=%d, m_size=%d", dec.read_pos, reqSize, dec.decoder.m_size.load());
+			cellMusicDecode.trace("cell_music_decode_read: position=CELL_MUSIC_DECODE_POSITION_MID, read_pos=%d, reqSize=%d, m_size=%d", dec.read_pos, reqSize, decoded);
 			*position = CELL_MUSIC_DECODE_POSITION_MID;
 		}
 		else
 		{
 			if (dec.decoder.set_next_index(true) == umax)
 			{
-				cellMusicDecode.trace("cell_music_decode_read: position=CELL_MUSIC_DECODE_POSITION_END_LIST_END, read_pos=%d, reqSize=%d, m_size=%d", dec.read_pos, reqSize, dec.decoder.m_size.load());
+				cellMusicDecode.trace("cell_music_decode_read: position=CELL_MUSIC_DECODE_POSITION_END_LIST_END, read_pos=%d, reqSize=%d, m_size=%d", dec.read_pos, reqSize, decoded);
 				*position = CELL_MUSIC_DECODE_POSITION_END_LIST_END;
 			}
 			else
 			{
-				cellMusicDecode.trace("cell_music_decode_read: position=CELL_MUSIC_DECODE_POSITION_END, read_pos=%d, reqSize=%d, m_size=%d", dec.read_pos, reqSize, dec.decoder.m_size.load());
+				cellMusicDecode.trace("cell_music_decode_read: position=CELL_MUSIC_DECODE_POSITION_END, read_pos=%d, reqSize=%d, m_size=%d", dec.read_pos, reqSize, decoded);
 				*position = CELL_MUSIC_DECODE_POSITION_END;
 			}
 		}
@@ -238,7 +357,8 @@ error_code cell_music_decode_read(vm::ptr<void> buf, vm::ptr<u32> startTime, u64
 			return { CELL_MUSIC_DECODE_ERROR_NO_LPCM_DATA, "size_to_read == 0" }; // TODO: speculative
 		}
 
-		std::memcpy(buf.get_ptr(), &::at32(dec.decoder.data, dec.read_pos), size_to_read);
+		// From where the decoder put it, straight into the game's buffer
+		dec.decoder.copy_out(static_cast<u8*>(buf.get_ptr()), dec.read_pos, size_to_read);
 
 		if (size_to_read < reqSize)
 		{
@@ -246,21 +366,11 @@ error_code cell_music_decode_read(vm::ptr<void> buf, vm::ptr<u32> startTime, u64
 			std::memset(vm::static_ptr_cast<u8>(buf).get_ptr() + size_to_read, 0, reqSize - size_to_read);
 		}
 
+		// startTime is milliseconds: the time of the block the read began in
+		const u64 start_time_ms = dec.decoder.time_at(dec.read_pos);
+		*startTime = static_cast<u32>(start_time_ms);
+
 		dec.read_pos += size_to_read;
-
-		s64 start_time_ms = 0;
-
-		if (!media_timestamps_empty(&dec.decoder.timestamps_ms))
-		{
-			start_time_ms = media_timestamps_front(&dec.decoder.timestamps_ms)->second;
-
-			while (media_timestamps_count(&dec.decoder.timestamps_ms) > 1 && dec.read_pos >= media_timestamps_at(&dec.decoder.timestamps_ms, 1)->first)
-			{
-				media_timestamps_pop_front(&dec.decoder.timestamps_ms);
-			}
-		}
-
-		*startTime = static_cast<u32>(start_time_ms); // startTime is milliseconds
 
 		switch (*position)
 		{
@@ -274,9 +384,7 @@ error_code cell_music_decode_read(vm::ptr<void> buf, vm::ptr<u32> startTime, u64
 		case CELL_MUSIC_DECODE_POSITION_END:
 		{
 			dec.read_pos = 0;
-			dec.decoder.clear();
-			dec.decoder.track_fully_consumed = 1;
-			dec.decoder.track_fully_consumed.notify_one();
+			dec.decoder.track_consumed();
 			break;
 		}
 		default:
@@ -288,7 +396,10 @@ error_code cell_music_decode_read(vm::ptr<void> buf, vm::ptr<u32> startTime, u64
 		cellMusicDecode.trace("cell_music_decode_read(size_to_read=%d, samples=%d, start_time_ms=%d)", size_to_read, size_to_read / sizeof(u64), start_time_ms);
 
 		return CELL_OK;
-	});
+	}();
+
+	dec.give_back();
+	return result;
 }
 
 error_code cellMusicDecodeInitialize(s32 mode, u32 container, s32 spuPriority, vm::ptr<CellMusicDecodeCallback> func, vm::ptr<void> userData)
@@ -346,21 +457,12 @@ error_code cellMusicDecodeFinalize()
 	cellMusicDecode.todo("cellMusicDecodeFinalize()");
 
 	auto& dec = g_fxo->get<music_decode>();
-	return hle_call([&]() -> error_code
-	{
-		dec.finalize();
 
-		if (dec.func)
-		{
-			sysutil_register_cb([&dec](ppu_thread& ppu) -> s32
-			{
-				dec.func(ppu, CELL_MUSIC_DECODE_EVENT_FINALIZE_RESULT, vm::addr_t(CELL_OK), dec.userData);
-				return CELL_OK;
-			});
-		}
+	// Run by whoever has the decoding, at once if nobody
+	if (!dec.post(music_decode::command_finalize))
+		return CELL_MUSIC_DECODE_ERROR_BUSY;
 
-		return CELL_OK;
-	});
+	return CELL_OK;
 }
 
 error_code cellMusicDecodeSelectContents()
@@ -380,31 +482,16 @@ error_code cellMusicDecodeSetDecodeCommand(s32 command)
 	}
 
 	auto& dec = g_fxo->get<music_decode>();
-	return hle_call([&]() -> error_code
-	{
-		if (!dec.func)
-			return CELL_MUSIC_DECODE_ERROR_GENERIC;
 
-		error_code result = CELL_OK;
-		{
-			std::scoped_lock slock(dec.decoder.m_mtx);
-			result = dec.set_decode_command(command);
-		}
+	if (!hle_call([&]() { return !!dec.func; }))
+		return CELL_MUSIC_DECODE_ERROR_GENERIC;
 
-		sysutil_register_cb([&dec, result](ppu_thread& ppu) -> s32
-		{
-			dec.func(ppu, CELL_MUSIC_DECODE_EVENT_SET_DECODE_COMMAND_RESULT, vm::addr_t(s32{result}), dec.userData);
-			return CELL_OK;
-		});
+	// Run by whoever has the decoding, at once if nobody; its result goes to
+	// the game's callback
+	if (!dec.post(command))
+		return CELL_MUSIC_DECODE_ERROR_BUSY;
 
-		//sysutil_register_cb([&dec, command](ppu_thread& ppu) -> s32
-		//{
-		//	dec.func(ppu, CELL_MUSIC_DECODE_EVENT_STATUS_NOTIFICATION, vm::addr_t(command), dec.userData);
-		//	return CELL_OK;
-		//});
-
-		return CELL_OK;
-	});
+	return CELL_OK;
 }
 
 error_code cellMusicDecodeGetDecodeStatus(vm::ptr<s32> status)
@@ -415,13 +502,10 @@ error_code cellMusicDecodeGetDecodeStatus(vm::ptr<s32> status)
 		return CELL_MUSIC_DECODE_ERROR_PARAM;
 
 	auto& dec = g_fxo->get<music_decode>();
-	return hle_call([&]() -> error_code
-	{
-		*status = dec.decode_status;
+	*status = retro_atomic_load_acquire_int(&dec.decode_status);
 
-		cellMusicDecode.notice("cellMusicDecodeGetDecodeStatus: status=%d", *status);
-		return CELL_OK;
-	});
+	cellMusicDecode.notice("cellMusicDecodeGetDecodeStatus: status=%d", *status);
+	return CELL_OK;
 }
 
 error_code cellMusicDecodeRead(vm::ptr<void> buf, vm::ptr<u32> startTime, u64 reqSize, vm::ptr<u64> readSize, vm::ptr<s32> position)
@@ -550,21 +634,12 @@ error_code cellMusicDecodeFinalize2()
 	cellMusicDecode.todo("cellMusicDecodeFinalize2()");
 
 	auto& dec = g_fxo->get<music_decode2>();
-	return hle_call([&]() -> error_code
-	{
-		dec.finalize();
 
-		if (dec.func)
-		{
-			sysutil_register_cb([&dec](ppu_thread& ppu) -> s32
-			{
-				dec.func(ppu, CELL_MUSIC_DECODE_EVENT_FINALIZE_RESULT, vm::addr_t(CELL_OK), dec.userData);
-				return CELL_OK;
-			});
-		}
+	// Run by whoever has the decoding, at once if nobody
+	if (!dec.post(music_decode::command_finalize))
+		return CELL_MUSIC_DECODE_ERROR_BUSY;
 
-		return CELL_OK;
-	});
+	return CELL_OK;
 }
 
 error_code cellMusicDecodeSelectContents2()
@@ -584,25 +659,16 @@ error_code cellMusicDecodeSetDecodeCommand2(s32 command)
 	}
 
 	auto& dec = g_fxo->get<music_decode2>();
-	return hle_call([&]() -> error_code
-	{
-		if (!dec.func)
-			return CELL_MUSIC_DECODE_ERROR_GENERIC;
 
-		error_code result = CELL_OK;
-		{
-			std::scoped_lock slock(dec.decoder.m_mtx);
-			result = dec.set_decode_command(command);
-		}
+	if (!hle_call([&]() { return !!dec.func; }))
+		return CELL_MUSIC_DECODE_ERROR_GENERIC;
 
-		sysutil_register_cb([&dec, result](ppu_thread& ppu) -> s32
-		{
-			dec.func(ppu, CELL_MUSIC_DECODE_EVENT_SET_DECODE_COMMAND_RESULT, vm::addr_t(s32{result}), dec.userData);
-			return CELL_OK;
-		});
+	// Run by whoever has the decoding, at once if nobody; its result goes to
+	// the game's callback
+	if (!dec.post(command))
+		return CELL_MUSIC_DECODE_ERROR_BUSY;
 
-		return CELL_OK;
-	});
+	return CELL_OK;
 }
 
 error_code cellMusicDecodeGetDecodeStatus2(vm::ptr<s32> status)
@@ -613,13 +679,10 @@ error_code cellMusicDecodeGetDecodeStatus2(vm::ptr<s32> status)
 		return CELL_MUSIC_DECODE_ERROR_PARAM;
 
 	auto& dec = g_fxo->get<music_decode2>();
-	return hle_call([&]() -> error_code
-	{
-		*status = dec.decode_status;
+	*status = retro_atomic_load_acquire_int(&dec.decode_status);
 
-		cellMusicDecode.notice("cellMusicDecodeGetDecodeStatus2: status=%d", *status);
-		return CELL_OK;
-	});
+	cellMusicDecode.notice("cellMusicDecodeGetDecodeStatus2: status=%d", *status);
+	return CELL_OK;
 }
 
 error_code cellMusicDecodeRead2(vm::ptr<void> buf, vm::ptr<u32> startTime, u64 reqSize, vm::ptr<u64> readSize, vm::ptr<s32> position)

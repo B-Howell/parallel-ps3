@@ -7,6 +7,7 @@
 #include <formats/rtags.h>
 
 #include <random>
+#include <rthreads/retro_waitaddr.h>
 #include <thread>
 
 
@@ -126,13 +127,19 @@ namespace utils
 	audio_decoder::audio_decoder()
 		: m_md(md_audio_new()), m_pcm(MD_READ_MIN * 2)
 	{
+		retro_atomic_size_init(&m_size, 0);
+		retro_atomic_size_init(&m_time_count, 0);
+		retro_atomic_int_init(&m_track, 0);
+		retro_atomic_int_init(&m_track_decoded, 0);
+		retro_atomic_int_init(&m_error, 0);
+		retro_atomic_int_init(&m_consumed, 0);
+		retro_atomic_int_init(&m_stop, 0);
 	}
 
 	audio_decoder::~audio_decoder()
 	{
 		stop();
 		md_audio_free(m_md);
-		media_timestamps_free(&timestamps_ms);
 	}
 
 	void audio_decoder::set_context(music_selection_context&& context)
@@ -145,16 +152,20 @@ namespace utils
 		m_swap_endianness = swapped;
 	}
 
+	// With the thread stopped: nothing decoded, nothing consumed. The
+	// chunks are kept for the next playlist
 	void audio_decoder::clear()
 	{
 		media_log.notice("audio_decoder: Clear data...");
 
-		track_fully_decoded = 0;
-		track_fully_consumed = 0;
-		has_error = false;
-		m_size = 0;
-		media_timestamps_clear(&timestamps_ms);
-		data.clear();
+		retro_atomic_store_release_size(&m_size, 0);
+		retro_atomic_store_release_size(&m_time_count, 0);
+		retro_atomic_store_release_int(&m_track, 0);
+		retro_atomic_store_release_int(&m_track_decoded, 0);
+		retro_atomic_store_release_int(&m_error, 0);
+		retro_atomic_store_release_int(&m_consumed, 0);
+		m_consumed_track = 0;
+		m_time_read = 0;
 	}
 
 	void audio_decoder::stop()
@@ -164,14 +175,71 @@ namespace utils
 		if (m_thread)
 		{
 			auto& thread = *m_thread;
-			thread = thread_state::aborting;
-			track_fully_consumed = 1;
-			track_fully_consumed.notify_one();
+			retro_atomic_store_release_int(&m_stop, 1);
+			retro_waitaddr_notify_all(&m_consumed);
 			thread();
 			m_thread.reset();
+			retro_atomic_store_release_int(&m_stop, 0);
 		}
 
 		clear();
+	}
+
+	u64 audio_decoder::decoded_size() const
+	{
+		// None of the track it is done with, while the thread has not gone
+		// on to the next
+		if (retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&m_track)) == m_consumed_track)
+			return 0;
+		return retro_atomic_load_acquire_size(const_cast<retro_atomic_size_t*>(&m_size));
+	}
+
+	bool audio_decoder::track_decoded() const
+	{
+		return retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&m_track)) != m_consumed_track
+			&& retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&m_track_decoded));
+	}
+
+	bool audio_decoder::failed() const
+	{
+		return retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&m_error)) != 0;
+	}
+
+	void audio_decoder::copy_out(u8* dst, u64 pos, u64 size) const
+	{
+		while (size)
+		{
+			const u64 in_chunk = std::min<u64>(size, chunk_size - pos % chunk_size);
+			std::memcpy(dst, m_chunks[pos / chunk_size].get() + pos % chunk_size, in_chunk);
+			dst += in_chunk;
+			pos += in_chunk;
+			size -= in_chunk;
+		}
+	}
+
+	u64 audio_decoder::time_at(u64 pos)
+	{
+		const u64 count = retro_atomic_load_acquire_size(&m_time_count);
+		if (m_time_read >= count)
+			return 0;
+		while (m_time_read + 1 < count && pos >= m_times[m_time_read + 1].first)
+			m_time_read++;
+		return m_times[m_time_read].second;
+	}
+
+	u32 audio_decoder::set_next_index(bool next)
+	{
+		// The thread waits for the track to be consumed before it looks at
+		// the context again
+		return m_context.step_track(next);
+	}
+
+	void audio_decoder::track_consumed()
+	{
+		m_consumed_track = retro_atomic_load_acquire_int(&m_track);
+		m_time_read = 0;
+		retro_atomic_store_release_int(&m_consumed, 1);
+		retro_waitaddr_notify_all(&m_consumed);
 	}
 
 	void audio_decoder::decode()
@@ -180,7 +248,12 @@ namespace utils
 
 		media_log.notice("audio_decoder: %d entries in playlist. Start decoding...", m_context.playlist.size());
 
-		const auto decode_track = [this](const std::string& path)
+		const auto stopping = [this]()
+		{
+			return retro_atomic_load_acquire_int(&m_stop) || thread_ctrl::state() == thread_state::aborting;
+		};
+
+		const auto decode_track = [this, stopping](const std::string& path)
 		{
 			media_log.notice("audio_decoder: decoding %s", path);
 
@@ -188,7 +261,7 @@ namespace utils
 			if (!m_md || !md_file_open(&file, path.c_str()))
 			{
 				media_log.error("audio_decoder: Could not open file '%s'", path);
-				has_error = true;
+				retro_atomic_store_release_int(&m_error, 1);
 				return;
 			}
 
@@ -197,21 +270,15 @@ namespace utils
 			{
 				media_log.error("audio_decoder: '%s' is not in a format that can be played", path);
 				md_file_close(&file);
-				has_error = true;
+				retro_atomic_store_release_int(&m_error, 1);
 				return;
 			}
 
 			constexpr u64 bytes_per_frame = 2 * sizeof(f32);
+			u64 size = 0;
+			u64 times = 0;
 
-			// A whole track ends up in our data, so reserve it in one go instead of letting it grow piecewise.
-			if (const u64 frames = md_audio_frames(m_md))
-			{
-				constexpr u64 max_reserve = 256 * 1024 * 1024; // Don't trust the header blindly
-				std::scoped_lock lock(m_mtx);
-				data.reserve(std::min<u64>(frames * bytes_per_frame, max_reserve));
-			}
-
-			while (thread_ctrl::state() != thread_state::aborting)
+			while (!stopping())
 			{
 				u64 timestamp_ms = 0;
 				const usz frames = md_audio_read(m_md, m_pcm.data(), m_pcm.size() / 2, &timestamp_ms);
@@ -220,7 +287,7 @@ namespace utils
 					break;
 				}
 
-				const u64 size = frames * bytes_per_frame;
+				const u64 block = frames * bytes_per_frame;
 				u8* out = reinterpret_cast<u8*>(m_pcm.data());
 
 				// The format is float 32bit per channel. Swap it in place, so we can append the buffer as-is.
@@ -229,29 +296,47 @@ namespace utils
 					copy_samples<f32>(out, out, frames * 2, true);
 				}
 
+				if (size + block > chunk_size * max_chunks)
 				{
-					std::scoped_lock lock(m_mtx);
-					data.insert(data.cend(), out, out + size);
-
-					const media_timestamp stamp{m_size, static_cast<u64>(timestamp_ms)};
-					ensure(media_timestamps_push_back_growing(&timestamps_ms, &stamp));
-					m_size += size;
+					media_log.error("audio_decoder: '%s' is longer than %d MiB decoded; the rest is not played", path, chunk_size * max_chunks >> 20);
+					break;
 				}
 
-				media_log.trace("audio_decoder: decoded frame_count=%d size=%d timestamp_ms=%d", frames, size, timestamp_ms);
+				// Into the chunks, made as they are first needed; then
+				// published, its time first
+				for (u64 at = 0; at < block;)
+				{
+					auto& chunk = m_chunks[(size + at) / chunk_size];
+					if (!chunk)
+						chunk = std::make_unique<u8[]>(chunk_size);
+					const u64 in_chunk = std::min<u64>(block - at, chunk_size - (size + at) % chunk_size);
+					std::memcpy(chunk.get() + (size + at) % chunk_size, out + at, in_chunk);
+					at += in_chunk;
+				}
+
+				if (times < max_times)
+				{
+					m_times[times++] = media_timestamp{size, static_cast<u64>(timestamp_ms)};
+					retro_atomic_store_release_size(&m_time_count, times);
+				}
+
+				size += block;
+				retro_atomic_store_release_size(&m_size, size);
+
+				media_log.trace("audio_decoder: decoded frame_count=%d size=%d timestamp_ms=%d", frames, block, timestamp_ms);
 			}
 
 			if (md_audio_failed(m_md))
 			{
 				media_log.error("audio_decoder: Decoding error in '%s'", path);
-				has_error = true;
+				retro_atomic_store_release_int(&m_error, 1);
 			}
 
 			md_audio_close(m_md);
 			md_file_close(&file);
 		};
 
-		m_thread = std::make_unique<named_thread<std::function<void()>>>("Music Decode Thread", [this, decode_track]()
+		m_thread = std::make_unique<named_thread<std::function<void()>>>("Music Decode Thread", [this, decode_track, stopping]()
 		{
 			for (const std::string& track : m_context.playlist)
 			{
@@ -261,7 +346,7 @@ namespace utils
 			if (m_context.playlist.empty())
 			{
 				media_log.error("audio_decoder: Can not play empty playlist");
-				has_error = true;
+				retro_atomic_store_release_int(&m_error, 1);
 				return;
 			}
 
@@ -275,14 +360,22 @@ namespace utils
 				std::shuffle(std::begin(m_context.playlist), std::end(m_context.playlist), engine);
 			}
 
-			while (thread_ctrl::state() != thread_state::aborting)
+			while (!stopping())
 			{
 				media_log.notice("audio_decoder: about to decode: %s (index=%d)", ::at32(m_context.playlist, m_context.current_track), m_context.current_track);
 
-				decode_track(::at32(m_context.playlist, m_context.current_track));
-				track_fully_decoded = 1;
+				// A new track: nothing of it yet, then its number, which
+				// the consumer goes by
+				retro_atomic_store_release_size(&m_size, 0);
+				retro_atomic_store_release_size(&m_time_count, 0);
+				retro_atomic_store_release_int(&m_track_decoded, 0);
+				retro_atomic_store_release_int(&m_consumed, 0);
+				retro_atomic_store_release_int(&m_track, retro_atomic_load_acquire_int(&m_track) + 1);
 
-				if (has_error)
+				decode_track(::at32(m_context.playlist, m_context.current_track));
+				retro_atomic_store_release_int(&m_track_decoded, 1);
+
+				if (failed())
 				{
 					media_log.notice("audio_decoder: stopping with error...");
 					break;
@@ -291,20 +384,19 @@ namespace utils
 				// Let's only decode one track at a time. Wait for the consumer to finish reading the track.
 				media_log.notice("audio_decoder: waiting until track is consumed...");
 
-				while (thread_ctrl::state() != thread_state::aborting && !track_fully_consumed)
+				while (!stopping() && !retro_atomic_load_acquire_int(&m_consumed))
 				{
-					thread_ctrl::wait_on(track_fully_consumed, 0);
+					const retro_waitaddr_t list[2] =
+					{
+						{&m_consumed, 0},
+						{&m_stop, 0},
+					};
+					retro_waitaddr_wait(list, 2, -1);
 				}
-				track_fully_consumed = 0;
 			}
 
 			media_log.notice("audio_decoder: finished playlist");
 		});
-	}
-
-	u32 audio_decoder::set_next_index(bool next)
-	{
-		return m_context.step_track(next);
 	}
 
 	video_encoder::video_encoder()

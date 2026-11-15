@@ -16,7 +16,11 @@
 //   ending the lend while retro_run has samples of the ring on loan;
 // - an audio output's settings (cellAudioOut), one word without a lock:
 //   three threads changing parts of them at once lose none of the
-//   changes, and a reader never sees half of one.
+//   changes, and a reader never sees half of one;
+// - cellMusicDecode's decoder hands its tracks over without a lock: a
+//   reader taking them as they are decoded gets every sample of both
+//   tracks of a playlist, in order, the second once it is done with the
+//   first.
 //
 // Built by `make check` from the core's own objects and archives, the same
 // link as the core's with this main.
@@ -24,6 +28,7 @@
 #include "stdafx.h"
 #include "libretro_audio.h"
 #include "Emu/Cell/Modules/cellAudioOut.h"
+#include "util/media_utils.h"
 
 #include <atomic>
 #include <chrono>
@@ -419,6 +424,79 @@ int main()
 		CHECK(torn == 0);
 		std::printf("test_audio_frontend: cellAudioOut's settings: %d changes each from three threads, downmixer %u and copy control %u counted (%u expected), %u torn reads\n",
 			n, last.downmixer, last.copy_control, n & 0xff, torn.load());
+	}
+
+	// cellMusicDecode's decoder: two WAV tracks, read while they decode
+	{
+		const std::string dir = fs::get_temp_dir() + "test_music_decode/";
+		fs::create_path(dir);
+		const u32 track_frames[2] = {150000, 90000};
+		const auto sample = [](u32 track, u32 n) -> s16 { return static_cast<s16>(static_cast<s32>((n * (track ? 7u : 3u)) % 60000) - 30000); };
+		std::vector<std::string> paths;
+		for (u32 t = 0; t < 2; t++)
+		{
+			std::vector<u8> wav(44 + track_frames[t] * 4);
+			const auto put32 = [&](usz at, u32 v) { std::memcpy(&wav[at], &v, 4); };
+			const auto put16 = [&](usz at, u16 v) { std::memcpy(&wav[at], &v, 2); };
+			std::memcpy(&wav[0], "RIFF", 4); put32(4, static_cast<u32>(wav.size() - 8)); std::memcpy(&wav[8], "WAVEfmt ", 8);
+			put32(16, 16); put16(20, 1); put16(22, 2); put32(24, 48000); put32(28, 48000 * 4); put16(32, 4); put16(34, 16);
+			std::memcpy(&wav[36], "data", 4); put32(40, track_frames[t] * 4);
+			for (u32 n = 0; n < track_frames[t] * 2; n++)
+				put16(44 + n * 2, static_cast<u16>(sample(t, n)));
+			paths.push_back(dir + (t ? "b.wav" : "a.wav"));
+			fs::write_file(paths.back(), fs::rewrite, wav);
+		}
+
+		utils::audio_decoder decoder;
+		music_selection_context context{};
+		context.playlist = paths;
+		decoder.set_context(std::move(context));
+		decoder.set_swap_endianness(false);
+		decoder.decode();
+
+		u32 track = 0, wrong = 0, reads = 0;
+		u64 pos = 0, got[2] = {};
+		const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+		std::vector<f32> piece(4096);
+		while (std::chrono::steady_clock::now() < until && !decoder.failed())
+		{
+			const u64 size = decoder.decoded_size();
+			if (size > pos)
+			{
+				const u64 bytes = std::min<u64>(size - pos, piece.size() * sizeof(f32)) & ~u64{7};
+				decoder.copy_out(reinterpret_cast<u8*>(piece.data()), pos, bytes);
+				for (u64 i = 0; i < bytes / sizeof(f32); i++)
+				{
+					const u32 n = static_cast<u32>(pos / sizeof(f32) + i);
+					if (std::fabs(piece[i] - sample(track, n) / 32768.0f) > 1e-6f)
+						wrong++;
+				}
+				pos += bytes;
+				got[track] = pos;
+				reads++;
+				continue;
+			}
+			if (decoder.track_decoded() && pos == size)
+			{
+				if (track == 1)
+					break;
+				CHECK(decoder.set_next_index(true) == 1);
+				decoder.track_consumed();
+				track = 1;
+				pos = 0;
+				continue;
+			}
+			std::this_thread::yield();
+		}
+		decoder.stop();
+		fs::remove_file(paths[0]);
+		fs::remove_file(paths[1]);
+		CHECK(!decoder.failed());
+		CHECK(got[0] == u64{track_frames[0]} * 8);
+		CHECK(got[1] == u64{track_frames[1]} * 8);
+		CHECK(wrong == 0);
+		std::printf("test_audio_frontend: music decoder: %llu and %llu bytes of two tracks read in %u reads while decoding, %u samples wrong\n",
+			static_cast<unsigned long long>(got[0]), static_cast<unsigned long long>(got[1]), reads, wrong);
 	}
 
 	std::printf("test_audio_frontend: %s\n", failures ? "FAIL" : "ok");
