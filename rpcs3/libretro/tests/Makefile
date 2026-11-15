@@ -675,7 +675,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 590
+LOCK_GUARD_MAX := 571
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -783,6 +783,8 @@ check: all
 	@if grep -nE "shared_mutex|lock_guard|reader_lock|scoped_lock|m_mtx|music\\.mtx|dec\\.mutex" ../../Emu/Cell/Modules/cellMusic.cpp ../../Emu/Cell/Modules/cellMusicDecode.cpp ../../util/media_utils.cpp; then echo "cellMusic: a lock is back - the selection is the HLE thread's, the decoding one thread's at a time (music_decode::busy), the decoder's tracks handed over without a lock"; exit 1; else echo "cellMusic: no lock"; fi
 	@# libmixer: the mix and the players the HLE thread's (hle_call), the game's samples mixed straight in
 	@if grep -nE "std::mutex|shared_mutex|lock_guard|g_surmx\.mutex" ../../Emu/Cell/Modules/libmixer.cpp; then echo "libmixer: a lock is back - the mix and the players are the HLE thread's (hle_call)"; exit 1; else echo "libmixer: no lock"; fi
+	@# cellVdec: the pictures go to the game through a lock-free ring, the sequence state moves on by compare-and-swap
+	@if grep -nE "shared_mutex|lock_guard|reader_lock|vdec->mutex|lock\{mutex\}" ../../Emu/Cell/Modules/cellVdec.cpp; then echo "cellVdec: a lock is back - the pictures go to the game through vdec_context's ring, the sequence state moves on by compare-and-swap"; exit 1; else echo "cellVdec: no lock of its own"; fi
 	@# The pads take no lock: pad::g_pad_mutex is gone, and a merge of
 	@# upstream's code that takes it does not bring it back
 	@if grep -rn "g_pad_mutex" ../../Emu ../../Input ../*.cpp ../*.h ../*.c; then echo "pads: pad::g_pad_mutex is back - the pads take no lock (AGENTS.md)"; exit 1; else echo "pads: no pad lock"; fi

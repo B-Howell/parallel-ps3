@@ -22,6 +22,8 @@
 #include "cellVdec.h"
 
 #include <mutex>
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 #include <queue>
 #include <cmath>
 #include <queues/retro_deque.h>
@@ -204,7 +206,6 @@ struct vdec_frame
 	u64 pts{};
 	u64 userdata{};
 	u32 frc{};
-	bool pic_item_received = false;
 	CellVdecPicAttr attr = CELL_VDEC_PICITEM_ATTR_NORMAL;
 };
 
@@ -240,7 +241,6 @@ struct vdec_context final
 	static constexpr usz au_stamps_count = 128;
 	au_stamps au_stamp[au_stamps_count]{};
 
-	shared_mutex mutex; // Used for 'out' queue (TODO)
 
 	const u32 type;
 	const u32 mem_addr;
@@ -254,9 +254,91 @@ struct vdec_context final
 	u64 next_dts{};
 	atomic_t<u32> ppu_tid{};
 
-	vdec_frames_t out_queue{}; // pictures the game has yet to take; made for out_max and one more
 	const u32 out_max = 60;
 	vdec_frames_t decoded{};   // the decoder thread's own: the pictures of the AU it is on
+
+	// The pictures the game has yet to take: a ring the decoder thread puts
+	// into and the game takes from, with no lock. The decoder thread owns
+	// out_put and the slots from out_put on; the game owns out_taken, the
+	// slots before out_put from out_taken on, and its cursor of the
+	// pictures whose items it has had (out_items). A flush (a new sequence,
+	// a close) is the decoder thread's mark: the game skips to it and gives
+	// those pictures back. The game's threads take one at a time (out_reader:
+	// a second finds nothing that time, as when the ring is empty). The
+	// decoder thread waits for room on out_taken.
+	static constexpr u32 out_slots = 64; // out_max and one more, a power of two
+	vdec_frame out_ring[out_slots]{};
+	retro_atomic_int_t out_put{0};
+	retro_atomic_int_t out_taken{0};
+	retro_atomic_int_t out_flushed{0};
+	retro_atomic_int_t out_reader{0};
+	s32 out_items = 0;
+
+	// The decoder thread's
+	u32 out_count()
+	{
+		return static_cast<u32>(retro_atomic_load_acquire_int(&out_put) - retro_atomic_load_acquire_int(&out_taken));
+	}
+
+	void out_push(const vdec_frame& frame)
+	{
+		const s32 put = retro_atomic_load_acquire_int(&out_put);
+		ensure(static_cast<u32>(put - retro_atomic_load_acquire_int(&out_taken)) < out_slots);
+		out_ring[static_cast<u32>(put) % out_slots] = frame;
+		retro_atomic_store_release_int(&out_put, put + 1);
+	}
+
+	void out_flush()
+	{
+		retro_atomic_store_release_int(&out_flushed, retro_atomic_load_acquire_int(&out_put));
+	}
+
+	// The game's, holding out_reader: past what was flushed; the first slot
+	// not taken; false when another game thread is taking
+	bool out_begin()
+	{
+		if (!retro_atomic_cas_int(&out_reader, 0, 1))
+			return false;
+
+		const s32 flushed = retro_atomic_load_acquire_int(&out_flushed);
+		s32 taken = retro_atomic_load_acquire_int(&out_taken);
+		if (flushed - taken > 0)
+		{
+			while (taken != flushed)
+				give_back(out_ring[static_cast<u32>(taken++) % out_slots]);
+			retro_atomic_store_release_int(&out_taken, taken);
+			retro_waitaddr_notify_all(&out_taken);
+		}
+		if (out_items - taken < 0)
+			out_items = taken;
+		return true;
+	}
+
+	void out_end()
+	{
+		retro_atomic_store_release_int(&out_reader, 0);
+	}
+
+	// The game's, holding out_reader: the oldest picture, taken
+	bool out_take(vdec_frame& frame)
+	{
+		const s32 taken = retro_atomic_load_acquire_int(&out_taken);
+		if (taken == retro_atomic_load_acquire_int(&out_put))
+			return false;
+		frame = std::exchange(out_ring[static_cast<u32>(taken) % out_slots], vdec_frame{});
+		retro_atomic_store_release_int(&out_taken, taken + 1);
+		retro_waitaddr_notify_all(&out_taken);
+		return true;
+	}
+
+	// The game's, holding out_reader: the oldest picture whose item it has
+	// not had, still queued; nullptr when there is none
+	vdec_frame* out_next_item()
+	{
+		if (out_items == retro_atomic_load_acquire_int(&out_put))
+			return nullptr;
+		return &out_ring[static_cast<u32>(out_items++) % out_slots];
+	}
 
 	// A frame's picture back to the pool
 	void give_back(vdec_frame& frame)
@@ -288,7 +370,6 @@ struct vdec_context final
 		, cb_func(func)
 		, cb_arg(arg)
 	{
-		ensure(vdec_frames_init(&out_queue, 64));
 		ensure(vdec_frames_init(&decoded, 32));
 
 		switch (type)
@@ -313,9 +394,10 @@ struct vdec_context final
 
 	~vdec_context()
 	{
-		flush(out_queue);
+		// Both threads are done with it: what is still in the ring goes back
+		for (s32 i = retro_atomic_load_acquire_int(&out_taken), put = retro_atomic_load_acquire_int(&out_put); i != put; i++)
+			give_back(out_ring[static_cast<u32>(i) % out_slots]);
 		flush(decoded);
-		vdec_frames_free(&out_queue);
 		vdec_frames_free(&decoded);
 		release_decoder();
 	}
@@ -373,8 +455,6 @@ struct vdec_context final
 			{
 			case vdec_cmd_type::start_sequence:
 			{
-				std::lock_guard lock{mutex};
-
 				if (seq_state == sequence_state::resetting)
 				{
 					cellVdec.trace("Reset sequence... (handle=0x%x, seq_id=%d, cmd_id=%d)", handle, cmd->seq_id, cmd->id);
@@ -386,7 +466,7 @@ struct vdec_context final
 
 				vdc_start(dec);
 
-				flush(out_queue); // Flush image queue
+				out_flush(); // Flush image queue: the game skips what is in it
 				log_framerate_num = 0;
 				log_framerate_den = 0;
 
@@ -402,10 +482,7 @@ struct vdec_context final
 			{
 				cellVdec.trace("End sequence... (handle=0x%x, seq_id=%d, cmd_id=%d)", handle, cmd->seq_id, cmd->id);
 
-				{
-					std::lock_guard lock{mutex};
-					seq_state = sequence_state::dormant;
-				}
+				seq_state = sequence_state::dormant;
 
 				cellVdec.trace("Sending CELL_VDEC_MSG_TYPE_SEQDONE (handle=0x%x, seq_id=%d, cmd_id=%d)", handle, cmd->seq_id, cmd->id);
 				cb_func(ppu, vid, CELL_VDEC_MSG_TYPE_SEQDONE, CELL_OK, cb_arg);
@@ -582,21 +659,22 @@ struct vdec_context final
 						u32 elapsed = 0;
 						while (thread_ctrl::state() != thread_state::aborting && !abort_decode && seq_id == cmd->seq_id)
 						{
-							{
-								std::lock_guard lock{mutex};
+							const s32 taken = retro_atomic_load_acquire_int(&out_taken);
 
-								if (vdec_frames_count(&out_queue) <= out_max)
-								{
-									break;
-								}
+							if (static_cast<u32>(retro_atomic_load_acquire_int(&out_put) - taken) <= out_max)
+							{
+								break;
 							}
 
-							thread_ctrl::wait_for(10000);
+							// Until the game takes one (or a close wakes it), looking
+							// again every 10 ms for an abort
+							const retro_waitaddr_t room[1] = {{&out_taken, static_cast<u32>(taken)}};
+							retro_waitaddr_wait(room, 1, 10000);
 
 							// Report a wait once: a game may keep the pictures of a decoder it does not display for a long time
 							if (++elapsed == 500) // 5 seconds
 							{
-								cellVdec.warning("Video au decode has been waiting for a consumer for 5 seconds. (handle=0x%x, seq_id=%d, cmd_id=%d, queue_size=%d)", handle, cmd->seq_id, cmd->id, vdec_frames_count(&out_queue));
+								cellVdec.warning("Video au decode has been waiting for a consumer for 5 seconds. (handle=0x%x, seq_id=%d, cmd_id=%d, queue_size=%d)", handle, cmd->seq_id, cmd->id, out_count());
 							}
 						}
 
@@ -610,11 +688,8 @@ struct vdec_context final
 							cellVdec.notice("Video au decode resumed after waiting %d seconds for a consumer. (handle=0x%x, seq_id=%d, cmd_id=%d)", elapsed / 100, handle, cmd->seq_id, cmd->id);
 						}
 
-						{
-							std::lock_guard lock{mutex};
-							ensure(vdec_frames_push_back_growing(&out_queue, vdec_frames_front(&decoded)));
-							vdec_frames_pop_front(&decoded);
-						}
+						out_push(*vdec_frames_front(&decoded));
+						vdec_frames_pop_front(&decoded);
 
 						cellVdec.trace("Sending CELL_VDEC_MSG_TYPE_PICOUT (handle=0x%x, seq_id=%d, cmd_id=%d)", handle, cmd->seq_id, cmd->id);
 						cb_func(ppu, vid, CELL_VDEC_MSG_TYPE_PICOUT, CELL_OK, cb_arg);
@@ -643,8 +718,7 @@ struct vdec_context final
 			}
 			case vdec_cmd_type::close:
 			{
-				std::lock_guard lock{mutex};
-				flush(out_queue);
+				out_flush();
 				break;
 			}
 			default:
@@ -652,7 +726,6 @@ struct vdec_context final
 				break;
 			}
 
-			std::lock_guard lock{mutex};
 			if (seq_state == sequence_state::closed)
 			{
 				break;
@@ -660,7 +733,6 @@ struct vdec_context final
 		}
 
 		// Make sure the state is closed at the end
-		std::lock_guard lock{mutex};
 		seq_state = sequence_state::closed;
 	}
 };
@@ -1505,13 +1577,9 @@ error_code cellVdecClose(ppu_thread& ppu, u32 handle)
 		return { CELL_VDEC_ERROR_ARG, "vdec is nullptr" };
 	}
 
+	if (vdec->seq_state == sequence_state::closed)
 	{
-		std::lock_guard lock{vdec->mutex};
-
-		if (vdec->seq_state == sequence_state::closed)
-		{
-			return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
-		}
+		return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
 	}
 
 	const u64 seq_id = vdec->seq_id;
@@ -1520,6 +1588,7 @@ error_code cellVdecClose(ppu_thread& ppu, u32 handle)
 
 	lv2_obj::sleep(ppu);
 	vdec->abort_decode = true;
+	retro_waitaddr_notify_all(&vdec->out_taken); // a decoder thread waiting for room looks again
 	vdec->in_cmd.push(vdec_cmd(vdec_cmd_type::close, seq_id, cmd_id));
 
 	while (!vdec->ppu_tid)
@@ -1535,7 +1604,6 @@ error_code cellVdecClose(ppu_thread& ppu, u32 handle)
 	}
 
 	vdec->seq_state = sequence_state::closed;
-	vdec->mutex.lock_unlock();
 
 	if (!idm::remove_verify<vdec_context>(handle, vdec))
 	{
@@ -1564,8 +1632,9 @@ error_code cellVdecStartSeq(ppu_thread& ppu, u32 handle)
 
 	sequence_state old_state{};
 
+	// Dormant, or ready (then resetting), moved on by compare-and-swap
+	for (;;)
 	{
-		std::lock_guard lock{vdec->mutex};
 		old_state = vdec->seq_state;
 
 		if (old_state != sequence_state::dormant && old_state != sequence_state::ready)
@@ -1573,9 +1642,9 @@ error_code cellVdecStartSeq(ppu_thread& ppu, u32 handle)
 			return { CELL_VDEC_ERROR_SEQ, old_state };
 		}
 
-		if (old_state == sequence_state::ready)
+		if (old_state == sequence_state::dormant || vdec->seq_state.compare_and_swap_test(sequence_state::ready, sequence_state::resetting))
 		{
-			vdec->seq_state = sequence_state::resetting;
+			break;
 		}
 	}
 
@@ -1586,8 +1655,6 @@ error_code cellVdecStartSeq(ppu_thread& ppu, u32 handle)
 	vdec->abort_decode = false;
 	vdec->is_running = false;
 	vdec->in_cmd.push(vdec_cmd(vdec_cmd_type::start_sequence, seq_id, cmd_id));
-
-	std::lock_guard lock{vdec->mutex};
 
 	if (false) // TODO: set to old state in case of error
 	{
@@ -1614,15 +1681,9 @@ error_code cellVdecEndSeq(ppu_thread& ppu, u32 handle)
 		return { CELL_VDEC_ERROR_ARG, "vdec is nullptr" };
 	}
 
+	if (!vdec->seq_state.compare_and_swap_test(sequence_state::ready, sequence_state::ending))
 	{
-		std::lock_guard lock{vdec->mutex};
-
-		if (vdec->seq_state != sequence_state::ready)
-		{
-			return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
-		}
-
-		vdec->seq_state = sequence_state::ending;
+		return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
 	}
 
 	const u64 seq_id = vdec->seq_id;
@@ -1654,13 +1715,9 @@ error_code cellVdecDecodeAu(ppu_thread& ppu, u32 handle, CellVdecDecodeMode mode
 		return { CELL_VDEC_ERROR_ARG, "vdec=%d, auInfo=%d, size=%d, startAddr=0x%x", !!vdec, !!auInfo, auInfo ? auInfo->size.value() : 0, auInfo ? auInfo->startAddr.value() : 0 };
 	}
 
+	if (vdec->seq_state != sequence_state::ready)
 	{
-		std::lock_guard lock{vdec->mutex};
-
-		if (vdec->seq_state != sequence_state::ready)
-		{
-			return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
-		}
+		return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
 	}
 
 	if (mode < 0 || mode > (CELL_VDEC_DEC_MODE_B_SKIP | CELL_VDEC_DEC_MODE_PB_SKIP))
@@ -1702,13 +1759,9 @@ error_code cellVdecDecodeAuEx2(ppu_thread& ppu, u32 handle, CellVdecDecodeMode m
 		return { CELL_VDEC_ERROR_ARG, "vdec=%d, auInfo=%d, size=%d, startAddr=0x%x", !!vdec, !!auInfo, auInfo ? auInfo->size.value() : 0, auInfo ? auInfo->startAddr.value() : 0 };
 	}
 
+	if (vdec->seq_state != sequence_state::ready)
 	{
-		std::lock_guard lock{vdec->mutex};
-
-		if (vdec->seq_state != sequence_state::ready)
-		{
-			return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
-		}
+		return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
 	}
 
 	if (mode < 0 || mode > (CELL_VDEC_DEC_MODE_B_SKIP | CELL_VDEC_DEC_MODE_PB_SKIP))
@@ -1758,13 +1811,9 @@ error_code cellVdecGetPictureExt(ppu_thread& ppu, u32 handle, vm::cptr<CellVdecP
 		return { CELL_VDEC_ERROR_ARG, "vdec=%d, format=%d", !!vdec, !!format };
 	}
 
+	if (vdec->seq_state == sequence_state::closed || vdec->seq_state > sequence_state::ending)
 	{
-		std::lock_guard lock{vdec->mutex};
-
-		if (vdec->seq_state == sequence_state::closed || vdec->seq_state > sequence_state::ending)
-		{
-			return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
-		}
+		return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
 	}
 
 	if (format->formatType > 4 || (format->formatType <= CELL_VDEC_PICFMT_RGBA32_ILV && format->colorMatrixType > CELL_VDEC_COLOR_MATRIX_TYPE_BT709))
@@ -1783,29 +1832,22 @@ error_code cellVdecGetPictureExt(ppu_thread& ppu, u32 handle, vm::cptr<CellVdecP
 	}
 
 	vdec_frame frame;
-	bool notify = false;
 	u64 sequence_id{};
 
+	// The oldest picture, taken; the decoder thread waiting for room is
+	// woken by the take
+	if (!vdec->out_begin())
 	{
-		std::lock_guard lock(vdec->mutex);
-
-		if (vdec_frames_empty(&vdec->out_queue))
-		{
-			return CELL_VDEC_ERROR_EMPTY;
-		}
-
-		frame = *vdec_frames_front(&vdec->out_queue);
-		sequence_id = vdec->seq_id;
-
-		vdec_frames_pop_front(&vdec->out_queue);
-		if (vdec_frames_count(&vdec->out_queue) + 1 == vdec->out_max)
-			notify = true;
+		return { CELL_VDEC_ERROR_EMPTY, "another thread is taking" };
 	}
 
-	if (notify)
+	const bool took = vdec->out_take(frame);
+	sequence_id = vdec->seq_id;
+	vdec->out_end();
+
+	if (!took)
 	{
-		auto vdec_ppu = idm::get_unlocked<named_thread<ppu_thread>>(vdec->ppu_tid);
-		if (vdec_ppu) thread_ctrl::notify(*vdec_ppu);
+		return CELL_VDEC_ERROR_EMPTY;
 	}
 
 	if (sequence_id != frame.seq_id)
@@ -1880,18 +1922,12 @@ error_code cellVdecGetPicItem(ppu_thread& ppu, u32 handle, vm::pptr<CellVdecPicI
 		return { CELL_VDEC_ERROR_ARG, "vdec=%d, picItem=%d", !!vdec, !!picItem };
 	}
 
-	u64 sequence_id{};
-
+	if (vdec->seq_state == sequence_state::closed || vdec->seq_state > sequence_state::ending)
 	{
-		std::lock_guard lock{vdec->mutex};
-
-		if (vdec->seq_state == sequence_state::closed || vdec->seq_state > sequence_state::ending)
-		{
-			return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
-		}
-
-		sequence_id = vdec->seq_id;
+		return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
 	}
+
+	const u64 sequence_id = vdec->seq_id;
 
 	struct all_info_t
 	{
@@ -1915,41 +1951,36 @@ error_code cellVdecGetPicItem(ppu_thread& ppu, u32 handle, vm::pptr<CellVdecPicI
 	u32 frc = 0;
 	CellVdecPicAttr attr = CELL_VDEC_PICITEM_ATTR_NORMAL;
 	vm::ptr<CellVdecPicItem> info = vm::null;
+	if (vdec->out_begin())
 	{
-		std::lock_guard lock(vdec->mutex);
-
-		for (usz i = 0, count = vdec_frames_count(&vdec->out_queue); i < count; i++)
+		if (vdec_frame* picture = vdec->out_next_item())
 		{
-			vdec_frame& picture = *vdec_frames_at(&vdec->out_queue, i);
+			ensure(picture->pic);
+			pict_type = picture->pic->type;
+			frame_width = picture->pic->width;
+			frame_height = picture->pic->height;
+			seq_id = picture->seq_id;
+			cmd_id = picture->cmd_id;
+			pts = picture->pts;
+			dts = picture->dts;
+			usrd = picture->userdata;
+			frc = picture->frc;
+			attr = picture->attr;
+			info.set(vdec->mem_addr + vdec->mem_bias);
 
-			if (!picture.pic_item_received)
+			constexpr u64 size_needed = sizeof(all_info_t);
+
+			if (vdec->mem_bias + size_needed >= vdec->mem_size / size_needed * size_needed)
 			{
-				picture.pic_item_received = true;
-				ensure(picture.pic);
-				pict_type = picture.pic->type;
-				frame_width = picture.pic->width;
-				frame_height = picture.pic->height;
-				seq_id = picture.seq_id;
-				cmd_id = picture.cmd_id;
-				pts = picture.pts;
-				dts = picture.dts;
-				usrd = picture.userdata;
-				frc = picture.frc;
-				attr = picture.attr;
-				info.set(vdec->mem_addr + vdec->mem_bias);
-
-				constexpr u64 size_needed = sizeof(all_info_t);
-
-				if (vdec->mem_bias + size_needed >= vdec->mem_size / size_needed * size_needed)
-				{
-					vdec->mem_bias = 0;
-					break;
-				}
-
+				vdec->mem_bias = 0;
+			}
+			else
+			{
 				vdec->mem_bias += size_needed;
-				break;
 			}
 		}
+
+		vdec->out_end();
 	}
 
 	if (!info || seq_id != sequence_id)
@@ -2133,8 +2164,6 @@ error_code cellVdecSetFrameRate(u32 handle, CellVdecFrameRate frameRateCode)
 		return { CELL_VDEC_ERROR_ARG, "vdec=%d, frameRateCode=0x%x", !!vdec, +frameRateCode };
 	}
 
-	std::lock_guard lock{vdec->mutex};
-
 	if (vdec->seq_state == sequence_state::closed || vdec->seq_state >= sequence_state::invalid)
 	{
 		return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
@@ -2209,8 +2238,6 @@ error_code cellVdecSetPts(u32 handle, vm::ptr<void> unk)
 	{
 		return { CELL_VDEC_ERROR_ARG, "vdec=%d, unk=%d", !!vdec, !!unk };
 	}
-
-	std::lock_guard lock{vdec->mutex};
 
 	if (vdec->seq_state == sequence_state::closed || vdec->seq_state >= sequence_state::invalid)
 	{
