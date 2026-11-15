@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_turn_calls test_turn_calls_tsan
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_turn_calls test_turn_calls_tsan test_crypto_hashes
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -190,6 +190,10 @@ obj/test_http.o: test_http.c
 	$(CC) $(CFLAGS) $(LRC_STD) $(SANITIZE) -c -o $@ $<
 
 test_http: obj/test_http.o $(call lrc_objs,$(sort $(test_http_LRC)))
+	$(CC) $(SANITIZE) -o $@ $^ $(LDFLAGS) $(LDLIBS) -lpthread
+
+# rpcs3/Crypto's hashes on libretro-common's, with the TLS test's set
+test_crypto_hashes: obj/test_crypto_hashes.o $(call lrc_objs,$(sort $(test_http_LRC)))
 	$(CC) $(SANITIZE) -o $@ $^ $(LDFLAGS) $(LDLIBS) -lpthread
 
 obj/bcdec_impl.o: bcdec_impl.c $(BCDEC)/bcdec.h
@@ -783,6 +787,7 @@ check: all
 	./test_guest_faults_tsan
 	./test_vk_interp_uploads
 	./test_vk_interp_dynamic
+	./test_crypto_hashes
 	./test_turn_calls
 	./test_turn_calls_tsan
 	./test_eeprom_table
@@ -847,7 +852,7 @@ check: all
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|->mutex|\.mutex" ../../Emu/Cell/lv2/sys_semaphore.cpp ../../Emu/Cell/lv2/sys_semaphore.h; then echo "sys_semaphore: a lock is back - the queue changes in the semaphore's turn (turn_call)"; exit 1; else echo "sys_semaphore: no lock"; fi
 	@# LLVM's SHA-1, SHA-256 and old atomics are gone: libretro-common's lrc_hash and retro_atomic stand in for them
 	@if ls ../../../3rdparty/llvm/llvm/llvm/lib/Support/SHA1.cpp ../../../3rdparty/llvm/llvm/llvm/lib/Support/SHA256.cpp ../../../3rdparty/llvm/llvm/llvm/lib/Support/Atomic.cpp ../../../3rdparty/llvm/llvm/llvm/include/llvm/Support/SHA1.h ../../../3rdparty/llvm/llvm/llvm/include/llvm/Support/SHA256.h ../../../3rdparty/llvm/llvm/llvm/include/llvm/Support/Atomic.h ../../../3rdparty/llvm/llvm/llvm/lib/Support/CRC.cpp ../../../3rdparty/llvm/llvm/llvm/include/llvm/Support/CRC.h ../../../3rdparty/llvm/llvm/llvm/lib/Support/xxhash.cpp ../../../3rdparty/llvm/llvm/llvm/include/llvm/Support/xxhash.h 2>/dev/null || grep -rn "llvm/Support/SHA1.h\|llvm/Support/SHA256.h\|llvm/Support/Atomic.h\|raw_sha1_ostream\|llvm/Support/CRC.h\|JamCRC\|xxHash64(\|MD5::body\|MD5_u32plus\|llvm/Support/xxhash.h\|xxh3_64bits" ../../../3rdparty/llvm/llvm/llvm/lib ../../../3rdparty/llvm/llvm/llvm/include ../../make/llvm/llvm.mk; then echo "llvm: its own SHA-1, SHA-256, MD5, CRC-32, XXH64, XXH3 or atomics are back - libretro-common's lrc_hash.h, encodings/crc32.h, encodings/xxh64.h, encodings/xxh3.h and retro_atomic are used instead"; exit 1; else echo "llvm: libretro-common's hashes and atomics, not its own"; fi
-	@if ls ../../Crypto/md5.cpp ../../Crypto/md5.h 2>/dev/null || grep -rn "mbedtls_md5\|Crypto/md5\|md5\.h\"" ../../Loader ../../Emu ../../Crypto ../*.cpp ../../Emu/CMakeLists.txt ../../../Makefile.common; then echo "Crypto: its own MD5 is back - libretro-common's MD5_* (lrc_hash.h) is used instead"; exit 1; else echo "Crypto: libretro-common's MD5, not its own"; fi
+	@if ls ../../Crypto/md5.cpp ../../Crypto/md5.h ../../Crypto/sha256.cpp ../../Crypto/sha256.h 2>/dev/null || grep -rn "mbedtls_md5\|Crypto/md5\|md5\.h\"\|mbedtls_sha256\|Crypto/sha256\|\"sha256\.h\"" ../../Loader ../../Emu ../../Crypto ../*.cpp ../../Emu/CMakeLists.txt ../../../Makefile.common; then echo "Crypto: its own MD5 or SHA-256 is back - libretro-common's MD5_* and sha256_stream_* (lrc_hash.h) are used instead"; exit 1; else echo "Crypto: libretro-common's MD5 and SHA-256, not its own"; fi
 	@# The pads take no lock: pad::g_pad_mutex is gone, and a merge of
 	@# upstream's code that takes it does not bring it back
 	@if grep -rn "g_pad_mutex" ../../Emu ../../Input ../*.cpp ../*.h ../*.c; then echo "pads: pad::g_pad_mutex is back - the pads take no lock (AGENTS.md)"; exit 1; else echo "pads: no pad lock"; fi

@@ -5,7 +5,7 @@
 #include "utils.h"
 #include "aes.h"
 #include "sha1.h"
-#include "sha256.h"
+#include <lrc_hash.h>
 #include "key_vault.h"
 #include <charconv>
 #include <cstdlib>
@@ -151,11 +151,10 @@ char* extract_file_name(std::string_view file_path, char real_file_name[CRYPTO_M
 std::string sha256_get_hash(const char* data, usz size, bool lower_case)
 {
 	u8 res_hash[32];
-	mbedtls_sha256_context ctx;
-	mbedtls_sha256_init(&ctx);
-	mbedtls_sha256_starts_ret(&ctx, 0);
-	mbedtls_sha256_update_ret(&ctx, reinterpret_cast<const unsigned char*>(data), size);
-	mbedtls_sha256_finish_ret(&ctx, res_hash);
+	sha256_state ctx;
+	sha256_stream_init(&ctx, 0);
+	sha256_stream_update(&ctx, reinterpret_cast<const u8*>(data), size);
+	sha256_stream_final(&ctx, res_hash);
 
 	std::string res_hash_string("0000000000000000000000000000000000000000000000000000000000000000");
 
