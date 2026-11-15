@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sys_sync.h"
+#include "Emu/CPU/turn_calls.h"
 
 #include "Emu/Memory/vm_ptr.h"
 
@@ -27,7 +28,10 @@ struct lv2_rwlock final : lv2_obj
 	const u64 key;
 	const u64 name;
 
-	shared_mutex mutex;
+	// The queues, and the owner word as it is changed with them, change in
+	// turn (turn_calls.h): no lock. Taking it free and giving a read up while
+	// nobody waits are a compare-and-swap of the owner word
+	turn_calls_cpp turns;
 	retro_atomic_64_t owner{0};
 	ppu_thread* rq{};
 	ppu_thread* wq{};
