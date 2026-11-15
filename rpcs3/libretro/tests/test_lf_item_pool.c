@@ -335,6 +335,60 @@ static void lockstep(void)
    lf_item_pool_free(&shared);
 }
 
+/* The test's hook in lf_pool_empty, between the look at the limit and the
+ * slot being given up: the first thread to come by while it is armed waits
+ * there until the other has had a round */
+static retro_atomic_int_t window_armed;
+static retro_atomic_int_t window_phase;
+
+void lf_pool_test_window(void)
+{
+   if (!retro_atomic_cas_int(&window_armed, 1, 0))
+      return;
+   retro_atomic_store_release_int(&window_phase, 1);
+   while (retro_atomic_load_acquire_int(&window_phase) != 2)
+      sched_yield();
+}
+
+static void *window_other(void *arg)
+{
+   (void)arg;
+   while (retro_atomic_load_acquire_int(&window_phase) != 1)
+      sched_yield();
+   /* The slot under is still the first thread's: this goes above it,
+    * raising the limit, and coming down stops at that slot */
+   if (!lf_item_pool_put(&shared, 2, 0, 1, item_of(2))
+         || lf_item_pool_take(&shared, 2, 0) != item_of(2))
+      retro_atomic_fetch_add_int(&bad, 1);
+   retro_atomic_store_release_int(&window_phase, 2);
+   return NULL;
+}
+
+/* A thread empties the top slot and lowers the limit, then is held up
+ * before it gives the slot up. Meanwhile another puts an item above it -
+ * the limit goes up - and takes it out again: coming down, it stops at the
+ * first thread's slot, still owned. Once the first gives its slot up, the
+ * limit must come down past it, though this thread lowered it already */
+static void window(void)
+{
+   pthread_t other;
+
+   TEST_CHECK(lf_item_pool_init(&shared, 4));
+   retro_atomic_store_release_int(&bad, 0);
+   retro_atomic_store_release_int(&window_phase, 0);
+   pthread_create(&other, NULL, window_other, NULL);
+
+   TEST_CHECK(lf_item_pool_put(&shared, 1, 0, 1, item_of(1)));
+   retro_atomic_store_release_int(&window_armed, 1);
+   TEST_CHECK(lf_item_pool_take(&shared, 1, 0) == item_of(1));
+   pthread_join(other, NULL);
+
+   TEST_CHECK(retro_atomic_load_acquire_int(&bad) == 0);
+   TEST_CHECK(lf_item_pool_held(&shared) == 0);
+   TEST_CHECK(retro_atomic_load_acquire_64(&shared.limit) == 0);
+   lf_item_pool_free(&shared);
+}
+
 /* Closing while items go in */
 static retro_atomic_int_t taken_in;
 
@@ -388,6 +442,7 @@ int main(void)
    together();
    churning();
    lockstep();
+   window();
    closing();
    printf("test_lf_item_pool: %s\n", test_failures ? "FAIL" : "ok");
    return test_failures ? 1 : 0;

@@ -4,6 +4,10 @@
 
 #include <stdlib.h>
 
+#ifdef LF_POOL_TEST_WINDOW
+void LF_POOL_TEST_WINDOW(void);
+#endif
+
 #define LF_POOL_EMPTY 0
 #define LF_POOL_OWNED 1
 #define LF_POOL_BIAS  2
@@ -70,25 +74,26 @@ static void *lf_pool_empty(struct lf_item_pool *pool, size_t i)
       int lowered = (uint64_t)retro_atomic_load_relaxed_64(&pool->limit) == i + 1
          && retro_atomic_cas_64(&pool->limit, i + 1, i);
 
-      if (!lowered)
-      {
-         /* The slot above may have come down to here since the look at the
-          * limit, and found this one still owned: it stopped there. So,
-          * once given up, look again and come down from here. The exchange
-          * is a full barrier, as is that thread's lowering compare-and-swap
-          * before its own look: one of the two sees the other. */
-         (void)retro_atomic_exchange_64(&pool->keys[i], LF_POOL_EMPTY);
+#ifdef LF_POOL_TEST_WINDOW
+      /* The test widens the window between the look at the limit and the
+       * slot being given up */
+      LF_POOL_TEST_WINDOW();
+#endif
 
-         if ((uint64_t)retro_atomic_load_acquire_64(&pool->limit) != i + 1
-               || !retro_atomic_cas_64(&pool->keys[i], LF_POOL_EMPTY, LF_POOL_OWNED))
-            break;
+      /* The slot given up. The exchange is a full barrier */
+      (void)retro_atomic_exchange_64(&pool->keys[i], LF_POOL_EMPTY);
 
+      /* A slot above may have come down to this one since the look at
+       * the limit - over the limit this thread set, if it was raised
+       * meanwhile and came back - and found this one still owned: it
+       * stopped here. So look again, and come down from here. That
+       * thread's lowering compare-and-swap is a full barrier before its
+       * look at this slot: one of the two sees the other. */
+      if ((uint64_t)retro_atomic_load_acquire_64(&pool->limit) == i + 1
+            && retro_atomic_cas_64(&pool->keys[i], LF_POOL_EMPTY, LF_POOL_OWNED))
          continue;
-      }
 
-      retro_atomic_store_release_64(&pool->keys[i], LF_POOL_EMPTY);
-
-      if (!i)
+      if (!lowered || !i)
          break;
 
       i--;

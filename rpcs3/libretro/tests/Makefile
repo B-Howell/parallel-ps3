@@ -470,13 +470,13 @@ LF_ITEM_POOL_DEPS := test_lf_item_pool.c test_common.h ../../../Utilities/lf_ite
 test_lf_item_pool: $(LF_ITEM_POOL_DEPS)
 	@mkdir -p obj
 	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -c -o obj/test_lf_item_pool.o test_lf_item_pool.c
-	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -c -o obj/lf_item_pool.o ../../../Utilities/lf_item_pool.c
+	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -DLF_POOL_TEST_WINDOW=lf_pool_test_window -c -o obj/lf_item_pool.o ../../../Utilities/lf_item_pool.c
 	$(CC) $(CFLAGS) -std=gnu99 $(SANITIZE) -o $@ obj/test_lf_item_pool.o obj/lf_item_pool.o $(LDFLAGS) $(LDLIBS) -lpthread
 
 test_lf_item_pool_tsan: $(LF_ITEM_POOL_DEPS)
 	@mkdir -p obj
 	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/test_lf_item_pool_tsan.o test_lf_item_pool.c
-	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/lf_item_pool_tsan.o ../../../Utilities/lf_item_pool.c
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -DLF_POOL_TEST_WINDOW=lf_pool_test_window -c -o obj/lf_item_pool_tsan.o ../../../Utilities/lf_item_pool.c
 	$(CC) $(CFLAGS) -std=gnu99 -fsanitize=thread -o $@ obj/test_lf_item_pool_tsan.o obj/lf_item_pool_tsan.o $(LDFLAGS) $(LDLIBS) -lpthread
 
 CPU_SLOTS_DEPS := test_cpu_slots.c test_common.h ../../Emu/CPU/cpu_slots.c ../../Emu/CPU/cpu_slots.h
