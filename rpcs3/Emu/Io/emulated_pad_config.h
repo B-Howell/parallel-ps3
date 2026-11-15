@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Utilities/Config.h"
-#include "Utilities/mutex.h"
+#include "Emu/CPU/turn_calls.h"
 #include "pad_types.h"
 #include "MouseHandler.h"
 
@@ -48,57 +48,62 @@ public:
 
 	pad_button get_pad_button(T id)
 	{
-		std::lock_guard lock(m_mutex);
-
-		if (const cfg_pad_btn<T>* item = get_button(id))
+		return turn_call(&m_turns, [&]() -> pad_button
 		{
-			return item->get();
-		}
+			if (const cfg_pad_btn<T>* item = get_button(id))
+			{
+				return item->get();
+			}
 
-		return pad_button::pad_button_max_enum;
+			return pad_button::pad_button_max_enum;
+		});
 	}
 
 	pad_button default_pad_button(T id)
 	{
-		std::lock_guard lock(m_mutex);
-
-		if (const cfg_pad_btn<T>* item = get_button(id))
+		return turn_call(&m_turns, [&]() -> pad_button
 		{
-			return item->get_default();
-		}
+			if (const cfg_pad_btn<T>* item = get_button(id))
+			{
+				return item->get_default();
+			}
 
-		return pad_button::pad_button_max_enum;
+			return pad_button::pad_button_max_enum;
+		});
 	}
 
 	void set_button(T id, pad_button btn_id)
 	{
-		std::lock_guard lock(m_mutex);
-
-		if (cfg_pad_btn<T>* item = get_button(id))
+		return turn_call(&m_turns, [&]()
 		{
-			item->set(btn_id);
-		}
+			if (cfg_pad_btn<T>* item = get_button(id))
+			{
+				item->set(btn_id);
+			}
+		});
 	}
 
 	void init_buttons()
 	{
-		std::lock_guard lock(m_mutex);
-
-		for (const auto& n : get_nodes())
+		return turn_call(&m_turns, [&]()
 		{
-			if (auto* pbtn = dynamic_cast<cfg_pad_btn<T>*>(n))
-				init_button(pbtn);
-		}
+			for (const auto& n : get_nodes())
+			{
+				if (auto* pbtn = dynamic_cast<cfg_pad_btn<T>*>(n))
+					init_button(pbtn);
+			}
 
-		publish_table();
+			publish_table();
+		});
 	}
 
 	void clear_buttons()
 	{
-		std::lock_guard lock(m_mutex);
-
-		buttons.clear();
-		publish_table();
+		return turn_call(&m_turns, [&]()
+		{
+			buttons.clear();
+			publish_table();
+		});
 	}
 
 	struct input_value
@@ -194,14 +199,15 @@ public:
 
 protected:
 	// For the configuration's own threads (loading, saving, the settings):
-	// the list of buttons below. A poll takes no lock.
-	mutable shared_mutex m_mutex;
+	// the list of buttons below changes in turn (turn_calls.h). A poll takes
+	// nothing.
+	mutable turn_calls_cpp m_turns;
 	std::vector<cfg_pad_btn<T>*> buttons;
 
 	// The mapping the polls read: each of the controller's buttons with the
 	// pad button it is on, as its offset and key code in the pad's data,
 	// sorted by those (buttons on the same one in the order declared). Made
-	// again whenever the buttons are (publish_table, under m_mutex: one
+	// again whenever the buttons are (publish_table, in the turn: one
 	// writer), in atomics under a sequence count that is odd meanwhile; a
 	// poll copies it whole and copies again if the count moved, so it never
 	// waits, holds nothing while the caller's callback runs, and never sees
@@ -247,7 +253,7 @@ protected:
 		buttons.push_back(pbtn);
 	}
 
-	// m_mutex held
+	// In the turn
 	void publish_table()
 	{
 		button_table table{};
@@ -374,42 +380,52 @@ struct emulated_pads_config : cfg::node
 		}
 	}
 
-	shared_mutex m_mutex;
+	// Loading and saving are done in turn (turn_calls.h), taking each
+	// player's turn inside: no lock
+	turn_calls_cpp m_turns;
 	std::string cfg_id;
 	std::array<std::shared_ptr<T>, Count> players;
 
 	bool load()
 	{
-		m_mutex.lock();
+		bool missing = false;
 
-		bool result = false;
-		const std::string cfg_name = fmt::format("%s%s.yml", fs::get_config_dir(true), cfg_id);
-		cfg_log.notice("Loading %s config: %s", cfg_id, cfg_name);
-
-		from_default();
-
-		for (std::shared_ptr<T>& player : players)
+		const bool result = turn_call(&m_turns, [&]
 		{
-			player->clear_buttons();
-		}
+			bool result = false;
+			const std::string cfg_name = fmt::format("%s%s.yml", fs::get_config_dir(true), cfg_id);
+			cfg_log.notice("Loading %s config: %s", cfg_id, cfg_name);
 
-		if (fs::file cfg_file{ cfg_name, fs::read })
-		{
-			if (const std::string content = cfg_file.to_string(); !content.empty())
-			{
-				result = from_string(content);
-			}
+			from_default();
 
 			for (std::shared_ptr<T>& player : players)
 			{
-				player->init_buttons();
+				player->clear_buttons();
 			}
 
-			m_mutex.unlock();
-		}
-		else
+			if (fs::file cfg_file{ cfg_name, fs::read })
+			{
+				if (const std::string content = cfg_file.to_string(); !content.empty())
+				{
+					result = from_string(content);
+				}
+
+				for (std::shared_ptr<T>& player : players)
+				{
+					player->init_buttons();
+				}
+			}
+			else
+			{
+				missing = true;
+			}
+
+			return result;
+		});
+
+		// Made with the defaults, out of the turn: save takes it
+		if (missing)
 		{
-			m_mutex.unlock();
 			save();
 		}
 
@@ -418,25 +434,26 @@ struct emulated_pads_config : cfg::node
 
 	void save()
 	{
-		std::lock_guard lock(m_mutex);
-
-		const std::string cfg_name = fmt::format("%s%s.yml", fs::get_config_dir(true), cfg_id);
-		cfg_log.notice("Saving %s config to '%s'", cfg_id, cfg_name);
-
-		if (!fs::create_path(fs::get_parent_dir(cfg_name)))
+		return turn_call(&m_turns, [&]()
 		{
-			cfg_log.fatal("Failed to create path: %s (%s)", cfg_name, fs::g_tls_error);
-		}
+			const std::string cfg_name = fmt::format("%s%s.yml", fs::get_config_dir(true), cfg_id);
+			cfg_log.notice("Saving %s config to '%s'", cfg_id, cfg_name);
 
-		if (!cfg::node::save(cfg_name))
-		{
-			cfg_log.error("Failed to save %s config to '%s' (error=%s)", cfg_id, cfg_name, fs::g_tls_error);
-		}
+			if (!fs::create_path(fs::get_parent_dir(cfg_name)))
+			{
+				cfg_log.fatal("Failed to create path: %s (%s)", cfg_name, fs::g_tls_error);
+			}
 
-		for (std::shared_ptr<T>& player : players)
-		{
-			player->clear_buttons();
-			player->init_buttons();
-		}
+			if (!cfg::node::save(cfg_name))
+			{
+				cfg_log.error("Failed to save %s config to '%s' (error=%s)", cfg_id, cfg_name, fs::g_tls_error);
+			}
+
+			for (std::shared_ptr<T>& player : players)
+			{
+				player->clear_buttons();
+				player->init_buttons();
+			}
+		});
 	}
 };
