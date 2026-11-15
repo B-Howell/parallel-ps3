@@ -713,6 +713,17 @@ CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ..
 # Each test also writes what the new code produces, for the reference
 # tools to read back
 check: all
+	@# The host's TableGen tools link libretro-common's objects on their own,
+	@# so one of them calling a function from a file not on the list only
+	@# shows on a host where it is not a macro (retro_sleep_us on Windows):
+	@# linked whole for Windows with MinGW, every object taken in
+	@if ! command -v x86_64-w64-mingw32-gcc >/dev/null; then echo "host libretro-common: x86_64-w64-mingw32-gcc missing (gcc-mingw-w64-x86-64)"; exit 1; fi
+	@rm -rf host_lrc_win && mkdir -p host_lrc_win && \
+	for f in $$($(MAKE) -s --no-print-directory -C ../../.. llvm-host-lrc-srcs); do \
+	   x86_64-w64-mingw32-gcc -c -O2 -w -I$(LRC)/include -o host_lrc_win/$$(echo $${f#./} | tr / _).o ../../../$$f || exit 1; done && \
+	printf 'int main(void) { return 0; }\n' > host_lrc_win/main.c && \
+	if x86_64-w64-mingw32-gcc -o host_lrc_win/link.exe host_lrc_win/main.c host_lrc_win/*.o 2> host_lrc_win/link.log; then echo "host libretro-common: links whole for Windows"; \
+	else cat host_lrc_win/link.log; echo "host libretro-common: the TableGen tools' libretro-common objects do not link for Windows - add the file that defines the symbol to LLVM_HOST_LRC_SRCS"; exit 1; fi
 	./test_zstd fixtures zstd_out.zst
 	if command -v zstd >/dev/null; then zstd -q -t zstd_out.zst; fi
 	./test_deflate fixtures deflate_out.gz
@@ -911,6 +922,6 @@ check-arm64:
 	$(ARM64_RUN) obj/test_audio_mix.arm64
 
 clean:
-	rm -rf obj $(TESTS) *_out.* rec_out
+	rm -rf obj $(TESTS) *_out.* rec_out host_lrc_win
 
 .PHONY: all check check-arm64 clean

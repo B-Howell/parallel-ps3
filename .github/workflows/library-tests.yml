@@ -152,7 +152,7 @@ jobs:
       # Mesa's EGL and software OpenGL, for the OpenGL renderer's frames to
       # the frontend (test_gl_frames)
       - name: Reference tools
-        run: sudo apt-get update -q && sudo apt-get install -y -q zstd zlib1g-dev ffmpeg libegl-dev libegl-mesa0 libgl1-mesa-dri
+        run: sudo apt-get update -q && sudo apt-get install -y -q zstd zlib1g-dev gcc-mingw-w64-x86-64 ffmpeg libegl-dev libegl-mesa0 libgl1-mesa-dri
 
       - name: Run
         run: make -C rpcs3/libretro/tests -j"$(nproc)" check
