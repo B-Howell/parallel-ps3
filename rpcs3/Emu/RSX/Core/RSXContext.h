@@ -4,6 +4,7 @@
 #include "Emu/Cell/lv2/sys_rsx.h"
 #include "Emu/RSX/GCM.h"
 #include "RSXIOMap.hpp"
+#include "Emu/CPU/turn_calls.h"
 
 namespace rsx
 {
@@ -42,7 +43,10 @@ namespace rsx
 		u32 display_buffers_count{ 0 };
 		u32 current_display_buffer{ 0 };
 
-		shared_mutex sys_rsx_mtx;
+		// What the sys_rsx syscalls change of it - the IO map, tiles, zcull
+		// regions, display buffers, the device's address - changes in turn
+		// (turn_calls.h): no lock
+		turn_calls_cpp sys_rsx_turns;
 		u32 device_addr{ 0 };
 		u32 label_addr{ 0 };
 		u32 main_mem_size{ 0 };

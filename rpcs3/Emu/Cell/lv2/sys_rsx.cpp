@@ -105,6 +105,10 @@ static u64 rsx_timeStamp()
 	return get_timebased_time();
 }
 
+// The one RSX context: claimed by sys_rsx_context_allocate, let go by
+// sys_rsx_context_free
+static retro_atomic_int_t s_context_claimed{};
+
 static void set_rsx_dmactl(rsx::thread* render, u64 get_put)
 {
 	{
@@ -393,9 +397,10 @@ error_code sys_rsx_context_allocate(cpu_thread& cpu, vm::ptr<u32> context_id, vm
 
 	const auto render = rsx::get_current_renderer();
 
-	std::lock_guard lock(render->sys_rsx_mtx);
-
-	if (render->dma_address)
+	// The one context is claimed with compare-and-swap, and made on this
+	// thread: what it makes (its event queue and port, the guest's stack
+	// variables) is the calling thread's to make
+	if (!retro_atomic_cas_int(&s_context_claimed, 0, 1))
 	{
 		// We currently do not support multiple contexts
 		fmt::throw_exception("sys_rsx_context_allocate was called twice");
@@ -406,6 +411,7 @@ error_code sys_rsx_context_allocate(cpu_thread& cpu, vm::ptr<u32> context_id, vm
 
 	if (!dma_address)
 	{
+		retro_atomic_store_release_int(&s_context_claimed, 0);
 		return CELL_ENOMEM;
 	}
 
@@ -497,13 +503,23 @@ error_code sys_rsx_context_free(ppu_thread& ppu, u32 context_id)
 	const auto render = rsx::get_current_renderer();
 
 	rsx::eng_lock fifo_lock(render);
-	std::scoped_lock lock(render->sys_rsx_mtx);
 
-	const u32 dma_address = render->dma_address;
-	render->dma_address = 0;
+	// The context is taken down on this thread, as it was made; only the
+	// address is taken in the turn the other syscalls change it in
+	const u32 dma_address = turn_call(&render->sys_rsx_turns, [&]
+	{
+		const u32 addr = render->dma_address;
+		render->dma_address = 0;
+		return addr;
+	});
 
 	if (context_id != 0x55555555 || !dma_address || render->state & cpu_flag::ret)
 	{
+		// The address is gone either way, as it was: a context can be made again
+		if (dma_address)
+		{
+			retro_atomic_store_release_int(&s_context_claimed, 0);
+		}
 		return CELL_EINVAL;
 	}
 
@@ -534,6 +550,7 @@ error_code sys_rsx_context_free(ppu_thread& ppu, u32 context_id)
 
 	ensure(vm::get(vm::rsx_context)->dealloc(dma_address));
 
+	retro_atomic_store_release_int(&s_context_claimed, 0);
 	return CELL_OK;
 }
 
@@ -590,18 +607,20 @@ error_code sys_rsx_context_iomap(cpu_thread& cpu, u32 context_id, u64 io, u64 ea
 	io >>= 20, ea >>= 20, size >>= 20;
 
 	rsx::eng_lock fifo_lock(render);
-	std::scoped_lock lock(render->sys_rsx_mtx);
 
-	for (u32 i = 0; i < size; i++)
+	turn_call(&render->sys_rsx_turns, [&]
 	{
-		auto& table = render->iomap_table;
+		for (u32 i = 0; i < size; i++)
+		{
+			auto& table = render->iomap_table;
 
-		// TODO: Investigate relaxed memory ordering
-		const u32 prev_ea = table.ea[io + i];
-		table.ea[io + i].release(static_cast<u32>(ea + i) << 20);
-		if (prev_ea + 1) table.io[prev_ea >> 20].release(-1); // Clear previous mapping if exists
-		table.io[ea + i].release(static_cast<u32>(io + i) << 20);
-	}
+			// TODO: Investigate relaxed memory ordering
+			const u32 prev_ea = table.ea[io + i];
+			table.ea[io + i].release(static_cast<u32>(ea + i) << 20);
+			if (prev_ea + 1) table.io[prev_ea >> 20].release(-1); // Clear previous mapping if exists
+			table.io[ea + i].release(static_cast<u32>(io + i) << 20);
+		}
+	});
 
 	return CELL_OK;
 }
@@ -637,16 +656,17 @@ error_code sys_rsx_context_iounmap(cpu_thread& cpu, u32 context_id, u64 io, u64 
 
 	vm::writer_lock rlock;
 
-	std::scoped_lock lock(render->sys_rsx_mtx);
-
-	for (const u64 end = (io >>= 20) + (size >>= 20); io < end;)
+	turn_call(&render->sys_rsx_turns, [&]
 	{
-		auto& table = render->iomap_table;
+		for (const u64 end = (io >>= 20) + (size >>= 20); io < end;)
+		{
+			auto& table = render->iomap_table;
 
-		const u32 ea_entry = table.ea[io];
-		table.ea[io++].release(-1);
-		if (ea_entry + 1) table.io[ea_entry >> 20].release(-1);
-	}
+			const u32 ea_entry = table.ea[io];
+			table.ea[io++].release(-1);
+			if (ea_entry + 1) table.io[ea_entry >> 20].release(-1);
+		}
+	});
 
 	return CELL_OK;
 }
@@ -694,7 +714,8 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		const u64 put = static_cast<u32>(a4);
 		const u64 get_put = put << 32 | get;
 
-		std::lock_guard lock(render->sys_rsx_mtx);
+		// The new get and put go in one compare-and-swap, a second set
+		// waiting for the first to be taken (set_rsx_dmactl): no lock
 		set_rsx_dmactl(render, get_put);
 		break;
 	}
@@ -783,8 +804,6 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 			return LV1_ILLEGAL_PARAMETER_VALUE;
 		}
 
-		std::lock_guard lock(render->sys_rsx_mtx);
-
 		// Note: no error checking is being done
 
 		const u32 width = (a4 >> 32) & 0xFFFFFFFF;
@@ -792,12 +811,15 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		const u32 pitch = (a5 >> 32) & 0xFFFFFFFF;
 		const u32 offset = a5 & 0xFFFFFFFF;
 
-		render->display_buffers[id].width = width;
-		render->display_buffers[id].height = height;
-		render->display_buffers[id].pitch = pitch;
-		render->display_buffers[id].offset = offset;
+		turn_call(&render->sys_rsx_turns, [&]
+		{
+			render->display_buffers[id].width = width;
+			render->display_buffers[id].height = height;
+			render->display_buffers[id].pitch = pitch;
+			render->display_buffers[id].offset = offset;
 
-		render->display_buffers_count = std::max<u32>(id + 1, render->display_buffers_count);
+			render->display_buffers_count = std::max<u32>(id + 1, render->display_buffers_count);
+		});
 		break;
 	}
 	case 0x105: // destroy buffer?
@@ -920,34 +942,52 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 			ensure(a5 & (1 << 30));
 		}
 
-		std::lock_guard lock(render->sys_rsx_mtx);
-
-		// When tile is going to be unbound, we can use it as a hint that the address will no longer be used as a surface and can be removed/invalidated
-		// Todo: There may be more checks such as format/size/width can could be done
-		if (tile.bound && !bound)
-			render->notify_tile_unbound(static_cast<u32>(a3));
-
+		// Taken before the turn, as sys_rsx_context_iomap takes it: the
+		// thread's own, and never inside a turn
+		std::optional<vm::writer_lock> rlock;
 		if (location == CELL_GCM_LOCATION_MAIN && bound)
 		{
-			vm::writer_lock rlock;
-
-			for (u32 io = (offset >> 20), end = (range.end >> 20); io <= end; io++)
-			{
-				if (render->iomap_table.ea[io] == umax)
-				{
-					return { CELL_EINVAL, "iomap_table ea is umax" };
-				}
-			}
+			rlock.emplace();
 		}
 
-		tile.location = location;
-		tile.offset = offset;
-		tile.size = size;
-		tile.pitch = pitch;
-		tile.comp = comp;
-		tile.base = base;
-		tile.bank = base;
-		tile.bound = bound;
+		enum { tile_set, tile_unbound, tile_unmapped } outcome = tile_set;
+		turn_call(&render->sys_rsx_turns, [&]
+		{
+			if (rlock)
+			{
+				for (u32 io = (offset >> 20), end = (range.end >> 20); io <= end; io++)
+				{
+					if (render->iomap_table.ea[io] == umax)
+					{
+						outcome = tile_unmapped;
+						return;
+					}
+				}
+			}
+
+			// When tile is going to be unbound, we can use it as a hint that the address will no longer be used as a surface and can be removed/invalidated
+			// Todo: There may be more checks such as format/size/width can could be done
+			if (tile.bound && !bound)
+				outcome = tile_unbound;
+
+			tile.location = location;
+			tile.offset = offset;
+			tile.size = size;
+			tile.pitch = pitch;
+			tile.comp = comp;
+			tile.base = base;
+			tile.bank = base;
+			tile.bound = bound;
+		});
+
+		if (outcome == tile_unmapped)
+		{
+			return { CELL_EINVAL, "iomap_table ea is umax" };
+		}
+
+		// The renderer is told on this thread, out of the turn
+		if (outcome == tile_unbound)
+			render->notify_tile_unbound(static_cast<u32>(a3));
 		break;
 	}
 	case 0x301: // Depth-buffer (Z-cull)
@@ -996,22 +1036,23 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 			ensure((a6 & 0xFFFFFFFF) == 0u + ((0x2000 << 0) | (0x20 << 16)));
 		}
 
-		std::lock_guard lock(render->sys_rsx_mtx);
+		turn_call(&render->sys_rsx_turns, [&]
+		{
+			auto &zcull = render->zculls[a3];
 
-		auto &zcull = render->zculls[a3];
-
-		zcull.zFormat = ((a4 >> 32) >> 4) & 0xF;
-		zcull.aaFormat = ((a4 >> 32) >> 8) & 0xF;
-		zcull.width = width;
-		zcull.height = height;
-		zcull.cullStart = cullStart;
-		zcull.offset = offset;
-		zcull.zcullDir = ((a6 >> 32) >> 1) & 0x1;
-		zcull.zcullFormat = ((a6 >> 32) >> 2) & 0x3FF;
-		zcull.sFunc = ((a6 >> 32) >> 12) & 0xF;
-		zcull.sRef = ((a6 >> 32) >> 16) & 0xFF;
-		zcull.sMask = ((a6 >> 32) >> 24) & 0xFF;
-		zcull.bound = bound;
+			zcull.zFormat = ((a4 >> 32) >> 4) & 0xF;
+			zcull.aaFormat = ((a4 >> 32) >> 8) & 0xF;
+			zcull.width = width;
+			zcull.height = height;
+			zcull.cullStart = cullStart;
+			zcull.offset = offset;
+			zcull.zcullDir = ((a6 >> 32) >> 1) & 0x1;
+			zcull.zcullFormat = ((a6 >> 32) >> 2) & 0x3FF;
+			zcull.sFunc = ((a6 >> 32) >> 12) & 0xF;
+			zcull.sRef = ((a6 >> 32) >> 16) & 0xFF;
+			zcull.sMask = ((a6 >> 32) >> 24) & 0xFF;
+			zcull.bound = bound;
+		});
 		break;
 	}
 
@@ -1125,9 +1166,12 @@ error_code sys_rsx_device_map(cpu_thread& cpu, vm::ptr<u64> dev_addr, vm::ptr<u6
 
 	const auto render = rsx::get_current_renderer();
 
-	std::scoped_lock lock(render->sys_rsx_mtx);
+	// Mapped on this thread, out of the turn (the memory map takes its own
+	// locks), and kept in the turn by whichever thread got there first; a
+	// thread that came second gives its mapping back
+	u32 current = turn_call(&render->sys_rsx_turns, [&] { return render->device_addr; });
 
-	if (!render->device_addr)
+	if (!current)
 	{
 		const auto area = vm::reserve_map(vm::rsx_context, 0, 0x10000000, 0x403);
 		const u32 addr = area ? area->alloc(0x100000) : 0;
@@ -1137,14 +1181,26 @@ error_code sys_rsx_device_map(cpu_thread& cpu, vm::ptr<u64> dev_addr, vm::ptr<u6
 			return CELL_ENOMEM;
 		}
 
-		sys_rsx.warning("sys_rsx_device_map(): Mapped address 0x%x", addr);
+		current = turn_call(&render->sys_rsx_turns, [&]
+		{
+			if (!render->device_addr)
+			{
+				render->device_addr = addr;
+			}
+			return render->device_addr;
+		});
 
-		*dev_addr = addr;
-		render->device_addr = addr;
-		return CELL_OK;
+		if (current != addr)
+		{
+			ensure(area->dealloc(addr));
+		}
+		else
+		{
+			sys_rsx.warning("sys_rsx_device_map(): Mapped address 0x%x", addr);
+		}
 	}
 
-	*dev_addr = render->device_addr;
+	*dev_addr = current;
 	return CELL_OK;
 }
 
