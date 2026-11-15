@@ -537,8 +537,7 @@ error_code cellAudioInRegisterDevice(u64 deviceType, vm::cptr<char> name, vm::pt
 		}
 
 		auto& mic_thr = g_fxo->get<mic_thread>();
-		const std::lock_guard mic_lock(mic_thr.mutex);
-		const u32 device_number = mic_thr.register_device(device->full_device_name);
+		const u32 device_number = mic_call([&]() { return mic_thr.register_device(device->full_device_name); });
 
 		return not_an_error(device_number);
 	});
@@ -549,8 +548,7 @@ error_code cellAudioInUnregisterDevice(u32 deviceNumber)
 	cellAvconfExt.todo("cellAudioInUnregisterDevice(deviceNumber=0x%x)", deviceNumber);
 
 	auto& mic_thr = g_fxo->get<mic_thread>();
-	const std::lock_guard lock(mic_thr.mutex);
-	mic_thr.unregister_device(deviceNumber);
+	mic_call([&]() { mic_thr.unregister_device(deviceNumber); });
 
 	return CELL_OK;
 }

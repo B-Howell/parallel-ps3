@@ -638,38 +638,40 @@ void usb_device_mic::isochronous_transfer(UsbTransfer* transfer)
 	const bool stereo = (m_mic_type == MicType::SingStar && current_altsetting == 2);
 
 	auto& mic_thr = g_fxo->get<mic_thread>();
-	const std::lock_guard lock(mic_thr.mutex);
-	if (!mic_thr.init)
+	mic_call([&]()
 	{
-	    usb_mic_log.notice("mic init");
-		mic_thr.load_config_and_init();
-		mic_thr.init = 1;
-	}
-	if (!mic_thr.check_device(0))
-	{
-	    usb_mic_log.notice("mic check");
-	}
-	microphone_device& device = ::at32(mic_thr.mic_list, 0);
-	if (!device.is_opened())
-	{
-	    usb_mic_log.notice("mic open");
-		device.open_microphone(CELLMIC_SIGTYPE_RAW, m_sample_rate, m_sample_rate, stereo ? 2 : 1);
-	}
-	if (!device.is_started())
-	{
-	    usb_mic_log.notice("mic start");
-		device.start_microphone();
-	}
+		if (!mic_thr.init)
+		{
+		    usb_mic_log.notice("mic init");
+			mic_thr.load_config_and_init();
+			mic_thr.init = 1;
+		}
+		if (!mic_thr.check_device(0))
+		{
+		    usb_mic_log.notice("mic check");
+		}
+		microphone_device& device = ::at32(mic_thr.mic_list, 0);
+		if (!device.is_opened())
+		{
+		    usb_mic_log.notice("mic open");
+			device.open_microphone(CELLMIC_SIGTYPE_RAW, m_sample_rate, m_sample_rate, stereo ? 2 : 1);
+		}
+		if (!device.is_started())
+		{
+		    usb_mic_log.notice("mic start");
+			device.start_microphone();
+		}
 
-	u8* buf = static_cast<u8*>(transfer->iso_request.buf.get_ptr());
-	for (u32 index = 0; index < transfer->iso_request.num_packets; index++)
-	{
-		const u16 inlen = ::at32(transfer->iso_request.packets, index) >> 4;
-		ensure(inlen >= (stereo ? 192 : 96));
-		const u32 outlen = device.read_raw(buf, stereo ? 192 : 96);
-		buf += outlen;
-		transfer->iso_request.packets[index] = (outlen & 0xFFF) << 4;
-		usb_mic_log.trace("    isochronous_transfer: dev=%d, buf=0x%x, start=0x%x, pks=0x%x idx=0x%x, inlen=0x%x, outlen=0x%x",
-			static_cast<u8>(m_mic_type), transfer->iso_request.buf, transfer->iso_request.start_frame, transfer->iso_request.num_packets, index, inlen, outlen);
-	}
+		u8* buf = static_cast<u8*>(transfer->iso_request.buf.get_ptr());
+		for (u32 index = 0; index < transfer->iso_request.num_packets; index++)
+		{
+			const u16 inlen = ::at32(transfer->iso_request.packets, index) >> 4;
+			ensure(inlen >= (stereo ? 192 : 96));
+			const u32 outlen = device.read_raw(buf, stereo ? 192 : 96);
+			buf += outlen;
+			transfer->iso_request.packets[index] = (outlen & 0xFFF) << 4;
+			usb_mic_log.trace("    isochronous_transfer: dev=%d, buf=0x%x, start=0x%x, pks=0x%x idx=0x%x, inlen=0x%x, outlen=0x%x",
+				static_cast<u8>(m_mic_type), transfer->iso_request.buf, transfer->iso_request.start_frame, transfer->iso_request.num_packets, index, inlen, outlen);
+		}
+	});
 }

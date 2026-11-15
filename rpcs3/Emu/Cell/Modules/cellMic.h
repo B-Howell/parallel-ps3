@@ -1,7 +1,8 @@
 #pragma once
 
 #include "Utilities/Thread.h"
-#include "Utilities/mutex.h"
+#include "Emu/Cell/Modules/hle_service.h"
+#include "Emu/IdManager.h"
 #include "Emu/system_config_types.h"
 
 // The core has no OpenAL - a capture device is the frontend's to open - so
@@ -418,13 +419,17 @@ public:
 
 	std::array<microphone_device, CELL_MAX_MICS> mic_list{};
 
-	shared_mutex mutex;
+	// The devices are the microphone thread's: every call that touches them
+	// runs there (mic_call), so nothing is locked
+	owner_calls_t calls{};
 	atomic_t<u8> init = 0;
+
+	mic_context() { owner_calls_init(&calls); }
+	mic_context& operator=(thread_state) { wake_up(); return *this; }
 
 	static constexpr auto thread_name = "Microphone Thread"sv;
 
 protected:
-	atomic_t<u32> wakey = 0;
 
 	//	u32 signalStateLocalTalk = 9; // value is in range 0-10. 10 indicates talking, 0 indicating none.
 	//	u32 signalStateFarTalk = 0; // value is in range 0-10. 10 indicates talking from far away, 0 indicating none.
@@ -435,3 +440,13 @@ protected:
 };
 
 using mic_thread = named_thread<mic_context>;
+
+// On the microphone thread: where its calls run at once
+inline thread_local bool g_on_mic_thread = false;
+
+// @f run on the microphone thread, its result given back
+template <typename F>
+auto mic_call(F&& f) -> decltype(f())
+{
+	return cpu_owner_call(&g_fxo->get<mic_thread>().calls, g_on_mic_thread, std::forward<F>(f));
+}

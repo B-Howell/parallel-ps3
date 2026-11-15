@@ -675,7 +675,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 697
+LOCK_GUARD_MAX := 670
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -769,6 +769,8 @@ check: all
 	@if grep -nE "shared_mutex|lock_audio|g_audio\.mutex|emu_cfg_upd_m|lock_guard lock\(mutex\)|unique_lock lock\(mutex\)" ../../Emu/Cell/Modules/cellAudio.cpp ../../Emu/Cell/Modules/cellAudio.h; then echo "cellAudio: a lock is back - its state is the cellAudio thread's (audio_call)"; exit 1; else echo "cellAudio: no lock, the cellAudio thread's"; fi
 	@# The overlay cursors: requests in atomic words, the render thread's to take up
 	@if grep -nE "shared_mutex|lock_guard|m_mutex" ../../Emu/RSX/Overlays/overlay_cursor.cpp ../../Emu/RSX/Overlays/overlay_cursor.h; then echo "cursors: a lock is back - their requests are words the render thread takes up"; exit 1; else echo "cursors: no lock"; fi
+	@# The microphones are the microphone thread's (mic_call), timed on the guest's clock
+	@if grep -nE "shared_mutex|lock_guard|unique_lock|steady_clock|thread_ctrl::wait" ../../Emu/Cell/Modules/cellMic.cpp ../../Emu/Cell/Modules/cellMic.h ../../Emu/Io/usb_microphone.cpp; then echo "microphones: a lock or a clock of the host's is back - they are the microphone thread's (mic_call), on the guest's clock"; exit 1; else echo "microphones: no lock, the microphone thread's, on the guest's clock"; fi
 	@# The pads take no lock: pad::g_pad_mutex is gone, and a merge of
 	@# upstream's code that takes it does not bring it back
 	@if grep -rn "g_pad_mutex" ../../Emu ../../Input ../*.cpp ../*.h ../*.c; then echo "pads: pad::g_pad_mutex is back - the pads take no lock (AGENTS.md)"; exit 1; else echo "pads: no pad lock"; fi
