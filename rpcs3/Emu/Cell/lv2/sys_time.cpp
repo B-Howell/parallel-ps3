@@ -99,38 +99,55 @@ void libretro_guest_clock_grant(double frame_seconds)
 	if (!freq || !(frame_seconds > 0))
 		return;
 	const u64 frame = static_cast<u64>(frame_seconds * static_cast<double>(freq));
+
+	// Readers told first that it changes, and the host's time read after: a
+	// reader still on the frame before read its time before this, where the
+	// clock was at most where this frame starts - so never backwards
+	const int seq = retro_atomic_load_relaxed_int(&s_clock_seq);
+	retro_atomic_store_relaxed_int(&s_clock_seq, seq + 1);
+	retro_atomic_thread_fence_release();
+
 	const u64 tsc   = utils::get_tsc();
 	u64 lag   = retro_atomic_load_relaxed_size(&s_clock_lag);
 	u64 grant = retro_atomic_load_relaxed_size(&s_clock_grant);
 	u64 floor;
 
 	int speed = 1 << 16;
+	u64 rate = 1 << 16;
 	if (!grant)
 	{
 		// Continuous with the host's clock the guest had until now
 		lag   = 0;
 		floor = tsc;
+		grant = floor + frame;
 	}
 	else
 	{
-		// Never behind the frames asked for: from the end of the last, on
-		// at the host's rate - on from where it stopped when it stopped there
-		// (paused), pulled forward to it when behind (fast-forward)
-		floor = grant;
-		lag   = tsc - floor;
-		// A frame of the guest's time for the host's time since the last
-		const u64 host = std::max<u64>(tsc - s_clock_last_grant_tsc, 1);
+		// The host's time since the last retro_run: retro_run's pace. Held
+		// within two frames' worth, so a pause does not make the next frame
+		// crawl
+		const u64 host = std::clamp<u64>(tsc - s_clock_last_grant_tsc, std::max<u64>(frame / 64, 1), frame * 2);
 		speed = static_cast<int>(std::clamp<u64>((frame << 16) / host, 1 << 12, 64 << 16));
+
+		// On from where the guest's clock is - never back - to one more
+		// frame than asked for so far, at the rate that gets it there in as
+		// long of the host's time as the last frame took: paused at the
+		// frame's end it moves a frame in a frame; behind (a frame came
+		// early) it catches up in the next, smoothly. Never more than a frame
+		// behind the frames asked for: retro_run in a burst pulls it forward
+		// The frame starts where the clock stands a little after now (20 us
+		// of the host's): the TSC is not read in order with the sequence
+		// count, so a reader still on the frame before can have read one a
+		// little later than this; from that, never back
+		const clock_slave now{lag, retro_atomic_load_relaxed_size(&s_clock_floor), grant, retro_atomic_load_relaxed_size(&s_clock_rate)};
+		floor = std::max<u64>(slaved_of(now, tsc + freq / 50000), grant - std::min<u64>(grant, frame));
+		lag   = tsc - floor;
+		grant = grant + frame;
+		rate  = std::clamp<u64>(((grant - floor) << 16) / host, 1 << 12, u64{64} << 16);
 	}
 	s_clock_last_grant_tsc = tsc;
 	retro_atomic_store_release_int(&s_clock_speed, speed);
-	grant = floor + frame;
-	// The first frame at the host's pace; after, at retro_run's
-	const u64 rate = static_cast<u64>(speed);
 
-	const int seq = retro_atomic_load_relaxed_int(&s_clock_seq);
-	retro_atomic_store_relaxed_int(&s_clock_seq, seq + 1);
-	retro_atomic_thread_fence_release();
 	retro_atomic_store_relaxed_size(&s_clock_lag, lag);
 	retro_atomic_store_relaxed_size(&s_clock_floor, floor);
 	retro_atomic_store_relaxed_size(&s_clock_grant, grant);

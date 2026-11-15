@@ -319,8 +319,12 @@ int main()
 			sleep_ms(4);
 		}
 
+		// A jump is the guest's time moving much more than four times the
+		// host's between two looks; a look that came late (the machine busy)
+		// is measured against the host's time it took, not counted as a jump
 		u64 worst_jump = 0, moved = 0;
 		u64 last = get_slaved_system_time();
+		auto last_host = std::chrono::steady_clock::now();
 		const u64 first = last;
 		for (int f = 0; f < 60; f++)
 		{
@@ -330,14 +334,18 @@ int main()
 			{
 				std::this_thread::sleep_for(std::chrono::microseconds(200));
 				const u64 now = get_slaved_system_time();
-				worst_jump = std::max<u64>(worst_jump, now - last);
+				const auto now_host = std::chrono::steady_clock::now();
+				const u64 host_us = std::chrono::duration_cast<std::chrono::microseconds>(now_host - last_host).count();
+				const u64 beyond = now - last > 4 * host_us ? now - last - 4 * host_us : 0;
+				worst_jump = std::max<u64>(worst_jump, beyond);
 				last = now;
+				last_host = now_host;
 			}
 		}
 		moved = last - first;
-		CHECK(worst_jump < 5'000);                       // a period is 5.3 ms
+		CHECK(worst_jump < 4'000);                       // a period is 5.3 ms
 		CHECK(moved >= 900'000 && moved <= 1'050'000);   // 60 frames: 1 s
-		std::printf("test_guest_clock: 4x fast-forward: guest moved %.1f ms in 60 frames, its largest jump %.2f ms\n", moved / 1000.0, worst_jump / 1000.0);
+		std::printf("test_guest_clock: 4x fast-forward: guest moved %.1f ms in 60 frames, its largest jump beyond four times the host's %.2f ms\n", moved / 1000.0, worst_jump / 1000.0);
 	}
 
 	// cellAudio's periods go by the guest's clock: its ring's time moves a
