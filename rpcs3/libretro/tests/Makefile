@@ -675,7 +675,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 602
+LOCK_GUARD_MAX := 590
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -781,6 +781,8 @@ check: all
 	@if grep -nE "std::mutex|shared_mutex|reader_lock|lock\((dcm\.)?mtx\)|lock\(mutex\)" ../../Emu/Cell/Modules/cellGame.cpp ../../Emu/Cell/Modules/cellGame.h; then echo "cellGame: a lock of its own is back - the disc change manager is words, the data check's directory the HLE thread's"; exit 1; else echo "cellGame: no lock of its own"; fi
 	@# cellMusic and cellMusicDecode: no lock; the selection the HLE thread's, the decoding one thread's at a time by a word, the decoder's tracks handed over without a lock
 	@if grep -nE "shared_mutex|lock_guard|reader_lock|scoped_lock|m_mtx|music\\.mtx|dec\\.mutex" ../../Emu/Cell/Modules/cellMusic.cpp ../../Emu/Cell/Modules/cellMusicDecode.cpp ../../util/media_utils.cpp; then echo "cellMusic: a lock is back - the selection is the HLE thread's, the decoding one thread's at a time (music_decode::busy), the decoder's tracks handed over without a lock"; exit 1; else echo "cellMusic: no lock"; fi
+	@# libmixer: the mix and the players the HLE thread's (hle_call), the game's samples mixed straight in
+	@if grep -nE "std::mutex|shared_mutex|lock_guard|g_surmx\.mutex" ../../Emu/Cell/Modules/libmixer.cpp; then echo "libmixer: a lock is back - the mix and the players are the HLE thread's (hle_call)"; exit 1; else echo "libmixer: no lock"; fi
 	@# The pads take no lock: pad::g_pad_mutex is gone, and a merge of
 	@# upstream's code that takes it does not bring it back
 	@if grep -rn "g_pad_mutex" ../../Emu ../../Input ../*.cpp ../*.h ../*.c; then echo "pads: pad::g_pad_mutex is back - the pads take no lock (AGENTS.md)"; exit 1; else echo "pads: no pad lock"; fi
