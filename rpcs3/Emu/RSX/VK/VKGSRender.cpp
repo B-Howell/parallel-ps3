@@ -948,9 +948,10 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 	{
 		// Only the renderer enters the texture cache. Whether the fault is
 		// the cache's at all is read from the table of locked pages.
-		if (!m_texture_cache.page_is_locked(address))
+		// A report's page of ZCULL's is the renderer's to deal with too
+		if (!m_texture_cache.page_is_locked(address) && !zcull_ctrl->may_own(address))
 		{
-			return zcull_ctrl->on_access_violation(address);
+			return false;
 		}
 
 		if (g_fxo->get<rsx::dma_manager>().is_current_thread())
@@ -960,6 +961,7 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 			// invalidates and flushes that itself (do_local_task)
 			ensure(!(m_queue_status & flush_queue_state::deadlock));
 
+			m_offloader_fault_address = address;
 			m_offloader_fault_range = g_fxo->get<rsx::dma_manager>().get_fault_range(is_writing);
 			m_offloader_fault_cause = (is_writing) ? rsx::invalidation_cause::write : rsx::invalidation_cause::read;
 
@@ -1769,6 +1771,7 @@ void VKGSRender::do_local_task(rsx::FIFO::state state)
 		// NOTE: It is not possible to handle regular flush requests before this is cleared
 		// NOTE: This may cause graphics corruption due to unsynchronized modification
 		on_invalidate_memory_range(m_offloader_fault_range, m_offloader_fault_cause);
+		zcull_ctrl->on_access_violation(m_offloader_fault_address);
 		m_queue_status.clear(flush_queue_state::deadlock);
 	}
 

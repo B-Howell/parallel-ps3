@@ -102,13 +102,14 @@ namespace rsx
 			std::unordered_map<u32, MMIO_page_data_t> m_locked_pages[2];
 			atomic_t<bool> m_pages_accessed[2] = { false, false };
 			atomic_t<s32> m_critical_reports_in_flight = { 0 };
-			shared_mutex m_pages_mutex;
 
-			// How many pages each map above holds, for the fault handler to
-			// read with no lock: it is told of every fault the texture cache
-			// did not take, and nearly all of those are on pages that are not
-			// here. Stored under the mutex, after every change to a map and
-			// before a page of it is protected.
+			// The locked pages are the renderer's alone: a fault on one from
+			// another thread is handed to the renderer (may_own), so they take
+			// no lock.
+			// How many pages each map above holds, for another thread's fault
+			// to read with no lock: nearly all of the faults the texture cache
+			// does not take are on pages that are not here. Stored after every
+			// change to a map and before a page of it is protected.
 			retro_atomic_int_t m_locked_page_count[2]{};
 
 			void on_report_enqueued(vm::addr_t address);
@@ -202,7 +203,10 @@ namespace rsx
 			u32 copy_reports_to(u32 start, u32 range, u32 dest);
 
 			// Check paging issues
+			// The renderer's. A fault on another thread asks may_own first,
+			// with no lock, and hands the fault to the renderer when it is
 			bool on_access_violation(u32 address);
+			bool may_own(u32 address) const;
 
 			// Optimization check
 			bool is_query_result_urgent(u32 address) const { return m_pages_accessed[rsx::classify_location(address)]; }

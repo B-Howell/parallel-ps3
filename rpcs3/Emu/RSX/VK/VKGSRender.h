@@ -215,6 +215,7 @@ private:
 
 	// Offloader thread deadlock recovery
 	rsx::atomic_bitmask_t<flush_queue_state> m_queue_status;
+	u32 m_offloader_fault_address = 0;
 	utils::address_range32 m_offloader_fault_range;
 	rsx::invalidation_cause m_offloader_fault_cause;
 

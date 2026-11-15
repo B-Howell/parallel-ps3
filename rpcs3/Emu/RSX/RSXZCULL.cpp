@@ -24,8 +24,6 @@ namespace rsx
 
 		ZCULL_control::~ZCULL_control()
 		{
-			std::scoped_lock lock(m_pages_mutex);
-
 			for (auto& block : m_locked_pages)
 			{
 				for (auto& p : block)
@@ -705,8 +703,6 @@ namespace rsx
 
 			// Disable optimizations across the accessed range if reports reside within
 			{
-				std::scoped_lock lock(m_pages_mutex);
-
 				const auto location1 = rsx::classify_location(memory_address);
 				const auto location2 = rsx::classify_location(memory_end - 1);
 
@@ -836,8 +832,6 @@ namespace rsx
 		void ZCULL_control::on_report_enqueued(vm::addr_t address)
 		{
 			const auto location = rsx::classify_location(address);
-			std::scoped_lock lock(m_pages_mutex);
-
 			if (!m_pages_accessed[location]) [[ likely ]]
 			{
 				const auto page_address = utils::page_start(static_cast<u32>(address));
@@ -868,8 +862,6 @@ namespace rsx
 			if (!m_pages_accessed[location])
 			{
 				const auto page_address = utils::page_start(static_cast<u32>(address));
-				std::scoped_lock lock(m_pages_mutex);
-
 				if (auto found = m_locked_pages[location].find(page_address);
 					found != m_locked_pages[location].end())
 				{
@@ -916,6 +908,12 @@ namespace rsx
 			retro_atomic_store_release_int(&m_locked_page_count[location], 0);
 		}
 
+		bool ZCULL_control::may_own(u32 address) const
+		{
+			const auto location = rsx::classify_location(address);
+			return !m_pages_accessed[location] && retro_atomic_load_acquire_int(&m_locked_page_count[location]) != 0;
+		}
+
 		bool ZCULL_control::on_access_violation(u32 address)
 		{
 			const auto page_address = utils::page_start(address);
@@ -937,8 +935,6 @@ namespace rsx
 
 			bool need_disable_optimizations = false;
 			{
-				std::scoped_lock lock(m_pages_mutex);
-
 				if (auto found = m_locked_pages[location].find(page_address);
 					found != m_locked_pages[location].end())
 				{
@@ -965,12 +961,10 @@ namespace rsx
 				}
 			}
 
-			// Deadlock avoidance, do not pause RSX FIFO eng while holding the pages lock
+			// On the renderer, whose FIFO is not running meanwhile
 			if (need_disable_optimizations)
 			{
 				auto thr = rsx::get_current_renderer();
-				rsx::eng_lock rlock(thr);
-				std::scoped_lock lock(m_pages_mutex);
 				disable_optimizations(thr, location);
 
 				thr->m_eng_interrupt_mask |= rsx::pipe_flush_interrupt;

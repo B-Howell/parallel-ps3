@@ -1344,9 +1344,10 @@ bool GLGSRender::on_access_violation(u32 address, bool is_writing)
 		// the cache's at all is read from the table of locked pages; if it
 		// is, it is handed to the renderer, which handles it as one of its
 		// own and wakes this thread (rsx::thread::serve_guest_faults).
-		if (!m_gl_texture_cache.page_is_locked(address))
+		// A report's page of ZCULL's is the renderer's to deal with too
+		if (!m_gl_texture_cache.page_is_locked(address) && !zcull_ctrl->may_own(address))
 		{
-			return zcull_ctrl->on_access_violation(address);
+			return false;
 		}
 
 		rsx_guest_fault_t fault;
