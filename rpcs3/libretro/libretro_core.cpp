@@ -3086,10 +3086,17 @@ void retro_unload_game(void)
 void retro_run(void)
 {
     // A frame of the frontend's: one more frame of the guest's time, and
-    // what a wait counted in frames waits for
-    libretro_guest_clock_grant(1.0 / libretro_frame_rate());
-    lv2_watchdog_tick();
-    libretro_event();
+    // what a wait counted in frames waits for - when the guest is owed one.
+    // In fast-forward only as fast as the game shows frames: a run that is
+    // not owed one is a frame shown again, with no VBLANK, no audio and no
+    // time for the guest
+    const bool frame_due = libretro_guest_frame_due(1.0 / libretro_frame_rate());
+    if (frame_due)
+    {
+        libretro_guest_clock_grant(1.0 / libretro_frame_rate());
+        lv2_watchdog_tick();
+        libretro_event();
+    }
 
     if (s_pkg_install_only)
     {
@@ -3197,17 +3204,18 @@ void retro_run(void)
         g_libretro_pad_thread->frontend_update(connected);
     }
 
-    // One PS3 VBLANK per retro_run - two where the VBLANK runs at twice the
+    // One PS3 VBLANK per frame owed - two where the VBLANK runs at twice the
     // rate the core shows frames at (a 30 fps game of the VBlank Frequency
     // list). The frontend paces; nothing in the core does.
-    if (Emu.IsRunning())
+    if (frame_due && Emu.IsRunning())
     {
         g_libretro_vblank_requests += s_output_hz ? std::max<u32>(1, g_cfg.video.vblank_rate.get() / s_output_hz) : 1;
         g_libretro_vblank_requests.notify_one();
     }
 
     // Process audio
-    libretro_audio_process(audio_batch_cb, libretro_frame_rate());
+    if (frame_due)
+        libretro_audio_process(audio_batch_cb, libretro_frame_rate());
 
 #ifdef HAVE_VULKAN
     if (g_libretro_vulkan_hw)

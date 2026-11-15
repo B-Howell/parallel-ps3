@@ -16,6 +16,13 @@ u64 get_guest_system_time(u64 time = umax);
 // retro_run's thread: one more frame of the guest's time (sys_time.cpp)
 void libretro_guest_clock_grant(double frame_seconds);
 
+// retro_run's thread, before the grant: whether the guest is owed a frame
+// now - in fast-forward only as fast as the game shows frames (sys_time.cpp)
+bool libretro_guest_frame_due(double frame_seconds);
+
+// The RSX thread: the game showed a frame (sys_time.cpp)
+void libretro_guest_flipped();
+
 // retro_run's thread, once a frame after the grant: the game's watchdog
 // looks at the guest's clock (sys_game.cpp)
 void lv2_watchdog_tick();

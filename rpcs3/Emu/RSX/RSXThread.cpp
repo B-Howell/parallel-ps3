@@ -3714,6 +3714,7 @@ namespace rsx
 		m_queued_flip.skip_frame |= g_cfg.video.disable_video_output && !g_cfg.video.perf_overlay.enabled;
 
 		flip(m_queued_flip);
+		libretro_guest_flipped();
 
 		last_guest_flip_timestamp = get_system_time() - 1000000;
 		flip_status = CELL_GCM_DISPLAY_FLIP_STATUS_DONE;

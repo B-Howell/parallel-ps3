@@ -41,6 +41,7 @@
 #include <chrono>
 #include <cstdio>
 #include <thread>
+#include <utility>
 #include <vector>
 
 static int failures = 0;
@@ -394,6 +395,63 @@ int main()
 		CHECK(!fired_paused);
 
 		std::printf("test_guest_clock: watchdog of 1 s ran out at frame %d; %s after 1.3 s paused\n", fired_at, fired_paused ? "ran out" : "not");
+	}
+
+	// Fast-forward goes as fast as the game makes frames, no faster:
+	// retro_run as the core runs it (libretro_guest_frame_due, then the
+	// grant), coming every 0.2 ms. The guest's time used to run on a frame
+	// every retro_run, whatever the game did: a loading screen's timeouts
+	// ran out before their loads, and the game's audio fell behind
+	// cellAudio's for good. A game that shows nothing gets at most twice
+	// real time; one that shows a frame for every frame (or every second
+	// one, at 30 fps) gets every frame asked for; at the frontend's own
+	// pace, uneven, every frame is owed even with nothing shown.
+	{
+		const auto run_for = [](int ms, int flip_every, int sleep_us, const int* pattern_ms, int pattern_n) -> std::pair<int, int>
+		{
+			int runs = 0, grants = 0;
+			const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+			while (std::chrono::steady_clock::now() < until)
+			{
+				runs++;
+				if (libretro_guest_frame_due(kFrame))
+				{
+					libretro_guest_clock_grant(kFrame);
+					grants++;
+					if (flip_every && grants % flip_every == 0)
+						libretro_guest_flipped();
+				}
+				if (pattern_n)
+					sleep_ms(pattern_ms[runs % pattern_n]);
+				else
+					std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
+			}
+			return {runs, grants};
+		};
+
+		const u64 a = get_slaved_system_time();
+		const auto still = run_for(300, 0, 200, nullptr, 0);
+		const u64 moved = get_slaved_system_time() - a;
+		// Two frames for every frame of real time, the few owed after the
+		// game's last frame, and the scheduler's slack
+		CHECK(still.second <= 300 * 2 * 60 / 1000 + 4 + 6);
+		CHECK(still.second >= 300 * 60 / 1000);
+		CHECK(moved <= 700000);
+
+		// The game shows a frame again
+		libretro_guest_flipped();
+		const auto every = run_for(150, 1, 200, nullptr, 0);
+		CHECK(every.second == every.first);
+		const auto half = run_for(150, 2, 200, nullptr, 0);
+		CHECK(half.second == half.first);
+
+		libretro_guest_flipped();
+		const int uneven[] = {16, 10, 23, 16, 12, 20, 16};
+		const auto paced = run_for(400, 0, 0, uneven, 7);
+		CHECK(paced.second == paced.first);
+		std::printf("test_guest_clock: fast-forward, nothing shown: %d of %d runs owed a frame, guest moved %.1f ms in 300 ms; "
+			"a frame shown each: %d of %d; at 30 fps: %d of %d; at the frontend's uneven pace: %d of %d\n",
+			still.second, still.first, moved / 1000.0, every.second, every.first, half.second, half.first, paced.second, paced.first);
 	}
 
 	std::printf("test_guest_clock: paused 120 ms, guest moved %.1f ms; 10 frames at once, %.1f had; "

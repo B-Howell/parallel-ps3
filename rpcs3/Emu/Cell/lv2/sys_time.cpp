@@ -158,6 +158,47 @@ void libretro_guest_clock_grant(double frame_seconds)
 	retro_waitaddr_notify_all(&s_clock_seq);
 }
 
+// The frames the game has shown (libretro_guest_flipped), and the grants
+// since the last of them; retro_run's own
+static retro_atomic_int_t s_guest_flips;
+static int s_due_flips;
+static int s_grants_since_flip;
+
+// The RSX thread: the game showed a frame
+void libretro_guest_flipped()
+{
+	retro_atomic_inc_int(&s_guest_flips);
+}
+
+// retro_run's thread, before it grants: whether the guest is owed a frame
+// now. Not when retro_run comes faster than real time (fast-forward) and the
+// game has shown nothing for the last few frames it was given: then the
+// guest's time ran on, every frame retro_run asked for, while its threads
+// did no more than the host let them - a loading screen's timeouts ran out
+// before the loads they waited on, and the game's audio fell periods behind
+// cellAudio's, which never caught up again. So the guest's time goes as fast
+// as the game makes frames, and while it makes none, at most twice real time.
+// At the frontend's pace, or slower, every frame is owed.
+bool libretro_guest_frame_due(double frame_seconds)
+{
+	const u64 freq = utils::get_tsc_freq();
+	if (!freq || !(frame_seconds > 0) || !retro_atomic_load_relaxed_size(&s_clock_grant))
+		return true;
+	const int flips = retro_atomic_load_acquire_int(&s_guest_flips);
+	if (flips != s_due_flips)
+	{
+		s_due_flips = flips;
+		s_grants_since_flip = 0;
+	}
+	const u64 frame = static_cast<u64>(frame_seconds * static_cast<double>(freq));
+	if (s_grants_since_flip < 4 || utils::get_tsc() - s_clock_last_grant_tsc >= frame / 2)
+	{
+		s_grants_since_flip++;
+		return true;
+	}
+	return false;
+}
+
 const void* libretro_guest_clock_word()
 {
 	return &s_clock_seq;
