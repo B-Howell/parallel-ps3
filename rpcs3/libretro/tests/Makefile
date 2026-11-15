@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -509,6 +509,23 @@ test_owner_calls_tsan: $(OWNER_CALLS_DEPS)
 	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/owner_calls_tsan.o ../../Emu/CPU/owner_calls.c
 	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ obj/test_owner_calls_tsan.o obj/owner_calls_tsan.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
 
+# The HLE modules' thread: the module and the test as C89
+HLE_SERVICE_DEPS := test_hle_service.c test_common.h ../../Emu/Cell/Modules/hle_service.c ../../Emu/Cell/Modules/hle_service.h $(OWNER_CALLS_DEPS)
+
+test_hle_service: $(HLE_SERVICE_DEPS)
+	@mkdir -p obj
+	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -c -o obj/test_hle_service.o test_hle_service.c
+	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -c -o obj/hle_service.o ../../Emu/Cell/Modules/hle_service.c
+	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -c -o obj/owner_calls_hle.o ../../Emu/CPU/owner_calls.c
+	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS $(SANITIZE) -o $@ obj/test_hle_service.o obj/hle_service.o obj/owner_calls_hle.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
+
+test_hle_service_tsan: $(HLE_SERVICE_DEPS)
+	@mkdir -p obj
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/test_hle_service_tsan.o test_hle_service.c
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/hle_service_tsan.o ../../Emu/Cell/Modules/hle_service.c
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/owner_calls_hle_tsan.o ../../Emu/CPU/owner_calls.c
+	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ obj/test_hle_service_tsan.o obj/hle_service_tsan.o obj/owner_calls_hle_tsan.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
+
 JIT_HOST_SYMBOLS_DEPS := test_jit_host_symbols.c test_common.h ../../Emu/CPU/jit_host_symbols.c ../../Emu/CPU/jit_host_symbols.h
 
 test_jit_host_symbols: $(JIT_HOST_SYMBOLS_DEPS)
@@ -655,7 +672,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 
 # The core's own code, searched for host clocks and sleeps
 # std::lock_guard left in the core's own code (falls with each patch)
-LOCK_GUARD_MAX := 923
+LOCK_GUARD_MAX := 907
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -709,6 +726,8 @@ check: all
 	./test_cpu_slots_tsan
 	./test_owner_calls
 	./test_owner_calls_tsan
+	./test_hle_service
+	./test_hle_service_tsan
 	./test_lf_hazard
 	./test_lf_hazard_tsan
 	./test_dma_views
@@ -739,6 +758,8 @@ check: all
 	@if grep -nE "mutex|lock_guard|unique_lock|reader_lock" ../../Emu/Io/Skylander.cpp ../../Emu/Io/Skylander.h ../../Emu/Io/Infinity.cpp ../../Emu/Io/Infinity.h ../../Emu/Io/Dimensions.cpp ../../Emu/Io/Dimensions.h ../../Emu/Io/KamenRider.cpp ../../Emu/Io/KamenRider.h; then echo "portals: a lock is back - the portals are the USB thread's, sys_usbd runs their transfers there"; exit 1; else echo "portals: no lock, the USB thread's"; fi
 	@# cellAudio's periods go by the guest's clock: no sleep and no clock of the host's
 	@if grep -nE "thread_ctrl::wait_for|get_system_time[ ]*\(" ../../Emu/Cell/Modules/cellAudio.cpp; then echo "cellAudio: a sleep or a clock of the host's is back - its periods go by the guest's clock (audio_ringbuffer::get_timestamp, wait_guest)"; exit 1; else echo "cellAudio: periods on the guest's clock"; fi
+	@# The keyboards are the HLE thread's (hle_call): no lock in their handler, cellKb or the overlays' use
+	@if grep -nE "m_mutex|lock_guard" ../../Emu/Io/KeyboardHandler.h ../../Emu/Io/KeyboardHandler.cpp ../../Emu/Cell/Modules/cellKb.cpp || grep -n "kb_handler.m_mutex" ../../Emu/RSX/Overlays/overlays.cpp; then echo "keyboards: a lock is back - their state is the HLE thread's (hle_call)"; exit 1; else echo "keyboards: no lock, the HLE thread's"; fi
 	@# The pads take no lock: pad::g_pad_mutex is gone, and a merge of
 	@# upstream's code that takes it does not bring it back
 	@if grep -rn "g_pad_mutex" ../../Emu ../../Input ../*.cpp ../*.h ../*.c; then echo "pads: pad::g_pad_mutex is back - the pads take no lock (AGENTS.md)"; exit 1; else echo "pads: no pad lock"; fi

@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Emu/Cell/Modules/hle_service.h"
 #include "KeyboardHandler.h"
 
 LOG_CHANNEL(input_log, "Input");
@@ -97,14 +98,15 @@ bool KeyboardHandlerBase::HandleKey(u32 qt_code, u32 native_code, bool pressed, 
 {
 	bool consumed = false;
 
-	std::lock_guard<std::mutex> lock(m_mutex);
-
-	for (auto& [id, consumer] : m_consumers)
+	return hle_call([&]() -> bool
 	{
-		consumed |= consumer.ConsumeKey(qt_code, native_code, pressed, is_auto_repeat, key);
-	}
+		for (auto& [id, consumer] : m_consumers)
+		{
+			consumed |= consumer.ConsumeKey(qt_code, native_code, pressed, is_auto_repeat, key);
+		}
 
-	return consumed;
+		return consumed;
+	});
 }
 
 bool keyboard_consumer::ConsumeKey(u32 qt_code, u32 native_code, bool pressed, bool is_auto_repeat, const std::u32string& key)
@@ -276,12 +278,13 @@ u32 keyboard_consumer::get_out_key_code(u32 qt_code, u32 native_code, u32 out_ke
 
 void KeyboardHandlerBase::SetIntercepted(bool intercepted)
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
-
-	for (auto& [id, consumer] : m_consumers)
+	hle_call([&]()
 	{
-		consumer.SetIntercepted(intercepted);
-	}
+		for (auto& [id, consumer] : m_consumers)
+		{
+			consumer.SetIntercepted(intercepted);
+		}
+	});
 }
 
 void keyboard_consumer::SetIntercepted(bool intercepted)
@@ -305,14 +308,15 @@ void keyboard_consumer::SetIntercepted(bool intercepted)
 
 void KeyboardHandlerBase::ReleaseAllKeys()
 {
-	std::lock_guard<std::mutex> lock(m_mutex);
-
-	for (auto& [id, consumer] : m_consumers)
+	hle_call([&]()
 	{
-		consumer.ReleaseAllKeys();
-	}
+		for (auto& [id, consumer] : m_consumers)
+		{
+			consumer.ReleaseAllKeys();
+		}
 
-	m_keys_released = true;
+		m_keys_released = true;
+	});
 }
 
 void keyboard_consumer::ReleaseAllKeys()

@@ -146,7 +146,8 @@ protected:
 class KeyboardHandlerBase
 {
 public:
-	std::mutex m_mutex;
+	// The consumers and their keyboards are the HLE thread's: every call that
+	// touches them runs there (hle_call, Emu/Cell/Modules/hle_service.h)
 
 	virtual void Init(keyboard_consumer& consumer, const u32 max_connect) = 0;
 

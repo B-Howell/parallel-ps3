@@ -63,4 +63,38 @@ void owner_calls_close(owner_calls_t *calls);
 
 #ifdef __cplusplus
 }
+
+#include <optional>
+#include <type_traits>
+#include <utility>
+
+/* C++: @f run on the owner and its result given back; on the owner itself
+ * (@on_owner) at once */
+template <typename F>
+auto owner_calls_on(owner_calls_t *calls, bool on_owner, F&& f) -> decltype(f())
+{
+   using result_t = decltype(f());
+
+   if (on_owner)
+      return f();
+
+   struct call_t
+   {
+      F* f;
+      std::conditional_t<std::is_void_v<result_t>, char, std::optional<result_t>> result;
+   } call{&f, {}};
+
+   owner_calls_call(calls, [](void* p)
+   {
+      call_t* const c = static_cast<call_t*>(p);
+
+      if constexpr (std::is_void_v<result_t>)
+         (*c->f)();
+      else
+         c->result.emplace((*c->f)());
+   }, &call);
+
+   if constexpr (!std::is_void_v<result_t>)
+      return std::move(*call.result);
+}
 #endif

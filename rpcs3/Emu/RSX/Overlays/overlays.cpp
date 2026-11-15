@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Emu/Cell/Modules/hle_service.h"
 #include "overlays.h"
 #include "overlay_manager.h"
 #include "Input/pad_thread.h"
@@ -184,38 +185,53 @@ namespace rsx
 				if (m_keyboard_input_enabled && !m_keyboard_pad_handler_active && retro_atomic_load_acquire_int(&input::g_keyboards_intercepted))
 				{
 					auto& kb_handler = g_fxo->get<KeyboardHandlerBase>();
-					std::lock_guard<std::mutex> lock(kb_handler.m_mutex);
 
-					// Add and get consumer
-					keyboard_consumer& kb_consumer = kb_handler.AddConsumer(keyboard_consumer::identifier::overlays, 1);
-					std::vector<Keyboard>& keyboards = kb_consumer.GetKeyboards();
+					// The keyboard's state is the HLE thread's: the keys are taken
+					// from it there, and acted on here
+					struct key_event { u32 led, mkey, key_code, out_key_code; bool pressed; std::u32string text; };
+					std::vector<key_event> events;
 
-					if (!keyboards.empty() && kb_consumer.GetInfo().status[0] == CELL_KB_STATUS_CONNECTED)
+					hle_call([&]()
 					{
-						KbData& current_data = kb_consumer.GetData(0);
-						KbExtraData& extra_data = kb_consumer.GetExtraData(0);
+						// Add and get consumer
+						keyboard_consumer& kb_consumer = kb_handler.AddConsumer(keyboard_consumer::identifier::overlays, 1);
+						std::vector<Keyboard>& keyboards = kb_consumer.GetKeyboards();
 
-						if (current_data.len > 0 || !extra_data.pressed_keys.empty())
+						if (!keyboards.empty() && kb_consumer.GetInfo().status[0] == CELL_KB_STATUS_CONNECTED)
 						{
-							for (s32 i = 0; i < current_data.len; i++)
+							KbData& current_data = kb_consumer.GetData(0);
+							KbExtraData& extra_data = kb_consumer.GetExtraData(0);
+
+							if (current_data.len > 0 || !extra_data.pressed_keys.empty())
 							{
-								const KbButton& key = current_data.buttons[i];
-								on_key_pressed(current_data.led, current_data.mkey, key.m_keyCode, key.m_outKeyCode, key.m_pressed, {});
+								for (s32 i = 0; i < current_data.len; i++)
+								{
+									const KbButton& key = current_data.buttons[i];
+									events.push_back({current_data.led, current_data.mkey, key.m_keyCode, key.m_outKeyCode, key.m_pressed, {}});
+								}
+
+								for (const std::u32string& key : extra_data.pressed_keys)
+								{
+									events.push_back({0, 0, 0, 0, true, key});
+								}
+
+								// Flush buffer unconditionally. Otherwise we get a flood of key events.
+								current_data.len = 0;
+								extra_data.pressed_keys.clear();
 							}
-
-							for (const std::u32string& key : extra_data.pressed_keys)
-							{
-								on_key_pressed(0, 0, 0, 0, true, key);
-							}
-
-							// Flush buffer unconditionally. Otherwise we get a flood of key events.
-							current_data.len = 0;
-							extra_data.pressed_keys.clear();
-
-							// Ignore gamepad input if a key was recognized
-							refresh();
-							continue;
 						}
+					});
+
+					if (!events.empty())
+					{
+						for (const key_event& e : events)
+						{
+							on_key_pressed(e.led, e.mkey, e.key_code, e.out_key_code, e.pressed, e.text);
+						}
+
+						// Ignore gamepad input if a key was recognized
+						refresh();
+						continue;
 					}
 				}
 
@@ -475,8 +491,10 @@ namespace rsx
 			// Remove keyboard consumer. We don't need it anymore.
 			{
 				auto& kb_handler = g_fxo->get<KeyboardHandlerBase>();
-				std::lock_guard<std::mutex> lock(kb_handler.m_mutex);
-				kb_handler.RemoveConsumer(keyboard_consumer::identifier::overlays);
+				hle_call([&]()
+				{
+					kb_handler.RemoveConsumer(keyboard_consumer::identifier::overlays);
+				});
 			}
 
 			// Disable pad interception since this user interface has to be interactive.

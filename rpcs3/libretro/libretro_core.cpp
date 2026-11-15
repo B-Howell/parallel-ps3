@@ -36,6 +36,7 @@
 #include "Emu/Io/Null/null_music_handler.h"
 #include "Emu/Io/Null/NullKeyboardHandler.h"
 #include "Emu/Io/KeyboardHandler.h"
+#include "Emu/Cell/Modules/hle_service.h"
 #include "Emu/Io/MouseHandler.h"
 // The OpenGL renderer, where there is one to have. On Android there is no
 // desktop GL, so the software path uses
@@ -3047,6 +3048,9 @@ bool retro_load_game_special(unsigned game_type, const struct retro_game_info* i
 
 void retro_unload_game(void)
 {
+    // The HLE modules' thread: started again by the next game's first call
+    struct stop_hle { ~stop_hle() { hle_service_stop(); } } stop_hle_at_end;
+
     s_pkg_install_only = false;
     s_pkg_install_frames = 0;
     // A motor left running would keep going after the game is gone.
