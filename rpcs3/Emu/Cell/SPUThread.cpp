@@ -1429,53 +1429,58 @@ void spu_thread::cpu_return()
 			u32 last_stop = 0;
 			{
 				lv2_obj::notify_all_t notify;
-				std::lock_guard lock(group->mutex);
-				retro_atomic_store_release_int(&group->run_state, SPU_THREAD_GROUP_STATUS_INITIALIZED);
 
-				if (!retro_atomic_load_acquire_int(&group->join_state))
+				// In the group's turn; the joining thread is woken in the
+				// scheduler's, inside it
+				turn_call(&group->turns, [&]
 				{
-					retro_atomic_store_release_int(&group->join_state, SYS_SPU_THREAD_GROUP_JOIN_ALL_THREADS_EXIT);
-				}
+					retro_atomic_store_release_int(&group->run_state, SPU_THREAD_GROUP_STATUS_INITIALIZED);
 
-				for (const auto& thread : group->threads)
-				{
-					if (thread && thread.get() != this && thread->status_npc.load().status >> 16 == SYS_SPU_THREAD_STOP_THREAD_EXIT)
+					if (!retro_atomic_load_acquire_int(&group->join_state))
 					{
-						// Wait for all threads to have error codes if exited by sys_spu_thread_exit
-						for (u32 status; !thread->exit_status.try_read(status)
-							|| status != thread->last_exit_status;)
+						retro_atomic_store_release_int(&group->join_state, SYS_SPU_THREAD_GROUP_JOIN_ALL_THREADS_EXIT);
+					}
+
+					for (const auto& thread : group->threads)
+					{
+						if (thread && thread.get() != this && thread->status_npc.load().status >> 16 == SYS_SPU_THREAD_STOP_THREAD_EXIT)
 						{
-							utils::pause();
+							// Wait for all threads to have error codes if exited by sys_spu_thread_exit
+							for (u32 status; !thread->exit_status.try_read(status)
+								|| status != thread->last_exit_status;)
+							{
+								utils::pause();
+							}
 						}
 					}
-				}
 
-				if (status_npc.load().status >> 16 == SYS_SPU_THREAD_STOP_THREAD_EXIT)
-				{
-					// Set exit status now, in conjunction with group state changes
-					exit_status.set_value(last_exit_status);
-				}
+					if (status_npc.load().status >> 16 == SYS_SPU_THREAD_STOP_THREAD_EXIT)
+					{
+						// Set exit status now, in conjunction with group state changes
+						exit_status.set_value(last_exit_status);
+					}
 
-				last_stop = static_cast<u32>(retro_atomic_load_acquire_int(&group->stop_count));
+					last_stop = static_cast<u32>(retro_atomic_load_acquire_int(&group->stop_count));
 
-				if (last_stop == umax)
-				{
-					// Restart with some high count to preserve some meaning
-					retro_atomic_store_release_int(&group->stop_count, 1000);
-				}
-				else
-				{
-					retro_atomic_fetch_add_int(&group->stop_count, 1);
-				}
+					if (last_stop == umax)
+					{
+						// Restart with some high count to preserve some meaning
+						retro_atomic_store_release_int(&group->stop_count, 1000);
+					}
+					else
+					{
+						retro_atomic_fetch_add_int(&group->stop_count, 1);
+					}
 
-				if (const auto ppu = std::exchange(group->waiter, nullptr))
-				{
-					// Send exit status directly to the joining thread
-					ppu->gpr[4] = static_cast<u32>(retro_atomic_load_acquire_int(&group->join_state));
-					ppu->gpr[5] = static_cast<s32>(retro_atomic_load_acquire_int(&group->exit_status));
-					retro_atomic_store_release_int(&group->join_state, 0);
-					lv2_obj::awake(ppu);
-				}
+					if (const auto ppu = std::exchange(group->waiter, nullptr))
+					{
+						// Send exit status directly to the joining thread
+						ppu->gpr[4] = static_cast<u32>(retro_atomic_load_acquire_int(&group->join_state));
+						ppu->gpr[5] = static_cast<s32>(retro_atomic_load_acquire_int(&group->exit_status));
+						retro_atomic_store_release_int(&group->join_state, 0);
+						lv2_obj::awake(ppu);
+					}
+				});
 			}
 
 			// Notify on last thread stopped
@@ -6119,20 +6124,25 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 				spu_function_logger logger(*this, "sys_spu_thread_send_event");
 
 				shared_ptr<lv2_event_queue> queue;
-				{
-					std::lock_guard lock(group->mutex);
 
+				// In the group's turn; false for a mailbox not empty
+				if (!turn_call(&group->turns, [&]
+				{
 					if (ch_in_mbox.get_count())
 					{
 						// TODO: Check this
 						spu_log.error("sys_spu_thread_send_event(spup=%d, data0=0x%x, data1=0x%x): In_MBox is not empty (%d)", spup, (value & 0x00ffffff), data, ch_in_mbox.get_count());
 						ch_in_mbox.set_values(1, CELL_EBUSY);
-						return true;
+						return false;
 					}
 
 					// Reserve a place in the inbound mailbox
 					ch_in_mbox.set_values(1, CELL_OK);
 					queue = this->spup[spup];
+					return true;
+				}))
+				{
+					return true;
 				}
 
 				const auto res = !queue ? CELL_ENOTCONN :
@@ -6170,11 +6180,7 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 
 				spu_function_logger logger(*this, "sys_spu_thread_throw_event");
 
-				shared_ptr<lv2_event_queue> queue;
-				{
-					std::lock_guard lock{group->mutex};
-					queue = this->spup[spup];
-				}
+				const shared_ptr<lv2_event_queue> queue = turn_call(&group->turns, [&] { return this->spup[spup]; });
 
 				// TODO: check passing spup value
 				if (auto res = queue ? queue->send(SYS_SPU_THREAD_EVENT_USER_KEY, lv2_id, (u64{spup} << 32) | (value & 0x00ffffff), data) : CELL_ENOTCONN)
@@ -6206,19 +6212,23 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 
 				spu_function_logger logger(*this, "sys_event_flag_set_bit");
 
+				// In the group's turn; false for a mailbox not empty
+				if (!turn_call(&group->turns, [&]
 				{
-					std::lock_guard lock(group->mutex);
-
 					if (ch_in_mbox.get_count())
 					{
 						// TODO: Check this
 						spu_log.error("sys_event_flag_set_bit(value=0x%x (flag=%d)): In_MBox is not empty (%d)", value, flag, ch_in_mbox.get_count());
 						ch_in_mbox.set_values(1, CELL_EBUSY);
-						return true;
+						return false;
 					}
 
 					// Reserve a place in the inbound mailbox
 					ch_in_mbox.set_values(1, CELL_OK);
+					return true;
+				}))
+				{
+					return true;
 				}
 
 				// Use the syscall to set flag
@@ -6497,37 +6507,40 @@ extern void resume_spu_thread_group_from_waiting(spu_thread& spu, std::array<sha
 {
 	const auto group = spu.group;
 
-	std::lock_guard lock(group->mutex);
+	// In the group's turn, inside the event queue's that sends
+	turn_call(&group->turns, [&]
+	{
 
-	if (static_cast<spu_group_status>(retro_atomic_load_acquire_int(&group->run_state)) == SPU_THREAD_GROUP_STATUS_WAITING)
-	{
-		retro_atomic_store_release_int(&group->run_state, SPU_THREAD_GROUP_STATUS_RUNNING);
-	}
-	else if (static_cast<spu_group_status>(retro_atomic_load_acquire_int(&group->run_state)) == SPU_THREAD_GROUP_STATUS_WAITING_AND_SUSPENDED)
-	{
-		retro_atomic_store_release_int(&group->run_state, SPU_THREAD_GROUP_STATUS_SUSPENDED);
-		spu.state += cpu_flag::signal;
-		ensure(spu.state & cpu_flag::suspend);
-		return;
-	}
-
-	for (auto& thread : group->threads)
-	{
-		if (thread)
+		if (static_cast<spu_group_status>(retro_atomic_load_acquire_int(&group->run_state)) == SPU_THREAD_GROUP_STATUS_WAITING)
 		{
-			if (thread.get() == &spu)
-			{
-				constexpr auto flags = cpu_flag::suspend + cpu_flag::signal;
-				ensure(((thread->state ^= flags) & flags) == cpu_flag::signal);
-			}
-			else
-			{
-				thread->state -= cpu_flag::suspend;
-			}
-
-			notify_spus[group->threads_map[thread->index]] = thread;
+			retro_atomic_store_release_int(&group->run_state, SPU_THREAD_GROUP_STATUS_RUNNING);
 		}
-	}
+		else if (static_cast<spu_group_status>(retro_atomic_load_acquire_int(&group->run_state)) == SPU_THREAD_GROUP_STATUS_WAITING_AND_SUSPENDED)
+		{
+			retro_atomic_store_release_int(&group->run_state, SPU_THREAD_GROUP_STATUS_SUSPENDED);
+			spu.state += cpu_flag::signal;
+			ensure(spu.state & cpu_flag::suspend);
+			return;
+		}
+
+		for (auto& thread : group->threads)
+		{
+			if (thread)
+			{
+				if (thread.get() == &spu)
+				{
+					constexpr auto flags = cpu_flag::suspend + cpu_flag::signal;
+					ensure(((thread->state ^= flags) & flags) == cpu_flag::signal);
+				}
+				else
+				{
+					thread->state -= cpu_flag::suspend;
+				}
+
+				notify_spus[group->threads_map[thread->index]] = thread;
+			}
+		}
+	});
 }
 
 bool spu_thread::stop_and_signal(u32 code)
@@ -6658,7 +6671,7 @@ bool spu_thread::stop_and_signal(u32 code)
 				thread_ctrl::wait_on(state, old);
 			}
 
-			reader_lock{group->mutex}, queue = get_queue(spuq);
+			queue = turn_call(&group->turns, [&]() -> shared_ptr<lv2_event_queue> { return get_queue(spuq); });
 
 			if (!queue)
 			{
@@ -6672,64 +6685,65 @@ bool spu_thread::stop_and_signal(u32 code)
 				lv2_obj::sleep(*this);
 			}
 
-			// In the queue's turn, the group's lock taken inside it (never the
-			// other way): 0 stopped, 1 to look again, 2 answered, 3 waiting
+			// In the queue's turn, the group's taken inside it (never the other
+			// way): 0 stopped, 1 to look again, 2 answered, 3 waiting
 			const int found = turn_call(&queue->turns, [&]() -> int
 			{
-				std::scoped_lock lock(group->mutex);
-
-				if (is_stopped())
+				return turn_call(&group->turns, [&]() -> int
 				{
-					return 0;
-				}
-
-				if (const auto _state = static_cast<spu_group_status>(retro_atomic_load_acquire_int(&group->run_state)); _state >= SPU_THREAD_GROUP_STATUS_WAITING && _state <= SPU_THREAD_GROUP_STATUS_WAITING_AND_SUSPENDED)
-				{
-					// Try again
-					ensure(state & cpu_flag::suspend);
-					return 1;
-				}
-
-				if (queue != get_queue(spuq))
-				{
-					// Try again
-					return 1;
-				}
-
-				if (!retro_atomic_load_acquire_int(&queue->exists))
-				{
-					ch_in_mbox.set_values(1, CELL_EINVAL);
-					return 2;
-				}
-
-				if (lv2_events_empty(&queue->events))
-				{
-					lv2_obj::emplace(queue->sq, this);
-					retro_atomic_store_release_int(&group->run_state, SPU_THREAD_GROUP_STATUS_WAITING);
-					group->waiter_spu_index = index;
-
-					for (auto& thread : group->threads)
+					if (is_stopped())
 					{
-						if (thread)
-						{
-							thread->state += cpu_flag::suspend;
-						}
+						return 0;
 					}
 
-					// Wait
-					return 3;
-				}
-				else
-				{
-					// Return the event immediately
-					const auto event = *lv2_events_front(&queue->events);
-					const auto data1 = static_cast<u32>(std::get<1>(event));
-					const auto data2 = static_cast<u32>(std::get<2>(event));
-					const auto data3 = static_cast<u32>(std::get<3>(event));
-					ch_in_mbox.set_values(4, CELL_OK, data1, data2, data3);
-					lv2_events_pop_front(&queue->events);
-					return 2;
-				}
+					if (const auto _state = static_cast<spu_group_status>(retro_atomic_load_acquire_int(&group->run_state)); _state >= SPU_THREAD_GROUP_STATUS_WAITING && _state <= SPU_THREAD_GROUP_STATUS_WAITING_AND_SUSPENDED)
+					{
+						// Try again
+						ensure(state & cpu_flag::suspend);
+						return 1;
+					}
+
+					if (queue != get_queue(spuq))
+					{
+						// Try again
+						return 1;
+					}
+
+					if (!retro_atomic_load_acquire_int(&queue->exists))
+					{
+						ch_in_mbox.set_values(1, CELL_EINVAL);
+						return 2;
+					}
+
+					if (lv2_events_empty(&queue->events))
+					{
+						lv2_obj::emplace(queue->sq, this);
+						retro_atomic_store_release_int(&group->run_state, SPU_THREAD_GROUP_STATUS_WAITING);
+						group->waiter_spu_index = index;
+
+						for (auto& thread : group->threads)
+						{
+							if (thread)
+							{
+								thread->state += cpu_flag::suspend;
+							}
+						}
+
+						// Wait
+						return 3;
+					}
+					else
+					{
+						// Return the event immediately
+						const auto event = *lv2_events_front(&queue->events);
+						const auto data1 = static_cast<u32>(std::get<1>(event));
+						const auto data2 = static_cast<u32>(std::get<2>(event));
+						const auto data3 = static_cast<u32>(std::get<3>(event));
+						ch_in_mbox.set_values(4, CELL_OK, data1, data2, data3);
+						lv2_events_pop_front(&queue->events);
+						return 2;
+					}
+				});
 			});
 
 			if (found == 0)
@@ -6802,7 +6816,7 @@ bool spu_thread::stop_and_signal(u32 code)
 
 		shared_ptr<lv2_event_queue> queue;
 
-		reader_lock{group->mutex}, queue = get_queue(spuq);
+		queue = turn_call(&group->turns, [&]() -> shared_ptr<lv2_event_queue> { return get_queue(spuq); });
 
 		while (true)
 		{
@@ -6811,39 +6825,40 @@ bool spu_thread::stop_and_signal(u32 code)
 				return ch_in_mbox.set_values(1, CELL_EINVAL), true;
 			}
 
-			// In the queue's turn, the group's lock taken inside it (never the
-			// other way). The queue the turn is had on is held meanwhile
+			// In the queue's turn, the group's taken inside it (never the other
+			// way). The queue the turn is had on is held meanwhile
 			const auto held = queue;
 
 			const bool answered = turn_call(&held->turns, [&]
 			{
-				std::scoped_lock group_lock(group->mutex);
-
-				if (const auto& queue0 = get_queue(spuq); queue != queue0)
+				return turn_call(&group->turns, [&]
 				{
-					queue = queue0;
-					return false;
-				}
+					if (const auto& queue0 = get_queue(spuq); queue != queue0)
+					{
+						queue = queue0;
+						return false;
+					}
 
-				if (!retro_atomic_load_acquire_int(&queue->exists))
-				{
-					ch_in_mbox.set_values(1, CELL_EINVAL);
+					if (!retro_atomic_load_acquire_int(&queue->exists))
+					{
+						ch_in_mbox.set_values(1, CELL_EINVAL);
+						return true;
+					}
+
+					if (lv2_events_empty(&queue->events))
+					{
+						ch_in_mbox.set_values(1, CELL_EBUSY);
+						return true;
+					}
+
+					const auto event = *lv2_events_front(&queue->events);
+					const auto data1 = static_cast<u32>(std::get<1>(event));
+					const auto data2 = static_cast<u32>(std::get<2>(event));
+					const auto data3 = static_cast<u32>(std::get<3>(event));
+					ch_in_mbox.set_values(4, CELL_OK, data1, data2, data3);
+					lv2_events_pop_front(&queue->events);
 					return true;
-				}
-
-				if (lv2_events_empty(&queue->events))
-				{
-					ch_in_mbox.set_values(1, CELL_EBUSY);
-					return true;
-				}
-
-				const auto event = *lv2_events_front(&queue->events);
-				const auto data1 = static_cast<u32>(std::get<1>(event));
-				const auto data2 = static_cast<u32>(std::get<2>(event));
-				const auto data3 = static_cast<u32>(std::get<3>(event));
-				ch_in_mbox.set_values(4, CELL_OK, data1, data2, data3);
-				lv2_events_pop_front(&queue->events);
-				return true;
+				});
 			});
 
 			if (answered)
@@ -6911,42 +6926,56 @@ bool spu_thread::stop_and_signal(u32 code)
 				thread_ctrl::wait_on(state, old);
 			}
 
-			std::lock_guard lock(group->mutex);
-
-			if (auto _state = static_cast<spu_group_status>(retro_atomic_load_acquire_int(&group->run_state));
-				_state >= SPU_THREAD_GROUP_STATUS_WAITING && _state <= SPU_THREAD_GROUP_STATUS_WAITING_AND_SUSPENDED)
+			// In the group's turn: 0 to look again, 1 another exits it, 2 exited
+			const int how = turn_call(&group->turns, [&]() -> int
 			{
-				// We can't exit while we are waiting on an SPU event
+				if (auto _state = static_cast<spu_group_status>(retro_atomic_load_acquire_int(&group->run_state));
+					_state >= SPU_THREAD_GROUP_STATUS_WAITING && _state <= SPU_THREAD_GROUP_STATUS_WAITING_AND_SUSPENDED)
+				{
+					// We can't exit while we are waiting on an SPU event
+					return 0;
+				}
+
+				if (std::exchange(group->set_terminate, true))
+				{
+					// Whoever terminated first decides the error status + cause
+					return 1;
+				}
+
+				for (auto& thread : group->threads)
+				{
+					if (thread)
+					{
+						thread->state.fetch_op([](bs_t<cpu_flag>& flags)
+						{
+							if (flags & cpu_flag::stop)
+							{
+								// In case the thread raised the ret flag itself at some point do not raise it again
+								return false;
+							}
+
+							flags += cpu_flag::stop + cpu_flag::ret;
+							return true;
+						});
+					}
+				}
+
+				retro_atomic_store_release_int(&group->exit_status, value);
+				retro_atomic_store_release_int(&group->join_state, SYS_SPU_THREAD_GROUP_JOIN_GROUP_EXIT);
+				set_status_npc();
+				return 2;
+			});
+
+			if (how == 0)
+			{
 				continue;
 			}
 
-			if (std::exchange(group->set_terminate, true))
+			if (how == 1)
 			{
-				// Whoever terminated first decides the error status + cause
 				return true;
 			}
 
-			for (auto& thread : group->threads)
-			{
-				if (thread)
-				{
-					thread->state.fetch_op([](bs_t<cpu_flag>& flags)
-					{
-						if (flags & cpu_flag::stop)
-						{
-							// In case the thread raised the ret flag itself at some point do not raise it again
-							return false;
-						}
-
-						flags += cpu_flag::stop + cpu_flag::ret;
-						return true;
-					});
-				}
-			}
-
-			retro_atomic_store_release_int(&group->exit_status, value);
-			retro_atomic_store_release_int(&group->join_state, SYS_SPU_THREAD_GROUP_JOIN_GROUP_EXIT);
-			set_status_npc();
 			break;
 		}
 

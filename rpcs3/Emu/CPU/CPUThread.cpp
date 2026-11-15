@@ -123,24 +123,30 @@ void fmt_class_string<cpu_threads_emulation_info_dump_t>::format(std::string& ou
 			if (selected_spu->get_type() == spu_type::threaded && selected_spu->group->max_num > 1u)
 			{
 				// Dump the information of the entire group
-				// Do not block because it is a potentially sensitive context
-				std::shared_lock rlock(selected_spu->group->mutex, std::defer_lock);
+				// Do not block for long because it is a potentially sensitive context:
+				// the group's turn is taken only once it is seen free (a thread that
+				// crashed in it holds it for good)
+				const auto group = selected_spu->group;
+				bool free = false;
 
-				for (u32 i = 0; !rlock.try_lock() && i < 100; i++)
+				for (u32 i = 0; !(free = !turn_calls_busy(&group->turns)) && i < 100; i++)
 				{
 					busy_wait();
 				}
 
-				if (rlock)
+				if (free)
 				{
-					for (const auto& spu : selected_spu->group->threads)
+					turn_call(&group->turns, [&]
 					{
-						if (spu && spu != selected_spu)
+						for (const auto& spu : group->threads)
 						{
-							fmt::append(out, "\n%s's thread context:\n", spu->get_name());
-							spu->dump_all(out);
+							if (spu && spu != selected_spu)
+							{
+								fmt::append(out, "\n%s's thread context:\n", spu->get_name());
+								spu->dump_all(out);
+							}
 						}
-					}
+					});
 				}
 				else
 				{

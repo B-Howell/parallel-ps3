@@ -288,7 +288,11 @@ struct lv2_spu_group
 	const bool has_scheduler_context;
 	u32 max_run;
 
-	shared_mutex mutex;
+	// What the group is - its threads, their ports and queues, its state as
+	// it changes with them - changes in turn (turn_calls.h): no lock. Taken
+	// inside an event queue's turn by the SPU paths that need both, and takes
+	// the scheduler's (lv2_obj::awake) inside it
+	turn_calls_cpp turns;
 
 	retro_atomic_int_t init; // Initialization Counter (a u32)
 	atomic_t<typename spu_thread::spu_prio_t> prio{}; // SPU Thread Group Priority
