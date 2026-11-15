@@ -13,6 +13,11 @@
 // - asked for more than is waiting, it gives what there is;
 // - a flush from the writer's side (the backend starting) drops what was
 //   waiting and nothing after it;
+// - the backend thread takes no lock and waits for nobody: what it wants
+//   of the rings (a flush, their limits, the dump's ring) is a request the
+//   data thread carries out before it next writes, and goes on writing
+//   after; the stream's new ports and the other news reach it as bits of
+//   one word and through a sequence count;
 // - sys_uart's two rings (retro_spsc) against the ring they were, the same
 //   bytes and counts through 200000 writes and reads;
 // - with RSXAUDIO_BENCH=1 it is timed: a callback's worth in
@@ -60,6 +65,31 @@ struct rsxaudio_backend_test
 	{
 		return thread.fill_from_ring(cfg, bytes, out);
 	}
+
+	static void request(rsxaudio_backend_thread& thread, bool aux, usz limit, usz aux_limit) { thread.request_rings(aux, limit, aux_limit); }
+	static void apply(rsxaudio_backend_thread& thread) { thread.apply_ring_request(); }
+	static bool applied(rsxaudio_backend_thread& thread) { return retro_atomic_load_acquire_int(&thread.ring_applied) == retro_atomic_load_acquire_int(&thread.ring_request); }
+	static bool data_aux(rsxaudio_backend_thread& thread) { return thread.data_aux_ringbuf; }
+	static lr_audio_ring& aux_ring(rsxaudio_backend_thread& thread) { return thread.aux_ringbuf; }
+	static void ports(rsxaudio_backend_thread& thread, AudioFreq freq)
+	{
+		std::array<rsxaudio_backend_thread::port_config, SYS_RSXAUDIO_AVPORT_CNT> cfg{};
+		for (auto& port : cfg)
+			port.freq = freq;
+		thread.set_new_stream_param(cfg, {});
+	}
+	static int take_events(rsxaudio_backend_thread& thread) { return retro_atomic_exchange_int(&thread.events, 0); }
+	static AudioFreq posted_freq(rsxaudio_backend_thread& thread)
+	{
+		for (;;)
+		{
+			const int seq = retro_seqlock_read_begin(&thread.ra_state_seq);
+			const AudioFreq freq = thread.new_ra_state.port[0].freq;
+			if (!retro_seqlock_read_retry(&thread.ra_state_seq, seq))
+				return freq;
+		}
+	}
+	static bool cfg_changed(rsxaudio_backend_thread& thread) { return thread.callback_cfg_now().cfg_changed; }
 
 	static config stereo(bool s16, u16 volume)
 	{
@@ -300,6 +330,47 @@ int main()
 		}
 		std::printf("test_rsxaudio_ring: a 64-byte UART packet in and out: %.1f ns with the old ring, %.1f ns now (%llu)\n", best_old, best_new, static_cast<unsigned long long>(sink & 1));
 		retro_spsc_free(&q);
+	}
+
+	// The backend thread's requests, carried out by the data thread
+	{
+		rsxaudio_backend_thread t;
+		lr_audio_ring& main = T::ring(t);
+		const T::config cfg = T::stereo(false, T::config::VOL_NOMINAL);
+		T::request(t, false, 4096 * sizeof(f32), 0);
+		CHECK(!T::applied(t));
+		T::apply(t);
+		CHECK(T::applied(t) && !T::data_aux(t) && main.limit == 4096 * sizeof(f32));
+
+		// Written before a flush asked for: not heard after it, and the
+		// data thread writes on
+		u64 in = push(main, 0, 2000);
+		T::request(t, false, 4096 * sizeof(f32), 0); // the backend starting
+		CHECK(lr_audio_ring_used(&main) == 2000 * sizeof(f32)); // nothing done by the asking
+		T::apply(t);
+		CHECK(lr_audio_ring_used(&main) == 0);
+		const u64 after = in;
+		in = push(main, in, 1000);
+		const u32 got = T::fill(t, cfg, 1000 * sizeof(f32), out.data());
+		CHECK(got == 1000 * sizeof(f32));
+		for (u32 i = 0; i < 1000; i++)
+			work[i] = sample_of(after + i);
+		AudioBackend::normalize(1000, work.data(), expected.data());
+		CHECK(std::memcmp(out.data(), expected.data(), 1000 * sizeof(f32)) == 0);
+
+		// The dump: the data thread goes over to the aux ring, made then
+		T::request(t, true, 2048 * sizeof(f32), 2048 * sizeof(f32));
+		T::apply(t);
+		CHECK(T::data_aux(t) && T::aux_ring(t).q.buffer && T::aux_ring(t).limit == 2048 * sizeof(f32) && main.limit == 2048 * sizeof(f32));
+
+		// The new ports: published through the sequence count, the bit set,
+		// and the callback told to wait for the backend to be set up again
+		while (T::take_events(t)) {}
+		T::ports(t, AudioFreq::FREQ_96K);
+		CHECK(T::posted_freq(t) == AudioFreq::FREQ_96K);
+		CHECK(T::take_events(t) & 2);
+		CHECK(T::cfg_changed(t));
+		std::printf("test_rsxaudio_ring: the backend thread's requests: a flush asked for and carried out by the writer, the dump's ring taken up, the ports posted\n");
 	}
 
 	std::printf("test_rsxaudio_ring: %s\n", failures ? "FAIL" : "ok");

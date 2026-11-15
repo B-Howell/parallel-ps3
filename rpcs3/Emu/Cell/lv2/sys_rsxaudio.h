@@ -12,6 +12,7 @@
 #include "Emu/Audio/AudioBackend.h"
 
 #include <retro_atomic.h>
+#include <rthreads/retro_seqlock.h>
 
 enum : u32
 {
@@ -498,33 +499,66 @@ private:
 	static constexpr f64 SERVICE_PERIOD_SEC = SERVICE_PERIOD / 1'000'000.0;
 	static constexpr u64 SERVICE_THRESHOLD = 1'500;
 
-	u64 start_time = get_system_time();
+	// The service periods (the dump's), on the guest's clock
+	u64 start_time = 0;
 	u64 time_period_idx = 1;
 
-	emu_audio_cfg new_emu_cfg{};
-	bool emu_cfg_changed = true;
+	// What other threads tell this one, bits of one word it waits on: no
+	// lock, and nobody waits for it. The emulator's config may have changed
+	// (this thread reads it itself), the stream's ports have, the backend's
+	// device may have, it failed, or a wake (its stop)
+	enum : int
+	{
+		EVENT_EMU_CFG = 1,
+		EVENT_RA_STATE = 2,
+		EVENT_DEVICE = 4,
+		EVENT_ERROR = 8,
+		EVENT_WAKE = 16,
+	};
+	retro_atomic_int_t events{EVENT_EMU_CFG | EVENT_RA_STATE};
 
+	void post_event(int event);
+
+	// The ports set_new_stream_param sets (one at a time: hw_param_ts's
+	// operations), through a sequence count this thread reads them by
 	rsxaudio_state new_ra_state{};
-	bool ra_state_changed = true;
+	retro_seqlock_t ra_state_seq{};
 
-	shared_mutex  state_update_m{};
-	cond_variable state_update_c{};
+	// This thread's backend_current_cfg as one word, for set_new_stream_param
+	// to compare with: the frequency, the channels, the avport
+	retro_atomic_64_t current_port{0};
+	static u64 port_word(const port_config& cfg, RsxaudioAvportIdx avport);
 
 	// One thread writes each and one reads, lock-free; what the callback
 	// reads it borrows where it lies when nothing has to be done to it first.
 	// ringbuf: written by the data thread (by this thread when the dump is
 	// on), read by the backend's callback. aux_ringbuf (dump on): written by
 	// the data thread, read by this thread.
+	//
+	// Both are made once at their most and never made again, so neither is
+	// taken from under the callback. What this thread wants of the rings'
+	// writing side - a flush, their limits, which ring the data thread
+	// writes - is a request the data thread carries out before it next
+	// writes (ring_request, ring_applied): one writer each, and nobody
+	// waits. While the dump is on this thread writes ringbuf itself, once
+	// the data thread has gone over to aux_ringbuf.
 	lr_audio_ring ringbuf{};
 	lr_audio_ring aux_ringbuf{};
 	friend struct rsxaudio_backend_test;
 	std::vector<u8> thread_tmp_buf{};
 	std::vector<f32> callback_tmp_buf{};
-	bool use_aux_ringbuf = false;
-	shared_mutex ringbuf_mutex{};
+	bool use_aux_ringbuf = false; // this thread's: what it asked for
+	bool data_aux_ringbuf = false; // the data thread's: what it does
+	retro_atomic_int_t ring_request{0};
+	retro_atomic_int_t ring_applied{0};
+	retro_atomic_size_t ring_limit{0};
+	retro_atomic_size_t aux_ring_limit{0};
+	retro_atomic_int_t ring_aux{0};
+	void request_rings(bool aux, usz limit, usz aux_limit);
+	void apply_ring_request();
 
 	std::shared_ptr<AudioBackend> backend{};
-	backend_config backend_current_cfg{ {}, new_emu_cfg.avport };
+	backend_config backend_current_cfg{ {}, RsxaudioAvportIdx::HDMI_0 };
 	// 16 bytes, changed as one with a 128-bit compare-and-swap
 	mutable retro_atomic_128_t callback_cfg = cfg_word(callback_config{});
 
@@ -555,8 +589,6 @@ private:
 			}
 		}
 	}
-	bool backend_error_occured = false;
-	bool backend_device_changed = false;
 
 	AudioDumper dumper{};
 

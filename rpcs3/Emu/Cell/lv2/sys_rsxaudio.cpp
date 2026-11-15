@@ -1311,9 +1311,17 @@ namespace audio
 	}
 }
 
+// The rings at their most: a quarter second of buffering, the backend's
+// callback frame (libretro: three frames) and 10 ms, of eight channels of
+// floats at 192 kHz
+static constexpr usz rsxaudio_ring_most = static_cast<usz>((0.25 + 3.0 / 60.0 + 512.0 / 48000.0) * sizeof(f32) * 8 * 192000) + 1;
+
 rsxaudio_backend_thread::rsxaudio_backend_thread()
 {
-	new_emu_cfg = get_emu_cfg();
+	retro_seqlock_init(&ra_state_seq);
+	retro_atomic_store_release_64(&current_port, static_cast<s64>(port_word(backend_current_cfg.cfg, backend_current_cfg.avport)));
+	ensure(lr_audio_ring_init(&ringbuf, rsxaudio_ring_most));
+	callback_tmp_buf.resize(rsxaudio_ring_most / sizeof(f32));
 
 	const f32 new_vol = audio::get_volume();
 
@@ -1345,11 +1353,52 @@ static usz ring_free_size(const lr_audio_ring& ring)
 	return ring.limit > used ? ring.limit - used : 0;
 }
 
-// Made anew for @bytes; neither thread is using it (the backend is closed, the writers are locked out)
-static void ring_set_size(lr_audio_ring& ring, u64 bytes)
+void rsxaudio_backend_thread::post_event(int event)
 {
-	lr_audio_ring_free(&ring);
-	ensure(lr_audio_ring_init(&ring, static_cast<usz>(std::max<u64>(bytes, 1))));
+	retro_atomic_fetch_or_int(&events, event);
+	retro_waitaddr_notify_all(&events);
+}
+
+u64 rsxaudio_backend_thread::port_word(const port_config& cfg, RsxaudioAvportIdx avport)
+{
+	return u64{static_cast<u32>(cfg.freq)} | u64{static_cast<u32>(cfg.ch_cnt) & 0xff} << 32 | u64{static_cast<u8>(avport)} << 40;
+}
+
+// This thread's: what the rings' writing side is to do next - flush both,
+// take @limit and @aux_limit, write to aux_ringbuf when @aux - for the data
+// thread to carry out before it next writes
+void rsxaudio_backend_thread::request_rings(bool aux, usz limit, usz aux_limit)
+{
+	use_aux_ringbuf = aux;
+	retro_atomic_store_release_size(&ring_limit, limit);
+	retro_atomic_store_release_size(&aux_ring_limit, aux_limit);
+	retro_atomic_store_release_int(&ring_aux, aux);
+	retro_atomic_store_release_int(&ring_request, retro_atomic_load_acquire_int(&ring_request) + 1);
+}
+
+// The data thread's, before it writes: this thread's request carried out.
+// The aux ring is made the first time the dump is on
+void rsxaudio_backend_thread::apply_ring_request()
+{
+	const int request = retro_atomic_load_acquire_int(&ring_request);
+	if (request == retro_atomic_load_acquire_int(&ring_applied))
+		return;
+
+	const bool aux = retro_atomic_load_acquire_int(&ring_aux) != 0;
+	if (aux && !aux_ringbuf.q.buffer)
+		ensure(lr_audio_ring_init(&aux_ringbuf, rsxaudio_ring_most));
+
+	lr_audio_ring_flush(&ringbuf);
+	lr_audio_ring_set_limit(&ringbuf, std::max<usz>(retro_atomic_load_acquire_size(&ring_limit), 1));
+
+	if (aux_ringbuf.q.buffer)
+	{
+		lr_audio_ring_flush(&aux_ringbuf);
+		lr_audio_ring_set_limit(&aux_ringbuf, std::max<usz>(retro_atomic_load_acquire_size(&aux_ring_limit), 1));
+	}
+
+	data_aux_ringbuf = aux;
+	retro_atomic_store_release_int(&ring_applied, request);
 }
 
 // The reader's: everything waiting is dropped
@@ -1365,8 +1414,6 @@ static void ring_reader_drop(lr_audio_ring& ring)
 
 void rsxaudio_backend_thread::update_emu_cfg()
 {
-	std::unique_lock lock(state_update_m);
-	const emu_audio_cfg _new_emu_cfg = get_emu_cfg();
 	const f32 new_vol = audio::get_volume();
 
 	change_callback_cfg([&](callback_config& val)
@@ -1375,13 +1422,8 @@ void rsxaudio_backend_thread::update_emu_cfg()
 		val.initial_volume = val.current_volume;
 	});
 
-	if (new_emu_cfg != _new_emu_cfg)
-	{
-		new_emu_cfg = _new_emu_cfg;
-		emu_cfg_changed = true;
-		lock.unlock();
-		state_update_c.notify_all();
-	}
+	// This thread reads the config itself, and acts on what changed
+	post_event(EVENT_EMU_CFG);
 }
 
 u32 rsxaudio_backend_thread::get_sample_rate() const
@@ -1436,107 +1478,124 @@ void rsxaudio_backend_thread::operator()()
 		bool checkDefaultDevice = false;
 		bool should_service_stream = false;
 
+		for (;;)
 		{
-			std::unique_lock lock(state_update_m);
-			for (;;)
+			// What was posted, taken as one; a post after this wakes the wait
+			const int event = retro_atomic_exchange_int(&events, 0);
+
+			if (thread_ctrl::state() == thread_state::aborting)
 			{
-				// Unsafe to access backend under lock (state_changed_callback uses state_update_m -> possible deadlock)
+				backend_stop();
 
-				if (thread_ctrl::state() == thread_state::aborting)
+				// Destroy the backend on this thread, the one that created it in backend_init().
+				// The backend's ctor calls CoInitializeEx here on Windows; if it is instead released
+				// by ~rsxaudio_backend_thread() (which runs on the GUI thread via g_fxo->clear()
+				// during Kill()), the matching CoUninitialize lands on the GUI thread, draining its
+				// OLE reference and silently breaking the main window's file drag&drop. Keep COM
+				// init/teardown balanced on this thread.
+				if (backend)
 				{
-					lock.unlock();
-					backend_stop();
+					backend->Close();
+					backend->SetWriteCallback(nullptr);
+					backend->SetStateCallback(nullptr);
+					backend = nullptr;
+				}
+				return;
+			}
 
-					// Destroy the backend on this thread, the one that created it in backend_init().
-					// The backend's ctor calls CoInitializeEx here on Windows; if it is instead released
-					// by ~rsxaudio_backend_thread() (which runs on the GUI thread via g_fxo->clear()
-					// during Kill()), the matching CoUninitialize lands on the GUI thread, draining its
-					// OLE reference and silently breaking the main window's file drag&drop. Keep COM
-					// init/teardown balanced on this thread.
-					if (backend)
-					{
-						backend->Close();
-						backend->SetWriteCallback(nullptr);
-						backend->SetStateCallback(nullptr);
-						backend = nullptr;
-					}
-					return;
+			if (event & EVENT_DEVICE)
+			{
+				should_update_backend = true;
+				checkDefaultDevice = true;
+			}
+
+			// Emulated state changed
+			if (event & EVENT_RA_STATE)
+			{
+				const callback_config cb_cfg = callback_cfg_now();
+
+				for (;;)
+				{
+					const int seq = retro_seqlock_read_begin(&ra_state_seq);
+					ra_state = new_ra_state;
+					if (!retro_seqlock_read_retry(&ra_state_seq, seq))
+						break;
 				}
 
-				if (backend_device_changed)
+				if (cb_cfg.cfg_changed)
 				{
 					should_update_backend = true;
-					checkDefaultDevice = true;
-					backend_device_changed = false;
-				}
-
-				// Emulated state changed
-				if (ra_state_changed)
-				{
-					const callback_config cb_cfg = callback_cfg_now();
-					ra_state_changed = false;
-					ra_state = new_ra_state;
-
-					if (cb_cfg.cfg_changed)
+					checkDefaultDevice = false;
+					change_callback_cfg([&](callback_config& val)
 					{
-						should_update_backend = true;
-						checkDefaultDevice = false;
-						change_callback_cfg([&](callback_config& val)
-						{
-							val.cfg_changed = false; // Acknowledge cfg update
-						});
-					}
+						val.cfg_changed = false; // Acknowledge cfg update
+					});
 				}
+			}
 
-				// Update emu config
-				if (emu_cfg_changed)
+			// Update emu config
+			if (event & EVENT_EMU_CFG)
+			{
+				const emu_audio_cfg new_emu_cfg = get_emu_cfg();
+
+				if (new_emu_cfg != emu_cfg || !backend)
 				{
 					reset_backend |= emu_cfg.renderer != new_emu_cfg.renderer;
-					emu_cfg_changed = false;
 					emu_cfg = new_emu_cfg;
 					should_update_backend = true;
 					checkDefaultDevice = false;
 				}
+			}
 
-				// Handle backend error notification
-				if (backend_error_occured)
-				{
-					reset_backend = true;
-					should_update_backend = true;
-					checkDefaultDevice = false;
-					backend_error_occured = false;
-				}
+			// Handle backend error notification
+			if (event & EVENT_ERROR)
+			{
+				reset_backend = true;
+				should_update_backend = true;
+				checkDefaultDevice = false;
+			}
 
-				if (should_update_backend)
+			if (should_update_backend)
+			{
+				backend_current_cfg.cfg = ra_state.port[static_cast<u8>(emu_cfg.avport)];
+				backend_current_cfg.avport = emu_cfg.avport;
+				retro_atomic_store_release_64(&current_port, static_cast<s64>(port_word(backend_current_cfg.cfg, backend_current_cfg.avport)));
+				break;
+			}
+
+			// Until something is posted, or the guest's time for the next
+			// period (the guest clock's word wakes it each frame)
+			const retro_atomic_int_t* clock_word = static_cast<const retro_atomic_int_t*>(libretro_guest_clock_word());
+			const retro_waitaddr_t list[2] =
+			{
+				{&events, 0},
+				{clock_word, static_cast<u32>(retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(clock_word)))},
+			};
+
+			if (backend_failed)
+			{
+				retro_waitaddr_wait(list, 2, static_cast<s64>(libretro_guest_wait_as_host(ERROR_SERVICE_PERIOD)));
+				break;
+			}
+
+			// The dump moves the data on itself, once the data thread writes
+			// to the aux ring
+			if (use_aux_ringbuf && retro_atomic_load_acquire_int(&ring_applied) == retro_atomic_load_acquire_int(&ring_request))
+			{
+				const u64 next_period_time = get_time_until_service();
+				should_service_stream = next_period_time <= SERVICE_THRESHOLD;
+
+				if (should_service_stream)
 				{
-					backend_current_cfg.cfg = ra_state.port[static_cast<u8>(emu_cfg.avport)];
-					backend_current_cfg.avport = emu_cfg.avport;
 					break;
 				}
 
-				if (backend_failed)
-				{
-					state_update_c.wait(state_update_m, ERROR_SERVICE_PERIOD);
-					break;
-				}
-
-				if (use_aux_ringbuf)
-				{
-					const u64 next_period_time = get_time_until_service();
-					should_service_stream = next_period_time <= SERVICE_THRESHOLD;
-
-					if (should_service_stream)
-					{
-						break;
-					}
-
-					state_update_c.wait(state_update_m, next_period_time);
-				}
-				else
-				{
-					// Nothing to do - wait for events
-					state_update_c.wait(state_update_m, umax);
-				}
+				retro_waitaddr_wait(list, 2, static_cast<s64>(libretro_guest_wait_as_host(next_period_time)));
+			}
+			else
+			{
+				// Nothing to do - wait for events
+				retro_waitaddr_wait(list, 1, -1);
 			}
 		}
 
@@ -1617,19 +1676,16 @@ void rsxaudio_backend_thread::operator()()
 
 rsxaudio_backend_thread& rsxaudio_backend_thread::operator=(thread_state /* state */)
 {
-	{
-		std::lock_guard lock(state_update_m);
-	}
-	state_update_c.notify_all();
+	post_event(EVENT_WAKE);
 	return *this;
 }
 
 void rsxaudio_backend_thread::set_new_stream_param(const std::array<port_config, SYS_RSXAUDIO_AVPORT_CNT> &cfg, avport_bit muted_avports)
 {
-	std::unique_lock lock(state_update_m);
-
 	const auto new_mute_state = gen_mute_state(muted_avports);
-	const bool should_update = backend_current_cfg.cfg != cfg[static_cast<u8>(backend_current_cfg.avport)];
+	const u64 current = static_cast<u64>(retro_atomic_load_acquire_64(&current_port));
+	const RsxaudioAvportIdx avport = static_cast<RsxaudioAvportIdx>(current >> 40 & 0xff);
+	const bool should_update = port_word(cfg[static_cast<u8>(avport)], avport) != current;
 
 	change_callback_cfg([&](callback_config& val)
 	{
@@ -1642,12 +1698,14 @@ void rsxaudio_backend_thread::set_new_stream_param(const std::array<port_config,
 		}
 	});
 
+	// One writer at a time (hw_param_ts's operations): the ports, for the
+	// backend thread to read through the sequence count
 	if (new_ra_state.port != cfg)
 	{
+		retro_seqlock_write_begin(&ra_state_seq);
 		new_ra_state.port = cfg;
-		ra_state_changed = true;
-		lock.unlock();
-		state_update_c.notify_all();
+		retro_seqlock_write_end(&ra_state_seq);
+		post_event(EVENT_RA_STATE);
 	}
 }
 
@@ -1676,11 +1734,8 @@ u8 rsxaudio_backend_thread::gen_mute_state(avport_bit avports)
 
 void rsxaudio_backend_thread::add_data(rsxaudio_data_container& cont)
 {
-	std::unique_lock lock(ringbuf_mutex, std::try_to_lock);
-	if (!lock.owns_lock())
-	{
-		return;
-	}
+	// What the backend thread asked of the rings, first
+	apply_ring_request();
 
 	const callback_config cb_cfg = callback_cfg_now();
 	if (!cb_cfg.ready || !cb_cfg.callback_active)
@@ -1692,7 +1747,7 @@ void rsxaudio_backend_thread::add_data(rsxaudio_data_container& cont)
 
 	if (u32 len = cont.get_data_size(cb_cfg.avport_idx))
 	{
-		if (use_aux_ringbuf)
+		if (data_aux_ringbuf)
 		{
 			if (ring_free_size(aux_ringbuf) >= len)
 			{
@@ -1759,26 +1814,20 @@ void rsxaudio_backend_thread::backend_init(const rsxaudio_state& ra_state, const
 	const f64 buffering_len = emu_cfg.buffering_enabled ? (emu_cfg.desired_buffer_duration / 1000.0) : 0.0;
 	const u64 bytes_per_sec = static_cast<u32>(AudioSampleSize::FLOAT) * static_cast<u32>(port_cfg.ch_cnt) * static_cast<u32>(port_cfg.freq);
 
+	// The rings' limits for the data thread to take up; the rings and the
+	// callback's buffer are made once, at their most
+	if (emu_cfg.dump_to_file)
 	{
-		std::lock_guard lock(ringbuf_mutex);
-		use_aux_ringbuf = emu_cfg.dump_to_file;
-
-		if (use_aux_ringbuf)
-		{
-			const f64 frame_len = std::max<f64>(buffering_len * 0.5, SERVICE_PERIOD_SEC) + cb_frame_len + _10ms;
-			const u64 frame_len_bytes = static_cast<u64>(std::round(frame_len * bytes_per_sec));
-			ring_set_size(aux_ringbuf, frame_len_bytes);
-			ring_set_size(ringbuf, frame_len_bytes);
-			thread_tmp_buf.resize(frame_len_bytes);
-		}
-		else
-		{
-			const f64 frame_len = std::max<f64>(buffering_len, cb_frame_len) + _10ms;
-			ring_set_size(ringbuf, static_cast<u64>(std::round(frame_len * bytes_per_sec)));
-			thread_tmp_buf.resize(0);
-		}
-
-		callback_tmp_buf.resize(static_cast<usz>((cb_frame_len + _10ms) * static_cast<u32>(AudioSampleSize::FLOAT) * static_cast<u32>(port_cfg.ch_cnt) * static_cast<u32>(port_cfg.freq)));
+		const f64 frame_len = std::max<f64>(buffering_len * 0.5, SERVICE_PERIOD_SEC) + cb_frame_len + _10ms;
+		const u64 frame_len_bytes = std::min<u64>(static_cast<u64>(std::round(frame_len * bytes_per_sec)), rsxaudio_ring_most);
+		thread_tmp_buf.resize(frame_len_bytes);
+		request_rings(true, frame_len_bytes, frame_len_bytes);
+	}
+	else
+	{
+		const f64 frame_len = std::max<f64>(buffering_len, cb_frame_len) + _10ms;
+		thread_tmp_buf.resize(0);
+		request_rings(false, std::min<u64>(static_cast<u64>(std::round(frame_len * bytes_per_sec)), rsxaudio_ring_most), 0);
 	}
 
 	change_callback_cfg([&](callback_config& val)
@@ -1801,18 +1850,9 @@ void rsxaudio_backend_thread::backend_start()
 {
 	ensure(backend != nullptr);
 
-	{
-		// What is waiting is dropped from the writers' side, with the data
-		// thread (add_data) kept out meanwhile; the callback is not asked
-		std::lock_guard lock(ringbuf_mutex);
-
-		if (use_aux_ringbuf)
-		{
-			lr_audio_ring_flush(&aux_ringbuf);
-		}
-
-		lr_audio_ring_flush(&ringbuf);
-	}
+	// What is waiting is dropped from the writers' side: the data thread
+	// flushes before it next writes; the callback is not asked
+	request_rings(use_aux_ringbuf, retro_atomic_load_acquire_size(&ring_limit), retro_atomic_load_acquire_size(&aux_ring_limit));
 
 	backend->Play();
 }
@@ -1964,33 +2004,29 @@ u32 rsxaudio_backend_thread::fill_from_ring(const callback_config& cb_cfg, u32 b
 
 void rsxaudio_backend_thread::state_changed_callback(AudioStateEvent event)
 {
+	switch (event)
 	{
-		std::lock_guard lock(state_update_m);
-		switch (event)
-		{
-		case AudioStateEvent::UNSPECIFIED_ERROR:
-		{
-			backend_error_occured = true;
-			break;
-		}
-		case AudioStateEvent::DEFAULT_DEVICE_MAYBE_CHANGED:
-		{
-			backend_device_changed = true;
-			break;
-		}
-		default:
-		{
-			fmt::throw_exception("Unknown audio state event");
-		}
-		}
+	case AudioStateEvent::UNSPECIFIED_ERROR:
+	{
+		post_event(EVENT_ERROR);
+		break;
 	}
-	state_update_c.notify_all();
+	case AudioStateEvent::DEFAULT_DEVICE_MAYBE_CHANGED:
+	{
+		post_event(EVENT_DEVICE);
+		break;
+	}
+	default:
+	{
+		fmt::throw_exception("Unknown audio state event");
+	}
+	}
 }
 
 u64 rsxaudio_backend_thread::get_time_until_service()
 {
 	const u64 next_service_time = start_time + time_period_idx * SERVICE_PERIOD;
-	const u64 current_time = get_system_time();
+	const u64 current_time = get_hw_clock_time();
 
 	return next_service_time >= current_time ? next_service_time - current_time : 0;
 }
@@ -2002,7 +2038,7 @@ void rsxaudio_backend_thread::update_service_time()
 
 void rsxaudio_backend_thread::reset_service_time()
 {
-	start_time = get_system_time();
+	start_time = get_hw_clock_time();
 	time_period_idx = 1;
 }
 
