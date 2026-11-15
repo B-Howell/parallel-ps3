@@ -1141,6 +1141,13 @@ void VKGSRender::emit_geometry(u32 sub_index)
 	// FIXME: We only need to rebind the pipeline when reload state is set. Flags?
 	m_program->bind(*m_current_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS);
 
+	if (m_shader_interpreter.is_interpreter(m_program))
+	{
+		// Its pipelines stand for any fixed-function state: this draw's goes
+		// on the command buffer (vk_interpreter_dynamic.h)
+		m_shader_interpreter.set_dynamic_state(*m_current_command_buffer, m_pipeline_properties);
+	}
+
 	if (reload_state)
 	{
 		update_draw_state();

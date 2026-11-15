@@ -1,5 +1,6 @@
 #include "device.h"
 #include "../VKLibretro.h"
+#include "../vk_interpreter_dynamic.h"
 #include "instance.h"
 #include "util/logs.hpp"
 #include "Emu/system_config.h"
@@ -37,6 +38,9 @@ namespace vk
 		VkPhysicalDeviceFaultFeaturesEXT device_fault_info{};
 		VkPhysicalDeviceMultiDrawFeaturesEXT multidraw_info{};
 		VkPhysicalDeviceProvokingVertexFeaturesEXT provoking_vertex_info{};
+		VkPhysicalDeviceExtendedDynamicStateFeaturesEXT eds1_info{};
+		VkPhysicalDeviceExtendedDynamicState2FeaturesEXT eds2_info{};
+		VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3_info{};
 
 		// Core features
 		shader_support_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
@@ -97,7 +101,38 @@ namespace vk
 			features2.pNext             = &provoking_vertex_info;
 		}
 
+		if (device_extensions.is_supported(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME) &&
+			device_extensions.is_supported(VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME))
+		{
+			eds1_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT;
+			eds1_info.pNext = features2.pNext;
+			features2.pNext = &eds1_info;
+
+			eds2_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT;
+			eds2_info.pNext = features2.pNext;
+			features2.pNext = &eds2_info;
+
+			if (device_extensions.is_supported(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME))
+			{
+				eds3_info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
+				eds3_info.pNext = features2.pNext;
+				features2.pNext = &eds3_info;
+			}
+		}
+
 		vkGetPhysicalDeviceFeatures2(dev, &features2);
+
+		interpreter_dynamic_caps = 0;
+		if (eds1_info.extendedDynamicState && eds2_info.extendedDynamicState2)
+		{
+			interpreter_dynamic_caps |= VK_IDYN_BASE;
+			if (eds2_info.extendedDynamicState2LogicOp) interpreter_dynamic_caps |= VK_IDYN_LOGIC_OP;
+			if (eds3_info.extendedDynamicState3ColorBlendEnable &&
+				eds3_info.extendedDynamicState3ColorBlendEquation &&
+				eds3_info.extendedDynamicState3ColorWriteMask) interpreter_dynamic_caps |= VK_IDYN_BLEND;
+			if (eds3_info.extendedDynamicState3LogicOpEnable) interpreter_dynamic_caps |= VK_IDYN_LOGIC_OP_ON;
+			if (eds3_info.extendedDynamicState3DepthClampEnable) interpreter_dynamic_caps |= VK_IDYN_DEPTH_CLAMP;
+		}
 
 		shader_types_support.allow_float64 = !!features2.features.shaderFloat64;
 		shader_types_support.allow_float16 = !!shader_support_info.shaderFloat16;
@@ -210,7 +245,20 @@ namespace vk
 			properties2.pNext = &multidraw_props;
 		}
 
+		VkPhysicalDeviceExtendedDynamicState3PropertiesEXT eds3_props{};
+		if ((interpreter_dynamic_caps & VK_IDYN_BASE) && device_extensions.is_supported(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME))
+		{
+			eds3_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_PROPERTIES_EXT;
+			eds3_props.pNext = properties2.pNext;
+			properties2.pNext = &eds3_props;
+		}
+
 		vkGetPhysicalDeviceProperties2(dev, &properties2);
+
+		if (eds3_props.dynamicPrimitiveTopologyUnrestricted)
+		{
+			interpreter_dynamic_caps |= VK_IDYN_TOPOLOGY_ANY;
+		}
 		props = properties2.properties;
 
 		if (descriptor_indexing_support)
@@ -736,6 +784,30 @@ namespace vk
 			enabled_features.logicOp = VK_FALSE;
 		}
 
+		// The shader interpreter's pipelines take their fixed-function state
+		// as dynamic where the device can (vk_interpreter_dynamic.h), so a
+		// few of them cover every state and are all made at boot
+		u32 interpreter_dynamic_caps = 0;
+		if (g_cfg.video.shadermode == shader_mode::async_with_interpreter ||
+			g_cfg.video.shadermode == shader_mode::interpreter_only)
+		{
+			interpreter_dynamic_caps = pgpu->interpreter_dynamic_caps;
+
+			if (!enabled_features.logicOp) interpreter_dynamic_caps &= ~(VK_IDYN_LOGIC_OP | VK_IDYN_LOGIC_OP_ON);
+			if (!enabled_features.depthClamp) interpreter_dynamic_caps &= ~VK_IDYN_DEPTH_CLAMP;
+		}
+
+		const bool want_eds3 = !!(interpreter_dynamic_caps & (VK_IDYN_BLEND | VK_IDYN_LOGIC_OP_ON | VK_IDYN_DEPTH_CLAMP));
+		if (interpreter_dynamic_caps & VK_IDYN_BASE)
+		{
+			requested_extensions.push_back(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
+			requested_extensions.push_back(VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
+			if (want_eds3)
+			{
+				requested_extensions.push_back(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+			}
+		}
+
 		// With the core's hardware Vulkan context the frontend presents from
 		// this device as well, and says what it needs of it.
 		vk::libretro::apply_frontend_requirements(requested_extensions, enabled_features);
@@ -862,6 +934,36 @@ namespace vk
 			device.pNext = &provoking_vertex_info;
 		}
 
+		VkPhysicalDeviceExtendedDynamicStateFeaturesEXT eds1_features{};
+		VkPhysicalDeviceExtendedDynamicState2FeaturesEXT eds2_features{};
+		VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3_features{};
+		if (interpreter_dynamic_caps & VK_IDYN_BASE)
+		{
+			eds1_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT;
+			eds1_features.extendedDynamicState = VK_TRUE;
+			eds1_features.pNext = const_cast<void*>(device.pNext);
+			device.pNext = &eds1_features;
+
+			eds2_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT;
+			eds2_features.extendedDynamicState2 = VK_TRUE;
+			eds2_features.extendedDynamicState2LogicOp = !!(interpreter_dynamic_caps & VK_IDYN_LOGIC_OP);
+			eds2_features.pNext = const_cast<void*>(device.pNext);
+			device.pNext = &eds2_features;
+
+			if (want_eds3)
+			{
+				const bool blend = !!(interpreter_dynamic_caps & VK_IDYN_BLEND);
+				eds3_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
+				eds3_features.extendedDynamicState3ColorBlendEnable = blend;
+				eds3_features.extendedDynamicState3ColorBlendEquation = blend;
+				eds3_features.extendedDynamicState3ColorWriteMask = blend;
+				eds3_features.extendedDynamicState3LogicOpEnable = !!(interpreter_dynamic_caps & VK_IDYN_LOGIC_OP_ON);
+				eds3_features.extendedDynamicState3DepthClampEnable = !!(interpreter_dynamic_caps & VK_IDYN_DEPTH_CLAMP);
+				eds3_features.pNext = const_cast<void*>(device.pNext);
+				device.pNext = &eds3_features;
+			}
+		}
+
 		// Through the frontend's wrapper when it gave one (context negotiation
 		// v2): it adds what it needs of the device to what is asked here
 		if (vk::libretro::create_device_wrapped(*pgpu, &device, &dev))
@@ -878,6 +980,8 @@ namespace vk
 			dump_debug_info(requested_extensions, enabled_features);
 			vk::die_with_error(error);
 		}
+
+		m_interpreter_dynamic_caps = interpreter_dynamic_caps;
 
 		// Dump some diagnostics to the log
 		rsx_log.notice("%u extensions loaded:", ::size32(requested_extensions));

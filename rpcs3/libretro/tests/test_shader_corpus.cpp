@@ -57,6 +57,7 @@
 
 #define private public
 #define protected public
+#include "Emu/RSX/VK/VKRenderPass.h"
 #include "Emu/RSX/VK/VKShaderInterpreter.h"
 #include "Emu/RSX/VK/VKCompute.h"
 #include "Emu/RSX/VK/VKResolveHelper.h"
@@ -1050,6 +1051,71 @@ struct shader_corpus_test
 		interpreter.destroy();
 	}
 
+	// The interpreter's pipelines with their fixed-function state dynamic
+	// (vk_interpreter_dynamic.h), on a device that has the extensions: the
+	// device is made with them, two draws' states that differ only in what
+	// is dynamic key one pipeline, and the driver makes that pipeline
+	static void interpreter_dynamic(const vk::render_device& device)
+	{
+		const u32 has = device.get_interpreter_dynamic_support();
+		if (!(has & VK_IDYN_BASE))
+		{
+			std::printf("  interpreter: no extended dynamic state on this device, not tried\n");
+			return;
+		}
+
+		const u32 caps = device.get_interpreter_dynamic_caps();
+		CHECK(caps & VK_IDYN_BASE);
+
+		vk::init();
+		vk::initialize_pipe_compiler(1, VK_NULL_HANDLE);
+
+		vk::shader_interpreter interpreter;
+		interpreter.init(device);
+		CHECK(interpreter.m_dynamic_caps == caps);
+
+		const VkFormat depth = device.get_formats_support().d24_unorm_s8 ? VK_FORMAT_D24_UNORM_S8_UINT : VK_FORMAT_D32_SFLOAT_S8_UINT;
+
+		// A shadow pass and a blended one on the same targets
+		vk::pipeline_props a{}, b{};
+		a.renderpass_key = b.renderpass_key = vk::get_renderpass_key(VK_FORMAT_B8G8R8A8_UNORM, depth, 2);
+		a.state.set_attachment_count(2);
+		b.state.set_attachment_count(2);
+		a.state.set_primitive_type(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
+		a.state.enable_cull_face(VK_CULL_MODE_FRONT_BIT);
+		a.state.enable_depth_test(VK_COMPARE_OP_LESS_OR_EQUAL);
+		a.state.set_depth_mask(true);
+		a.state.enable_stencil_test(VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_INCREMENT_AND_CLAMP, VK_COMPARE_OP_EQUAL, 0xFF, 0xFF);
+		b.state.set_primitive_type(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+		b.state.set_color_mask(0, true, true, true, true);
+		b.state.enable_blend(0, VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD, VK_BLEND_OP_ADD);
+
+		const auto ka = interpreter.canonical(a);
+		const auto kb = interpreter.canonical(b);
+		if (caps & VK_IDYN_BLEND)
+		{
+			CHECK(ka == kb);
+			CHECK(rpcs3::hash_struct(ka) == rpcs3::hash_struct(kb));
+		}
+		else
+		{
+			// Blending stays in the key; the rest is gone
+			CHECK(ka.state.rs.cullMode == VK_CULL_MODE_NONE && !ka.state.ds.depthTestEnable);
+		}
+		CHECK(!(a == b));
+
+		CHECK(!!interpreter.link(ka, 0));
+		CHECK(!!interpreter.link(kb, 0));
+
+		// The same pipeline with nothing dynamic is made as before
+		interpreter.m_dynamic_caps = 0;
+		CHECK(!!interpreter.link(interpreter.canonical(a), 0));
+
+		std::printf("  interpreter: dynamic state 0x%x of 0x%x, one pipeline for both passes\n", caps, has);
+		interpreter.destroy();
+		vk::destroy_pipe_compiler();
+	}
+
 	// The interpreter's caches are looked up and added to with no lock (the
 	// pipeline compiler's thread publishes programs while the renderer
 	// looks them up). Six threads give the same 2000 keys a program each,
@@ -1605,7 +1671,7 @@ int main()
 	g_fxo->reset();
 	vk::load_vulkan(gipa);
 	vk::instance instance;
-	if (!instance.create("corpus", true))
+	if (!instance.create("corpus"))
 	{
 		std::printf("test_shader_corpus: no Vulkan instance: nothing gathered; ok\n");
 		return 0;
@@ -1625,12 +1691,16 @@ int main()
 			graphics = i;
 	CHECK(graphics != umax);
 
+	// The interpreter's pipelines are made with their fixed-function state
+	// dynamic where the device can, which the device is made for
+	g_cfg.video.shadermode.set(shader_mode::async_with_interpreter);
 	vk::render_device device;
 	device.create(gpu, graphics, umax, umax);
 	vk::set_current_renderer(device);
 
 	const bool can_run = shader_run_start(gpu, graphics) != 0;
 	shader_corpus_test::interpreter(device);
+	shader_corpus_test::interpreter_dynamic(device);
 
 	// The compute tasks
 	compute_source<vk::cs_shuffle_16>();

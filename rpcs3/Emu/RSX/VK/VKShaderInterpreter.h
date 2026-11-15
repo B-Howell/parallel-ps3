@@ -3,6 +3,7 @@
 #include "Emu/RSX/Program/ProgramStateCache.h"
 #include "Emu/RSX/VK/VKPipelineCompiler.h"
 #include "vkutils/descriptors.h"
+#include "vk_interpreter_dynamic.h"
 #include <unordered_map>
 #include <retro_atomic.h>
 
@@ -164,6 +165,13 @@ namespace vk
 			return *static_cast<std::shared_ptr<T>*>(retro_atomic_load_acquire_ptr(slot));
 		}
 
+		// What the pipelines take as dynamic (vk_interpreter_dynamic.h)
+		unsigned m_dynamic_caps = 0;
+		vk_idyn_fns m_dynamic_fns{};
+
+		// The key's properties: what is dynamic put to one value
+		vk::pipeline_props canonical(const vk::pipeline_props& properties) const;
+
 		pipeline_key m_current_key{};
 		pipeline_info_ex_t m_current_pipeline_info_ex{};
 		glsl::program* m_current_interpreter = nullptr;
@@ -194,6 +202,10 @@ namespace vk
 		std::pair<std::shared_ptr<VKVertexProgram>, std::shared_ptr<VKFragmentProgram>> get_shaders() const;
 
 		bool is_interpreter(const glsl::program* prog) const;
+
+		// After an interpreter pipeline is bound: the draw's values of what
+		// the pipeline takes as dynamic
+		void set_dynamic_state(VkCommandBuffer cmd, const vk::pipeline_props& properties) const;
 
 		u32 get_vertex_instruction_location() const;
 		u32 get_fragment_instruction_location() const;

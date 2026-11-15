@@ -37,6 +37,26 @@ VK_FUNC(vkCmdDrawMultiIndexedEXT);
 // EXT_external_memory_host
 VK_FUNC(vkGetMemoryHostPointerPropertiesEXT);
 
+// EXT_extended_dynamic_state 1 to 3, for the shader interpreter's pipelines
+VK_FUNC(vkCmdSetCullModeEXT);
+VK_FUNC(vkCmdSetFrontFaceEXT);
+VK_FUNC(vkCmdSetPrimitiveTopologyEXT);
+VK_FUNC(vkCmdSetDepthTestEnableEXT);
+VK_FUNC(vkCmdSetDepthWriteEnableEXT);
+VK_FUNC(vkCmdSetDepthCompareOpEXT);
+VK_FUNC(vkCmdSetDepthBoundsTestEnableEXT);
+VK_FUNC(vkCmdSetStencilTestEnableEXT);
+VK_FUNC(vkCmdSetStencilOpEXT);
+VK_FUNC(vkCmdSetDepthBiasEnableEXT);
+VK_FUNC(vkCmdSetPrimitiveRestartEnableEXT);
+VK_FUNC(vkCmdSetRasterizerDiscardEnableEXT);
+VK_FUNC(vkCmdSetLogicOpEXT);
+VK_FUNC(vkCmdSetColorBlendEnableEXT);
+VK_FUNC(vkCmdSetColorBlendEquationEXT);
+VK_FUNC(vkCmdSetColorWriteMaskEXT);
+VK_FUNC(vkCmdSetLogicOpEnableEXT);
+VK_FUNC(vkCmdSetDepthClampEnableEXT);
+
 #undef VK_FUNC
 #undef DECLARE_VK_FUNCTION_HEADER
 #undef DECLARE_VK_FUNCTION_BODY

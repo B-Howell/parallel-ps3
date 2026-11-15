@@ -13,6 +13,7 @@
 #include "Emu/localized_string.h"
 
 #include <thread>
+#include <rthreads/retro_waitaddr.h>
 
 namespace vk
 {
@@ -52,12 +53,16 @@ namespace vk
 			const vk::pipeline_props& props,
 			VkDevice device,
 			VkShaderModule vs,
-			VkShaderModule fs)
+			VkShaderModule fs,
+			unsigned dynamic_caps)
 			: m_properties(props)
 			, m_device(device)
 			, m_vs(vs)
 			, m_fs(fs)
 		{
+			VkDynamicState more[VK_IDYN_MAX_STATES];
+			const unsigned count = vk_idyn_states(dynamic_caps, more);
+			m_dynamic_state_descriptors.insert(m_dynamic_state_descriptors.end(), more, more + count);
 		}
 
 		VkGraphicsPipelineCreateInfo compile()
@@ -449,6 +454,61 @@ namespace vk
 	void shader_interpreter::init(const vk::render_device& dev)
 	{
 		m_device = dev;
+
+		m_dynamic_fns =
+		{
+			_vkCmdSetCullModeEXT,
+			_vkCmdSetFrontFaceEXT,
+			_vkCmdSetPrimitiveTopologyEXT,
+			_vkCmdSetDepthTestEnableEXT,
+			_vkCmdSetDepthWriteEnableEXT,
+			_vkCmdSetDepthCompareOpEXT,
+			_vkCmdSetDepthBoundsTestEnableEXT,
+			_vkCmdSetStencilTestEnableEXT,
+			_vkCmdSetStencilOpEXT,
+			_vkCmdSetDepthBiasEnableEXT,
+			_vkCmdSetPrimitiveRestartEnableEXT,
+			_vkCmdSetRasterizerDiscardEnableEXT,
+			_vkCmdSetLogicOpEXT,
+			_vkCmdSetColorBlendEnableEXT,
+			_vkCmdSetColorBlendEquationEXT,
+			_vkCmdSetColorWriteMaskEXT,
+			_vkCmdSetLogicOpEnableEXT,
+			_vkCmdSetDepthClampEnableEXT
+		};
+
+		m_dynamic_caps = vk_idyn_usable(dev.get_interpreter_dynamic_caps(), &m_dynamic_fns);
+	}
+
+	static vk_idyn_state dynamic_view(vk::pipeline_props& props)
+	{
+		return
+		{
+			&props.state.ia,
+			&props.state.rs,
+			&props.state.ds,
+			&props.state.cs,
+			props.state.att_state
+		};
+	}
+
+	vk::pipeline_props shader_interpreter::canonical(const vk::pipeline_props& properties) const
+	{
+		vk::pipeline_props result = properties;
+		const vk_idyn_state view = dynamic_view(result);
+		vk_idyn_canonical(m_dynamic_caps, &view);
+		return result;
+	}
+
+	void shader_interpreter::set_dynamic_state(VkCommandBuffer cmd, const vk::pipeline_props& properties) const
+	{
+		if (!m_dynamic_caps)
+		{
+			return;
+		}
+
+		const vk_idyn_state view = dynamic_view(const_cast<vk::pipeline_props&>(properties));
+		vk_idyn_record(&m_dynamic_fns, cmd, m_dynamic_caps, &view);
 	}
 
 	void shader_interpreter::destroy()
@@ -474,7 +534,7 @@ namespace vk
 		auto vs = build_vs(compiler_opt);
 		auto fs = build_fs(compiler_opt);
 
-		async_pipe_compiler_context context{ properties, m_device, vs->shader.get_handle(), fs->shader.get_handle() };
+		async_pipe_compiler_context context{ properties, m_device, vs->shader.get_handle(), fs->shader.get_handle(), m_dynamic_caps };
 		auto create_graphics_info_fn = [=]() mutable
 		{
 			return context.compile();
@@ -539,7 +599,7 @@ namespace vk
 	{
 		pipeline_key key;
 		key.compiler_opt = 0;
-		key.properties = properties;
+		key.properties = canonical(properties);
 
 		if (rsx::method_registers.alpha_test_enabled()) [[unlikely]]
 		{
@@ -600,13 +660,13 @@ namespace vk
 			if (retro_atomic_load_acquire_int(&found->flags) == CACHED_PIPE_UNOPTIMIZED &&
 				retro_atomic_cas_int(&found->flags, CACHED_PIPE_UNOPTIMIZED, CACHED_PIPE_UNOPTIMIZED | CACHED_PIPE_RECOMPILING))
 			{
-				link(properties, key.compiler_opt, true, {});
+				link(key.properties, key.compiler_opt, true, {});
 			}
 
 			return m_current_interpreter;
 		}
 
-		m_current_interpreter = publish(key, link(properties, key.compiler_opt), 0, true)->program.get();
+		m_current_interpreter = publish(key, link(key.properties, key.compiler_opt), 0, true)->program.get();
 		return m_current_interpreter;
 	}
 
@@ -773,38 +833,95 @@ namespace vk
 			}
 		}
 
+		if (m_dynamic_caps & VK_IDYN_BASE)
+		{
+			// The fixed-function state is dynamic: what sets the pipelines
+			// apart is the render pass, so the warm-up covers render passes,
+			// the formats the RSX has that were left out for time too
+			pipe_properties.clear();
+
+			std::vector<VkFormat> depth_formats = { VK_FORMAT_UNDEFINED, depth_format, VK_FORMAT_D16_UNORM, VK_FORMAT_D32_SFLOAT };
+			if (pdev->get_formats_support().d32_sfloat_s8 && depth_format != VK_FORMAT_D32_SFLOAT_S8_UINT)
+			{
+				depth_formats.push_back(VK_FORMAT_D32_SFLOAT_S8_UINT);
+			}
+
+			possible_color_formats.push_back(VK_FORMAT_R5G6B5_UNORM_PACK16);
+			possible_color_formats.push_back(VK_FORMAT_A1R5G5B5_UNORM_PACK16);
+			possible_color_formats.push_back(VK_FORMAT_R32G32B32A32_SFLOAT);
+
+			for (const auto surface_format : possible_color_formats)
+			{
+				for (const auto ds_format : depth_formats)
+				{
+					// Up to four targets with the main depth format, one otherwise
+					const u8 most = (ds_format == depth_format) ? 4 : 1;
+
+					for (u8 count = 1; count <= most; ++count)
+					{
+						// What is not dynamic is as a game most often has it
+						vk::pipeline_props props{};
+						props.state.set_attachment_count(count);
+						props.state.set_primitive_type(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+						props.state.enable_depth_bias(true);
+						props.state.enable_depth_clamp(true);
+						props.state.enable_depth_bounds_test(pdev->get_depth_bounds_support());
+						for (u8 index = 0; index < count; ++index)
+						{
+							props.state.set_color_mask(index, true, true, true, true);
+						}
+						props.renderpass_key = vk::get_renderpass_key(surface_format, ds_format, count);
+						pipe_properties.push_back(canonical(props));
+					}
+				}
+			}
+		}
+		else
+		{
+			// What is dynamic anyway may still set two apart
+			for (auto& props : pipe_properties)
+			{
+				props = canonical(props);
+			}
+		}
+
 		const auto variants = program_common::interpreter::get_interpreter_variants();
 		const u32 limit1 = ::size32(variants.base_pipelines) * ::size32(pipe_properties);
 		const u32 limit2 = ::size32(variants.pipelines) * ::size32(pipe_properties);
 		dlg->set_limit(0, limit1);
 		dlg->set_limit(1, limit2);
 
-		atomic_t<u32> ctr = 0;
+		// Counted by the compiler threads as each is made; this thread waits
+		// on the count, waking for each, instead of looking every 16 ms
+		retro_atomic_int_t done{};
 		for (const auto& props : pipe_properties)
 		{
 			for (auto& variant : variants.base_pipelines)
 			{
-				pipeline_key key{};
-				key.properties = props;
-				key.compiler_opt = variant.first | variant.second;
-
-				link(props, variant.first | variant.second, true, [&](std::shared_ptr<glsl::program>&) { ctr++; });
+				link(props, variant.first | variant.second, true, [&done](std::shared_ptr<glsl::program>&)
+				{
+					retro_atomic_inc_int(&done);
+					retro_waitaddr_notify_all(&done);
+				});
 			}
 		}
 
 		// Drain the queue.
 		// FIXME: Since the queue is executing from the context of the pipe compiler, we cannot properly stop this process.
-		do
+		for (;;)
 		{
-			std::this_thread::sleep_for(16ms);
+			const int completed = retro_atomic_load_acquire_int(&done);
+			dlg->update_msg(0, get_localized_string(localized_string_id::RSX_OVERLAYS_COMPILING_SHADERS_VULKAN, "%u %s %u", static_cast<u32>(completed), get_localized_string(localized_string_id::PROGRESS_DIALOG_OF), limit1));
+			dlg->set_value(0, static_cast<u32>(completed));
 
-			const auto completed = ctr.load();
-			dlg->update_msg(0, get_localized_string(localized_string_id::RSX_OVERLAYS_COMPILING_SHADERS_VULKAN, "%u %s %u", completed, get_localized_string(localized_string_id::PROGRESS_DIALOG_OF), limit1));
-			dlg->set_value(0, completed);
+			if (static_cast<u32>(completed) >= limit1)
+			{
+				break;
+			}
+
+			const retro_waitaddr_t w{ &done, static_cast<u32>(completed) };
+			retro_waitaddr_wait(&w, 1, -1);
 		}
-		while (ctr.load() < limit1);
-
-		ctr = 0;
 
 		for (const auto& props : pipe_properties)
 		{

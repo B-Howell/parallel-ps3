@@ -106,6 +106,10 @@ namespace vk
 			bool provoking_vertex_last = false;
 		} optional_features_support;
 
+		// What the shader interpreter's pipelines can take as dynamic
+		// (VK_IDYN_*, vk_interpreter_dynamic.h)
+		u32 interpreter_dynamic_caps = 0;
+
 		friend class render_device;
 	private:
 		void get_physical_device_features(bool allow_extensions);
@@ -145,6 +149,9 @@ namespace vk
 		gpu_formats_support m_formats_support{};
 		std::unique_ptr<mem_allocator_base> m_allocator;
 		VkDevice dev = VK_NULL_HANDLE;
+
+		// What was enabled of physical_device::interpreter_dynamic_caps
+		u32 m_interpreter_dynamic_caps = 0;
 
 		VkQueue m_graphics_queue = VK_NULL_HANDLE;
 		VkQueue m_present_queue = VK_NULL_HANDLE;
@@ -193,6 +200,8 @@ namespace vk
 		bool get_extended_device_fault_support() const { return pgpu->optional_features_support.extended_device_fault; }
 		bool get_texture_compression_bc_support() const { return pgpu->optional_features_support.texture_compression_bc; }
 		bool get_provoking_vertex_last_support() const { return pgpu->optional_features_support.provoking_vertex_last; }
+		u32 get_interpreter_dynamic_caps() const { return m_interpreter_dynamic_caps; }
+		u32 get_interpreter_dynamic_support() const { return pgpu->interpreter_dynamic_caps; }
 
 		u64 get_descriptor_update_after_bind_support() const { return pgpu->descriptor_indexing_support.update_after_bind_mask; }
 		u32 get_descriptor_max_draw_calls() const { return pgpu->descriptor_max_draw_calls; }
