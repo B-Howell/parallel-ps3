@@ -136,6 +136,16 @@ void lv2_rsxaudio::save(utils::serial& ar)
 	}
 }
 
+// On the RSX audio data thread: where the game's calls on the object run
+static thread_local bool s_on_rsxaudio_data = false;
+
+// @f run on the RSX audio data thread, its result given back
+template <typename F>
+static auto rsxaudio_data_call(F&& f) -> decltype(f())
+{
+	return cpu_owner_call(&g_fxo->get<rsx_audio_data>().calls, s_on_rsxaudio_data, std::forward<F>(f));
+}
+
 error_code sys_rsxaudio_initialize(ppu_thread& ppu, vm::ptr<u32> handle)
 {
 	ppu.state += cpu_flag::wait;
@@ -164,36 +174,37 @@ error_code sys_rsxaudio_initialize(ppu_thread& ppu, vm::ptr<u32> handle)
 	}
 
 	const auto rsxaudio_obj = idm::get_unlocked<lv2_obj, lv2_rsxaudio>(id);
-	std::lock_guard lock(rsxaudio_obj->mutex);
-
-	rsxaudio_obj->shmem = vm::addr_t{vm::alloc(sizeof(rsxaudio_shmem), vm::main)};
-
-	if (!rsxaudio_obj->shmem)
+	return rsxaudio_data_call([&]() -> error_code
 	{
-		idm::remove<lv2_obj, lv2_rsxaudio>(id);
-		retro_atomic_store_release_int(&rsxaudio_thread.rsxaudio_ctx_allocated, 0);
-		return CELL_ENOMEM;
-	}
+		rsxaudio_obj->shmem = vm::addr_t{vm::alloc(sizeof(rsxaudio_shmem), vm::main)};
 
-	rsxaudio_obj->page_lock();
+		if (!rsxaudio_obj->shmem)
+		{
+			idm::remove<lv2_obj, lv2_rsxaudio>(id);
+			retro_atomic_store_release_int(&rsxaudio_thread.rsxaudio_ctx_allocated, 0);
+			return CELL_ENOMEM;
+		}
 
-	rsxaudio_shmem* sh_page = rsxaudio_obj->get_rw_shared_page();
-	sh_page->ctrl = {};
+		rsxaudio_obj->page_lock();
 
-	for (auto& uf : sh_page->ctrl.channel_uf)
-	{
-		uf.uf_event_cnt = 0;
-		uf.unk1         = 0;
-	}
+		rsxaudio_shmem* sh_page = rsxaudio_obj->get_rw_shared_page();
+		sh_page->ctrl = {};
 
-	sh_page->ctrl.unk4             = 0x8000;
-	sh_page->ctrl.intr_thread_prio = 0xDEADBEEF;
-	sh_page->ctrl.unk5             = 0;
+		for (auto& uf : sh_page->ctrl.channel_uf)
+		{
+			uf.uf_event_cnt = 0;
+			uf.unk1         = 0;
+		}
 
-	rsxaudio_obj->init = true;
-	*handle = id;
+		sh_page->ctrl.unk4             = 0x8000;
+		sh_page->ctrl.intr_thread_prio = 0xDEADBEEF;
+		sh_page->ctrl.unk5             = 0;
 
-	return CELL_OK;
+		rsxaudio_obj->init = true;
+		*handle = id;
+
+		return CELL_OK;
+	});
 }
 
 error_code sys_rsxaudio_finalize(ppu_thread& ppu, u32 handle)
@@ -209,27 +220,25 @@ error_code sys_rsxaudio_finalize(ppu_thread& ppu, u32 handle)
 		return CELL_ESRCH;
 	}
 
-	std::lock_guard lock(rsxaudio_obj->mutex);
-
-	if (!rsxaudio_obj->init)
+	return rsxaudio_data_call([&]() -> error_code
 	{
-		return CELL_ESRCH;
-	}
+		if (!rsxaudio_obj->init)
+		{
+			return CELL_ESRCH;
+		}
 
-	auto& rsxaudio_thread = g_fxo->get<rsx_audio_data>();
+		auto& rsxaudio_thread = g_fxo->get<rsx_audio_data>();
 
-	{
-		std::lock_guard ra_obj_lock{rsxaudio_thread.rsxaudio_obj_upd_m};
 		rsxaudio_thread.rsxaudio_obj_ptr = null_ptr;
-	}
 
-	rsxaudio_obj->init = false;
-	vm::dealloc(rsxaudio_obj->shmem, vm::main);
+		rsxaudio_obj->init = false;
+		vm::dealloc(rsxaudio_obj->shmem, vm::main);
 
-	idm::remove<lv2_obj, lv2_rsxaudio>(handle);
-	retro_atomic_store_release_int(&rsxaudio_thread.rsxaudio_ctx_allocated, 0);
+		idm::remove<lv2_obj, lv2_rsxaudio>(handle);
+		retro_atomic_store_release_int(&rsxaudio_thread.rsxaudio_ctx_allocated, 0);
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code sys_rsxaudio_import_shared_memory(ppu_thread& ppu, u32 handle, vm::ptr<u64> addr)
@@ -245,22 +254,23 @@ error_code sys_rsxaudio_import_shared_memory(ppu_thread& ppu, u32 handle, vm::pt
 		return CELL_ESRCH;
 	}
 
-	std::lock_guard<shared_mutex> lock(rsxaudio_obj->mutex);
-
-	if (!rsxaudio_obj->init)
+	return rsxaudio_data_call([&]() -> error_code
 	{
-		return CELL_ESRCH;
-	}
+		if (!rsxaudio_obj->init)
+		{
+			return CELL_ESRCH;
+		}
 
-	if (!vm::check_addr(addr.addr(), vm::page_writable, sizeof(u64)))
-	{
-		return CELL_EFAULT;
-	}
+		if (!vm::check_addr(addr.addr(), vm::page_writable, sizeof(u64)))
+		{
+			return CELL_EFAULT;
+		}
 
-	*addr = rsxaudio_obj->shmem;
-	rsxaudio_obj->page_unlock();
+		*addr = rsxaudio_obj->shmem;
+		rsxaudio_obj->page_unlock();
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code sys_rsxaudio_unimport_shared_memory(ppu_thread& ppu, u32 handle, vm::ptr<u64> addr /* unused */)
@@ -276,16 +286,17 @@ error_code sys_rsxaudio_unimport_shared_memory(ppu_thread& ppu, u32 handle, vm::
 		return CELL_ESRCH;
 	}
 
-	std::lock_guard<shared_mutex> lock(rsxaudio_obj->mutex);
-
-	if (!rsxaudio_obj->init)
+	return rsxaudio_data_call([&]() -> error_code
 	{
-		return CELL_ESRCH;
-	}
+		if (!rsxaudio_obj->init)
+		{
+			return CELL_ESRCH;
+		}
 
-	rsxaudio_obj->page_lock();
+		rsxaudio_obj->page_lock();
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code sys_rsxaudio_create_connection(u32 handle)
@@ -299,56 +310,57 @@ error_code sys_rsxaudio_create_connection(u32 handle)
 		return CELL_ESRCH;
 	}
 
-	std::lock_guard<shared_mutex> lock(rsxaudio_obj->mutex);
-
-	if (!rsxaudio_obj->init)
+	return rsxaudio_data_call([&]() -> error_code
 	{
-		return CELL_ESRCH;
-	}
-
-	rsxaudio_shmem* sh_page = rsxaudio_obj->get_rw_shared_page();
-
-	const error_code port_create_status = [&]() -> error_code
-	{
-		if (auto queue1 = idm::get_unlocked<lv2_obj, lv2_event_queue>(sh_page->ctrl.event_queue_1_id))
+		if (!rsxaudio_obj->init)
 		{
-			rsxaudio_obj->event_queue[0] = queue1;
-
-			if (auto queue2 = idm::get_unlocked<lv2_obj, lv2_event_queue>(sh_page->ctrl.event_queue_2_id))
-			{
-				rsxaudio_obj->event_queue[1] = queue2;
-
-				if (auto queue3 = idm::get_unlocked<lv2_obj, lv2_event_queue>(sh_page->ctrl.event_queue_3_id))
-				{
-					rsxaudio_obj->event_queue[2] = queue3;
-
-					return CELL_OK;
-				}
-			}
+			return CELL_ESRCH;
 		}
 
-		return CELL_ESRCH;
-	}();
+		rsxaudio_shmem* sh_page = rsxaudio_obj->get_rw_shared_page();
 
-	if (port_create_status != CELL_OK)
-	{
-		return port_create_status;
-	}
+		const error_code port_create_status = [&]() -> error_code
+		{
+			if (auto queue1 = idm::get_unlocked<lv2_obj, lv2_event_queue>(sh_page->ctrl.event_queue_1_id))
+			{
+				rsxaudio_obj->event_queue[0] = queue1;
 
-	for (auto& rb : sh_page->ctrl.ringbuf)
-	{
-		rb.dma_silence_addr = rsxaudio_obj->dma_io_base + offsetof(rsxaudio_shmem, dma_silence_region);
-		rb.unk2             = 100;
-	}
+				if (auto queue2 = idm::get_unlocked<lv2_obj, lv2_event_queue>(sh_page->ctrl.event_queue_2_id))
+				{
+					rsxaudio_obj->event_queue[1] = queue2;
 
-	for (u32 entry_idx = 0; entry_idx < SYS_RSXAUDIO_RINGBUF_SZ; entry_idx++)
-	{
-		sh_page->ctrl.ringbuf[static_cast<u32>(RsxaudioPort::SERIAL)].entries[entry_idx].dma_addr  = rsxaudio_obj->dma_io_base + u32{offsetof(rsxaudio_shmem, dma_serial_region)} + SYS_RSXAUDIO_RINGBUF_BLK_SZ_SERIAL * entry_idx;
-		sh_page->ctrl.ringbuf[static_cast<u32>(RsxaudioPort::SPDIF_0)].entries[entry_idx].dma_addr = rsxaudio_obj->dma_io_base + u32{offsetof(rsxaudio_shmem, dma_spdif_0_region)} + SYS_RSXAUDIO_RINGBUF_BLK_SZ_SPDIF * entry_idx;
-		sh_page->ctrl.ringbuf[static_cast<u32>(RsxaudioPort::SPDIF_1)].entries[entry_idx].dma_addr = rsxaudio_obj->dma_io_base + u32{offsetof(rsxaudio_shmem, dma_spdif_1_region)} + SYS_RSXAUDIO_RINGBUF_BLK_SZ_SPDIF * entry_idx;
-	}
+					if (auto queue3 = idm::get_unlocked<lv2_obj, lv2_event_queue>(sh_page->ctrl.event_queue_3_id))
+					{
+						rsxaudio_obj->event_queue[2] = queue3;
 
-	return CELL_OK;
+						return CELL_OK;
+					}
+				}
+			}
+
+			return CELL_ESRCH;
+		}();
+
+		if (port_create_status != CELL_OK)
+		{
+			return port_create_status;
+		}
+
+		for (auto& rb : sh_page->ctrl.ringbuf)
+		{
+			rb.dma_silence_addr = rsxaudio_obj->dma_io_base + offsetof(rsxaudio_shmem, dma_silence_region);
+			rb.unk2             = 100;
+		}
+
+		for (u32 entry_idx = 0; entry_idx < SYS_RSXAUDIO_RINGBUF_SZ; entry_idx++)
+		{
+			sh_page->ctrl.ringbuf[static_cast<u32>(RsxaudioPort::SERIAL)].entries[entry_idx].dma_addr  = rsxaudio_obj->dma_io_base + u32{offsetof(rsxaudio_shmem, dma_serial_region)} + SYS_RSXAUDIO_RINGBUF_BLK_SZ_SERIAL * entry_idx;
+			sh_page->ctrl.ringbuf[static_cast<u32>(RsxaudioPort::SPDIF_0)].entries[entry_idx].dma_addr = rsxaudio_obj->dma_io_base + u32{offsetof(rsxaudio_shmem, dma_spdif_0_region)} + SYS_RSXAUDIO_RINGBUF_BLK_SZ_SPDIF * entry_idx;
+			sh_page->ctrl.ringbuf[static_cast<u32>(RsxaudioPort::SPDIF_1)].entries[entry_idx].dma_addr = rsxaudio_obj->dma_io_base + u32{offsetof(rsxaudio_shmem, dma_spdif_1_region)} + SYS_RSXAUDIO_RINGBUF_BLK_SZ_SPDIF * entry_idx;
+		}
+
+		return CELL_OK;
+	});
 }
 
 error_code sys_rsxaudio_close_connection(u32 handle)
@@ -362,25 +374,22 @@ error_code sys_rsxaudio_close_connection(u32 handle)
 		return CELL_ESRCH;
 	}
 
-	std::lock_guard<shared_mutex> lock(rsxaudio_obj->mutex);
-
-	if (!rsxaudio_obj->init)
+	return rsxaudio_data_call([&]() -> error_code
 	{
-		return CELL_ESRCH;
-	}
+		if (!rsxaudio_obj->init)
+		{
+			return CELL_ESRCH;
+		}
 
-	{
-		auto& rsxaudio_thread = g_fxo->get<rsx_audio_data>();
-		std::lock_guard ra_obj_lock{rsxaudio_thread.rsxaudio_obj_upd_m};
-		rsxaudio_thread.rsxaudio_obj_ptr = null_ptr;
-	}
+		g_fxo->get<rsx_audio_data>().rsxaudio_obj_ptr = null_ptr;
 
-	for (u32 q_idx = 0; q_idx < SYS_RSXAUDIO_PORT_CNT; q_idx++)
-	{
-		rsxaudio_obj->event_queue[q_idx].reset();
-	}
+		for (u32 q_idx = 0; q_idx < SYS_RSXAUDIO_PORT_CNT; q_idx++)
+		{
+			rsxaudio_obj->event_queue[q_idx].reset();
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code sys_rsxaudio_prepare_process(u32 handle)
@@ -394,24 +403,24 @@ error_code sys_rsxaudio_prepare_process(u32 handle)
 		return CELL_ESRCH;
 	}
 
-	std::lock_guard<shared_mutex> lock(rsxaudio_obj->mutex);
-
-	if (!rsxaudio_obj->init)
+	return rsxaudio_data_call([&]() -> error_code
 	{
-		return CELL_ESRCH;
-	}
+		if (!rsxaudio_obj->init)
+		{
+			return CELL_ESRCH;
+		}
 
-	auto& rsxaudio_thread = g_fxo->get<rsx_audio_data>();
-	std::lock_guard ra_obj_lock{rsxaudio_thread.rsxaudio_obj_upd_m};
+		auto& rsxaudio_thread = g_fxo->get<rsx_audio_data>();
 
-	if (rsxaudio_thread.rsxaudio_obj_ptr)
-	{
-		return -1;
-	}
+		if (rsxaudio_thread.rsxaudio_obj_ptr)
+		{
+			return -1;
+		}
 
-	rsxaudio_thread.rsxaudio_obj_ptr = rsxaudio_obj;
+		rsxaudio_thread.rsxaudio_obj_ptr = rsxaudio_obj;
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code sys_rsxaudio_start_process(u32 handle)
@@ -425,43 +434,44 @@ error_code sys_rsxaudio_start_process(u32 handle)
 		return CELL_ESRCH;
 	}
 
-	std::lock_guard<shared_mutex> lock(rsxaudio_obj->mutex);
-
-	if (!rsxaudio_obj->init)
+	return rsxaudio_data_call([&]() -> error_code
 	{
-		return CELL_ESRCH;
-	}
-
-	rsxaudio_shmem* sh_page = rsxaudio_obj->get_rw_shared_page();
-
-	for (auto& rb : sh_page->ctrl.ringbuf)
-	{
-		if (rb.active) rsxaudio_ringbuf_reader::clean_buf(rb);
-	}
-
-	for (auto& uf : sh_page->ctrl.channel_uf)
-	{
-		uf.uf_event_cnt = 0;
-		uf.unk1         = 0;
-	}
-
-	auto& rsxaudio_thread = g_fxo->get<rsx_audio_data>();
-	rsxaudio_thread.update_hw_param([&](auto& param)
-	{
-		if (sh_page->ctrl.ringbuf[static_cast<u32>(RsxaudioPort::SERIAL)].active)  param.serial.dma_en   = true;
-		if (sh_page->ctrl.ringbuf[static_cast<u32>(RsxaudioPort::SPDIF_0)].active) param.spdif[0].dma_en = true;
-		if (sh_page->ctrl.ringbuf[static_cast<u32>(RsxaudioPort::SPDIF_1)].active) param.spdif[1].dma_en = true;
-	});
-
-	for (u32 q_idx = 0; q_idx < SYS_RSXAUDIO_PORT_CNT; q_idx++)
-	{
-		if (const auto& queue = rsxaudio_obj->event_queue[q_idx]; queue && sh_page->ctrl.ringbuf[q_idx].active)
+		if (!rsxaudio_obj->init)
 		{
-			queue->send(rsxaudio_obj->event_port_name[q_idx], q_idx, 0, 0);
+			return CELL_ESRCH;
 		}
-	}
 
-	return CELL_OK;
+		rsxaudio_shmem* sh_page = rsxaudio_obj->get_rw_shared_page();
+
+		for (auto& rb : sh_page->ctrl.ringbuf)
+		{
+			if (rb.active) rsxaudio_ringbuf_reader::clean_buf(rb);
+		}
+
+		for (auto& uf : sh_page->ctrl.channel_uf)
+		{
+			uf.uf_event_cnt = 0;
+			uf.unk1         = 0;
+		}
+
+		auto& rsxaudio_thread = g_fxo->get<rsx_audio_data>();
+		rsxaudio_thread.update_hw_param([&](auto& param)
+		{
+			if (sh_page->ctrl.ringbuf[static_cast<u32>(RsxaudioPort::SERIAL)].active)  param.serial.dma_en   = true;
+			if (sh_page->ctrl.ringbuf[static_cast<u32>(RsxaudioPort::SPDIF_0)].active) param.spdif[0].dma_en = true;
+			if (sh_page->ctrl.ringbuf[static_cast<u32>(RsxaudioPort::SPDIF_1)].active) param.spdif[1].dma_en = true;
+		});
+
+		for (u32 q_idx = 0; q_idx < SYS_RSXAUDIO_PORT_CNT; q_idx++)
+		{
+			if (const auto& queue = rsxaudio_obj->event_queue[q_idx]; queue && sh_page->ctrl.ringbuf[q_idx].active)
+			{
+				queue->send(rsxaudio_obj->event_port_name[q_idx], q_idx, 0, 0);
+			}
+		}
+
+		return CELL_OK;
+	});
 }
 
 error_code sys_rsxaudio_stop_process(u32 handle)
@@ -475,41 +485,42 @@ error_code sys_rsxaudio_stop_process(u32 handle)
 		return CELL_ESRCH;
 	}
 
-	std::lock_guard<shared_mutex> lock(rsxaudio_obj->mutex);
-
-	if (!rsxaudio_obj->init)
+	return rsxaudio_data_call([&]() -> error_code
 	{
-		return CELL_ESRCH;
-	}
-
-	auto& rsxaudio_thread = g_fxo->get<rsx_audio_data>();
-
-	rsxaudio_thread.update_hw_param([&](auto& param)
-	{
-		param.serial.dma_en  = false;
-		param.serial.muted   = true;
-		param.serial.en      = false;
-
-		for (auto& spdif : param.spdif)
+		if (!rsxaudio_obj->init)
 		{
-			spdif.dma_en = false;
-			if (!spdif.use_serial_buf)
-			{
-				spdif.en = false;
-			}
+			return CELL_ESRCH;
 		}
 
-		param.spdif[1].muted  = true;
+		auto& rsxaudio_thread = g_fxo->get<rsx_audio_data>();
+
+		rsxaudio_thread.update_hw_param([&](auto& param)
+		{
+			param.serial.dma_en  = false;
+			param.serial.muted   = true;
+			param.serial.en      = false;
+
+			for (auto& spdif : param.spdif)
+			{
+				spdif.dma_en = false;
+				if (!spdif.use_serial_buf)
+				{
+					spdif.en = false;
+				}
+			}
+
+			param.spdif[1].muted  = true;
+		});
+
+		rsxaudio_shmem* sh_page = rsxaudio_obj->get_rw_shared_page();
+
+		for (auto& rb : sh_page->ctrl.ringbuf)
+		{
+			if (rb.active) rsxaudio_ringbuf_reader::clean_buf(rb);
+		}
+
+		return CELL_OK;
 	});
-
-	rsxaudio_shmem* sh_page = rsxaudio_obj->get_rw_shared_page();
-
-	for (auto& rb : sh_page->ctrl.ringbuf)
-	{
-		if (rb.active) rsxaudio_ringbuf_reader::clean_buf(rb);
-	}
-
-	return CELL_OK;
 }
 
 error_code sys_rsxaudio_get_dma_param(u32 handle, u32 flag, vm::ptr<u64> out)
@@ -523,28 +534,29 @@ error_code sys_rsxaudio_get_dma_param(u32 handle, u32 flag, vm::ptr<u64> out)
 		return CELL_ESRCH;
 	}
 
-	std::lock_guard lock(rsxaudio_obj->mutex);
-
-	if (!rsxaudio_obj->init)
+	return rsxaudio_data_call([&]() -> error_code
 	{
-		return CELL_ESRCH;
-	}
+		if (!rsxaudio_obj->init)
+		{
+			return CELL_ESRCH;
+		}
 
-	if (!vm::check_addr(out.addr(), vm::page_writable, sizeof(u64)))
-	{
-		return CELL_EFAULT;
-	}
+		if (!vm::check_addr(out.addr(), vm::page_writable, sizeof(u64)))
+		{
+			return CELL_EFAULT;
+		}
 
-	if (flag == rsxaudio_dma_flag::IO_ID)
-	{
-		*out = rsxaudio_obj->dma_io_id;
-	}
-	else if (flag == rsxaudio_dma_flag::IO_BASE)
-	{
-		*out = rsxaudio_obj->dma_io_base;
-	}
+		if (flag == rsxaudio_dma_flag::IO_ID)
+		{
+			*out = rsxaudio_obj->dma_io_id;
+		}
+		else if (flag == rsxaudio_dma_flag::IO_BASE)
+		{
+			*out = rsxaudio_obj->dma_io_base;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 rsxaudio_data_container::rsxaudio_data_container(const rsxaudio_hw_param_t& hw_param, const buf_t& buf, bool serial_rdy, bool spdif_0_rdy, bool spdif_1_rdy) : hwp(hw_param), out_buf(buf)
@@ -779,6 +791,7 @@ bool rsxaudio_data_container::data_was_used()
 rsxaudio_data_thread::rsxaudio_data_thread()
 {
 	retro_seqlock_init(&hw_param_seq);
+	owner_calls_init(&calls);
 }
 
 // The HLE thread's, after a change
@@ -804,11 +817,18 @@ void rsxaudio_data_thread::operator()()
 {
 	thread_ctrl::scoped_priority high_prio(+1);
 
+	s_on_rsxaudio_data = true;
+
 	while (thread_ctrl::state() != thread_state::aborting)
 	{
 		static const std::function<void()> tmr_callback = [this]() { extract_audio_data(); };
 
-		switch (timer.wait(tmr_callback))
+		// The game's calls first, then the periods; a call made meanwhile
+		// wakes the wait
+		const retro_waitaddr_t calls_word = {owner_calls_wake_word(&calls), static_cast<u32>(retro_atomic_load_acquire_int(owner_calls_wake_word(&calls)))};
+		owner_calls_run(&calls);
+
+		switch (timer.wait(tmr_callback, &calls_word))
 		{
 		case rsxaudio_periodic_tmr::wait_result::SUCCESS:
 		case rsxaudio_periodic_tmr::wait_result::TIMEOUT:
@@ -824,11 +844,15 @@ void rsxaudio_data_thread::operator()()
 		}
 		}
 	}
+
+	// After this, a call runs where it is made
+	owner_calls_close(&calls);
 }
 
 rsxaudio_data_thread& rsxaudio_data_thread::operator=(thread_state /* state */)
 {
 	timer.cancel_wait();
+	owner_calls_wake(&calls);
 	return *this;
 }
 
@@ -845,19 +869,14 @@ void rsxaudio_data_thread::extract_audio_data()
 {
 	// Accessing timer state is safe here, since we're in timer::wait()
 
-	const auto rsxaudio_obj = [&]()
-	{
-		std::lock_guard ra_obj_lock{rsxaudio_obj_upd_m};
-		return rsxaudio_obj_ptr;
-	}();
+	// This thread's own, as the object's state is: no lock
+	const auto rsxaudio_obj = rsxaudio_obj_ptr;
 
 	if (Emu.IsPausedOrReady() || !rsxaudio_obj)
 	{
 		advance_all_timers();
 		return;
 	}
-
-	std::lock_guard<shared_mutex> rsxaudio_lock(rsxaudio_obj->mutex);
 
 	if (!rsxaudio_obj->init)
 	{
@@ -2136,7 +2155,7 @@ void rsxaudio_periodic_tmr::take_up_requests()
 	}
 }
 
-rsxaudio_periodic_tmr::wait_result rsxaudio_periodic_tmr::wait(const std::function<void()> &callback)
+rsxaudio_periodic_tmr::wait_result rsxaudio_periodic_tmr::wait(const std::function<void()> &callback, const retro_waitaddr_t* also)
 {
 	if (!callback)
 	{
@@ -2150,16 +2169,23 @@ rsxaudio_periodic_tmr::wait_result rsxaudio_periodic_tmr::wait(const std::functi
 	if (const u64 next = get_rel_next_time(); next != 0)
 	{
 		const retro_atomic_int_t* clock_word = static_cast<const retro_atomic_int_t*>(libretro_guest_clock_word());
-		const retro_waitaddr_t list[2] =
+		retro_waitaddr_t list[3] =
 		{
 			{&wake_word, static_cast<u32>(wake)},
 			{clock_word, static_cast<u32>(retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(clock_word)))},
+			{},
 		};
+		unsigned count = 2;
+
+		// And the caller's own word (the data thread's calls)
+		if (also)
+			list[count++] = *also;
 
 		// No period at all (no timer active): until the timers change
-		retro_waitaddr_wait(list, 2, next == umax ? -1 : static_cast<s64>(libretro_guest_wait_as_host(next)));
+		retro_waitaddr_wait(list, count, next == umax ? -1 : static_cast<s64>(libretro_guest_wait_as_host(next)));
 
-		if (retro_atomic_load_acquire_int(&wake_word) != wake)
+		if (retro_atomic_load_acquire_int(&wake_word) != wake
+			|| (also && static_cast<u32>(retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(static_cast<const retro_atomic_int_t*>(also->addr)))) != also->old))
 		{
 			return wait_result::TIMER_CANCELED;
 		}

@@ -11,6 +11,8 @@
 #include "Emu/Audio/AudioBackend.h"
 
 #include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
+#include "Emu/CPU/owner_calls.h"
 #include <rthreads/retro_seqlock.h>
 
 enum : u32
@@ -146,7 +148,8 @@ struct lv2_rsxaudio final : lv2_obj
 	static constexpr u64 dma_io_id = 1;
 	static constexpr u32 dma_io_base = 0x30000000;
 
-	shared_mutex mutex{};
+	// The data thread's, as everything below is: the game's calls run their
+	// part there (rsxaudio_data_call), so nothing is locked
 	bool init = false;
 
 	vm::addr_t shmem{};
@@ -196,7 +199,8 @@ public:
 	// Wait until timer fires and calls callback. The data thread's alone:
 	// the virtual timers are its, and what is below is for it and for the
 	// callback it runs.
-	wait_result wait(const std::function<void()> &callback);
+	// @also: a word of the caller's own to wake on as well (cancelled then)
+	wait_result wait(const std::function<void()> &callback, const retro_waitaddr_t* also = nullptr);
 
 	// Cancel wait() call. Any thread.
 	void cancel_wait();
@@ -618,8 +622,9 @@ public:
 	// Prevent creation of multiple rsxaudio contexts
 	retro_atomic_int_t rsxaudio_ctx_allocated{};
 
-	shared_mutex rsxaudio_obj_upd_m{};
+	// The object being processed, and the game's calls on it: this thread's
 	shared_ptr<lv2_rsxaudio> rsxaudio_obj_ptr{};
+	owner_calls_t calls{};
 
 	void operator()();
 	rsxaudio_data_thread& operator=(thread_state state);

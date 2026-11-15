@@ -22,6 +22,8 @@
 //   time, and reach the data thread through a sequence count: three
 //   threads changing them at once lose no change, and the data thread
 //   never sees half of one;
+// - the game's calls on the rsxaudio object run on the data thread, which
+//   takes them up at once, even while it waits with no timer running.
 // - sys_uart's two rings (retro_spsc) against the ring they were, the same
 //   bytes and counts through 200000 writes and reads;
 // - with RSXAUDIO_BENCH=1 it is timed: a callback's worth in
@@ -452,6 +454,44 @@ int main()
 		CHECK(torn == 0);
 		std::printf("test_rsxaudio_ring: the hardware's parameters: %d changes from each of three threads, the count at %u (%u expected), %u torn in %u reads\n",
 			n, last.spdif[0].cs_data[0], static_cast<u8>(2 * n), torn.load(), reads.load());
+	}
+
+	// The game's calls on the object: run by the data thread, at once
+	{
+		g_fxo->init<rsx_audio_data>();
+		auto& data = g_fxo->get<rsx_audio_data>();
+		// Let it get to its wait, no timer running
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		u32 on_data = 0, quick = 0;
+		double worst_ms = 0;
+		for (int i = 0; i < 20; i++)
+		{
+			std::atomic<bool> done{false};
+			std::thread::id where{};
+			const auto t0 = std::chrono::steady_clock::now();
+			std::thread caller([&]
+			{
+				owner_calls_on(&data.calls, false, [&]() { where = std::this_thread::get_id(); });
+				done = true;
+			});
+			while (!done && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(2))
+				std::this_thread::yield();
+			const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+			worst_ms = std::max(worst_ms, ms);
+			if (!done)
+			{
+				// Never taken up: let the thread go so the test ends
+				data = thread_state::aborting;
+			}
+			caller.join();
+			quick += done && ms < 100.0;
+			on_data += done && where != std::thread::id{} && where != caller.get_id() && where != std::this_thread::get_id();
+			if (!done)
+				break;
+		}
+		CHECK(quick == 20);
+		CHECK(on_data == 20);
+		std::printf("test_rsxaudio_ring: calls on the data thread: %u of 20 taken up at once (worst %.2f ms), %u run there\n", quick, worst_ms, on_data);
 	}
 
 	std::printf("test_rsxaudio_ring: %s\n", failures ? "FAIL" : "ok");
