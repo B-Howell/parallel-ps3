@@ -14,6 +14,7 @@
 #include "Emu/Cell/timers.hpp"
 
 #include <rthreads/retro_waitaddr.h>
+#include "Emu/CPU/owner_calls.h"
 
 #include <optional>
 #include <type_traits>
@@ -309,45 +310,15 @@ private:
 	std::vector<UsbTransfer*> fake_transfers;
 
 public:
-	// Woken: a fake transfer or a request handed over, or the thread stopping
-	retro_atomic_int_t wake_word{};
-
-	// A call of on_thread's waiting for the thread: on the caller's stack
-	struct request
-	{
-		mpsc_stack_node_t node; // first: the stack's link
-		void (*run)(void*);
-		void* call;
-		retro_atomic_int_t done;
-	};
-
-	mpsc_stack_t requests{};
-
-	// Callers in on_thread now; the top bit set once the thread takes no more
-	// (it runs the last ones it has, then stops). One word, so a caller and
-	// the thread's end cannot miss each other
-	static constexpr int requests_closed = int{1} << 30;
-	retro_atomic_int_t requesting{};
+	// The calls run on the USB thread (Emu/CPU/owner_calls.c); its wake word
+	// is the thread's too: a fake transfer handed over, or the thread stopping
+	owner_calls_t calls{};
 
 	static thread_local bool on_usb_thread;
 
-	// The thread's: what was asked of it, in order
-	void take_requests()
-	{
-		for (mpsc_stack_node_t* node = mpsc_stack_reverse(mpsc_stack_drain(&requests)); node;)
-		{
-			request* const req = reinterpret_cast<request*>(node);
-			node = node->next;
-			req->run(req->call);
-			retro_atomic_store_release_int(&req->done, 1);
-			retro_waitaddr_notify_all(&req->done);
-		}
-	}
-
 	void wake()
 	{
-		retro_atomic_fetch_add_int(&wake_word, 1);
-		retro_waitaddr_notify_all(&wake_word);
+		owner_calls_wake(&calls);
 	}
 
 	usb_handler_thread& operator=(thread_state)
@@ -520,6 +491,7 @@ void usb_handler_thread::perform_scan()
 usb_handler_thread::usb_handler_thread()
 {
 	ensure(usbd_events_init(&usbd_events, 64));
+	owner_calls_init(&calls);
 	fake_transfers.reserve(MAX_SYS_USBD_TRANSFERS);
 
 #if LIBUSB_API_VERSION >= 0x0100010A
@@ -738,21 +710,14 @@ auto usb_handler_thread::on_thread(F&& f) -> decltype(f())
 		return f();
 	}
 
-	if (retro_atomic_fetch_add_int(&requesting, 1) & requests_closed)
-	{
-		// The thread is gone: nothing else runs its part any more
-		retro_atomic_fetch_sub_int(&requesting, 1);
-		wake();
-		return f();
-	}
-
 	struct call_t
 	{
 		F* f;
 		std::conditional_t<std::is_void_v<result_t>, char, std::optional<result_t>> result;
 	} call{&f, {}};
 
-	request req{{}, [](void* p)
+	// Waited for; run here instead once the thread has stopped
+	owner_calls_call(&calls, [](void* p)
 	{
 		call_t* const c = static_cast<call_t*>(p);
 
@@ -764,19 +729,7 @@ auto usb_handler_thread::on_thread(F&& f) -> decltype(f())
 		{
 			c->result.emplace((*c->f)());
 		}
-	}, &call, {}};
-
-	mpsc_stack_push(&requests, &req.node);
-	wake();
-
-	while (!retro_atomic_load_acquire_int(&req.done))
-	{
-		const retro_waitaddr_t until_done{&req.done, 0};
-		retro_waitaddr_wait(&until_done, 1, -1);
-	}
-
-	retro_atomic_fetch_sub_int(&requesting, 1);
-	wake();
+	}, &call);
 
 	if constexpr (!std::is_void_v<result_t>)
 	{
@@ -796,8 +749,8 @@ void usb_handler_thread::operator()()
 	while (thread_ctrl::state() != thread_state::aborting)
 	{
 		// Before what was handed over is taken up: a later hand-over wakes
-		const int wake = retro_atomic_load_acquire_int(&wake_word);
-		take_requests();
+		const int wake = retro_atomic_load_acquire_int(owner_calls_wake_word(&calls));
+		owner_calls_run(&calls);
 
 		for (mpsc_stack_node_t* node = mpsc_stack_reverse(mpsc_stack_drain(&fake_handed)); node;)
 		{
@@ -866,29 +819,15 @@ void usb_handler_thread::operator()()
 		const retro_atomic_int_t* clock_word = static_cast<const retro_atomic_int_t*>(libretro_guest_clock_word());
 		const retro_waitaddr_t list[2] =
 		{
-			{&wake_word, static_cast<u32>(wake)},
+			{owner_calls_wake_word(&calls), static_cast<u32>(wake)},
 			{clock_word, static_cast<u32>(retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(clock_word)))},
 		};
 
 		retro_waitaddr_wait(list, 2, static_cast<s64>(libretro_guest_wait_as_host(handled_devices.empty() ? 500'000 : delay)));
 	}
 
-	// Stopping: no more requests, and those already made are run
-	retro_atomic_fetch_or_int(&requesting, requests_closed);
-
-	for (;;)
-	{
-		const int wake = retro_atomic_load_acquire_int(&wake_word);
-		take_requests();
-
-		if (!(retro_atomic_load_acquire_int(&requesting) & ~requests_closed))
-		{
-			break;
-		}
-
-		const retro_waitaddr_t list{&wake_word, static_cast<u32>(wake)};
-		retro_waitaddr_wait(&list, 1, -1);
-	}
+	// Stopping: no more calls, and those already made are run
+	owner_calls_close(&calls);
 }
 
 void usb_handler_thread::send_message(u32 message, u32 tr_id)

@@ -323,15 +323,12 @@ int main()
 			s_usb_id = std::this_thread::get_id();
 			while (!retro_atomic_load_acquire_int(&s_stop8))
 			{
-				const int wake = retro_atomic_load_acquire_int(&usbh2.wake_word);
-				usbh2.take_requests();
-				const retro_waitaddr_t w{&usbh2.wake_word, static_cast<u32>(wake)};
-				retro_waitaddr_wait(&w, 1, 1000);
+				const int wake = retro_atomic_load_acquire_int(owner_calls_wake_word(&usbh2.calls));
+				owner_calls_run(&usbh2.calls);
+				const retro_waitaddr_t w{owner_calls_wake_word(&usbh2.calls), static_cast<u32>(wake)};
+				retro_waitaddr_wait(&w, 1, -1);
 			}
-			retro_atomic_fetch_or_int(&usbh2.requesting, usb_handler_thread::requests_closed);
-			while (retro_atomic_load_acquire_int(&usbh2.requesting) & ~usb_handler_thread::requests_closed)
-				usbh2.take_requests();
-			usbh2.take_requests();
+			owner_calls_close(&usbh2.calls);
 		});
 
 		while (s_usb_id == std::thread::id{})
