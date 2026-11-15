@@ -16,7 +16,9 @@
 #include "llvm/Support/Format.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/xxhash.h"
+#include "llvm/ADT/ArrayRef.h" // what llvm/Support/xxhash.h brought in
+#include "llvm/ADT/StringRef.h"
+#include <encodings/xxh3.h> // libretro-common's XXH3, in place of LLVM's
 #include "llvm/TableGen/CodeGenHelpers.h"
 #include "llvm/TableGen/Error.h"
 #include "llvm/TableGen/Record.h"
@@ -121,14 +123,14 @@ void RuntimeLibcallEmitter::emitGetRuntimeLibcallEnum(raw_ostream &OS) const {
         "} // End namespace llvm\n";
 }
 
-// StringMap uses xxh3_64bits, truncated to uint32_t.
+// StringMap uses XXH3 (libretro-common's xxh3_64), truncated to uint32_t.
 static uint64_t hash(StringRef Str) {
-  return static_cast<uint32_t>(xxh3_64bits(Str));
+  return static_cast<uint32_t>(xxh3_64(Str.data(), Str.size(), 0));
 }
 
 static void emitHashFunction(raw_ostream &OS) {
   OS << "static inline uint64_t hash(StringRef Str) {\n"
-        "  return static_cast<uint32_t>(xxh3_64bits(Str));\n"
+        "  return static_cast<uint32_t>(xxh3_64(Str.data(), Str.size(), 0));\n"
         "}\n\n";
 }
 

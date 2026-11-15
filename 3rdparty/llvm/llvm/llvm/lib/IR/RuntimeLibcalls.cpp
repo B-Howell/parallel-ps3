@@ -12,7 +12,9 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/SystemLibraries.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/xxhash.h"
+#include "llvm/ADT/ArrayRef.h" // what llvm/Support/xxhash.h brought in
+#include "llvm/ADT/StringRef.h"
+#include <encodings/xxh3.h> // libretro-common's XXH3, in place of LLVM's
 #include "llvm/TargetParser/ARMTargetParser.h"
 
 #define DEBUG_TYPE "runtime-libcalls-info"

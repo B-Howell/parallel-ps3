@@ -25,7 +25,9 @@
 #include <encodings/crc32.h> // libretro-common's CRC-32, in place of LLVM's
 #include "llvm/Support/Path.h"
 #include "llvm/Support/TimeProfiler.h"
-#include "llvm/Support/xxhash.h"
+#include "llvm/ADT/ArrayRef.h" // what llvm/Support/xxhash.h brought in
+#include "llvm/ADT/StringRef.h"
+#include <encodings/xxh3.h> // libretro-common's XXH3, in place of LLVM's
 
 #include <ctime>
 
@@ -348,7 +350,7 @@ Error PDBFileBuilder::commit(StringRef Filename, codeview::GUID *Guid) {
 
     // Compute a hash of all sections of the output file.
     uint64_t Digest =
-        xxh3_64bits({Buffer.getBufferStart(), Buffer.getBufferEnd()});
+        xxh3_64(Buffer.getBufferStart(), Buffer.getBufferEnd() - Buffer.getBufferStart(), 0);
 
     H->Age = 1;
 

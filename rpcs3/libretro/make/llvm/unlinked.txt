@@ -696,3 +696,5 @@ lib/Transforms/Vectorize/Vectorize.cpp
 #removed lib/Support/Atomic.cpp
 # Its CRC-32 and JamCRC too: libretro-common's encoding_crc32 at the callers
 #removed lib/Support/CRC.cpp
+# And its xxhash (XXH64 and XXH3): libretro-common's xxh64 and xxh3_64 at the callers
+#removed lib/Support/xxhash.cpp

@@ -50,6 +50,8 @@
 #include <llvm/Support/DynamicLibrary.h>
 #include <llvm/Support/Hash.h>
 #include <llvm/Support/MD5.h>
+#include <llvm/ADT/StableHashing.h>
+#include <llvm/ADT/StringMap.h>
 
 #include <thread>
 #ifdef _MSC_VER
@@ -393,7 +395,8 @@ static void threads_in_llvm()
 }
 
 // LLVM's hashes on libretro-common's (MD5 in utils/md5.c, XXH64 in
-// encodings/encoding_xxh64.c), against the published test vectors: the
+// encodings/encoding_xxh64.c, XXH3 in encodings/encoding_xxh3.c), against
+// the published test vectors: the
 // MD5 that names a global's GUID (MD5Hash), a running MD5 looked at
 // midway (result()) and carried on, and the KCFI type ID (XXH64's low half)
 static void llvm_hashes()
@@ -416,6 +419,16 @@ static void llvm_hashes()
 
 	CHECK(llvm::getKCFITypeID("", llvm::KCFIHashAlgorithm::xxHash64) == 0x51d8e999u);
 	CHECK(llvm::getKCFITypeID("abc", llvm::KCFIHashAlgorithm::xxHash64) == 0xad770999u);
+
+	// XXH3, libretro-common's xxh3_64: the hash every StringMap goes by, and
+	// the stable names' (canonical vectors for "" and "abc")
+	CHECK(llvm::StringMapImpl::hash("") == 0x38d394c2u);
+	CHECK(llvm::StringMapImpl::hash("abc") == 0x892f3950u);
+	CHECK(llvm::stable_hash_name("abc") == 0x78af5f94892f3950ull);
+	llvm::StringMap<int> map;
+	for (int i = 0; i < 1000; i++)
+		map[std::to_string(i)] = i;
+	CHECK(map.size() == 1000 && map.lookup("123") == 123 && map.lookup("999") == 999 && !map.count("1000"));
 }
 
 int main()

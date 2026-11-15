@@ -58,7 +58,7 @@ Error CodeGenDataReader::mergeFromObjectFile(
     if (Name != CGOutlineName && Name != CGMergeName)
       return;
     if (CombinedHash)
-      *CombinedHash = stable_hash_combine(*CombinedHash, xxh3_64bits(Contents));
+      *CombinedHash = stable_hash_combine(*CombinedHash, xxh3_64(Contents.data(), Contents.size(), 0));
     auto *Data = reinterpret_cast<const unsigned char *>(Contents.data());
     auto *EndData = Data + Contents.size();
     // In case dealing with an executable that has concatenated cgdata,

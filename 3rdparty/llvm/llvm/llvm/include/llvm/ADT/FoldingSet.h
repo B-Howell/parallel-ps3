@@ -22,7 +22,9 @@
 #include "llvm/ADT/iterator.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Compiler.h"
-#include "llvm/Support/xxhash.h"
+#include "llvm/ADT/ArrayRef.h" // what llvm/Support/xxhash.h brought in
+#include "llvm/ADT/StringRef.h"
+#include <encodings/xxh3.h> // libretro-common's XXH3, in place of LLVM's
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -186,8 +188,7 @@ public:
   // Compute a deterministic hash value across processes that is suitable for
   // on-disk serialization.
   unsigned computeStableHash() const {
-    return static_cast<unsigned>(xxh3_64bits(ArrayRef(
-        reinterpret_cast<const uint8_t *>(Data), sizeof(unsigned) * Size)));
+    return static_cast<unsigned>(xxh3_64(Data, sizeof(unsigned) * Size, 0));
   }
 
   LLVM_ABI bool operator==(FoldingSetNodeIDRef) const;

@@ -490,8 +490,10 @@ $(LLVM_HOST_OBJ)/%.c.o: $(LLVM_SRC)/%.c
 	$(Q)$(HOST_CC) -MMD -MP -c -o $@ $< -O2 -DNDEBUG -w $(call llvm_defs,$(HOST_OS)) $(LLVM_CPPFLAGS)
 
 # The parts of libretro-common LLVM's Support calls in place of its own
-# (MD5, XXH64), built for the host's TableGen tools as well
-LLVM_HOST_LRC_SRCS := $(addprefix $(CORE_DIR)/rpcs3/libretro/libretro-common/,utils/md5.c encodings/encoding_xxh64.c)
+# (MD5, XXH64, XXH3 with the CPU's features), built for the host's
+# TableGen tools as well
+LLVM_HOST_LRC_SRCS := $(addprefix $(CORE_DIR)/rpcs3/libretro/libretro-common/,utils/md5.c encodings/encoding_xxh64.c \
+   encodings/encoding_xxh3.c features/features_cpu.c compat/compat_strl.c)
 LLVM_HOST_LRC_OBJS := $(patsubst $(CORE_DIR)/rpcs3/libretro/libretro-common/%.c,$(LLVM_HOST_OBJ)/lrc/%.c.o,$(LLVM_HOST_LRC_SRCS))
 
 $(LLVM_HOST_OBJ)/lrc/%.c.o: $(CORE_DIR)/rpcs3/libretro/libretro-common/%.c

@@ -9,7 +9,7 @@
 // This file provides types and functions for computing and combining stable
 // hashes. Stable hashes can be useful for hashing across different modules,
 // processes, machines, or compiler runs for a specific compiler version. It
-// currently employs the xxh3_64bits hashing algorithm. Be aware that this
+// currently employs XXH3 (libretro-common's xxh3_64). Be aware that this
 // implementation may be adjusted or updated as improvements to the compiler are
 // made.
 //
@@ -19,7 +19,9 @@
 #define LLVM_ADT_STABLEHASHING_H
 
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/xxhash.h"
+#include "llvm/ADT/ArrayRef.h" // what llvm/Support/xxhash.h brought in
+#include "llvm/ADT/StringRef.h"
+#include <encodings/xxh3.h> // libretro-common's XXH3, in place of LLVM's
 
 namespace llvm {
 
@@ -30,7 +32,7 @@ using stable_hash = uint64_t;
 inline stable_hash stable_hash_combine(ArrayRef<stable_hash> Buffer) {
   const uint8_t *Ptr = reinterpret_cast<const uint8_t *>(Buffer.data());
   size_t Size = Buffer.size() * sizeof(stable_hash);
-  return xxh3_64bits(ArrayRef<uint8_t>(Ptr, Size));
+  return xxh3_64(Ptr, Size, 0);
 }
 
 inline stable_hash stable_hash_combine(stable_hash A, stable_hash B) {
@@ -69,7 +71,8 @@ inline StringRef get_stable_name(StringRef Name) {
 // computes a hash of this stable name. For instance, `foo.llvm.1234` would have
 // the same hash as `foo.llvm.5678.
 inline stable_hash stable_hash_name(StringRef Name) {
-  return xxh3_64bits(get_stable_name(Name));
+  const StringRef Stable = get_stable_name(Name);
+  return xxh3_64(Stable.data(), Stable.size(), 0);
 }
 
 } // namespace llvm

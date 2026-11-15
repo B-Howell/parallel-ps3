@@ -28,7 +28,9 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/TimeProfiler.h"
-#include "llvm/Support/xxhash.h"
+#include "llvm/ADT/ArrayRef.h" // what llvm/Support/xxhash.h brought in
+#include "llvm/ADT/StringRef.h"
+#include <encodings/xxh3.h> // libretro-common's XXH3, in place of LLVM's
 #include <algorithm>
 #include <vector>
 
@@ -78,7 +80,7 @@ struct llvm::pdb::SymbolDenseMapInfo {
     return Tombstone;
   }
   static unsigned getHashValue(const CVSymbol &Val) {
-    return xxh3_64bits(Val.RecordData);
+    return xxh3_64(Val.RecordData.data(), Val.RecordData.size(), 0);
   }
   static bool isEqual(const CVSymbol &LHS, const CVSymbol &RHS) {
     return LHS.RecordData == RHS.RecordData;

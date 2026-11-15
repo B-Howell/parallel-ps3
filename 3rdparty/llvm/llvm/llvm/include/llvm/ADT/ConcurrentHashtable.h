@@ -18,7 +18,9 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/WithColor.h"
-#include "llvm/Support/xxhash.h"
+#include "llvm/ADT/ArrayRef.h" // what llvm/Support/xxhash.h brought in
+#include "llvm/ADT/StringRef.h"
+#include <encodings/xxh3.h> // libretro-common's XXH3, in place of LLVM's
 #include <atomic>
 #include <cstddef>
 #include <iomanip>
@@ -76,7 +78,7 @@ class ConcurrentHashTableInfoByPtr {
 public:
   /// \returns Hash value for the specified \p Key.
   static inline uint64_t getHashValue(const KeyTy &Key) {
-    return xxh3_64bits(Key);
+    return xxh3_64(Key.data(), Key.size(), 0);
   }
 
   /// \returns true if both \p LHS and \p RHS are equal.

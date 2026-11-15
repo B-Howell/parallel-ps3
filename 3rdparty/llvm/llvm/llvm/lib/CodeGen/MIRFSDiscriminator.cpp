@@ -25,7 +25,9 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/xxhash.h"
+#include "llvm/ADT/ArrayRef.h" // what llvm/Support/xxhash.h brought in
+#include "llvm/ADT/StringRef.h"
+#include <encodings/xxh3.h> // libretro-common's XXH3, in place of LLVM's
 #include "llvm/Transforms/Utils/SampleProfileLoaderBaseUtil.h"
 
 using namespace llvm;
@@ -80,8 +82,11 @@ static uint64_t getCallStackHash(const DILocation *DIL) {
   };
   uint64_t Ret = 0;
   for (DIL = DIL->getInlinedAt(); DIL; DIL = DIL->getInlinedAt()) {
-    Ret = hashCombine(Ret, xxh3_64bits(ArrayRef<uint8_t>(DIL->getLine())));
-    Ret = hashCombine(Ret, xxh3_64bits(DIL->getSubprogramLinkageName()));
+    // The line's low octet, as the ArrayRef of one uint8_t it was made from
+    const uint8_t Line = static_cast<uint8_t>(DIL->getLine());
+    const StringRef Linkage = DIL->getSubprogramLinkageName();
+    Ret = hashCombine(Ret, xxh3_64(&Line, 1, 0));
+    Ret = hashCombine(Ret, xxh3_64(Linkage.data(), Linkage.size(), 0));
   }
   return Ret;
 }

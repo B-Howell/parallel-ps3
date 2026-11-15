@@ -39,7 +39,9 @@
 #include "llvm/Support/Regex.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/xxhash.h"
+#include "llvm/ADT/ArrayRef.h" // what llvm/Support/xxhash.h brought in
+#include "llvm/ADT/StringRef.h"
+#include <encodings/xxh3.h> // libretro-common's XXH3, in place of LLVM's
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -753,27 +755,27 @@ PrintIRInstrumentation::~PrintIRInstrumentation() {
 static void writeIRFileDisplayName(raw_ostream &ResultStream, Any IR) {
   const Module *M = unwrapModule(IR, /*Force=*/true);
   assert(M && "should have unwrapped module");
-  uint64_t NameHash = xxh3_64bits(M->getName());
+  uint64_t NameHash = xxh3_64(M->getName().data(), M->getName().size(), 0);
   unsigned MaxHashWidth = sizeof(uint64_t) * 2;
   write_hex(ResultStream, NameHash, HexPrintStyle::Lower, MaxHashWidth);
   if (unwrapIR<Module>(IR)) {
     ResultStream << "-module";
   } else if (const auto *F = unwrapIR<Function>(IR)) {
     ResultStream << "-function-";
-    auto FunctionNameHash = xxh3_64bits(F->getName());
+    auto FunctionNameHash = xxh3_64(F->getName().data(), F->getName().size(), 0);
     write_hex(ResultStream, FunctionNameHash, HexPrintStyle::Lower,
               MaxHashWidth);
   } else if (const auto *C = unwrapIR<LazyCallGraph::SCC>(IR)) {
     ResultStream << "-scc-";
-    auto SCCNameHash = xxh3_64bits(C->getName());
+    auto SCCNameHash = xxh3_64(C->getName().data(), C->getName().size(), 0);
     write_hex(ResultStream, SCCNameHash, HexPrintStyle::Lower, MaxHashWidth);
   } else if (const auto *L = unwrapIR<Loop>(IR)) {
     ResultStream << "-loop-";
-    auto LoopNameHash = xxh3_64bits(L->getName());
+    auto LoopNameHash = xxh3_64(L->getName().data(), L->getName().size(), 0);
     write_hex(ResultStream, LoopNameHash, HexPrintStyle::Lower, MaxHashWidth);
   } else if (const auto *MF = unwrapIR<MachineFunction>(IR)) {
     ResultStream << "-machine-function-";
-    auto MachineFunctionNameHash = xxh3_64bits(MF->getName());
+    auto MachineFunctionNameHash = xxh3_64(MF->getName().data(), MF->getName().size(), 0);
     write_hex(ResultStream, MachineFunctionNameHash, HexPrintStyle::Lower,
               MaxHashWidth);
   } else {

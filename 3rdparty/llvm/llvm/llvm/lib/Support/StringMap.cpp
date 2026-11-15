@@ -13,7 +13,9 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/ReverseIteration.h"
-#include "llvm/Support/xxhash.h"
+#include "llvm/ADT/ArrayRef.h" // what llvm/Support/xxhash.h brought in
+#include "llvm/ADT/StringRef.h"
+#include <encodings/xxh3.h> // libretro-common's XXH3, in place of LLVM's
 
 using namespace llvm;
 
@@ -43,7 +45,9 @@ static inline unsigned *getHashTable(StringMapEntryBase **TheTable,
   return reinterpret_cast<unsigned *>(TheTable + NumBuckets + 1);
 }
 
-uint32_t StringMapImpl::hash(StringRef Key) { return xxh3_64bits(Key); }
+uint32_t StringMapImpl::hash(StringRef Key) {
+  return xxh3_64(Key.data(), Key.size(), 0);
+}
 
 StringMapImpl::StringMapImpl(unsigned InitSize, unsigned itemSize)
     : ItemSize(itemSize) {
