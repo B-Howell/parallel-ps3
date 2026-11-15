@@ -1130,9 +1130,15 @@ namespace vk
 		vk::buffer* upload_buffer = nullptr;
 		usz offset_in_upload_buffer = 0;
 
-		std::vector<VkBufferImageCopy> copy_regions;
-		std::vector<VkBufferCopy> buffer_copies;
-		std::vector<std::pair<VkBuffer, u32>> upload_commands;
+		// The lists of copies are the thread's, kept from one upload to the
+		// next: emptied, never given back, so a texture upload allocates
+		// nothing once they have grown to what uploads need
+		thread_local std::vector<VkBufferImageCopy> copy_regions;
+		thread_local std::vector<VkBufferCopy> buffer_copies;
+		thread_local std::vector<std::pair<VkBuffer, u32>> upload_commands;
+		copy_regions.clear();
+		buffer_copies.clear();
+		upload_commands.clear();
 		copy_regions.reserve(subresource_layout.size());
 
 		auto& cmd2 = prepare_for_transfer(cmd, dst_image, image_setup_flags);
