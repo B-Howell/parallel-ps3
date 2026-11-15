@@ -186,8 +186,7 @@ u64 lv2_timer::check(u64 _now) noexcept
 			{
 				lv2_obj::notify_all_t notify;
 
-				std::lock_guard lock(mutex);
-				return check_unlocked(_now);
+				return turn_call(&turns, [&] { return check_unlocked(_now); });
 			}
 
 			return (next - _now);
@@ -350,7 +349,7 @@ error_code sys_timer_destroy(ppu_thread& ppu, u32 timer_id)
 
 	auto timer = idm::withdraw<lv2_obj, lv2_timer>(timer_id, [&](lv2_timer& timer) -> CellError
 	{
-		if (reader_lock lock(timer.mutex); lv2_obj::check(timer.port))
+		if (turn_call(&timer.turns, [&] { return lv2_obj::check(timer.port); }))
 		{
 			return CELL_EISCONN;
 		}
@@ -386,10 +385,11 @@ error_code sys_timer_get_information(ppu_thread& ppu, u32 timer_id, vm::ptr<sys_
 	// Found with no lock over the IDs (idm::check_entered)
 	const auto timer = idm::check_entered<lv2_obj, lv2_timer>(timer_id, [&](lv2_timer& timer)
 	{
-		std::lock_guard lock(timer.mutex);
-
-		timer.check_unlocked(now);
-		timer.get_information(_info);
+		turn_call(&timer.turns, [&]
+		{
+			timer.check_unlocked(now);
+			timer.get_information(_info);
+		});
 	});
 
 	if (!timer)
@@ -418,47 +418,48 @@ error_code _sys_timer_start(ppu_thread& ppu, u32 timer_id, u64 base_time, u64 pe
 
 	const auto timer = idm::check_entered<lv2_obj, lv2_timer>(timer_id, [&](lv2_timer& timer) -> CellError
 	{
-		std::lock_guard lock(timer.mutex);
-
-		// LV2 Disassembly: Simple nullptr check (assignment test, do not use lv2_obj::check here)
-		if (!timer.port)
+		return turn_call(&timer.turns, [&]() -> CellError
 		{
-			return CELL_ENOTCONN;
-		}
-
-		timer.check_unlocked(start_time);
-		if (static_cast<u32>(retro_atomic_load_acquire_int(&timer.state)) != SYS_TIMER_STATE_STOP)
-		{
-			return CELL_EBUSY;
-		}
-
-		if (!period && start_time >= base_time)
-		{
-			// Invalid oneshot
-			return CELL_ETIMEDOUT;
-		}
-
-		const u64 expire = period == 0 ? base_time : // oneshot
-			base_time == 0 ? utils::add_saturate(start_time, period) : // periodic timer with no base (using start time as base)
-			start_time < utils::add_saturate(base_time, period) ? utils::add_saturate(base_time, period) : // periodic with base time over start time
-			[&]() -> u64 // periodic timer base before start time (align to be at least a period over start time)
+			// LV2 Disassembly: Simple nullptr check (assignment test, do not use lv2_obj::check here)
+			if (!timer.port)
 			{
-				// Optimized from a loop in LV2:
-				// do
-				// {
-				// 	  base_time += period;
-				// }
-				// while (base_time < start_time);
+				return CELL_ENOTCONN;
+			}
 
-				const u64 start_time_with_base_time_reminder = utils::add_saturate(start_time - start_time % period, base_time % period);
+			timer.check_unlocked(start_time);
+			if (static_cast<u32>(retro_atomic_load_acquire_int(&timer.state)) != SYS_TIMER_STATE_STOP)
+			{
+				return CELL_EBUSY;
+			}
 
-				return utils::add_saturate(start_time_with_base_time_reminder, start_time_with_base_time_reminder < start_time ? period : 0);
-			}();
+			if (!period && start_time >= base_time)
+			{
+				// Invalid oneshot
+				return CELL_ETIMEDOUT;
+			}
 
-		retro_atomic_store_release_64(&timer.expire, static_cast<s64>(expire));
-		retro_atomic_store_release_64(&timer.period, static_cast<s64>(period));
-		retro_atomic_store_release_int(&timer.state, SYS_TIMER_STATE_RUN);
-		return {};
+			const u64 expire = period == 0 ? base_time : // oneshot
+				base_time == 0 ? utils::add_saturate(start_time, period) : // periodic timer with no base (using start time as base)
+				start_time < utils::add_saturate(base_time, period) ? utils::add_saturate(base_time, period) : // periodic with base time over start time
+				[&]() -> u64 // periodic timer base before start time (align to be at least a period over start time)
+				{
+					// Optimized from a loop in LV2:
+					// do
+					// {
+					// 	  base_time += period;
+					// }
+					// while (base_time < start_time);
+
+					const u64 start_time_with_base_time_reminder = utils::add_saturate(start_time - start_time % period, base_time % period);
+
+					return utils::add_saturate(start_time_with_base_time_reminder, start_time_with_base_time_reminder < start_time ? period : 0);
+				}();
+
+			retro_atomic_store_release_64(&timer.expire, static_cast<s64>(expire));
+			retro_atomic_store_release_64(&timer.period, static_cast<s64>(period));
+			retro_atomic_store_release_int(&timer.state, SYS_TIMER_STATE_RUN);
+			return {};
+		});
 	});
 
 	if (!timer)
@@ -489,9 +490,11 @@ error_code sys_timer_stop(ppu_thread& ppu, u32 timer_id)
 
 	const auto timer = idm::check_entered<lv2_obj, lv2_timer>(timer_id, [now = get_guest_system_time(), notify = lv2_obj::notify_all_t()](lv2_timer& timer)
 	{
-		std::lock_guard lock(timer.mutex);
-		timer.check_unlocked(now);
-		retro_atomic_store_release_int(&timer.state, SYS_TIMER_STATE_STOP);
+		turn_call(&timer.turns, [&]
+		{
+			timer.check_unlocked(now);
+			retro_atomic_store_release_int(&timer.state, SYS_TIMER_STATE_STOP);
+		});
 	});
 
 	if (!timer)
@@ -517,19 +520,20 @@ error_code sys_timer_connect_event_queue(ppu_thread& ppu, u32 timer_id, u32 queu
 			return CELL_ESRCH;
 		}
 
-		std::lock_guard lock(timer.mutex);
-
-		if (lv2_obj::check(timer.port))
+		return turn_call(&timer.turns, [&]() -> CellError
 		{
-			return CELL_EISCONN;
-		}
+			if (lv2_obj::check(timer.port))
+			{
+				return CELL_EISCONN;
+			}
 
-		// Connect event queue
-		timer.port   = found;
-		timer.source = name ? name : (u64{process_getpid() + 0u} << 32) | u64{timer_id};
-		timer.data1  = data1;
-		timer.data2  = data2;
-		return {};
+			// Connect event queue
+			timer.port   = found;
+			timer.source = name ? name : (u64{process_getpid() + 0u} << 32) | u64{timer_id};
+			timer.data1  = data1;
+			timer.data2  = data2;
+			return {};
+		});
 	});
 
 	if (!timer)
@@ -553,18 +557,19 @@ error_code sys_timer_disconnect_event_queue(ppu_thread& ppu, u32 timer_id)
 
 	const auto timer = idm::check_entered<lv2_obj, lv2_timer>(timer_id, [now = get_guest_system_time(), notify = lv2_obj::notify_all_t()](lv2_timer& timer) -> CellError
 	{
-		std::lock_guard lock(timer.mutex);
-
-		timer.check_unlocked(now);
-		retro_atomic_store_release_int(&timer.state, SYS_TIMER_STATE_STOP);
-
-		if (!lv2_obj::check(timer.port))
+		return turn_call(&timer.turns, [&]() -> CellError
 		{
-			return CELL_ENOTCONN;
-		}
+			timer.check_unlocked(now);
+			retro_atomic_store_release_int(&timer.state, SYS_TIMER_STATE_STOP);
 
-		timer.port.reset();
-		return {};
+			if (!lv2_obj::check(timer.port))
+			{
+				return CELL_ENOTCONN;
+			}
+
+			timer.port.reset();
+			return {};
+		});
 	});
 
 	if (!timer)

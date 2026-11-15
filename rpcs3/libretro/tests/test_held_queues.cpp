@@ -228,6 +228,73 @@ int main()
 
 	}
 
+	// A periodic timer's expiry checked from four threads at once, as the
+	// timer thread and sys_timer_get_information/stop on PPU threads all do:
+	// in the timer's turn every period sends one event, in order - none
+	// twice, none missed - however the threads meet
+	{
+		usz rounds_wrong = 0, sent = 0;
+
+		for (u32 round = 0; round < 1000; round++)
+		{
+			const auto queue = idm::make_ptr<lv2_obj, lv2_event_queue>(SYS_SYNC_FIFO, SYS_PPU_QUEUE, 127, 0, 0);
+			const u32 queue_id = idm::last_id();
+			retro_atomic_store_release_int(&queue->exists, 1);
+
+			const auto timer = idm::make_ptr<lv2_obj, lv2_timer>();
+			const u32 timer_id = idm::last_id();
+			timer->port   = queue;
+			timer->source = 1;
+			retro_atomic_store_release_64(&timer->expire, 1000);
+			retro_atomic_store_release_64(&timer->period, 100);
+			retro_atomic_store_release_int(&timer->state, SYS_TIMER_STATE_RUN);
+
+			// Every thread looks at every moment from the first expiry to the
+			// hundredth, the same moments, all let go at once
+			static retro_atomic_int_t s_ready;
+			retro_atomic_store_release_int(&s_ready, 0);
+
+			std::thread lookers[4];
+			for (u32 t = 0; t < 4; t++)
+			{
+				lookers[t] = std::thread([&timer]
+				{
+					retro_atomic_fetch_add_int(&s_ready, 1);
+					while (retro_atomic_load_acquire_int(&s_ready) < 4)
+						std::this_thread::yield();
+
+					for (u64 i = 0; i < 100; i++)
+					{
+						timer->check(1000 + i * 100);
+					}
+				});
+			}
+
+			for (auto& t : lookers)
+				t.join();
+
+			const usz count = lv2_events_count(&queue->events);
+			bool ok = count == 100;
+
+			for (usz i = 0; ok && i < count; i++)
+			{
+				// The fourth word is the expiry the event was sent for
+				ok = std::get<3>(*lv2_events_at(&queue->events, i)) == 1000 + i * 100;
+			}
+
+			sent += count;
+			rounds_wrong += !ok;
+
+			timer->port.reset();
+			retro_atomic_store_release_int(&queue->exists, 0);
+			idm::remove<lv2_obj, lv2_timer>(timer_id);
+			idm::remove<lv2_obj, lv2_event_queue>(queue_id);
+		}
+
+		CHECK(rounds_wrong == 0);
+		std::printf("test_held_queues: timer expiries checked from 4 threads: %zu events in 1000 rounds, %zu rounds wrong\n", sent, rounds_wrong);
+	}
+
 	// sys_usbd's transfers, from four threads at once as from several PPU
 	// threads: no transfer is given to two at once, and a status read while
 	// the USB thread writes it is never half old, half new

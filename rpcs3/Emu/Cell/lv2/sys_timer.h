@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sys_event.h"
+#include "Emu/CPU/turn_calls.h"
 #include "Emu/Memory/vm_ptr.h"
 
 #include <queues/mpsc_stack.h>
@@ -25,7 +26,10 @@ struct lv2_timer : lv2_obj
 {
 	static const u32 id_base = 0x11000000;
 
-	shared_mutex mutex;
+	// Its expiry, start, stop and port are changed in turn (turn_calls.h):
+	// no lock. The state, expiry and period are words of their own, for the
+	// timer thread and get_information to read with none
+	turn_calls_cpp turns;
 	retro_atomic_int_t state{SYS_TIMER_STATE_STOP}; // a u32
 
 	shared_ptr<lv2_event_queue> port;
@@ -52,7 +56,7 @@ struct lv2_timer : lv2_obj
 	shared_ptr<lv2_timer> for_thread; // the thread's reference, until it takes it up
 
 	u64 check(u64 _now) noexcept;
-	u64 check_unlocked(u64 _now) noexcept;
+	u64 check_unlocked(u64 _now) noexcept; // in the timer's turn
 
 	lv2_timer() noexcept
 		: lv2_obj(1)
