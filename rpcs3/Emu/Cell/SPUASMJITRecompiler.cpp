@@ -7,7 +7,7 @@
 
 #include "SPUThread.h"
 #include "SPUInterpreter.h"
-#include "Crypto/sha1.h"
+#include <lrc_hash.h>
 
 #include "util/asm.hpp"
 #include "util/v128.hpp"
@@ -77,12 +77,12 @@ spu_function_t spu_recompiler::compile(spu_program&& _func)
 	}
 
 	{
-		sha1_context ctx;
+		sha1_state ctx;
 		u8 output[20];
 
-		sha1_starts(&ctx);
-		sha1_update(&ctx, reinterpret_cast<const u8*>(func.data.data()), func.data.size() * 4);
-		sha1_finish(&ctx, output);
+		sha1_stream_init(&ctx);
+		sha1_stream_update(&ctx, reinterpret_cast<const u8*>(func.data.data()), func.data.size() * 4);
+		sha1_stream_final(&ctx, output);
 
 		be_t<u64> hash_start;
 		std::memcpy(&hash_start, output, sizeof(hash_start));

@@ -4,7 +4,7 @@
 
 #include "utils.h"
 #include "aes.h"
-#include "sha1.h"
+#include <crypto/kdf.h>
 #include <lrc_hash.h>
 #include "key_vault.h"
 #include <charconv>
@@ -108,14 +108,14 @@ bool hmac_hash_compare(const unsigned char *key, int key_len, const unsigned cha
 {
 	const std::unique_ptr<u8[]> out(new u8[key_len]);
 
-	sha1_hmac(key, key_len, in, in_len, out.get());
+	hmac_sha1(key, key_len, in, in_len, out.get());
 
 	return std::memcmp(out.get(), hash, hash_len) == 0;
 }
 
 void hmac_hash_forge(const unsigned char *key, int key_len, const unsigned char *in, usz in_len, unsigned char *hash)
 {
-	sha1_hmac(key, key_len, in, in_len, hash);
+	hmac_sha1(key, key_len, in, in_len, hash);
 }
 
 bool cmac_hash_compare(const unsigned char *key, int key_len, const unsigned char *in, usz in_len, const unsigned char *hash, usz hash_len)

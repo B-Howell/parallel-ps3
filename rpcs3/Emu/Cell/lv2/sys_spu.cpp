@@ -5,7 +5,7 @@
 #include "Emu/IdManager.h"
 #include "Crypto/unself.h"
 #include "Crypto/unedat.h"
-#include "Crypto/sha1.h"
+#include <lrc_hash.h>
 #include "Loader/ELF.h"
 #include "Utilities/bin_patch.h"
 
@@ -138,15 +138,15 @@ void sys_spu_image::deploy(u8* loc, std::span<const sys_spu_segment> segs, bool 
 	std::string dump;
 
 	// Executable hash
-	sha1_context sha;
-	sha1_starts(&sha);
+	sha1_state sha;
+	sha1_stream_init(&sha);
 	u8 sha1_hash[20];
 
 	for (const auto& seg : segs)
 	{
 		fmt::append(dump, "\n\t[%u] t=0x%x, ls=0x%x, size=0x%x, addr=0x%x", &seg - segs.data(), seg.type, seg.ls, seg.size, seg.addr);
 
-		sha1_update(&sha, reinterpret_cast<const uchar*>(&seg.type), sizeof(seg.type));
+		sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&seg.type), sizeof(seg.type));
 
 		// Prevent possible segfault
 		const u32 masked_ls = seg.ls % SPU_LS_SIZE;
@@ -173,9 +173,9 @@ void sys_spu_image::deploy(u8* loc, std::span<const sys_spu_segment> segs, bool 
 			}
 
 			std::memcpy(loc + masked_ls, vm::base(seg.addr), masked_size);
-			sha1_update(&sha, reinterpret_cast<const uchar*>(&seg.size), sizeof(seg.size));
-			sha1_update(&sha, reinterpret_cast<const uchar*>(&seg.ls), sizeof(seg.ls));
-			sha1_update(&sha, loc + masked_ls, masked_size);
+			sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&seg.size), sizeof(seg.size));
+			sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&seg.ls), sizeof(seg.ls));
+			sha1_stream_update(&sha, loc + masked_ls, masked_size);
 		}
 		else if (seg.type == SYS_SPU_SEGMENT_TYPE_FILL)
 		{
@@ -190,18 +190,18 @@ void sys_spu_image::deploy(u8* loc, std::span<const sys_spu_segment> segs, bool 
 			}
 
 			std::fill_n(reinterpret_cast<be_t<u32>*>(loc + masked_ls), masked_size / 4, seg.addr);
-			sha1_update(&sha, reinterpret_cast<const uchar*>(&seg.size), sizeof(seg.size));
-			sha1_update(&sha, reinterpret_cast<const uchar*>(&seg.ls), sizeof(seg.ls));
-			sha1_update(&sha, reinterpret_cast<const uchar*>(&seg.addr), sizeof(seg.addr));
+			sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&seg.size), sizeof(seg.size));
+			sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&seg.ls), sizeof(seg.ls));
+			sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&seg.addr), sizeof(seg.addr));
 		}
 		else if (seg.type == SYS_SPU_SEGMENT_TYPE_INFO)
 		{
 			const be_t<u32> size = seg.size + 0x14; // Workaround
-			sha1_update(&sha, reinterpret_cast<const uchar*>(&size), sizeof(size));
+			sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&size), sizeof(size));
 		}
 	}
 
-	sha1_finish(&sha, sha1_hash);
+	sha1_stream_final(&sha, sha1_hash);
 
 	// Format patch name
 	std::string hash("SPU-0000000000000000000000000000000000000000");

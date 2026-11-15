@@ -3,7 +3,7 @@
 #include "Utilities/JIT.h"
 #include "Utilities/StrUtil.h"
 #include "util/serialization.hpp"
-#include "Crypto/sha1.h"
+#include <lrc_hash.h>
 #include "Crypto/unself.h"
 #include "Loader/ELF.h"
 #include "Loader/mself.hpp"
@@ -5424,9 +5424,9 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 		// Compute module hash to generate (hopefully) unique object name
 		std::string obj_name;
 		{
-			sha1_context ctx;
+			sha1_state ctx;
 			u8 output[20];
-			sha1_starts(&ctx);
+			sha1_stream_init(&ctx);
 
 			int has_dcbz = !!g_cfg.core.accurate_cache_line_stores;
 
@@ -5444,8 +5444,8 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 
 				const be_t<u32> addr = func.addr - reloc;
 				const be_t<u32> size = func.size;
-				sha1_update(&ctx, reinterpret_cast<const u8*>(&addr), sizeof(addr));
-				sha1_update(&ctx, reinterpret_cast<const u8*>(&size), sizeof(size));
+				sha1_stream_update(&ctx, reinterpret_cast<const u8*>(&addr), sizeof(addr));
+				sha1_stream_update(&ctx, reinterpret_cast<const u8*>(&size), sizeof(size));
 
 				for (const auto block : func)
 				{
@@ -5467,12 +5467,12 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 						if (roff > addr)
 						{
 							// Hash from addr to the beginning of the relocation
-							sha1_update(&ctx, ensure(info.get_ptr<const u8>(addr)), roff - addr);
+							sha1_stream_update(&ctx, ensure(info.get_ptr<const u8>(addr)), roff - addr);
 						}
 
 						// Hash relocation type instead
 						const be_t<u32> type = low->type;
-						sha1_update(&ctx, reinterpret_cast<const u8*>(&type), sizeof(type));
+						sha1_stream_update(&ctx, reinterpret_cast<const u8*>(&type), sizeof(type));
 
 						// Set the next addr
 						addr = roff + 4;
@@ -5493,7 +5493,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 					}
 
 					// Hash from addr to the end of the block
-					sha1_update(&ctx, ensure(info.get_ptr<const u8>(addr)), block.second - (addr - block.first));
+					sha1_stream_update(&ctx, ensure(info.get_ptr<const u8>(addr)), block.second - (addr - block.first));
 				}
 
 				if (reloc)
@@ -5515,7 +5515,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 					}
 				}
 
-				sha1_update(&ctx, ensure(info.get_ptr<const u8>(func.addr)), func.size);
+				sha1_stream_update(&ctx, ensure(info.get_ptr<const u8>(func.addr)), func.size);
 			}
 
 			if (fpos >= info.get_funcs().size() || (module_counter % c_modules_per_jit) == (c_modules_per_jit - 1))
@@ -5554,7 +5554,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 
 				if (module_counter != 0)
 				{
-					sha1_update(&ctx, reinterpret_cast<const u8*>(addrs.data()), addrs.size() * sizeof(be_t<u32>));
+					sha1_stream_update(&ctx, reinterpret_cast<const u8*>(addrs.data()), addrs.size() * sizeof(be_t<u32>));
 				}
 
 				part.jit_bounds = std::move(local_jit_bounds);
@@ -5564,10 +5564,10 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 			if (false)
 			{
 				const be_t<u64> forced_upd = 3;
-				sha1_update(&ctx, reinterpret_cast<const u8*>(&forced_upd), sizeof(forced_upd));
+				sha1_stream_update(&ctx, reinterpret_cast<const u8*>(&forced_upd), sizeof(forced_upd));
 			}
 
-			sha1_finish(&ctx, output);
+			sha1_stream_final(&ctx, output);
 
 			// Settings: should be populated by settings which affect codegen (TODO)
 			enum class ppu_settings : u32

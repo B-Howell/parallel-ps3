@@ -1,6 +1,6 @@
 #include "stdafx.h"
 
-#include "Crypto/sha1.h"
+#include <crypto/kdf.h>
 #include "Crypto/key_vault.h"
 
 #include "PUP.h"
@@ -102,7 +102,7 @@ pup_error pup_object::validate_hashes()
 		m_file.read(buffer.data(), file.data_length);
 
 		u8 output[20] = {};
-		sha1_hmac(PUP_KEY, sizeof(PUP_KEY), buffer.data(), buffer.size(), output);
+		hmac_sha1(PUP_KEY, sizeof(PUP_KEY), buffer.data(), buffer.size(), output);
 
 		// Compare to hash entry
 		if (std::memcmp(output, m_hash_tbl[&file - m_file_tbl.data()].hash, 20) != 0)

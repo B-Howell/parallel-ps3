@@ -2,7 +2,7 @@
 #include "Emu/VFS.h"
 #include "Emu/System.h"
 #include "TRP.h"
-#include "Crypto/sha1.h"
+#include <lrc_hash.h>
 #include "Utilities/StrUtil.h"
 
 LOG_CHANNEL(trp_log, "Trophy");
@@ -153,7 +153,7 @@ bool TRPLoader::LoadHeader(bool show)
 			std::memset(&(reinterpret_cast<TRPHeader*>(file_contents.data()))->sha1, 0, 20);
 
 			unsigned char hash[20];
-			sha1(file_contents.data(), m_header.trp_file_size, hash);
+			SHA1Digest(file_contents.data(), m_header.trp_file_size, hash);
 
 			if (std::memcmp(hash, m_header.sha1, 20) != 0)
 			{

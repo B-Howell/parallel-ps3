@@ -13,7 +13,7 @@
 // (SPULLVMRecompiler.cpp)
 extern const char* const g_spu_recompiler_base_built;
 const char* const g_spu_recompiler_base_built = __DATE__ " " __TIME__;
-#include "Crypto/sha1.h"
+#include <lrc_hash.h>
 #include "Utilities/StrUtil.h"
 #include "Utilities/JIT.h"
 #include "util/init_mutex.hpp"
@@ -1070,12 +1070,12 @@ void spu_cache::initialize(bool build_existing_cache)
 
 			be_t<u64> hash_start;
 			{
-				sha1_context ctx;
+				sha1_state ctx;
 				u8 output[20];
 
-				sha1_starts(&ctx);
-				sha1_update(&ctx, reinterpret_cast<const u8*>(func.data.data()), func.data.size() * 4);
-				sha1_finish(&ctx, output);
+				sha1_stream_init(&ctx);
+				sha1_stream_update(&ctx, reinterpret_cast<const u8*>(func.data.data()), func.data.size() * 4);
+				sha1_stream_final(&ctx, output);
 				std::memcpy(&hash_start, output, sizeof(hash_start));
 			}
 
@@ -8666,12 +8666,12 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 	std::string func_hash;
 	if (!result.data.empty())
 	{
-		sha1_context ctx;
+		sha1_state ctx;
 		u8 output[20]{};
 
-		sha1_starts(&ctx);
-		sha1_update(&ctx, reinterpret_cast<const u8*>(result.data.data()), result.data.size() * 4);
-		sha1_finish(&ctx, output);
+		sha1_stream_init(&ctx);
+		sha1_stream_update(&ctx, reinterpret_cast<const u8*>(result.data.data()), result.data.size() * 4);
+		sha1_stream_final(&ctx, output);
 		fmt::append(func_hash, "%s", fmt::base57(output));
 	}
 
@@ -8689,12 +8689,12 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 
 		std::string pattern_hash;
 		{
-			sha1_context ctx;
+			sha1_state ctx;
 			u8 output[20]{};
 
-			sha1_starts(&ctx);
-			sha1_update(&ctx, reinterpret_cast<const u8*>(result.data.data()) + (pattern.lsa_pc - result.lower_bound), pattern.rdatomic_pc - pattern.lsa_pc);
-			sha1_finish(&ctx, output);
+			sha1_stream_init(&ctx);
+			sha1_stream_update(&ctx, reinterpret_cast<const u8*>(result.data.data()) + (pattern.lsa_pc - result.lower_bound), pattern.rdatomic_pc - pattern.lsa_pc);
+			sha1_stream_final(&ctx, output);
 			fmt::append(pattern_hash, "%s", fmt::base57(output));
 		}
 
@@ -8963,12 +8963,12 @@ void spu_recompiler_base::dump(const spu_program& result, std::string& out, u32 
 
 	if (!result.data.empty())
 	{
-		sha1_context ctx;
+		sha1_state ctx;
 		u8 output[20];
 
-		sha1_starts(&ctx);
-		sha1_update(&ctx, reinterpret_cast<const u8*>(result.data.data()), result.data.size() * 4);
-		sha1_finish(&ctx, output);
+		sha1_stream_init(&ctx);
+		sha1_stream_update(&ctx, reinterpret_cast<const u8*>(result.data.data()), result.data.size() * 4);
+		sha1_stream_final(&ctx, output);
 		fmt::append(hash, "%s", fmt::base57(output));
 		std::memcpy(&hash_start, output, sizeof(hash_start));
 	}
@@ -9450,12 +9450,12 @@ struct spu_fast : public spu_recompiler_base
 		m_size = ::size32(func.data) * 4;
 
 		{
-			sha1_context ctx;
+			sha1_state ctx;
 			u8 output[20];
 
-			sha1_starts(&ctx);
-			sha1_update(&ctx, reinterpret_cast<const u8*>(func.data.data()), func.data.size() * 4);
-			sha1_finish(&ctx, output);
+			sha1_stream_init(&ctx);
+			sha1_stream_update(&ctx, reinterpret_cast<const u8*>(func.data.data()), func.data.size() * 4);
+			sha1_stream_final(&ctx, output);
 
 			be_t<u64> hash_start;
 			std::memcpy(&hash_start, output, sizeof(hash_start));
@@ -10039,12 +10039,12 @@ extern std::string format_spu_func_info(u32 addr, cpu_thread* spu)
 
 	std::string info;
 	{
-		sha1_context ctx;
+		sha1_state ctx;
 		u8 output[20];
 
-		sha1_starts(&ctx);
-		sha1_update(&ctx, reinterpret_cast<const u8*>(func.data.data()), func.data.size() * 4);
-		sha1_finish(&ctx, output);
+		sha1_stream_init(&ctx);
+		sha1_stream_update(&ctx, reinterpret_cast<const u8*>(func.data.data()), func.data.size() * 4);
+		sha1_stream_final(&ctx, output);
 		fmt::append(info, "size=%d, end=0x%x, hash=%s", func.data.size(), addr + func.data.size() * 4, fmt::base57(output));
 	}
 

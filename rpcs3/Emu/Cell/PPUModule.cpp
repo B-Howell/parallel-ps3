@@ -6,7 +6,7 @@
 #include "Utilities/address_range.h"
 #include "Utilities/lf_u64_map.h"
 #include "util/serialization.hpp"
-#include "Crypto/sha1.h"
+#include <lrc_hash.h>
 #include "Crypto/unself.h"
 #include "Loader/ELF.h"
 #include "Emu/System.h"
@@ -61,14 +61,14 @@ extern u32 ppu_generate_id(std::string_view name)
 	// Symbol name suffix
 	constexpr auto suffix = "\x67\x59\x65\x99\x04\x25\x04\x90\x56\x64\x27\x49\x94\x89\x74\x1A"sv;
 
-	sha1_context ctx;
+	sha1_state ctx;
 	u8 output[20];
 
 	// Compute SHA-1 hash
-	sha1_starts(&ctx);
-	sha1_update(&ctx, reinterpret_cast<const u8*>(name.data()), name.size());
-	sha1_update(&ctx, reinterpret_cast<const u8*>(suffix.data()), suffix.size());
-	sha1_finish(&ctx, output);
+	sha1_stream_init(&ctx);
+	sha1_stream_update(&ctx, reinterpret_cast<const u8*>(name.data()), name.size());
+	sha1_stream_update(&ctx, reinterpret_cast<const u8*>(suffix.data()), suffix.size());
+	sha1_stream_final(&ctx, output);
 
 	le_t<u32> result = 0;
 	std::memcpy(&result, output, sizeof(result));
@@ -1450,16 +1450,16 @@ static void ppu_check_patch_spu_images(const ppu_module<lv2_obj>& mod, const ppu
 		std::vector<u32> applied;
 
 		// Executable hash
-		sha1_context sha2;
-		sha1_starts(&sha2);
+		sha1_state sha2;
+		sha1_stream_init(&sha2);
 		u8 sha1_hash[20];
 
 		for (const auto& prog : obj.progs)
 		{
 			// Only hash the data, we are not loading it
-			sha1_update(&sha2, reinterpret_cast<const uchar*>(&prog.p_vaddr), sizeof(prog.p_vaddr));
-			sha1_update(&sha2, reinterpret_cast<const uchar*>(&prog.p_memsz), sizeof(prog.p_memsz));
-			sha1_update(&sha2, reinterpret_cast<const uchar*>(&prog.p_filesz), sizeof(prog.p_filesz));
+			sha1_stream_update(&sha2, reinterpret_cast<const uchar*>(&prog.p_vaddr), sizeof(prog.p_vaddr));
+			sha1_stream_update(&sha2, reinterpret_cast<const uchar*>(&prog.p_memsz), sizeof(prog.p_memsz));
+			sha1_stream_update(&sha2, reinterpret_cast<const uchar*>(&prog.p_filesz), sizeof(prog.p_filesz));
 
 			fmt::append(dump, "\n\tSegment: p_type=0x%x, p_vaddr=0x%llx, p_filesz=0x%llx, p_memsz=0x%llx, p_offset=0x%llx", prog.p_type, prog.p_vaddr, prog.p_filesz, prog.p_memsz, prog.p_offset);
 
@@ -1472,12 +1472,12 @@ static void ppu_check_patch_spu_images(const ppu_module<lv2_obj>& mod, const ppu
 					utilize_spu_data_segment(prog.p_vaddr, (elf_header + prog.p_offset), prog.p_filesz);
 				}
 
-				sha1_update(&sha2, (elf_header + prog.p_offset), prog.p_filesz);
+				sha1_stream_update(&sha2, (elf_header + prog.p_offset), prog.p_filesz);
 			}
 
 			else if (prog.p_type == 0x4u /* NOTE */ && prog.p_filesz > 0u)
 			{
-				sha1_update(&sha2, (elf_header + prog.p_offset), prog.p_filesz);
+				sha1_stream_update(&sha2, (elf_header + prog.p_offset), prog.p_filesz);
 
 				// We assume that the string SPUNAME exists 0x14 bytes into the NOTE segment
 				name = ensure(mod.get_ptr<const char>(seg.addr + prefix_addr + prog.p_offset + 0x14));
@@ -1491,7 +1491,7 @@ static void ppu_check_patch_spu_images(const ppu_module<lv2_obj>& mod, const ppu
 
 		fmt::append(dump, " (image addr: 0x%x, size: 0x%x)", seg.addr + prefix_addr, obj.highest_offset);
 
-		sha1_finish(&sha2, sha1_hash);
+		sha1_stream_final(&sha2, sha1_hash);
 
 		// Format patch name
 		std::string hash("SPU-0000000000000000000000000000000000000000");
@@ -1652,8 +1652,8 @@ shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, bool virtual_load, c
 	ppu_initialize_modules(&link);
 
 	// Library hash
-	sha1_context sha;
-	sha1_starts(&sha);
+	sha1_state sha;
+	sha1_stream_init(&sha);
 
 	u32 end = 0;
 	u32 toc = 0;
@@ -1666,8 +1666,8 @@ shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, bool virtual_load, c
 		ppu_loader.notice("** Segment: p_type=0x%x, p_vaddr=0x%llx, p_filesz=0x%llx, p_memsz=0x%llx, flags=0x%x", prog.p_type, prog.p_vaddr, prog.p_filesz, prog.p_memsz, prog.p_flags);
 
 		// Hash big-endian values
-		sha1_update(&sha, reinterpret_cast<const uchar*>(&prog.p_type), sizeof(prog.p_type));
-		sha1_update(&sha, reinterpret_cast<const uchar*>(&prog.p_flags), sizeof(prog.p_flags));
+		sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&prog.p_type), sizeof(prog.p_type));
+		sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&prog.p_flags), sizeof(prog.p_flags));
 
 		switch (const u32 p_type = prog.p_type)
 		{
@@ -1724,9 +1724,9 @@ shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, bool virtual_load, c
 				ppu_loader.warning("**** Loaded to 0x%x...0x%x (size=0x%x)", addr, addr + mem_size - 1, mem_size);
 
 				// Hash segment
-				sha1_update(&sha, reinterpret_cast<const uchar*>(&prog.p_vaddr), sizeof(prog.p_vaddr));
-				sha1_update(&sha, reinterpret_cast<const uchar*>(&prog.p_memsz), sizeof(prog.p_memsz));
-				sha1_update(&sha, prog.bin.data(), prog.bin.size());
+				sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&prog.p_vaddr), sizeof(prog.p_vaddr));
+				sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&prog.p_memsz), sizeof(prog.p_memsz));
+				sha1_stream_update(&sha, prog.bin.data(), prog.bin.size());
 
 				// Initialize executable code if necessary
 				if (prog.p_flags & 0x1 && !virtual_load)
@@ -1983,7 +1983,7 @@ shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, bool virtual_load, c
 	g_fxo->need<prx_names_table>();
 	g_fxo->get<prx_names_table>().install(prx->name, *prx);
 
-	sha1_finish(&sha, prx->sha1);
+	sha1_stream_final(&sha, prx->sha1);
 
 	// Format patch name
 	std::string hash = fmt::format("PRX-%s", fmt::base57(prx->sha1));
@@ -2335,8 +2335,8 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 	u32 end = 0;
 
 	// Executable hash
-	sha1_context sha;
-	sha1_starts(&sha);
+	sha1_state sha;
+	sha1_stream_init(&sha);
 
 	struct on_fatal_error
 	{
@@ -2383,8 +2383,8 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 		_seg.filesz = ::narrow<u32>(prog.p_filesz);
 
 		// Hash big-endian values
-		sha1_update(&sha, reinterpret_cast<const uchar*>(&prog.p_type), sizeof(prog.p_type));
-		sha1_update(&sha, reinterpret_cast<const uchar*>(&prog.p_flags), sizeof(prog.p_flags));
+		sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&prog.p_type), sizeof(prog.p_type));
+		sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&prog.p_flags), sizeof(prog.p_flags));
 
 		if (type == 0x1 /* LOAD */ && prog.p_memsz)
 		{
@@ -2454,9 +2454,9 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 				vm::page_protect(addr0, size0, 0, vm::page_writable | vm::page_readable, vm::page_executable);
 			}
 
-			sha1_update(&sha, reinterpret_cast<const uchar*>(&prog.p_vaddr), sizeof(prog.p_vaddr));
-			sha1_update(&sha, reinterpret_cast<const uchar*>(&prog.p_memsz), sizeof(prog.p_memsz));
-			sha1_update(&sha, prog.bin.data(), prog.bin.size());
+			sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&prog.p_vaddr), sizeof(prog.p_vaddr));
+			sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&prog.p_memsz), sizeof(prog.p_memsz));
+			sha1_stream_update(&sha, prog.bin.data(), prog.bin.size());
 
 			// Initialize executable code if necessary
 			if (prog.p_flags & 0x1 && !virtual_load)
@@ -2494,7 +2494,7 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 		}
 	}
 
-	sha1_finish(&sha, _main.sha1);
+	sha1_stream_final(&sha, _main.sha1);
 
 	// Format patch name
 	std::string hash("PPU-0000000000000000000000000000000000000000");
@@ -3000,8 +3000,8 @@ std::pair<shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_ob
 	auto& link = g_fxo->get<ppu_linkage_info>();
 
 	// Executable hash
-	sha1_context sha;
-	sha1_starts(&sha);
+	sha1_state sha;
+	sha1_stream_init(&sha);
 
 	// Check if it is an overlay executable first
 	for (const auto& prog : elf.progs)
@@ -3043,8 +3043,8 @@ std::pair<shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_ob
 		_seg.filesz = ::narrow<u32>(prog.p_filesz);
 
 		// Hash big-endian values
-		sha1_update(&sha, reinterpret_cast<const uchar*>(&prog.p_type), sizeof(prog.p_type));
-		sha1_update(&sha, reinterpret_cast<const uchar*>(&prog.p_flags), sizeof(prog.p_flags));
+		sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&prog.p_type), sizeof(prog.p_type));
+		sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&prog.p_flags), sizeof(prog.p_flags));
 
 		if (type == 0x1 /* LOAD */ && prog.p_memsz)
 		{
@@ -3093,9 +3093,9 @@ std::pair<shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_ob
 
 			// Copy segment data, hash it
 			if (!already_loaded) std::memcpy(ensure(ovlm->get_ptr<void>(addr)), prog.bin.data(), prog.bin.size());
-			sha1_update(&sha, reinterpret_cast<const uchar*>(&prog.p_vaddr), sizeof(prog.p_vaddr));
-			sha1_update(&sha, reinterpret_cast<const uchar*>(&prog.p_memsz), sizeof(prog.p_memsz));
-			sha1_update(&sha, prog.bin.data(), prog.bin.size());
+			sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&prog.p_vaddr), sizeof(prog.p_vaddr));
+			sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&prog.p_memsz), sizeof(prog.p_memsz));
+			sha1_stream_update(&sha, prog.bin.data(), prog.bin.size());
 
 			// Initialize executable code if necessary
 			if (prog.p_flags & 0x1 && !virtual_load)
@@ -3131,7 +3131,7 @@ std::pair<shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_ob
 		}
 	}
 
-	sha1_finish(&sha, ovlm->sha1);
+	sha1_stream_final(&sha, ovlm->sha1);
 
 	// Format patch name
 	std::string hash("OVL-0000000000000000000000000000000000000000");

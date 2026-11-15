@@ -4,7 +4,7 @@
 #include <bit>
 
 #include "Crypto/aes.h"
-#include "Crypto/sha1.h"
+#include <lrc_hash.h>
 
 LOG_CHANNEL(infinity_log, "infinity");
 
@@ -302,12 +302,12 @@ u32 infinity_base::load_figure(const std::array<u8, 0x14 * 0x10>& buf, fs::file 
 		sha1_calc.push_back(buf[i]);
 	}
 
-	sha1_context ctx;
+	sha1_state ctx;
 	u8 output[20];
 
-	sha1_starts(&ctx);
-	sha1_update(&ctx, sha1_calc.data(), sha1_calc.size());
-	sha1_finish(&ctx, output);
+	sha1_stream_init(&ctx);
+	sha1_stream_update(&ctx, sha1_calc.data(), sha1_calc.size());
+	sha1_stream_final(&ctx, output);
 
 	std::array<u8, 16> key{};
 	for (int i = 0; i < 4; i++)

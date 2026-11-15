@@ -1,6 +1,6 @@
 #include "stdafx.h"
 #include "aes.h"
-#include "sha1.h"
+#include <lrc_hash.h>
 #include "key_vault.h"
 #include "util/asm.hpp"
 #include "util/logs.hpp"
@@ -1630,7 +1630,7 @@ usz package_reader::decrypt(u64 offset, u64 size, const uchar* key, std::span<u8
 				u8 data[20];
 			} hash{};
 
-			sha1(reinterpret_cast<const u8*>(input), sizeof(input), hash.data);
+			SHA1Digest(reinterpret_cast<const u8*>(input), sizeof(input), hash.data);
 
 			const u128 v = read_from_ptr<u128>(local_buf, i * sizeof(u128));
 			write_to_ptr<u128>(local_buf, i * sizeof(u128), v ^ read_from_ptr<u128>(hash.data));

@@ -8,7 +8,7 @@
 #include "Emu/Cell/lv2/sys_time.h"
 #include "Emu/Memory/vm_reservation.h"
 #include "Emu/RSX/Core/RSXReservationLock.hpp"
-#include "Crypto/sha1.h"
+#include <lrc_hash.h>
 #include "Utilities/JIT.h"
 
 #include "SPUThread.h"
@@ -1710,19 +1710,19 @@ public:
 			m_object_target = jit_compiler::cpu(g_cfg.core.llvm_cpu.to_string()) + " " LLVM_VERSION_STRING " v2";
 		}
 
-		sha1_context ctx;
+		sha1_state ctx;
 		u8 output[20];
-		sha1_starts(&ctx);
+		sha1_stream_init(&ctx);
 
 		const auto put = [&](const auto& value)
 		{
 			const u64 raw = static_cast<u64>(value);
-			sha1_update(&ctx, reinterpret_cast<const u8*>(&raw), sizeof(raw));
+			sha1_stream_update(&ctx, reinterpret_cast<const u8*>(&raw), sizeof(raw));
 		};
 
 		const std::string& stamp = note_stamp();
-		sha1_update(&ctx, reinterpret_cast<const u8*>(stamp.data()), stamp.size());
-		sha1_update(&ctx, reinterpret_cast<const u8*>(m_object_target.data()), m_object_target.size());
+		sha1_stream_update(&ctx, reinterpret_cast<const u8*>(stamp.data()), stamp.size());
+		sha1_stream_update(&ctx, reinterpret_cast<const u8*>(m_object_target.data()), m_object_target.size());
 
 		// Every setting the recompiler, the translator and the analyser read
 		put(g_cfg.core.spu_block_size.get());
@@ -1751,8 +1751,8 @@ public:
 #endif
 		put(func.entry_point);
 		put(func.lower_bound);
-		sha1_update(&ctx, reinterpret_cast<const u8*>(func.data.data()), func.data.size() * 4);
-		sha1_finish(&ctx, output);
+		sha1_stream_update(&ctx, reinterpret_cast<const u8*>(func.data.data()), func.data.size() * 4);
+		sha1_stream_final(&ctx, output);
 
 		return fmt::format("spu-%s.key", fmt::base57(output));
 	}
@@ -2016,12 +2016,12 @@ public:
 		}
 
 		{
-			sha1_context ctx;
+			sha1_state ctx;
 			u8 output[20];
 
-			sha1_starts(&ctx);
-			sha1_update(&ctx, reinterpret_cast<const u8*>(func.data.data()), func.data.size() * 4);
-			sha1_finish(&ctx, output);
+			sha1_stream_init(&ctx);
+			sha1_stream_update(&ctx, reinterpret_cast<const u8*>(func.data.data()), func.data.size() * 4);
+			sha1_stream_final(&ctx, output);
 
 			m_hash.clear();
 			fmt::append(m_hash, "__spu-0x%05x-%s", func.entry_point, fmt::base57(output));
@@ -4206,13 +4206,13 @@ public:
 
 			const std::string& target = m_object_target;
 
-			sha1_context ctx;
+			sha1_state ctx;
 			u8 output[20];
 
-			sha1_starts(&ctx);
-			sha1_update(&ctx, reinterpret_cast<const u8*>(bitcode.data()), bitcode.size());
-			sha1_update(&ctx, reinterpret_cast<const u8*>(target.data()), target.size());
-			sha1_finish(&ctx, output);
+			sha1_stream_init(&ctx);
+			sha1_stream_update(&ctx, reinterpret_cast<const u8*>(bitcode.data()), bitcode.size());
+			sha1_stream_update(&ctx, reinterpret_cast<const u8*>(target.data()), target.size());
+			sha1_stream_final(&ctx, output);
 
 			_module->setModuleIdentifier(fmt::format("spu-%s.obj", fmt::base57(output)));
 			have_object = jit_compiler::check(m_spurt->get_cache_path() + "llvm/" + _module->getModuleIdentifier());

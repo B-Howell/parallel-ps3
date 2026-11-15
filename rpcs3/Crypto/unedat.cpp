@@ -1,7 +1,7 @@
 #include "stdafx.h"
 #include "key_vault.h"
 #include "unedat.h"
-#include "sha1.h"
+#include <lrc_hash.h>
 #include "lz.h"
 #include "ec.h"
 #include "utils.h"
@@ -525,10 +525,10 @@ bool check_data(const u8* key, const EDAT_HEADER& edat, const NPD_HEADER& npd, c
 
 				f.read_at(file_offset + metadata_offset, metadata_buf.data(), metadata_buf_size);
 
-				sha1(metadata_buf.data(), metadata_buf_size, signature_hash);
+				SHA1Digest(metadata_buf.data(), metadata_buf_size, signature_hash);
 			}
 			else
-				sha1(metadata.get(), metadata_size, signature_hash);
+				SHA1Digest(metadata.get(), metadata_size, signature_hash);
 
 			if (!ecdsa_verify(signature_hash, signature_r, signature_s))
 			{
@@ -557,7 +557,7 @@ bool check_data(const u8* key, const EDAT_HEADER& edat, const NPD_HEADER& npd, c
 			u8 header_buf[0xD8]{};
 
 			f.read_at(file_offset, header_buf, 0xD8);
-			sha1(header_buf, 0xD8, signature_hash);
+			SHA1Digest(header_buf, 0xD8, signature_hash);
 
 			if (!ecdsa_verify(signature_hash, signature_r, signature_s))
 				edat_log.warning("Header signature is invalid!");
