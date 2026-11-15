@@ -289,7 +289,7 @@ int main()
 
 	if (std::getenv("GEM_BENCH"))
 	{
-		enum { loops = 4000000 };
+		constexpr double loops = 4000000.0;
 		shared_mutex old_lock; // a lock of the kind gem.mtx was
 		double lock_ns = 1e9, read_ns = 1e9, change_ns = 1e9;
 		u64 sink = 0;
