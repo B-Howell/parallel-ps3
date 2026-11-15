@@ -8,14 +8,15 @@
 #pragma warning( disable : 4005 )
 #endif
 
-// The functions are volk's pointers, loaded at run time (vk::load_vulkan):
-// the core links no Vulkan library. VK_NO_PROTOTYPES comes from the build,
-// so that every vulkan.h included anywhere leaves the names to volk.
+// The functions are the core's pointers, loaded at run time (vk_loader.h,
+// vk::load_vulkan): the core links no Vulkan library. VK_NO_PROTOTYPES
+// comes from the build, so that every vulkan.h included anywhere leaves the
+// names to the loader.
 #ifndef VK_NO_PROTOTYPES
 #define VK_NO_PROTOTYPES
 #endif
 #include <vulkan/vulkan.h>
-#include <volk.h>
+#include "vk_loader.h"
 
 #ifdef _MSC_VER
 #pragma warning(pop)

@@ -14,11 +14,11 @@ LDLIBS   += -lm
 TEST_STD := -std=c89 -Wdeclaration-after-statement
 LRC_STD  := -std=gnu99
 # as libretro_common.cmake builds it: net_http over its own TLS client
-LRC_DEFS := -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
+LRC_DEFS := -DHAVE_DYLIB -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_turn_calls test_turn_calls_tsan test_crypto_hashes test_vk_heap
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_turn_calls test_turn_calls_tsan test_crypto_hashes test_vk_heap test_vk_loader
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -643,6 +643,15 @@ test_vk_heap: $(VK_HEAP_DEPS)
 	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -isystem ../../../3rdparty/Vulkan-Headers/include -c -o obj/vk_heap.o ../../Emu/RSX/VK/vkutils/vk_heap.c
 	$(CC) $(CFLAGS) $(SANITIZE) -o $@ obj/test_vk_heap.o obj/vk_heap.o $(LDFLAGS) $(LDLIBS)
 
+# The core's Vulkan loader, through libretro-common's dylib
+VK_LOADER_DEPS := test_vk_loader.c test_common.h ../../Emu/RSX/VK/vk_loader.c ../../Emu/RSX/VK/vk_loader.h
+
+test_vk_loader: $(VK_LOADER_DEPS) obj/dynamic/dylib.o
+	@mkdir -p obj
+	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -isystem ../../../3rdparty/Vulkan-Headers/include -I../../Emu/RSX/VK -c -o obj/test_vk_loader.o test_vk_loader.c
+	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -DHAVE_DYLIB -isystem ../../../3rdparty/Vulkan-Headers/include -c -o obj/vk_loader.o ../../Emu/RSX/VK/vk_loader.c
+	$(CC) $(CFLAGS) $(SANITIZE) -o $@ obj/test_vk_loader.o obj/vk_loader.o obj/dynamic/dylib.o $(LDFLAGS) $(LDLIBS) -ldl
+
 VK_INTERP_DYNAMIC_DEPS := test_vk_interp_dynamic.c test_common.h ../../Emu/RSX/VK/vk_interpreter_dynamic.c ../../Emu/RSX/VK/vk_interpreter_dynamic.h
 
 test_vk_interp_dynamic: $(VK_INTERP_DYNAMIC_DEPS)
@@ -797,6 +806,7 @@ check: all
 	./test_vk_interp_dynamic
 	./test_crypto_hashes
 	./test_vk_heap
+	./test_vk_loader
 	./test_turn_calls
 	./test_turn_calls_tsan
 	./test_eeprom_table
@@ -887,6 +897,8 @@ check: all
 	@if grep -nE "shared_mutex|std::mutex|lock_guard|unique_lock|Utilities/mutex.h" ../../Emu/RSX/VK/vkutils/descriptors.cpp ../../Emu/RSX/VK/vkutils/descriptors.h || grep -n "lock_guard lock(m_descriptor_set)" ../../Emu/RSX/VK/VKProgramPipeline.cpp; then echo "vk descriptors: a lock is back - the flush list and the set storage change in turn (turn_call)"; exit 1; else echo "vk descriptors: no lock, the flush list and set storage in turn"; fi
 	@# The Vulkan Memory Allocator is gone: device memory is the renderer's own C89 heap (vkutils/vk_heap.c)
 	@if ls ../../../3rdparty/GPUOpen/VulkanMemoryAllocator/include ../../Emu/RSX/VK/VKMemAlloc.cpp 2>/dev/null || grep -rnE "vk_mem_alloc|Vma[A-Z]|vma[A-Z]" --include=*.cpp --include=*.h --include=*.c ../../Emu ../../../Makefile ../../../Makefile.common; then echo "vk: the Vulkan Memory Allocator is back - device memory is vk_heap.c's"; exit 1; else echo "vk: no VMA, device memory from vk_heap.c"; fi
+	@# volk is gone: the Vulkan functions are the core's own list, loaded by vk_loader.c through libretro-common's dylib
+	@if ls ../../../3rdparty/volk 2>/dev/null || grep -rnE "volk[A-Z]|<volk.h>|SOURCES_VOLK|libvolk" --include=*.cpp --include=*.h --include=*.c ../../Emu ../../../Makefile ../../../Makefile.common ../../../3rdparty/CMakeLists.txt ../shader_runner.h shader_runner.h 2>/dev/null; then echo "vk: volk is back - the functions are vk_loader.c's"; exit 1; else echo "vk: no volk, the functions from vk_loader.c"; fi
 	@# LLVM's SHA-1, SHA-256 and old atomics are gone: libretro-common's lrc_hash and retro_atomic stand in for them
 	@if ls ../../../3rdparty/llvm/llvm/llvm/lib/Support/SHA1.cpp ../../../3rdparty/llvm/llvm/llvm/lib/Support/SHA256.cpp ../../../3rdparty/llvm/llvm/llvm/lib/Support/Atomic.cpp ../../../3rdparty/llvm/llvm/llvm/include/llvm/Support/SHA1.h ../../../3rdparty/llvm/llvm/llvm/include/llvm/Support/SHA256.h ../../../3rdparty/llvm/llvm/llvm/include/llvm/Support/Atomic.h ../../../3rdparty/llvm/llvm/llvm/lib/Support/CRC.cpp ../../../3rdparty/llvm/llvm/llvm/include/llvm/Support/CRC.h ../../../3rdparty/llvm/llvm/llvm/lib/Support/xxhash.cpp ../../../3rdparty/llvm/llvm/llvm/include/llvm/Support/xxhash.h 2>/dev/null || grep -rn "llvm/Support/SHA1.h\|llvm/Support/SHA256.h\|llvm/Support/Atomic.h\|raw_sha1_ostream\|llvm/Support/CRC.h\|JamCRC\|xxHash64(\|MD5::body\|MD5_u32plus\|llvm/Support/xxhash.h\|xxh3_64bits" ../../../3rdparty/llvm/llvm/llvm/lib ../../../3rdparty/llvm/llvm/llvm/include ../../make/llvm/llvm.mk; then echo "llvm: its own SHA-1, SHA-256, MD5, CRC-32, XXH64, XXH3 or atomics are back - libretro-common's lrc_hash.h, encodings/crc32.h, encodings/xxh64.h, encodings/xxh3.h and retro_atomic are used instead"; exit 1; else echo "llvm: libretro-common's hashes and atomics, not its own"; fi
 	@if ls ../../Crypto/md5.cpp ../../Crypto/md5.h ../../Crypto/sha256.cpp ../../Crypto/sha256.h ../../Crypto/sha1.cpp ../../Crypto/sha1.h ../../Crypto/aes.cpp ../../Crypto/aes.h ../../Crypto/aesni.cpp ../../Crypto/aesni.h ../../Crypto/ec.cpp ../../Crypto/ec.h 2>/dev/null || grep -rn "mbedtls_md5\|Crypto/md5\|md5\.h\"\|mbedtls_sha256\|Crypto/sha256\|\"sha256\.h\"\|sha1_context\|sha1_starts\|sha1_hmac\|Crypto/sha1\|\"sha1\.h\"\|aes_context\|aes_setkey_\|aes_crypt_\|rpcs3_aes_cmac\|Crypto/aes\|\"aes\.h\"\|aesni\|ecdsa_\|\"ec\.h\"\|Crypto/ec\.cpp" ../../Loader ../../Emu ../../Crypto ../*.cpp ../../Emu/CMakeLists.txt ../../../Makefile.common; then echo "Crypto: its own MD5, SHA-1, SHA-256 or AES, or the dead ECDSA check, is back - libretro-common's MD5_*, sha1_stream_*, sha256_stream_* (lrc_hash.h), hmac_sha1 (crypto/kdf.h) and aes_* (crypto/crypto.h) are used instead"; exit 1; else echo "Crypto: libretro-common's MD5, SHA-1, SHA-256 and AES, not its own"; fi

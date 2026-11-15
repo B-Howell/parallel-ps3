@@ -6,9 +6,9 @@
 # LLVM is linked statically, so the core is a single file with nothing to
 # place beside it.
 #
-# The GL and Vulkan headers and volk come from the tree (3rdparty/GL,
-# 3rdparty/Vulkan-Headers, 3rdparty/volk): the GL functions come from the
-# frontend and Vulkan is loaded at run time, so neither is linked.
+# The GL and Vulkan headers come from the tree (3rdparty/GL,
+# 3rdparty/Vulkan-Headers): the GL functions come from the frontend and
+# Vulkan is loaded at run time (vk_loader.c), so neither is linked.
 #
 # TLS (RPCN, the clans server) is libretro-common's own client, and HTTP
 # (UPnP, the clans server) its net_http: no wolfSSL and no libcurl, whose

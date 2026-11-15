@@ -84,7 +84,7 @@ fi
 
 # Fail here rather than on a tester's machine: anything the DLL imports beyond
 # Windows itself and OpenGL is a DLL nobody will have. vulkan-1 is not
-# imported either: volk opens it at run time.
+# imported either: the core opens it at run time (vk_loader.c).
 llvm-objdump -p artifacts/parallel_ps3_libretro.dll | awk '/DLL Name:/ { print $3 }' | sort -u > imports.txt
 cat imports.txt
 if grep -viE '^(api-ms-win-crt-.*|kernel32|user32|gdi32|advapi32|shell32|ole32|oleaut32|ws2_32|iphlpapi|bcrypt|crypt32|pdh|dbghelp|ntdll|winmm|secur32|shlwapi|version|setupapi|opengl32)\.dll$' imports.txt; then

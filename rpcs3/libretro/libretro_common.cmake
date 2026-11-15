@@ -16,6 +16,7 @@ add_library(libretro_common STATIC
     ${LIBRETRO_COMMON_DIR}/crypto/kdf.c
     ${LIBRETRO_COMMON_DIR}/crypto/pk.c
     ${LIBRETRO_COMMON_DIR}/crypto/x509.c
+    ${LIBRETRO_COMMON_DIR}/dynamic/dylib.c
     ${LIBRETRO_COMMON_DIR}/encodings/encoding_base64.c
     ${LIBRETRO_COMMON_DIR}/encodings/encoding_crc32.c
     ${LIBRETRO_COMMON_DIR}/encodings/encoding_deflate.c
@@ -104,6 +105,7 @@ target_include_directories(libretro_common PUBLIC ${LIBRETRO_COMMON_DIR}/include
 # crypto/), for the clans server; the defines change only the library's
 # own sources, not its headers
 target_compile_definitions(libretro_common PRIVATE HAVE_SSL HAVE_RETROSSL HAVE_CRYPTO)
+target_compile_definitions(libretro_common PUBLIC HAVE_DYLIB)
 
 # audio_transfer's arms, for the music cellSearch lists and cellMusicDecode
 # plays (util/media_decode.c)

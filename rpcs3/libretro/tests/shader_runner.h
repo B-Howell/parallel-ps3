@@ -8,7 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <volk.h>
+#include "Emu/RSX/VK/vk_loader.h"
 
 #ifdef __cplusplus
 extern "C" {

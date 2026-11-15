@@ -62,25 +62,16 @@ else()
 endif()
 
 
-# Vulkan: Khronos' headers and volk from the tree. volk loads the functions
-# at run time, from the frontend's vkGetInstanceProcAddr or the system's
-# loader (vulkan-1.dll, libvulkan.so.1, MoltenVK), so nothing is linked and
-# nothing has to be installed to build.
+# Vulkan: Khronos' headers from the tree. The core loads the functions at
+# run time (rpcs3/Emu/RSX/VK/vk_loader.c), from the frontend's
+# vkGetInstanceProcAddr or the system's loader (vulkan-1.dll,
+# libvulkan.so.1, MoltenVK), so nothing is linked and nothing has to be
+# installed to build.
 set(VULKAN_TARGET 3rdparty_dummy_lib)
 if(USE_VULKAN)
-	add_library(3rdparty_volk STATIC volk/volk.c)
-	set_property(TARGET 3rdparty_volk PROPERTY POSITION_INDEPENDENT_CODE ON)
-	target_include_directories(3rdparty_volk SYSTEM PUBLIC Vulkan-Headers/include volk)
-	target_compile_definitions(3rdparty_volk PUBLIC VK_NO_PROTOTYPES)
-	# No window system's surface functions: the frontend presents
-	if(NOT WIN32)
-		target_link_libraries(3rdparty_volk PRIVATE ${CMAKE_DL_LIBS})
-	endif()
-
 	add_library(3rdparty_vulkan INTERFACE)
-	target_compile_definitions(3rdparty_vulkan INTERFACE -DHAVE_VULKAN)
-	target_link_libraries(3rdparty_vulkan INTERFACE 3rdparty_volk)
-
+	target_include_directories(3rdparty_vulkan SYSTEM INTERFACE Vulkan-Headers/include)
+	target_compile_definitions(3rdparty_vulkan INTERFACE -DHAVE_VULKAN VK_NO_PROTOTYPES)
 	set(VULKAN_TARGET 3rdparty_vulkan)
 endif()
 

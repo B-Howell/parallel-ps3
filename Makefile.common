@@ -18,6 +18,7 @@ SOURCES_LRC := \
 	$(CORE_DIR)/rpcs3/libretro/libretro-common/crypto/kdf.c \
 	$(CORE_DIR)/rpcs3/libretro/libretro-common/crypto/pk.c \
 	$(CORE_DIR)/rpcs3/libretro/libretro-common/crypto/x509.c \
+	$(CORE_DIR)/rpcs3/libretro/libretro-common/dynamic/dylib.c \
 	$(CORE_DIR)/rpcs3/libretro/libretro-common/encodings/encoding_base64.c \
 	$(CORE_DIR)/rpcs3/libretro/libretro-common/encodings/encoding_crc32.c \
 	$(CORE_DIR)/rpcs3/libretro/libretro-common/encodings/encoding_deflate.c \
@@ -617,6 +618,7 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/VKShaderInterpreter.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/vk_interpreter_dynamic.c \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/vk_interpreter_uploads.c \
+	$(CORE_DIR)/rpcs3/Emu/RSX/VK/vk_loader.c \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/VKTexture.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/VKTextureCache.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/VK/VKVertexBuffers.cpp \
@@ -721,7 +723,6 @@ SOURCES_RPCS3_GL := \
 	$(CORE_DIR)/rpcs3/Emu/RSX/GL/glutils/sampler.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/GL/upscalers/fsr1/fsr_pass.cpp
 
-SOURCES_VOLK := $(CORE_DIR)/3rdparty/volk/volk.c
 
 SOURCES_LIBRETRO := \
 	$(CORE_DIR)/rpcs3/Input/pad_thread.cpp \
@@ -771,7 +772,7 @@ SOURCES_GENERATED := \
 # rslc (the shader compiler) as an emulator needs it: its extended dialect,
 # SPIR-V out, no Direct3D bytecode, no printed text, with the builder (stages
 # made by calls)
-FLAGS_LRC     := -std=gnu99 -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
+FLAGS_LRC     := -std=gnu99 -DHAVE_DYLIB -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P \
 	-DRSLC_EXTENDED -DRSLC_NO_DXBC -DRSLC_NO_TEXT -DRSLC_BUILD \
@@ -786,9 +787,9 @@ FLAGS_LIBUSB  := -std=gnu99 -fvisibility=hidden -w \
 FLAGS_ASMJIT  := -std=gnu++20 -w -DASMJIT_STATIC -isystem $(CORE_DIR)/3rdparty/asmjit/asmjit/src
 FLAGS_RTMIDI  := -std=c++11 -w -I$(CORE_DIR)/3rdparty/rtmidi/rtmidi
 FLAGS_FUSION  := -w -I$(CORE_DIR)/3rdparty/fusion/fusion/Fusion
-# Vulkan's headers and volk from the tree: nothing to install.
-# volk loads the Vulkan functions at run time; the core links no loader.
-FLAGS_VOLK    := -std=gnu99 -w -DVK_NO_PROTOTYPES -isystem $(CORE_DIR)/3rdparty/Vulkan-Headers/include
+# Vulkan's headers from the tree: nothing to install. The core loads the
+# Vulkan functions at run time (rpcs3/Emu/RSX/VK/vk_loader.c); it links no
+# loader.
 
 # RPCS3 itself (rpcs3_emu) and the core's own files (rpcs3_libretro)
 INCLUDES_RPCS3 := \
@@ -801,8 +802,7 @@ INCLUDES_RPCS3 := \
 	-I$(CORE_DIR)/3rdparty/rtmidi/rtmidi \
 	-isystem $(CORE_DIR)/3rdparty/asmjit/asmjit/src \
 	-isystem $(CORE_DIR)/3rdparty/GL \
-	-isystem $(CORE_DIR)/3rdparty/Vulkan-Headers/include \
-	-isystem $(CORE_DIR)/3rdparty/volk
+	-isystem $(CORE_DIR)/3rdparty/Vulkan-Headers/include
 INCLUDES_LIBRETRO := \
 	-I$(CORE_DIR)/rpcs3/Emu \
 	-I$(CORE_DIR)/rpcs3/libretro \

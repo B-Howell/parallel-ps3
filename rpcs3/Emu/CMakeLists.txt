@@ -668,6 +668,7 @@ if(TARGET 3rdparty_vulkan)
         RSX/VK/VKVertexProgram.cpp
         RSX/VK/VKTextureCache.cpp
         RSX/VK/VulkanAPI.cpp
+        RSX/VK/vk_loader.c
     )
     if(APPLE)
         target_sources(rpcs3_emu PRIVATE

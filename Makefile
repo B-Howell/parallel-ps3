@@ -72,7 +72,7 @@ include Makefile.common
 HOST_CC ?= cc
 PKG_CONFIG ?= pkg-config
 
-DEFINES := -DLIBRETRO_CORE -DHAVE_VULKAN -DVK_NO_PROTOTYPES -DAL_LIBTYPE_STATIC
+DEFINES := -DLIBRETRO_CORE -DHAVE_VULKAN -DVK_NO_PROTOTYPES -DHAVE_DYLIB -DAL_LIBTYPE_STATIC
 LIBS    :=
 
 # Unix
@@ -112,7 +112,7 @@ else ifeq ($(platform), osx)
 else ifneq (,$(findstring win,$(platform)))
    TARGET  := $(TARGET_NAME)_libretro.dll
    # Statically, so the DLL needs Windows' own DLLs and nothing
-   # else (volk opens vulkan-1.dll at run time); RETRO_API's dllexport is
+   # else (vulkan-1.dll is opened at run time); RETRO_API's dllexport is
    # what it exports
    SHARED  := -shared -static -static-libgcc -static-libstdc++ -Wl,--no-undefined
    OS_LIBUSB   := $(SOURCES_LIBUSB_WINDOWS)
@@ -353,12 +353,11 @@ OBJ_LIBUSB   := $(call objs,$(SOURCES_LIBUSB) $(OS_LIBUSB))
 OBJ_ASMJIT   := $(call objs,$(SOURCES_ASMJIT))
 OBJ_RTMIDI   := $(call objs,$(SOURCES_RTMIDI))
 OBJ_FUSION   := $(call objs,$(SOURCES_FUSION))
-OBJ_VOLK     := $(call objs,$(SOURCES_VOLK))
 OBJ_LIBRETRO := $(call objs,$(SOURCES_LIBRETRO) $(SOURCES_GENERATED) $(OS_LIBRETRO))
 OBJ_RPCS3    := $(call objs,$(SOURCES_RPCS3) $(OS_RPCS3))
 
 OBJECTS := $(OBJ_LRC) $(OBJ_LIBUSB) $(OBJ_ASMJIT) $(OBJ_RTMIDI) $(OBJ_FUSION) \
-	$(OBJ_VOLK) $(OBJ_RPCS3) $(OBJ_LIBRETRO)
+	$(OBJ_RPCS3) $(OBJ_LIBRETRO)
 
 $(OBJ_LRC):      FLAGS := $(FLAGS_LRC)
 # What atomic_t's wait and notify park through: built as threaded code, which
@@ -368,7 +367,6 @@ $(OBJ_LIBUSB):   FLAGS := $(FLAGS_LIBUSB)
 $(OBJ_ASMJIT):   FLAGS := $(FLAGS_ASMJIT)
 $(OBJ_RTMIDI):   FLAGS := $(FLAGS_RTMIDI)
 $(OBJ_FUSION):   FLAGS := $(FLAGS_FUSION)
-$(OBJ_VOLK):     FLAGS := $(FLAGS_VOLK)
 $(OBJ_RPCS3):    FLAGS := $(FLAGS_RPCS3)
 $(call objs,$(filter %.c,$(SOURCES_RPCS3) $(OS_RPCS3))): FLAGS := $(FLAGS_RPCS3_C)
 $(OBJ_LIBRETRO): FLAGS := $(FLAGS_LIBRETRO)
@@ -392,7 +390,7 @@ $(CORE_DIR)/rpcs3/rpcs3_version.o: $(CORE_DIR)/rpcs3/git-version.h
 # the fake toolchains in LLVM's clang tests, and delete them.
 OBJ_DIRS := $(sort $(dir \
 	$(SOURCES_LRC) $(SOURCES_ASMJIT) $(SOURCES_LIBUSB) $(SOURCES_RTMIDI) \
-	$(SOURCES_FUSION) $(SOURCES_VOLK) $(SOURCES_RPCS3) $(SOURCES_RPCS3_GL) $(SOURCES_LIBRETRO) \
+	$(SOURCES_FUSION) $(SOURCES_RPCS3) $(SOURCES_RPCS3_GL) $(SOURCES_LIBRETRO) \
 	$(SOURCES_LIBUSB_LINUX) \
 	$(SOURCES_LIBUSB_DARWIN) $(SOURCES_LIBUSB_WINDOWS) $(SOURCES_RPCS3_AARCH64) \
 	$(SOURCES_RPCS3_DARWIN) $(SOURCES_LIBRETRO_GL) $(SOURCES_LIBRETRO_NOGL) \
@@ -433,7 +431,6 @@ ARCHIVES := \
 	$(CORE_DIR)/libusb.a \
 	$(CORE_DIR)/librtmidi.a \
 	$(CORE_DIR)/libfusion.a \
-	$(CORE_DIR)/libvolk.a \
 	$(LLVM_ARCHIVE)
 
 $(CORE_DIR)/librpcs3_emu.a: $(OBJ_RPCS3)
@@ -442,7 +439,6 @@ $(CORE_DIR)/libasmjit.a: $(OBJ_ASMJIT)
 $(CORE_DIR)/libusb.a: $(OBJ_LIBUSB)
 $(CORE_DIR)/librtmidi.a: $(OBJ_RTMIDI)
 $(CORE_DIR)/libfusion.a: $(OBJ_FUSION)
-$(CORE_DIR)/libvolk.a: $(OBJ_VOLK)
 
 $(filter-out $(LLVM_ARCHIVE),$(ARCHIVES)):
 	$(SAY) AR $@
@@ -837,7 +833,7 @@ OBJ_SHADER_RUNNER := $(CORE_DIR)/rpcs3/libretro/tests/shader_runner.o
 $(OBJ_SHADER_CORPUS_TEST): FLAGS := $(FLAGS_LIBRETRO)
 $(OBJ_SHADER_CORPUS_TEST): $(CORE_DIR)/rpcs3/Emu/RSX/Program/SPIRVCommon.cpp $(CORE_DIR)/rpcs3/libretro/tests/shader_runner.h
 $(OBJ_SHADER_RUNNER): FLAGS := -std=gnu99 -Wall -Wextra -Wdeclaration-after-statement -Werror -DVK_NO_PROTOTYPES \
-	-isystem $(CORE_DIR)/3rdparty/Vulkan-Headers/include -isystem $(CORE_DIR)/3rdparty/volk
+	-isystem $(CORE_DIR)/3rdparty/Vulkan-Headers/include -I$(CORE_DIR)/rpcs3
 $(OBJ_SHADER_RUNNER): $(CORE_DIR)/rpcs3/libretro/tests/shader_runner.h
 
 $(SHADER_CORPUS_TEST): $(OBJ_SHADER_CORPUS_TEST) $(OBJ_SHADER_RUNNER) $(OBJ_LIBRETRO) $(ARCHIVES)

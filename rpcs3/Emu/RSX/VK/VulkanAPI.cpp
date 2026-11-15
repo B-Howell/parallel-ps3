@@ -12,17 +12,17 @@ namespace vk
 
 	bool load_vulkan()
 	{
-		return vkGetInstanceProcAddr || volkInitialize() == VK_SUCCESS;
+		return vk_loader_init() != 0;
 	}
 
 	void load_vulkan(PFN_vkGetInstanceProcAddr get_instance_proc_addr)
 	{
-		volkInitializeCustom(get_instance_proc_addr);
+		vk_loader_init_custom(get_instance_proc_addr);
 	}
 
 	void load_vulkan_instance(VkInstance instance)
 	{
-		volkLoadInstance(instance);
+		vk_loader_load_instance(instance);
 	}
 
 	void init()

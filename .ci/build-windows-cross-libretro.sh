@@ -10,7 +10,7 @@
 # here from the sources in the repository (BUILD_LLVM), the way the Android
 # build gets it.
 # The Vulkan headers come from the tree and the loader that comes with the
-# GPU driver is opened at run time (volk); GLEW is not used on Windows.
+# GPU driver is opened at run time (vk_loader.c); GLEW is not used on Windows.
 # OpenCV is left out, as it is optional.
 #
 # Expects to run from the top of the source tree, with the submodule URLs

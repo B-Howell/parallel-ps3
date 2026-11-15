@@ -341,7 +341,7 @@ jobs:
           cp "$f" $CORE
           strip -x $CORE
           # Nothing from Homebrew at its own path: zstd (LLVM's) goes next
-          # to the core. MoltenVK is not linked: volk opens the one RetroArch
+          # to the core. MoltenVK is not linked: the core opens the one RetroArch
           # carries at run time
           if otool -L $CORE | grep -q -i 'vulkan\|MoltenVK'; then echo "the core links Vulkan"; exit 1; fi
           ZSTD=$(otool -L $CORE | awk '/libzstd/ {print $1}')
