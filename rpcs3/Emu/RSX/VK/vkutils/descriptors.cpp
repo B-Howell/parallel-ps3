@@ -15,43 +15,49 @@ namespace vk
 		public:
 			inline void flush_all()
 			{
-				std::lock_guard lock(m_notifications_lock);
-
-				for (auto& set : m_notification_list)
+				turn_call(&m_turns, [&]
 				{
-					set->flush();
-				}
+					for (auto& set : m_notification_list)
+					{
+						set->flush();
+					}
 
-				m_notification_list.clear();
+					m_notification_list.clear();
+				});
 			}
 
 			void register_(descriptor_set* set)
 			{
-				std::lock_guard lock(m_notifications_lock);
-
-				m_notification_list.push_back(set);
-				// rsx_log.notice("[descriptor_manager::register] Now monitoring %u descriptor sets", m_notification_list.size());
+				turn_call(&m_turns, [&]
+				{
+					m_notification_list.push_back(set);
+					// rsx_log.notice("[descriptor_manager::register] Now monitoring %u descriptor sets", m_notification_list.size());
+				});
 			}
 
 			void deregister(descriptor_set* set)
 			{
-				std::lock_guard lock(m_notifications_lock);
-
-				m_notification_list.erase_if(FN(x == set));
-				// rsx_log.notice("[descriptor_manager::deregister] Now monitoring %u descriptor sets", m_notification_list.size());
+				turn_call(&m_turns, [&]
+				{
+					m_notification_list.erase_if(FN(x == set));
+					// rsx_log.notice("[descriptor_manager::deregister] Now monitoring %u descriptor sets", m_notification_list.size());
+				});
 			}
 
 			void destroy()
 			{
-				std::lock_guard lock(m_notifications_lock);
-				m_notification_list.clear();
+				turn_call(&m_turns, [&]
+				{
+					m_notification_list.clear();
+				});
 			}
 
 			dispatch_manager() = default;
 
 		private:
 			rsx::simple_array<descriptor_set*> m_notification_list;
-			std::mutex m_notifications_lock;
+			// The sets to flush change in turn (turn_calls.h): no lock
+			turn_calls_cpp m_turns;
 
 			dispatch_manager(const dispatch_manager&) = delete;
 			dispatch_manager& operator = (const dispatch_manager&) = delete;
@@ -535,19 +541,20 @@ namespace vk
 			return;
 		}
 
-		std::lock_guard lock(m_storage_lock);
+		turn_call(&m_storage_turns, [&]
+		{
+			const auto num_writes = ::size32(m_pending_writes);
+			const auto num_copies = ::size32(m_pending_copies);
+			vkUpdateDescriptorSets(*g_render_device, num_writes, m_pending_writes.data(), num_copies, m_pending_copies.data());
 
-		const auto num_writes = ::size32(m_pending_writes);
-		const auto num_copies = ::size32(m_pending_copies);
-		vkUpdateDescriptorSets(*g_render_device, num_writes, m_pending_writes.data(), num_copies, m_pending_copies.data());
+			m_storage_cache_id++;
 
-		m_storage_cache_id++;
-
-		m_push_type_mask = 0;
-		m_pending_writes.clear();
-		m_pending_copies.clear();
-		m_image_info_pool.clear();
-		m_buffer_info_pool.clear();
-		m_buffer_view_pool.clear();
+			m_push_type_mask = 0;
+			m_pending_writes.clear();
+			m_pending_copies.clear();
+			m_image_info_pool.clear();
+			m_buffer_info_pool.clear();
+			m_buffer_view_pool.clear();
+		});
 	}
 }

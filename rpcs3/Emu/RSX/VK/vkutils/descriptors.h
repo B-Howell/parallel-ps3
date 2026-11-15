@@ -1,7 +1,8 @@
 #pragma once
 
 #include "../VulkanAPI.h"
-#include "Utilities/mutex.h"
+#include "Emu/CPU/turn_calls.h"
+#include "util/atomic.hpp"
 
 #include "commands.h"
 #include "device.h"
@@ -213,9 +214,8 @@ namespace vk
 		const rsx::simple_array<WriteDescriptorSetT> peek() const { return m_pending_writes; }
 		u64 cache_id() const { return m_storage_cache_id; }
 
-		// Basic lockable for storage coherence
-		void lock() { m_storage_lock.lock(); }
-		void unlock() { m_storage_lock.unlock(); }
+		// The storage is filled and flushed in turn (turn_calls.h): no lock
+		turn_calls_cpp& storage_turns() { return m_storage_turns; }
 
 	private:
 		VkDescriptorSet m_handle = VK_NULL_HANDLE;
@@ -223,7 +223,7 @@ namespace vk
 		u64 m_push_type_mask = 0;
 		bool m_in_use = false;
 
-		shared_mutex m_storage_lock;
+		turn_calls_cpp m_storage_turns;
 		atomic_t<u64> m_storage_cache_id = 0;
 
 		rsx::simple_array<VkBufferView> m_buffer_view_pool;

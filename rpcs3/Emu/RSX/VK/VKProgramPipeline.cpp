@@ -584,8 +584,9 @@ namespace vk
 				fmt::throw_exception("Unexpected descriptor structure at index %u", idx);
 			};
 
+			// In the set's storage turn, as its flush
+			turn_call(&m_descriptor_set.storage_turns(), [&]
 			{
-				std::lock_guard lock(m_descriptor_set);
 				const bool cache_is_valid = m_descriptor_template_cache_id == m_descriptor_set.cache_id();
 
 				for (unsigned i = 0; i < m_descriptor_slots.size(); ++i)
@@ -600,7 +601,7 @@ namespace vk
 					update_descriptor_slot(i);
 					m_descriptors_dirty[i] = false;
 				}
-			}
+			});
 
 			// Push
 			m_descriptor_set.push(m_descriptor_template, m_descriptor_template_typemask);
