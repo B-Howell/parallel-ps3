@@ -101,6 +101,41 @@ nt_p2p_port::nt_p2p_port(u16 port)
 nt_p2p_port::~nt_p2p_port()
 {
 	np::close_socket(p2p_socket);
+
+	// What nobody took
+	take_rpcn_msgs();
+	take_sign_msgs();
+}
+
+// In the order they came: the stack gives them newest first
+std::vector<std::vector<u8>> nt_p2p_port::take_rpcn_msgs()
+{
+	std::vector<std::vector<u8>> msgs;
+
+	for (mpsc_stack_node_t* node = mpsc_stack_reverse(mpsc_stack_drain(&rpcn_msgs)); node;)
+	{
+		auto* const msg = static_cast<rpcn_msg_node*>(node);
+		node = node->next;
+		msgs.push_back(std::move(msg->data));
+		delete msg;
+	}
+
+	return msgs;
+}
+
+std::vector<signaling_message> nt_p2p_port::take_sign_msgs()
+{
+	std::vector<signaling_message> msgs;
+
+	for (mpsc_stack_node_t* node = mpsc_stack_reverse(mpsc_stack_drain(&sign_msgs)); node;)
+	{
+		auto* const msg = static_cast<sign_msg_node*>(node);
+		node = node->next;
+		msgs.push_back(std::move(msg->msg));
+		delete msg;
+	}
+
+	return msgs;
 }
 
 void nt_p2p_port::dump_packet(p2ps_encapsulated_tcp* tcph)
@@ -201,21 +236,19 @@ bool nt_p2p_port::recv_data()
 		{
 		case SUBSET_RPCN:
 		{
-			std::lock_guard lock(s_rpcn_mutex);
-			rpcn_msgs.push_back(std::move(vport_0_data));
+			auto* const node = new rpcn_msg_node;
+			node->data = std::move(vport_0_data);
+			mpsc_stack_push(&rpcn_msgs, node);
 			return true;
 		}
 		case SUBSET_SIGNALING:
 		{
-			signaling_message msg;
+			auto* const node = new sign_msg_node;
+			signaling_message& msg = node->msg;
 			msg.src_addr = reinterpret_cast<struct sockaddr_in*>(&native_addr)->sin_addr.s_addr;
 			msg.src_port = std::bit_cast<u16, be_t<u16>>(reinterpret_cast<struct sockaddr_in*>(&native_addr)->sin_port);
 			msg.data     = std::move(vport_0_data);
-
-			{
-				std::lock_guard lock(s_sign_mutex);
-				sign_msgs.push_back(std::move(msg));
-			}
+			mpsc_stack_push(&sign_msgs, node);
 
 			auto& sigh = g_fxo->get<named_thread<signaling_handler>>();
 			sigh.wake_up();

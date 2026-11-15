@@ -78,12 +78,7 @@ std::vector<std::vector<u8>> get_rpcn_msgs()
 		std::lock_guard list_lock(nc.list_p2p_ports_mutex);
 		if (nc.list_p2p_ports.contains(SCE_NP_PORT))
 		{
-			auto& def_port = ::at32(nc.list_p2p_ports, SCE_NP_PORT);
-			{
-				std::lock_guard lock(def_port.s_rpcn_mutex);
-				msgs = std::move(def_port.rpcn_msgs);
-				def_port.rpcn_msgs.clear();
-			}
+			msgs = ::at32(nc.list_p2p_ports, SCE_NP_PORT).take_rpcn_msgs();
 		}
 		else
 		{
@@ -102,12 +97,7 @@ std::vector<signaling_message> get_sign_msgs()
 		std::lock_guard list_lock(nc.list_p2p_ports_mutex);
 		if (nc.list_p2p_ports.contains(SCE_NP_PORT))
 		{
-			auto& def_port = ::at32(nc.list_p2p_ports, SCE_NP_PORT);
-			{
-				std::lock_guard lock(def_port.s_sign_mutex);
-				msgs = std::move(def_port.sign_msgs);
-				def_port.sign_msgs.clear();
-			}
+			msgs = ::at32(nc.list_p2p_ports, SCE_NP_PORT).take_sign_msgs();
 		}
 		else
 		{

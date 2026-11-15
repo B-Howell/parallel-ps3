@@ -2,6 +2,8 @@
 
 #include <set>
 
+#include <queues/mpsc_stack.h>
+
 #include "lv2_socket_p2ps.h"
 
 #ifdef _WIN32
@@ -59,12 +61,22 @@ struct nt_p2p_port
 	// Current free port index
 	u16 binding_port = 30000;
 
-	// Queued messages from RPCN
-	shared_mutex s_rpcn_mutex;
-	std::vector<std::vector<u8>> rpcn_msgs{};
-	// Queued signaling messages
-	shared_mutex s_sign_mutex;
-	std::vector<signaling_message> sign_msgs{};
+	// Queued messages from RPCN and signaling messages: the P2P thread
+	// pushes each on a stack (mpsc_stack), which their readers take whole
+	// (take_rpcn_msgs, take_sign_msgs): no lock
+	struct rpcn_msg_node : mpsc_stack_node_t
+	{
+		std::vector<u8> data;
+	};
+	struct sign_msg_node : mpsc_stack_node_t
+	{
+		signaling_message msg;
+	};
+	mpsc_stack_t rpcn_msgs{};
+	mpsc_stack_t sign_msgs{};
+
+	std::vector<std::vector<u8>> take_rpcn_msgs();
+	std::vector<signaling_message> take_sign_msgs();
 
 	std::array<u8, 65535> p2p_recv_data{};
 
