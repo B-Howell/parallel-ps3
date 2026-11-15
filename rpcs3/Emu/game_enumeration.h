@@ -2,7 +2,7 @@
 
 #include "util/types.hpp"
 #include "util/sysinfo.hpp"
-#include "Utilities/mutex.h"
+#include "Emu/CPU/turn_calls.h"
 #include "emu_callbacks.h"
 #include "System.h"
 #include "system_utils.hpp"
@@ -61,10 +61,12 @@ private:
 	virtual void add_game_apply_extras([[maybe_unused]] game_info_type& game) {}
 	void add_disc_dir(const std::string& path, std::vector<std::string>& legit_paths);
 
-	shared_mutex m_games_mutex;
+	// The games found and the paths to look in change in turn
+	// (turn_calls.h), from the scanning threads: no lock
+	turn_calls_cpp m_games_turns;
 	std::vector<game_info_type> m_games;
 
-	shared_mutex m_path_mutex;
+	turn_calls_cpp m_path_turns;
 	std::vector<path_entry> m_path_entries;
 	std::set<std::string> m_path_list;
 	std::unordered_set<std::string> m_scanned_iso_paths;
@@ -131,8 +133,7 @@ std::optional<game_info_type> game_enumeration<game_info_type>::get_game_info(co
 		}
 
 		// Track this ISO path for cache cleanup after scan completes.
-		std::lock_guard lock(m_path_mutex);
-		m_scanned_iso_paths.insert(dir_or_elf);
+		turn_call(&m_path_turns, [&] { m_scanned_iso_paths.insert(dir_or_elf); });
 	}
 
 	const auto file_exists = [&archive, &cache_entry](const std::string& path)
@@ -339,13 +340,11 @@ std::optional<game_info_type> game_enumeration<game_info_type>::get_game_info(co
 template <typename game_info_type>
 void game_enumeration<game_info_type>::push_path(const std::string& path, std::vector<std::string>& legit_paths)
 {
+	if (!turn_call(&m_path_turns, [&] { return m_path_list.insert(path).second; }))
 	{
-		std::lock_guard lock(m_path_mutex);
-		if (!m_path_list.insert(path).second)
-		{
-			return;
-		}
+		return;
 	}
+
 	legit_paths.push_back(path);
 }
 
@@ -356,8 +355,7 @@ void game_enumeration<game_info_type>::add_game(const std::string& path, const s
 	{
 		add_game_apply_extras(*game);
 
-		std::lock_guard lock(m_games_mutex);
-		m_games.push_back(std::move(*game));
+		turn_call(&m_games_turns, [&] { m_games.push_back(std::move(*game)); });
 	}
 }
 
@@ -400,8 +398,7 @@ void game_enumeration<game_info_type>::parse_directories()
 			continue;
 		}
 
-		std::lock_guard lock(m_path_mutex);
-		m_path_entries.emplace_back(path_entry{hdd0_game + entry.name, false});
+		turn_call(&m_path_turns, [&] { m_path_entries.emplace_back(path_entry{hdd0_game + entry.name, false}); });
 	}
 
 	for (const auto& [serial, path] : Emu.GetGamesConfig().get_games())
@@ -425,8 +422,7 @@ void game_enumeration<game_info_type>::parse_directories()
 			game_dir = game_dir.substr(0, game_dir.size() - 4);
 		}
 
-		std::lock_guard lock(m_path_mutex);
-		m_path_entries.emplace_back(path_entry{game_dir, true});
+		turn_call(&m_path_turns, [&] { m_path_entries.emplace_back(path_entry{game_dir, true}); });
 	}
 }
 
@@ -589,30 +585,33 @@ void game_enumeration<game_info_type>::apply_patches()
 template <typename game_info_type>
 void game_enumeration<game_info_type>::add_vfs_entry()
 {
-	std::lock_guard lock(m_path_mutex);
-	m_path_entries.emplace_back(path_entry{m_dev_flash + "vsh/module/vsh.self", false});
+	turn_call(&m_path_turns, [&] { m_path_entries.emplace_back(path_entry{m_dev_flash + "vsh/module/vsh.self", false}); });
 }
 
 template <typename game_info_type>
 void game_enumeration<game_info_type>::remove_duplicates()
 {
-	std::lock_guard lock(m_path_mutex);
-	std::sort(m_path_entries.begin(), m_path_entries.end(), [](const path_entry& l, const path_entry& r){return l.path < r.path;});
-	m_path_entries.erase(unique(m_path_entries.begin(), m_path_entries.end(), [](const path_entry& l, const path_entry& r){return l.path == r.path;}), m_path_entries.end());
+	turn_call(&m_path_turns, [&]
+	{
+		std::sort(m_path_entries.begin(), m_path_entries.end(), [](const path_entry& l, const path_entry& r){return l.path < r.path;});
+		m_path_entries.erase(unique(m_path_entries.begin(), m_path_entries.end(), [](const path_entry& l, const path_entry& r){return l.path == r.path;}), m_path_entries.end());
+	});
 }
 
 template <typename game_info_type>
 void game_enumeration<game_info_type>::clear(bool clear_iso_paths)
 {
-	std::scoped_lock lock(m_games_mutex, m_path_mutex);
-	m_path_entries.clear();
-	m_path_list.clear();
-	m_games.clear();
-
-	if (clear_iso_paths)
+	turn_call(&m_games_turns, [&] { m_games.clear(); });
+	turn_call(&m_path_turns, [&]
 	{
-		m_scanned_iso_paths.clear();
-	}
+		m_path_entries.clear();
+		m_path_list.clear();
+
+		if (clear_iso_paths)
+		{
+			m_scanned_iso_paths.clear();
+		}
+	});
 }
 
 template <typename game_info_type>
