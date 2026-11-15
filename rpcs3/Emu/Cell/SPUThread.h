@@ -765,7 +765,16 @@ public:
 	std::pair<u32, u32> read_dec() const; // Read decrementer
 
 	atomic_t<u32> run_ctrl = 0; // SPU Run Control register (only provided to get latest data written)
-	shared_mutex run_ctrl_mtx;
+	// Counted up each time a raw SPU stops running, with a wake: what a stop
+	// request waits on, so a run request after the stop cannot keep it
+	// waiting (run requests take no lock)
+	atomic_t<u32> stop_count = 0;
+
+	void count_stop()
+	{
+		stop_count++;
+		stop_count.notify_all();
+	}
 
 	struct alignas(8) status_npc_sync_var
 	{

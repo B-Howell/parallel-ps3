@@ -1418,6 +1418,7 @@ void spu_thread::cpu_return()
 		}).second)
 		{
 			status_npc.notify_one();
+			count_stop();
 		}
 	}
 	else if (is_stopped())
@@ -6565,6 +6566,7 @@ bool spu_thread::stop_and_signal(u32 code)
 		set_status_npc();
 
 		status_npc.notify_one();
+		count_stop();
 
 		int_ctrl[2].set(SPU_INT2_STAT_SPU_STOP_AND_SIGNAL_INT);
 		check_state();
@@ -7058,6 +7060,7 @@ void spu_thread::halt()
 		});
 
 		status_npc.notify_one();
+		count_stop();
 
 		int_ctrl[2].set(SPU_INT2_STAT_SPU_HALT_OR_STEP_INT);
 

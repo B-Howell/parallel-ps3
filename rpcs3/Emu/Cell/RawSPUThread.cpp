@@ -10,10 +10,10 @@ inline void try_start(spu_thread& spu)
 {
 	bool notify = false;
 
+	// One compare-and-swap of the status: a stop request in progress is not
+	// held up by it, nor it by the stop (stop_count)
 	if (~spu.status_npc.load().status & SPU_STATUS_RUNNING)
 	{
-		reader_lock lock(spu.run_ctrl_mtx);
-
 		if (spu.status_npc.fetch_op([](spu_thread::status_npc_sync_var& value)
 		{
 			if (value.status & SPU_STATUS_RUNNING)
@@ -416,15 +416,17 @@ bool spu_thread::write_reg(const u32 addr, const u32 value)
 				return true;
 			}
 
-			std::scoped_lock lock(run_ctrl_mtx);
+			// Read before the look: a stop after it counts, and the wait ends
+			// with it even if a run request has started the SPU again since
+			const u32 stops = stop_count.load();
 
 			if (status_npc.load().status & SPU_STATUS_RUNNING)
 			{
 				state += cpu_flag::stop + cpu_flag::ret;
 
-				for (status_npc_sync_var old; (old = status_npc).status & SPU_STATUS_RUNNING;)
+				while (stop_count.load() == stops && (status_npc.load().status & SPU_STATUS_RUNNING))
 				{
-					utils::bless<atomic_t<u32>>(&status_npc)[0].wait(old.status);
+					stop_count.wait(stops);
 				}
 			}
 		}
