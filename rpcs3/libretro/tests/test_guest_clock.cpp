@@ -308,6 +308,38 @@ int main()
 			had, guest_us / 1000.0, expected, while_paused, static_cast<long long>(took_ms));
 	}
 
+	// A 4x fast-forward: retro_run every 4 ms of the host's. The guest's
+	// clock moves smoothly through each frame, at four times the host's
+	// pace: never a jump of several audio periods at once, which cellAudio
+	// took for a game that had not fed its buffers - and played silence
+	{
+		for (int f = 0; f < 10; f++)
+		{
+			libretro_guest_clock_grant(kFrame);
+			sleep_ms(4);
+		}
+
+		u64 worst_jump = 0, moved = 0;
+		u64 last = get_slaved_system_time();
+		const u64 first = last;
+		for (int f = 0; f < 60; f++)
+		{
+			libretro_guest_clock_grant(kFrame);
+			const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(4);
+			while (std::chrono::steady_clock::now() < until)
+			{
+				std::this_thread::sleep_for(std::chrono::microseconds(200));
+				const u64 now = get_slaved_system_time();
+				worst_jump = std::max<u64>(worst_jump, now - last);
+				last = now;
+			}
+		}
+		moved = last - first;
+		CHECK(worst_jump < 5'000);                       // a period is 5.3 ms
+		CHECK(moved >= 900'000 && moved <= 1'050'000);   // 60 frames: 1 s
+		std::printf("test_guest_clock: 4x fast-forward: guest moved %.1f ms in 60 frames, its largest jump %.2f ms\n", moved / 1000.0, worst_jump / 1000.0);
+	}
+
 	// cellAudio's periods go by the guest's clock: its ring's time moves a
 	// frame's worth for a frame of retro_run, and not while it is paused
 	{

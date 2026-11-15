@@ -25,11 +25,18 @@ static u64 systemtime_offset;
 // forward to the frame granted before (fast-forward). Over any stretch the
 // guest has had exactly the frames retro_run asked for. The PPU, SPU and RSX
 // threads are not stopped: only their time is bounded. In host TSC ticks:
-// the guest's TSC is tsc - lag, held within [floor, grant]; grant 0 until
-// the first retro_run, the host's own until then. One writer (retro_run),
-// read by every thread through a sequence count.
+// the guest's TSC is floor + (tsc - base) * rate, held within [floor,
+// grant]: from the start of its frame at the pace retro_run has been
+// coming (rate, 16.16: 1 at the declared frame rate, 4 in a 4x
+// fast-forward, a half in slow motion), so in fast-forward it moves
+// smoothly through the frame instead of at the host's pace and then a jump
+// at the next one - which an audio period, a timer or a timeout saw as a
+// stall of several periods at once. grant 0 until the first retro_run, the
+// host's own until then. One writer (retro_run), read by every thread
+// through a sequence count.
 static retro_atomic_int_t s_clock_seq;
-static retro_atomic_size_t s_clock_lag;
+static retro_atomic_size_t s_clock_lag; // base - floor: the host's TSC at the grant less the frame's start
+static retro_atomic_size_t s_clock_rate;
 static retro_atomic_size_t s_clock_floor;
 static retro_atomic_size_t s_clock_grant;
 // How fast the guest's time has been passing against the host's, 16.16
@@ -43,6 +50,7 @@ struct clock_slave
 	u64 lag;
 	u64 floor;
 	u64 grant;
+	u64 rate; // 16.16
 };
 
 static clock_slave read_clock_slave()
@@ -56,10 +64,24 @@ static clock_slave read_clock_slave()
 		c.lag   = retro_atomic_load_relaxed_size(&s_clock_lag);
 		c.floor = retro_atomic_load_relaxed_size(&s_clock_floor);
 		c.grant = retro_atomic_load_relaxed_size(&s_clock_grant);
+		c.rate  = retro_atomic_load_relaxed_size(&s_clock_rate);
 		retro_atomic_thread_fence_acquire();
 		if (retro_atomic_load_relaxed_int(&s_clock_seq) == seq)
 			return c;
 	}
+}
+
+// The guest's TSC at the host's @tsc, by @c: from the frame's start at its rate
+static u64 slaved_of(const clock_slave& c, u64 tsc)
+{
+	const u64 base = c.floor + c.lag;
+	if (tsc <= base)
+		return c.floor;
+	// The rate is at most 64 (2^22 in 16.16): 2^41 ticks of the host's (over
+	// ten minutes) times it stays within 64 bits, and is past any frame
+	const u64 since = std::min<u64>(tsc - base, u64{1} << 41);
+	const u64 moved = (since * c.rate) >> 16;
+	return std::min<u64>(c.floor + std::min<u64>(moved, c.grant - c.floor), c.grant);
 }
 
 static u64 slaved_tsc(u64 tsc)
@@ -67,7 +89,7 @@ static u64 slaved_tsc(u64 tsc)
 	const clock_slave c = read_clock_slave();
 	if (!c.grant)
 		return tsc;
-	return std::clamp<u64>(tsc - c.lag, c.floor, c.grant);
+	return slaved_of(c, tsc);
 }
 
 // retro_run's thread: one more frame of the guest's time
@@ -103,6 +125,8 @@ void libretro_guest_clock_grant(double frame_seconds)
 	s_clock_last_grant_tsc = tsc;
 	retro_atomic_store_release_int(&s_clock_speed, speed);
 	grant = floor + frame;
+	// The first frame at the host's pace; after, at retro_run's
+	const u64 rate = static_cast<u64>(speed);
 
 	const int seq = retro_atomic_load_relaxed_int(&s_clock_seq);
 	retro_atomic_store_relaxed_int(&s_clock_seq, seq + 1);
@@ -110,6 +134,7 @@ void libretro_guest_clock_grant(double frame_seconds)
 	retro_atomic_store_relaxed_size(&s_clock_lag, lag);
 	retro_atomic_store_relaxed_size(&s_clock_floor, floor);
 	retro_atomic_store_relaxed_size(&s_clock_grant, grant);
+	retro_atomic_store_relaxed_size(&s_clock_rate, rate);
 	retro_atomic_store_release_int(&s_clock_seq, seq + 2);
 
 	// Threads waiting for the guest's time to pass
@@ -134,7 +159,7 @@ u64 libretro_guest_wait_as_host(u64 guest_us)
 		return guest_us;
 	u64 host_us = std::max<u64>((std::min<u64>(guest_us, u64{umax} >> 16) << 16) / static_cast<u64>(speed), 1);
 	const clock_slave c = read_clock_slave();
-	if (c.grant && utils::get_tsc() - c.lag - c.floor >= c.grant - c.floor)
+	if (c.grant && slaved_of(c, utils::get_tsc()) >= c.grant)
 		host_us = std::max<u64>(host_us, 1000);
 	return host_us;
 }
@@ -165,11 +190,23 @@ static u64 host_to_slaved_time(u64 time)
 	const clock_slave c = read_clock_slave();
 	if (!c.grant)
 		return time;
-	const s64 lag = static_cast<s64>(c.lag);
-	const s64 sfreq = static_cast<s64>(freq);
-	const s64 lag_us = lag / sfreq * 1000000ll + lag % sfreq * 1000000ll / sfreq;
-	const u64 grant_us = c.grant / freq * 1000000ull + c.grant % freq * 1000000ull / freq;
-	return std::min<u64>(time - static_cast<u64>(lag_us), grant_us);
+	// In the TSC's ticks, rounded down (so never later than the clock read
+	// after it): from the frame's start at the frame's rate, as slaved_of;
+	// a host time before the frame's start is that much of the guest's time
+	// before it
+	const u64 tsc = time / 1000000ull * freq + time % 1000000ull * freq / 1000000ull;
+	const u64 base = c.floor + c.lag;
+	u64 guest;
+	if (tsc >= base)
+	{
+		guest = slaved_of(c, tsc);
+	}
+	else
+	{
+		const u64 before = (std::min<u64>(base - tsc, u64{1} << 41) * c.rate) >> 16;
+		guest = c.floor - std::min<u64>(before, c.floor);
+	}
+	return guest / freq * 1000000ull + guest % freq * 1000000ull / freq;
 }
 
 #ifndef __linux__
