@@ -1,6 +1,13 @@
 // RPCS3 libretro core implementation
 // Focuses on OpenGL rendering backend
 
+#ifdef _WIN32
+// winsock2.h before anything else: stdafx.h and what follows bring in
+// windows.h, and winsock2.h after it warns (winsock.h's sockets were there
+// first). Without WIN32_LEAN_AND_MEAN, as windows.h was always had here:
+// the timer resolution calls need its mmsystem.h
+#include <winsock2.h>
+#endif
 #include "stdafx.h"
 #include <bit>
 #include <deque>
@@ -98,8 +105,6 @@
 #include <cctype>
 
 #ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <winsock2.h>
 #include <Windows.h>
 #endif
 #ifdef __linux__
