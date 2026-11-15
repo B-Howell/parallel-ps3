@@ -18,10 +18,10 @@ bool libretro_audio_multi_available();
 // sample rate over @frame_rate, the frames a second the core declares
 void libretro_audio_process(retro_audio_sample_batch_t audio_batch_cb, double frame_rate);
 
-// LibretroAudioBackend - AudioBackend implementation for libretro. Nothing
-// is buffered here. cellAudio's ring is lent to retro_run where it lies
-// (SetLendRing): the frontend reads the game's samples from the ring's own
-// memory. A source with only a write callback (the RSX audio path) is
+// LibretroAudioBackend - AudioBackend implementation for libretro. The
+// backend has a ring of its own, made with it and lent to cellAudio
+// (LendRing), which writes the game's audio into it; retro_run hands the
+// frontend the samples where they lie, in the ring's own memory. A source with only a write callback (the RSX audio path) is
 // pulled from into the buffer retro_run hands the frontend.
 class LibretroAudioBackend : public AudioBackend
 {
@@ -29,22 +29,30 @@ private:
     retro_atomic_int_t m_playing;
     retro_atomic_int_t m_initialized;
 
-    // Who is using the callbacks and the format: 1 while retro_run pulls,
-    // 2 while cellAudio's thread opens, closes or sets them. retro_run never
-    // waits for it - it pulls nothing that run and the time is owed to the
-    // next - and the other side waits only out of a pull.
-    retro_atomic_int_t m_access;
+    // Nothing here is locked, and neither side ever waits for the other.
+    //
+    // The stream's format, one word, from Open and Close for retro_run:
+    // channels (bits 0-3, 0 while closed), float (bit 4), bytes a sample
+    // (5-7), the frontend's speakers (8-39), and a count of changes (40
+    // up). retro_run reads it before and after each pull, and drops what it
+    // pulled across a change
+    retro_atomic_64_t m_format;
 
-    // The layout's speakers as the frontend names them, worked out at Open
-    unsigned m_speakers = 0;
+    // The backend's ring, made with it and freed with it, so it is never
+    // taken from under a pull; lent to cellAudio while m_lending is set
+    lr_audio_ring m_ring{};
+    bool m_ring_made = false;
+    retro_atomic_int_t m_lending;
 
-    // cellAudio's ring, while it has one for this backend; and the bytes of
-    // a frame of what retro_run has on loan from it
-    lr_audio_ring* m_ring = nullptr;
+    // The write callbacks, in three slots: the one published (m_callback,
+    // 3 for none), the one a pull of retro_run's is in (m_callback_in_use,
+    // 3 for none) and one to set the next in - never one of the other two
+    std::function<u32(u32, void*)> m_callbacks[3];
+    retro_atomic_int_t m_callback;
+    retro_atomic_int_t m_callback_in_use;
+
+    // The bytes of a frame of what retro_run has on loan from the ring
     size_t m_lent_frame_bytes = 0;
-
-    void begin_exclusive();
-    void end_exclusive();
 
     // Note: We use the base class m_sampling_rate, m_sample_size, m_channels, m_layout
     // DO NOT shadow them here or audio format detection will break!
@@ -60,7 +68,8 @@ public:
 
     void SetWriteCallback(std::function<u32(u32, void*)> cb) override;
     void SetStateCallback(std::function<void(AudioStateEvent)> cb) override;
-    void SetLendRing(lr_audio_ring* ring) override;
+    lr_audio_ring* LendRing(usz bytes) override;
+    void EndLend() override;
 
     f64 GetCallbackFrameLen() override;
 
@@ -79,9 +88,8 @@ public:
 
     // retro_run's: exactly @frames frames of the ring where they lie, at
     // *@ptr, until Return - or 0 when the ring cannot lend that many in one
-    // piece (GetSamples then). Between a Borrow that lends and its Return
-    // cellAudio's thread cannot open, close or take the ring away: it waits
-    // for the Return.
+    // piece (GetSamples then). cellAudio's thread can open, close and end
+    // the lend meanwhile: the ring stays where it is.
     size_t Borrow(const void** ptr, size_t frames, lr_audio_format* format);
     void Return(size_t frames);
 };

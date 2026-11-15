@@ -11,7 +11,9 @@
 //   across a flush (nothing written before it is heard after it), and
 //   silence when the ring has less than is due;
 // - while cellAudio's thread opens, closes and sets the callback over and
-//   over, a run never waits for it: no run takes a millisecond.
+//   over, a run never waits for it: no run takes a millisecond;
+// - nor does cellAudio's thread wait for a run: opening, closing and
+//   ending the lend while retro_run has samples of the ring on loan.
 //
 // Built by `make check` from the core's own objects and archives, the same
 // link as the core's with this main.
@@ -199,12 +201,13 @@ int main()
 		LibretroAudioBackend backend;
 		CHECK(backend.Open("", AudioFreq::FREQ_48K, AudioSampleSize::FLOAT, AudioChannelCnt::STEREO, audio_channel_layout::automatic));
 
-		lr_audio_ring ring;
-		CHECK(lr_audio_ring_init(&ring, 4800 * 2 * sizeof(float))); // a tenth of a second
+		// The backend's own ring, holding a tenth of a second
+		lr_audio_ring* lent = backend.LendRing(4800 * 2 * sizeof(float));
+		CHECK(lent != nullptr);
+		lr_audio_ring& ring = *lent;
 		// The ring's memory, both mappings of it
 		s_lend_begin = ring.q.buffer;
 		s_lend_end = ring.q.buffer + ring.q.capacity * 2;
-		backend.SetLendRing(&ring);
 		backend.Play();
 
 		u32 produced = 0;
@@ -258,8 +261,8 @@ int main()
 			wrong += s_got_f32[i] != sample_value(after_flush + static_cast<u32>(i));
 		CHECK(wrong == 0);
 
-		// The ring taken away: silence, and the ring is not touched again
-		backend.SetLendRing(nullptr);
+		// The lend ended: silence, and the ring is not read again
+		backend.EndLend();
 		fill(800);
 		const usz used = lr_audio_ring_used(&ring);
 		s_got_f32.clear();
@@ -269,7 +272,6 @@ int main()
 		CHECK(s_got_f32.empty() && s_got_s16.size() == 800u * 2);
 
 		backend.Close();
-		lr_audio_ring_free(&ring);
 		s_lend_begin = s_lend_end = nullptr;
 	}
 
@@ -306,6 +308,56 @@ int main()
 		backend.Close();
 		CHECK(worst_ms < 1.0);
 		std::printf("test_audio_frontend: slowest run while cellAudio's thread churns: %.3f ms\n", worst_ms);
+	}
+
+	// retro_run with samples of the ring on loan while cellAudio's thread
+	// opens, closes, sets a callback and ends and starts the lend: none of
+	// it waits for the loan to be given back (it used to spin until it
+	// was), and the loan, given back after, is harmless
+	{
+		CHECK(libretro_audio_negotiate_multi(environ_multi));
+		LibretroAudioBackend backend;
+		CHECK(backend.Open("", AudioFreq::FREQ_48K, AudioSampleSize::FLOAT, AudioChannelCnt::STEREO, audio_channel_layout::automatic));
+		lr_audio_ring* ring = backend.LendRing(4800 * 2 * sizeof(float));
+		CHECK(ring != nullptr);
+		backend.Play();
+		std::vector<float> block(800 * 2, 0.25f);
+		CHECK(lr_audio_ring_push(ring, block.data(), block.size() * sizeof(float), false) == block.size() * sizeof(float));
+
+		const void* ptr = nullptr;
+		lr_audio_format format{};
+		CHECK(backend.Borrow(&ptr, 800, &format) == 800);
+
+		double worst_ms = 0;
+		std::thread other([&]
+		{
+			const auto t0 = std::chrono::steady_clock::now();
+			backend.EndLend();
+			backend.Close();
+			backend.SetWriteCallback(produce);
+			backend.Open("", AudioFreq::FREQ_48K, AudioSampleSize::FLOAT, AudioChannelCnt::STEREO, audio_channel_layout::automatic);
+			backend.SetWriteCallback(nullptr);
+			ring = backend.LendRing(4800 * 2 * sizeof(float));
+			worst_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+		});
+		// The loan held for 50 ms
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		backend.Return(800);
+		other.join();
+		CHECK(worst_ms < 10.0);
+
+		// The new stream after it: what is written now is what is heard
+		backend.Play();
+		std::vector<float> fresh(800 * 2, 0.5f);
+		CHECK(lr_audio_ring_push(ring, fresh.data(), fresh.size() * sizeof(float), false) == fresh.size() * sizeof(float));
+		s_got_f32.clear();
+		libretro_audio_process(take_s16, 60.0);
+		usz wrong = 0;
+		for (float v : s_got_f32)
+			wrong += v != 0.5f;
+		CHECK(s_got_f32.size() == 800u * 2 && wrong == 0);
+		backend.Close();
+		std::printf("test_audio_frontend: cellAudio's thread reopened the stream in %.3f ms while retro_run held a loan for 50 ms\n", worst_ms);
 	}
 
 	std::printf("test_audio_frontend: %s\n", failures ? "FAIL" : "ok");

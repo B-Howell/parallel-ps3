@@ -155,8 +155,11 @@ audio_ringbuffer::audio_ringbuffer(cell_audio_config& _cfg)
 		return cfg.audio_min_buffer_duration;
 	}();
 
-	ensure(lr_audio_ring_init(&cb_ringbuf, static_cast<u32>(cfg.backend_ch_cnt * cfg.audio_sampling_rate * cfg.audio_sample_size * buffer_dur_mult)));
-	backend->SetLendRing(&cb_ringbuf);
+	const usz ring_bytes = static_cast<u32>(cfg.backend_ch_cnt * cfg.audio_sampling_rate * cfg.audio_sample_size * buffer_dur_mult);
+	if (lr_audio_ring* lent = backend->LendRing(ring_bytes))
+		ring = lent;
+	else
+		ensure(lr_audio_ring_init(&cb_ringbuf, ring_bytes));
 	backend->SetStateCallback(std::bind(&audio_ringbuffer::backend_state_callback, this, std::placeholders::_1));
 }
 
@@ -167,8 +170,8 @@ audio_ringbuffer::~audio_ringbuffer()
 		flush();
 	}
 
-	// The backend is out of the ring before it goes
-	backend->SetLendRing(nullptr);
+	// The backend's ring stays the backend's: nothing waits for its reader
+	backend->EndLend();
 	backend->Close();
 	lr_audio_ring_free(&cb_ringbuf);
 }
@@ -232,7 +235,7 @@ float* audio_ringbuffer::get_current_buffer() const
 u64 audio_ringbuffer::get_enqueued_samples() const
 {
 	AUDIT(cfg.buffering_enabled);
-	return lr_audio_ring_used(&cb_ringbuf) / (cfg.audio_sample_size * cfg.backend_ch_cnt);
+	return lr_audio_ring_used(ring) / (cfg.audio_sample_size * cfg.backend_ch_cnt);
 }
 
 u64 audio_ringbuffer::get_enqueued_playtime() const
@@ -256,7 +259,7 @@ void audio_ringbuffer::enqueue(bool enqueue_silence, bool force)
 		cur_pos = (cur_pos + 1) % cfg.num_allocated_buffers;
 	}
 
-	if (!lr_audio_ring_active(&cb_ringbuf) && !force)
+	if (!lr_audio_ring_active(ring) && !force)
 	{
 		// backend is not ready yet
 		return;
@@ -298,7 +301,7 @@ void audio_ringbuffer::commit_data(f32* buf, u32 sample_cnt)
 		AudioBackend::convert_to_s16(sample_cnt_out, buf, buf);
 	}
 
-	lr_audio_ring_push(&cb_ringbuf, buf, sample_cnt_out * cfg.audio_sample_size, false);
+	lr_audio_ring_push(ring, buf, sample_cnt_out * cfg.audio_sample_size, false);
 }
 
 void audio_ringbuffer::play()
@@ -316,7 +319,7 @@ void audio_ringbuffer::play()
 void audio_ringbuffer::flush()
 {
 	backend->Pause();
-	lr_audio_ring_flush(&cb_ringbuf);
+	lr_audio_ring_flush(ring);
 	playing = false;
 }
 

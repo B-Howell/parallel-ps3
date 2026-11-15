@@ -310,7 +310,10 @@ private:
 
 	// To the backend: written here, lent to retro_run where it lies. The
 	// backend having come for audio ("active") is the ring's to tell.
+	// The ring the frontend's pulls take the audio from: the backend's own
+	// (LendRing), or cb_ringbuf for a backend with none
 	lr_audio_ring cb_ringbuf{};
+	lr_audio_ring* ring = &cb_ringbuf;
 
 	atomic_t<bool> backend_device_changed = false;
 	bool playing = false;

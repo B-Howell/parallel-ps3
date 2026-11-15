@@ -80,10 +80,13 @@ public:
 	// Callback should return number of submitted bytes. Calling other backend functions from callback is unsafe.
 	virtual void SetWriteCallback(std::function<u32(u32 /* byte_cnt */, void* /* buffer */)> cb);
 
-	// The ring the backend takes the game's audio from where it lies, in
-	// place of the write callback (nullptr: none any more; returns once the
-	// backend is out of it). A backend that only copies ignores it.
-	virtual void SetLendRing(struct lr_audio_ring* /*ring*/) {}
+	// The backend's own ring, which it takes the game's audio from where it
+	// lies, in place of the write callback: holding @bytes from now on and
+	// empty, for the caller to write into until EndLend. It lives as long as
+	// the backend does, so nothing waits for the reader to be out of it.
+	// nullptr from a backend that has none: the caller keeps its own.
+	virtual struct lr_audio_ring* LendRing(usz /*bytes*/) { return nullptr; }
+	virtual void EndLend() {}
 
 	// Sets error callback. It's called when backend detects event in audio chain that needs immediate attention.
 	// Calling other backend functions from callback is unsafe.

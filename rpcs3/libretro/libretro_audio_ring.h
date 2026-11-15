@@ -58,6 +58,9 @@ size_t lr_audio_ring_used(const struct lr_audio_ring *ring);
 size_t lr_audio_ring_push(struct lr_audio_ring *ring, const void *data,
       size_t bytes, bool force);
 
+/* What it holds for the writer from now on: @bytes, at most what it was set
+ * up to hold. */
+void lr_audio_ring_set_limit(struct lr_audio_ring *ring, size_t bytes);
 /* Drops what is waiting, and the reader's "active". */
 void lr_audio_ring_flush(struct lr_audio_ring *ring);
 

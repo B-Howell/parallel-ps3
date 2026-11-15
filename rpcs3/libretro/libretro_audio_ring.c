@@ -20,6 +20,12 @@ bool lr_audio_ring_init(struct lr_audio_ring *ring, size_t bytes)
    return true;
 }
 
+void lr_audio_ring_set_limit(struct lr_audio_ring *ring, size_t bytes)
+{
+   size_t most = ring->q.capacity / 2;
+   ring->limit = bytes < most ? bytes : most;
+}
+
 void lr_audio_ring_free(struct lr_audio_ring *ring)
 {
    if (ring->q.buffer)
