@@ -2,6 +2,8 @@
 
 #include "Emu/Memory/vm_ptr.h"
 
+#include <retro_atomic.h>
+
 // Return Codes
 enum
 {
@@ -330,11 +332,8 @@ struct disc_change_manager
 {
 	disc_change_manager();
 	virtual ~disc_change_manager();
-
-	std::mutex mtx;
-	atomic_t<bool> is_inserting = false;
-	vm::ptr<CellGameDiscEjectCallback> eject_callback = vm::null;
-	vm::ptr<CellGameDiscInsertCallback> insert_callback = vm::null;
+	disc_change_manager(const disc_change_manager&) = delete;
+	disc_change_manager& operator=(const disc_change_manager&) = delete;
 
 	enum class eject_state
 	{
@@ -343,7 +342,19 @@ struct disc_change_manager
 		ejected,
 		busy
 	};
-	atomic_t<eject_state> state = eject_state::unknown;
+
+	// No lock: the game's callbacks are one word (the eject callback's
+	// address low, the insert callback's high), and the disc's state one
+	// more, moved on by compare-and-swap. The frontend's eject and insert
+	// claim the state (inserted or ejected to busy) and the game's callback
+	// thread gives it back; a callback the game registers or unregisters
+	// meanwhile is the one the callback thread looks at when it runs.
+	retro_atomic_64_t callbacks{0};
+	retro_atomic_int_t state{static_cast<int>(eject_state::unknown)};
+
+	vm::ptr<CellGameDiscEjectCallback> eject_callback();
+	vm::ptr<CellGameDiscInsertCallback> insert_callback();
+	eject_state get_state();
 
 	error_code register_callbacks(vm::ptr<CellGameDiscEjectCallback> func_eject, vm::ptr<CellGameDiscInsertCallback> func_insert);
 	error_code unregister_callbacks();

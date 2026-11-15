@@ -14,6 +14,7 @@
 #include "cellSysutil.h"
 #include "cellMsgDialog.h"
 #include "cellGame.h"
+#include "hle_service.h"
 
 #include "Loader/PSF.h"
 #include "Utilities/StrUtil.h"
@@ -191,13 +192,18 @@ struct content_permission final
 // Content directory of the last cellGameDataCheckCreate2() call, measured by cellGameDataGetSizeKB()
 // A game may check several different directories: Rock Band 2 checks its own game data and then Rock Band's
 // in order to import its songs, so the size always refers to the dirName of the check which asked for it
+// Checks may be issued from more than one thread of the game: the directory
+// is the HLE thread's, set and read there (hle_call), so nothing is locked
 struct game_data_check final
 {
-	shared_mutex mutex; // Checks may be issued from more than one thread of the game
 	std::string dir; // "/dev_hdd0/game/" + dirName, empty until the first check
 
-	void set_dir(std::string_view path) { std::lock_guard lock(mutex); dir = path; }
-	std::string get_dir() { reader_lock lock(mutex); return dir; }
+	game_data_check() = default;
+	game_data_check(const game_data_check&) = delete;
+	game_data_check& operator=(const game_data_check&) = delete;
+
+	void set_dir(std::string_view path) { hle_call([&]() { dir = path; }); }
+	std::string get_dir() { return hle_call([&]() { return dir; }); }
 };
 
 template<>
@@ -264,19 +270,29 @@ disc_change_manager::~disc_change_manager()
 	g_emu_callbacks.enable_disc_insert(false);
 }
 
+vm::ptr<CellGameDiscEjectCallback> disc_change_manager::eject_callback()
+{
+	return vm::cast(static_cast<u32>(static_cast<u64>(retro_atomic_load_acquire_64(&callbacks))));
+}
+
+vm::ptr<CellGameDiscInsertCallback> disc_change_manager::insert_callback()
+{
+	return vm::cast(static_cast<u32>(static_cast<u64>(retro_atomic_load_acquire_64(&callbacks)) >> 32));
+}
+
+disc_change_manager::eject_state disc_change_manager::get_state()
+{
+	return static_cast<eject_state>(retro_atomic_load_acquire_int(&state));
+}
+
 error_code disc_change_manager::register_callbacks(vm::ptr<CellGameDiscEjectCallback> func_eject, vm::ptr<CellGameDiscInsertCallback> func_insert)
 {
-	std::lock_guard lock(mtx);
-
-	eject_callback = func_eject;
-	insert_callback = func_insert;
+	retro_atomic_store_release_64(&callbacks, static_cast<s64>(u64{func_insert.addr()} << 32 | func_eject.addr()));
 
 	const bool is_disc_mounted = fs::is_dir(vfs::get("/dev_bdvd/PS3_GAME"));
 
-	if (state == eject_state::unknown)
-	{
-		state = is_disc_mounted ? eject_state::inserted : eject_state::ejected;
-	}
+	// Known from now on, unless the frontend got there first
+	retro_atomic_cas_int(&state, static_cast<int>(eject_state::unknown), static_cast<int>(is_disc_mounted ? eject_state::inserted : eject_state::ejected));
 
 	g_emu_callbacks.enable_disc_eject(!!func_eject && is_disc_mounted);
 	g_emu_callbacks.enable_disc_insert(!!func_insert && !is_disc_mounted);
@@ -286,26 +302,12 @@ error_code disc_change_manager::register_callbacks(vm::ptr<CellGameDiscEjectCall
 
 error_code disc_change_manager::unregister_callbacks()
 {
-	const auto unregister = [this]() -> void
-	{
-		eject_callback = vm::null;
-		insert_callback = vm::null;
+	// The insert callback is known to call cellGameUnregisterDiscChangeCallback:
+	// with no lock that needs nothing special
+	retro_atomic_store_release_64(&callbacks, 0);
 
-		g_emu_callbacks.enable_disc_eject(false);
-		g_emu_callbacks.enable_disc_insert(false);
-	};
-
-	if (is_inserting)
-	{
-		// NOTE: The insert_callback is known to call cellGameUnregisterDiscChangeCallback.
-		// So we keep it out of the mutex lock until it proves to be an issue.
-		unregister();
-	}
-	else
-	{
-		std::lock_guard lock(mtx);
-		unregister();
-	}
+	g_emu_callbacks.enable_disc_eject(false);
+	g_emu_callbacks.enable_disc_insert(false);
 
 	return CELL_OK;
 }
@@ -314,33 +316,30 @@ void disc_change_manager::eject_disc()
 {
 	cellGame.notice("Ejecting disc...");
 
-	std::lock_guard lock(mtx);
-
-	if (state != eject_state::inserted)
+	if (!retro_atomic_cas_int(&state, static_cast<int>(eject_state::inserted), static_cast<int>(eject_state::busy)))
 	{
-		cellGame.fatal("Can not eject disc in the current state. (state=%s)", state.load());
+		cellGame.fatal("Can not eject disc in the current state. (state=%s)", get_state());
 		return;
 	}
 
-	state = eject_state::busy;
 	g_emu_callbacks.enable_disc_eject(false);
 
-	ensure(eject_callback);
+	ensure(eject_callback());
 
 	sysutil_register_cb([](ppu_thread& cb_ppu) -> s32
 	{
 		auto& dcm = g_fxo->get<disc_change_manager>();
-		std::lock_guard lock(dcm.mtx);
 
 		cellGame.notice("Executing eject_callback...");
-		dcm.eject_callback(cb_ppu);
+		if (const auto func = dcm.eject_callback())
+			func(cb_ppu);
 
 		ensure(vfs::unmount("/dev_bdvd"));
 		ensure(vfs::unmount("/dev_ps2disc"));
-		dcm.state = eject_state::ejected;
+		retro_atomic_store_release_int(&dcm.state, static_cast<int>(eject_state::ejected));
 
 		// Re-enable disc insertion only if the callback is still registered
-		g_emu_callbacks.enable_disc_insert(!!dcm.insert_callback);
+		g_emu_callbacks.enable_disc_insert(!!dcm.insert_callback());
 
 		return CELL_OK;
 	});
@@ -350,44 +349,39 @@ void disc_change_manager::insert_disc(u32 disc_type, std::string title_id)
 {
 	cellGame.notice("Inserting disc...");
 
-	std::lock_guard lock(mtx);
-
-	if (state != eject_state::ejected)
+	if (!retro_atomic_cas_int(&state, static_cast<int>(eject_state::ejected), static_cast<int>(eject_state::busy)))
 	{
-		cellGame.fatal("Can not insert disc in the current state. (state=%s)", state.load());
+		cellGame.fatal("Can not insert disc in the current state. (state=%s)", get_state());
 		return;
 	}
 
-	state = eject_state::busy;
 	g_emu_callbacks.enable_disc_insert(false);
 
-	ensure(insert_callback);
-
-	is_inserting = true;
+	ensure(insert_callback());
 
 	sysutil_register_cb([disc_type, title_id = std::move(title_id)](ppu_thread& cb_ppu) -> s32
 	{
 		auto& dcm = g_fxo->get<disc_change_manager>();
-		std::lock_guard lock(dcm.mtx);
 
-		if (disc_type == CELL_GAME_DISCTYPE_PS3)
+		if (const auto func = dcm.insert_callback())
 		{
-			vm::var<char[]> _title_id = vm::make_str(title_id);
-			cellGame.notice("Executing insert_callback for title '%s' with disc_type %d...", _title_id.get_ptr(), disc_type);
-			dcm.insert_callback(cb_ppu, disc_type, _title_id);
-		}
-		else
-		{
-			cellGame.notice("Executing insert_callback with disc_type %d...", disc_type);
-			dcm.insert_callback(cb_ppu, disc_type, vm::null);
+			if (disc_type == CELL_GAME_DISCTYPE_PS3)
+			{
+				vm::var<char[]> _title_id = vm::make_str(title_id);
+				cellGame.notice("Executing insert_callback for title '%s' with disc_type %d...", _title_id.get_ptr(), disc_type);
+				func(cb_ppu, disc_type, _title_id);
+			}
+			else
+			{
+				cellGame.notice("Executing insert_callback with disc_type %d...", disc_type);
+				func(cb_ppu, disc_type, vm::null);
+			}
 		}
 
-		dcm.state = eject_state::inserted;
+		retro_atomic_store_release_int(&dcm.state, static_cast<int>(eject_state::inserted));
 
 		// Re-enable disc ejection only if the callback is still registered
-		g_emu_callbacks.enable_disc_eject(!!dcm.eject_callback);
-
-		dcm.is_inserting = false;
+		g_emu_callbacks.enable_disc_eject(!!dcm.eject_callback());
 
 		return CELL_OK;
 	});
