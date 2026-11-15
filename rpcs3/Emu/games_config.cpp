@@ -23,8 +23,10 @@ games_config::~games_config()
 
 const std::map<std::string, std::string> games_config::get_games() const
 {
-	std::lock_guard lock(m_mutex);
-	return m_games;
+	return turn_call(&m_turns, [&]() -> std::map<std::string, std::string>
+	{
+		return m_games;
+	});
 }
 
 std::string games_config::get_path(const std::string& title_id) const
@@ -34,14 +36,15 @@ std::string games_config::get_path(const std::string& title_id) const
 		return {};
 	}
 
-	std::lock_guard lock(m_mutex);
-
-	if (const auto it = m_games.find(title_id); it != m_games.cend())
+	return turn_call(&m_turns, [&]() -> std::string
 	{
-		return it->second;
-	}
+		if (const auto it = m_games.find(title_id); it != m_games.cend())
+		{
+			return it->second;
+		}
 
-	return {};
+		return {};
+	});
 }
 
 games_config::result games_config::add_game(const std::string& key, const std::string& path)
@@ -63,32 +66,33 @@ games_config::result games_config::add_game(const std::string& key, const std::s
 		return add_game(key, path + '/');
 	}
 
-	std::lock_guard lock(m_mutex);
-
-	// Access or create node if does not exist
-	if (auto it = m_games.find(key); it != m_games.end())
+	return turn_call(&m_turns, [&]() -> result
 	{
-		if (it->second == path)
+		// Access or create node if does not exist
+		if (auto it = m_games.find(key); it != m_games.end())
 		{
-			// Nothing to do
-			return result::exists;
+			if (it->second == path)
+			{
+				// Nothing to do
+				return result::exists;
+			}
+
+			it->second = path;
+		}
+		else
+		{
+			m_games.emplace(key, path);
 		}
 
-		it->second = path;
-	}
-	else
-	{
-		m_games.emplace(key, path);
-	}
+		m_dirty = true;
 
-	m_dirty = true;
+		if (m_save_on_dirty && !save_nl())
+		{
+			return result::failure;
+		}
 
-	if (m_save_on_dirty && !save_nl())
-	{
-		return result::failure;
-	}
-
-	return result::success;
+		return result::success;
+	});
 }
 
 games_config::result games_config::add_external_hdd_game(const std::string& key, std::string& path)
@@ -118,23 +122,24 @@ games_config::result games_config::add_external_hdd_game(const std::string& key,
 
 games_config::result games_config::remove_game(const std::string& key)
 {
-	std::lock_guard lock(m_mutex);
-
-	// Remove node
-	if (m_games.erase(key) == 0) // If node not found
+	return turn_call(&m_turns, [&]() -> result
 	{
-		// Nothing to do
+		// Remove node
+		if (m_games.erase(key) == 0) // If node not found
+		{
+			// Nothing to do
+			return result::success;
+		}
+
+		m_dirty = true;
+
+		if (m_save_on_dirty && !save_nl())
+		{
+			return result::failure;
+		}
+
 		return result::success;
-	}
-
-	m_dirty = true;
-
-	if (m_save_on_dirty && !save_nl())
-	{
-		return result::failure;
-	}
-
-	return result::success;
+	});
 }
 
 bool games_config::save_nl()
@@ -162,58 +167,61 @@ bool games_config::save_nl()
 
 bool games_config::save()
 {
-	std::lock_guard lock(m_mutex);
-	return save_nl();
+	return turn_call(&m_turns, [&]() -> bool
+	{
+		return save_nl();
+	});
 }
 
 void games_config::load()
 {
-	std::lock_guard lock(m_mutex);
-
-	m_games.clear();
-
-	const std::string path = fs::get_config_dir(true) + "games.yml";
-
-	// Move file from deprecated location to new location
-#ifdef _WIN32
-	const std::string old_path = fs::get_config_dir(false) + "games.yml";
-
-	if (fs::is_file(old_path))
+	return turn_call(&m_turns, [&]()
 	{
-		cfg_log.notice("Found deprecated games.yml file: '%s'", old_path);
+		m_games.clear();
 
-		if (!fs::rename(old_path, path, false))
+		const std::string path = fs::get_config_dir(true) + "games.yml";
+
+		// Move file from deprecated location to new location
+	#ifdef _WIN32
+		const std::string old_path = fs::get_config_dir(false) + "games.yml";
+
+		if (fs::is_file(old_path))
 		{
-			(fs::g_tls_error == fs::error::exist ? cfg_log.warning : cfg_log.error)("Failed to move '%s' to '%s' (error='%s')", old_path, path, fs::g_tls_error);
-		}
-	}
-#endif
+			cfg_log.notice("Found deprecated games.yml file: '%s'", old_path);
 
-	if (fs::file f{path, fs::read + fs::create})
-	{
-		const yaml_doc doc(f.to_string());
-		const yaml_node result = doc.root();
-
-		if (!doc.error().empty())
-		{
-			cfg_log.error("Failed to load games.yml: %s", doc.error());
-		}
-
-		if (!result.is_map())
-		{
-			if (!result.is_null())
+			if (!fs::rename(old_path, path, false))
 			{
-				cfg_log.error("Failed to load games.yml: %s, not a map", result.type_name());
-			}
-			return;
-		}
-
-		for (const yaml_node entry : result)
-		{
-			if (!entry.key().empty() && entry.is_scalar() && !entry.scalar().empty())
-			{
-				m_games.emplace(entry.key(), entry.scalar());
+				(fs::g_tls_error == fs::error::exist ? cfg_log.warning : cfg_log.error)("Failed to move '%s' to '%s' (error='%s')", old_path, path, fs::g_tls_error);
 			}
 		}
-	}
+	#endif
+
+		if (fs::file f{path, fs::read + fs::create})
+		{
+			const yaml_doc doc(f.to_string());
+			const yaml_node result = doc.root();
+
+			if (!doc.error().empty())
+			{
+				cfg_log.error("Failed to load games.yml: %s", doc.error());
+			}
+
+			if (!result.is_map())
+			{
+				if (!result.is_null())
+				{
+					cfg_log.error("Failed to load games.yml: %s, not a map", result.type_name());
+				}
+				return;
+			}
+
+			for (const yaml_node entry : result)
+			{
+				if (!entry.key().empty() && entry.is_scalar() && !entry.scalar().empty())
+				{
+					m_games.emplace(entry.key(), entry.scalar());
+				}
+			}
+		}
+	});
 }

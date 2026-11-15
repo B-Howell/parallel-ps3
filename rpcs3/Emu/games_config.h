@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Utilities/mutex.h"
+#include "Emu/CPU/turn_calls.h"
 #include <map>
 
 class games_config
@@ -33,7 +33,8 @@ private:
 	void load();
 
 	std::map<std::string, std::string> m_games;
-	mutable shared_mutex m_mutex;
+	// The games and the file change in turn (turn_calls.h): no lock
+	mutable turn_calls_cpp m_turns;
 
 	bool m_dirty = false;
 	bool m_save_on_dirty = true;
