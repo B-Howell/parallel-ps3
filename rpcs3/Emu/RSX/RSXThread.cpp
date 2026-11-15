@@ -3226,8 +3226,6 @@ namespace rsx
 
 			auto& cfg = g_fxo->get<gcm_config>();
 
-			std::optional<std::unique_lock<shared_mutex>> hle_lock;
-
 			for (u32 i = 0; i < std::size(unmap_status); i++)
 			{
 				// TODO: Check order when sending multiple events
@@ -3235,26 +3233,25 @@ namespace rsx
 				{
 					if (isHLE)
 					{
-						if (!hle_lock)
+						// In the turn cellGcmSys changes the offset tables in
+						turn_call(&cfg.io_turns, [&]
 						{
-							hle_lock = std::unique_lock{cfg.gcmio_mutex};
-						}
+							int bit = 0;
 
-						int bit = 0;
-
-						while (to_unmap)
-						{
-							bit = (std::countr_zero<u64>(std::rotl<u64>(to_unmap, 0 - bit)) + bit);
-							to_unmap &= ~(1ull << bit);
-
-							constexpr u16 null_entry = 0xFFFF;
-							const u32 ea = std::exchange(cfg.offsetTable.eaAddress[(i * 64 + bit)], null_entry);
-
-							if (ea < (rsx::constants::local_mem_base >> 20))
+							while (to_unmap)
 							{
-								cfg.offsetTable.ioAddress[ea] = null_entry;
+								bit = (std::countr_zero<u64>(std::rotl<u64>(to_unmap, 0 - bit)) + bit);
+								to_unmap &= ~(1ull << bit);
+
+								constexpr u16 null_entry = 0xFFFF;
+								const u32 ea = std::exchange(cfg.offsetTable.eaAddress[(i * 64 + bit)], null_entry);
+
+								if (ea < (rsx::constants::local_mem_base >> 20))
+								{
+									cfg.offsetTable.ioAddress[ea] = null_entry;
+								}
 							}
-						}
+						});
 
 						continue;
 					}
@@ -3263,11 +3260,6 @@ namespace rsx
 					const u64 io_event = SYS_RSX_EVENT_UNMAPPED_BASE << i;
 					event_data.emplace_back(io_event, to_unmap);
 				}
-			}
-
-			if (hle_lock)
-			{
-				hle_lock->unlock();
 			}
 
 			// Pause RSX thread momentarily to handle unmapping

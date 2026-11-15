@@ -328,8 +328,8 @@ error_code cellGcmBindZcull(u8 index, u32 offset, u32 width, u32 height, u32 cul
 
 	const auto gcm_zcull = zcull.pack();
 
-	std::lock_guard lock(gcm_cfg.gcmio_mutex);
-
+	// sys_rsx changes the region in its turn; the guest's copy of it is the
+	// game's to keep in step, as libgcm leaves it
 	if (auto err = sys_rsx_context_attribute(0x5555'5555, 0x301, index, u64{gcm_zcull.region} << 32 | gcm_zcull.size, u64{gcm_zcull.start} << 32 | gcm_zcull.offset, u64{gcm_zcull.status0} << 32 | gcm_zcull.status1))
 	{
 		return err;
@@ -393,8 +393,9 @@ error_code _cellGcmInitBody(ppu_thread& ppu, vm::pptr<CellGcmContextData> contex
 
 	cellGcmSys.warning("_cellGcmInitBody(context=**0x%x, cmdSize=0x%x, ioSize=0x%x, ioAddress=0x%x)", context, cmdSize, ioSize, ioAddress);
 
+	// Made once, before the game's other gcm calls: the IO map it makes
+	// changes in turn as theirs do
 	auto& gcm_cfg = g_fxo->get<gcm_config>();
-	std::lock_guard lock(gcm_cfg.gcmio_mutex);
 
 	gcm_cfg.current_config.ioAddress = 0;
 	gcm_cfg.current_config.localAddress = 0;
@@ -774,9 +775,6 @@ void cellGcmSetZcull(u8 index, u32 offset, u32 width, u32 height, u32 cullStart,
 	const auto gcm_zcull = zcull.pack();
 
 	// The second difference between BindZcull and this function (second is no return value) is that this function is not thread-safe
-	// But take care anyway
-	std::lock_guard lock(gcm_cfg.gcmio_mutex);
-
 	if (!sys_rsx_context_attribute(0x5555'5555, 0x301, index, u64{gcm_zcull.region} << 32 | gcm_zcull.size, u64{gcm_zcull.start} << 32 | gcm_zcull.offset, u64{gcm_zcull.status0} << 32 | gcm_zcull.status1))
 	{
 		vm::_ptr<CellGcmZcullInfo>(gcm_cfg.zculls_addr)[index] = gcm_zcull;
@@ -1029,6 +1027,71 @@ error_code cellGcmIoOffsetToAddress(u32 ioOffset, vm::ptr<u32> address)
 	return CELL_OK;
 }
 
+// IO pages are 1 MB; at most 512 of them (a 512 MB IO space). A range past
+// that is the syscall's to refuse, with nothing to mark
+static bool gcm_io_take(gcm_config& cfg, u32 io, u32 count)
+{
+	const u32 end = std::min<u32>(io + count, 0x200);
+
+	for (u32 i = io; i < end; i++)
+	{
+		if (cfg.io_pending[i / 64] & (1ull << (i % 64)))
+		{
+			return false;
+		}
+	}
+
+	for (u32 i = io; i < end; i++)
+	{
+		cfg.io_pending[i / 64] |= 1ull << (i % 64);
+	}
+
+	return true;
+}
+
+static void gcm_io_give(gcm_config& cfg, u32 io, u32 count)
+{
+	const u32 end = std::min<u32>(io + count, 0x200);
+
+	for (u32 i = io; i < end; i++)
+	{
+		cfg.io_pending[i / 64] &= ~(1ull << (i % 64));
+	}
+}
+
+// The pages are marked: the syscall on this thread, then the tables in turn
+static error_code gcm_map_taken(ppu_thread& ppu, gcm_config& gcm_cfg, u32 ea, u32 io, u32 size, bool is_strict)
+{
+	const error_code error = sys_rsx_context_iomap(ppu, 0x55555555, io, ea, size, 0xe000000000000800ull | (u64{is_strict} << 60));
+	const bool mapped = !error;
+
+	ea >>= 20, io >>= 20, size >>= 20;
+
+	turn_call(&gcm_cfg.io_turns, [&]
+	{
+		if (mapped)
+		{
+			// Fill the offset table
+			for (u32 i = 0; i < size; i++)
+			{
+				gcm_cfg.offsetTable.ioAddress[ea + i] = io + i;
+				gcm_cfg.offsetTable.eaAddress[io + i] = ea + i;
+			}
+
+			gcm_cfg.IoMapTable[ea] = size;
+		}
+
+		gcm_io_give(gcm_cfg, io, size);
+	});
+
+	if (!mapped)
+	{
+		return error;
+	}
+
+	return CELL_OK;
+}
+
 error_code gcmMapEaIoAddress(ppu_thread& ppu, u32 ea, u32 io, u32 size, bool is_strict)
 {
 	if (!size || (ea & 0xFFFFF) || (io & 0xFFFFF) || (size & 0xFFFFF))
@@ -1036,32 +1099,21 @@ error_code gcmMapEaIoAddress(ppu_thread& ppu, u32 ea, u32 io, u32 size, bool is_
 		return CELL_GCM_ERROR_FAILURE;
 	}
 
-	if (auto error = sys_rsx_context_iomap(ppu, 0x55555555, io, ea, size, 0xe000000000000800ull | (u64{is_strict} << 60)))
-	{
-		return error;
-	}
-
-	// Assume lock is acquired
 	auto& gcm_cfg = g_fxo->get<gcm_config>();
-	ea >>= 20, io >>= 20, size >>= 20;
 
-	// Fill the offset table
-	for (u32 i = 0; i < size; i++)
+	// Another thread mapping or unmapping these pages at this moment: the
+	// game's race, refused rather than waited out
+	if (!turn_call(&gcm_cfg.io_turns, [&] { return gcm_io_take(gcm_cfg, io >> 20, size >> 20); }))
 	{
-		gcm_cfg.offsetTable.ioAddress[ea + i] = io + i;
-		gcm_cfg.offsetTable.eaAddress[io + i] = ea + i;
+		return CELL_GCM_ERROR_FAILURE;
 	}
 
-	gcm_cfg.IoMapTable[ea] = size;
-	return CELL_OK;
+	return gcm_map_taken(ppu, gcm_cfg, ea, io, size, is_strict);
 }
 
 error_code cellGcmMapEaIoAddress(ppu_thread& ppu, u32 ea, u32 io, u32 size)
 {
 	cellGcmSys.warning("cellGcmMapEaIoAddress(ea=0x%x, io=0x%x, size=0x%x)", ea, io, size);
-
-	auto& gcm_cfg = g_fxo->get<gcm_config>();
-	std::lock_guard lock(gcm_cfg.gcmio_mutex);
 
 	return gcmMapEaIoAddress(ppu, ea, io, size, false);
 }
@@ -1072,9 +1124,6 @@ error_code cellGcmMapEaIoAddressWithFlags(ppu_thread& ppu, u32 ea, u32 io, u32 s
 
 	ensure(flags == CELL_GCM_IOMAP_FLAG_STRICT_ORDERING);
 
-	auto& gcm_cfg = g_fxo->get<gcm_config>();
-	std::lock_guard lock(gcm_cfg.gcmio_mutex);
-
 	return gcmMapEaIoAddress(ppu, ea, io, size, true);
 }
 
@@ -1083,12 +1132,24 @@ error_code cellGcmMapLocalMemory(vm::ptr<u32> address, vm::ptr<u32> size)
 	cellGcmSys.warning("cellGcmMapLocalMemory(address=*0x%x, size=*0x%x)", address, size);
 
 	auto& gcm_cfg = g_fxo->get<gcm_config>();
-	std::lock_guard lock(gcm_cfg.gcmio_mutex);
 
-	if (!gcm_cfg.local_addr && !gcm_cfg.local_size && vm::falloc(gcm_cfg.local_addr = rsx::constants::local_mem_base, gcm_cfg.local_size = 0xf900000 /* TODO */, vm::video))
+	// Claimed in turn, allocated out of it (the memory map takes its own locks)
+	const bool claimed = turn_call(&gcm_cfg.io_turns, [&]
 	{
-		*address = gcm_cfg.local_addr;
-		*size = gcm_cfg.local_size;
+		if (gcm_cfg.local_addr || gcm_cfg.local_size)
+		{
+			return false;
+		}
+
+		gcm_cfg.local_addr = rsx::constants::local_mem_base;
+		gcm_cfg.local_size = 0xf900000; // TODO
+		return true;
+	});
+
+	if (claimed && vm::falloc(rsx::constants::local_mem_base, 0xf900000, vm::video))
+	{
+		*address = rsx::constants::local_mem_base;
+		*size = 0xf900000;
 		return CELL_OK;
 	}
 
@@ -1102,34 +1163,46 @@ error_code cellGcmMapMainMemory(ppu_thread& ppu, u32 ea, u32 size, vm::ptr<u32> 
 	if (!size || (ea & 0xFFFFF) || (size & 0xFFFFF)) return CELL_GCM_ERROR_FAILURE;
 
 	auto& gcm_cfg = g_fxo->get<gcm_config>();
-	std::lock_guard lock(gcm_cfg.gcmio_mutex);
+	const u32 main_mem_size = rsx::get_current_renderer()->main_mem_size;
 
-	// Use the offset table to find the next free io address
-	for (u32 io = 0, end = (rsx::get_current_renderer()->main_mem_size - gcm_cfg.reserved_size) >> 20, unmap_count = 1; unmap_count + io <= end; unmap_count++)
+	// Use the offset table to find the next free io address: free, and not
+	// being mapped or unmapped by another thread. Marked in the same turn
+	const u32 found = turn_call(&gcm_cfg.io_turns, [&]() -> u32
 	{
-		if (gcm_cfg.offsetTable.eaAddress[io + unmap_count - 1] > 0xBFF)
+		const auto pending = [&](u32 page) { return page < 0x200 && (gcm_cfg.io_pending[page / 64] & (1ull << (page % 64))); };
+
+		for (u32 io = 0, end = (main_mem_size - gcm_cfg.reserved_size) >> 20, unmap_count = 1; unmap_count + io <= end; unmap_count++)
 		{
-			if (unmap_count >= (size >> 20))
+			if (gcm_cfg.offsetTable.eaAddress[io + unmap_count - 1] > 0xBFF && !pending(io + unmap_count - 1))
 			{
-				io <<= 20;
-
-				if (auto error = gcmMapEaIoAddress(ppu, ea, io, size, false))
+				if (unmap_count >= (size >> 20))
 				{
-					return error;
+					gcm_io_take(gcm_cfg, io, size >> 20);
+					return io;
 				}
-
-				*offset = io;
-				return CELL_OK;
+			}
+			else
+			{
+				io += unmap_count;
+				unmap_count = 0;
 			}
 		}
-		else
-		{
-			io += unmap_count;
-			unmap_count = 0;
-		}
+
+		return umax;
+	});
+
+	if (found == umax)
+	{
+		return CELL_GCM_ERROR_NO_IO_PAGE_TABLE;
 	}
 
-	return CELL_GCM_ERROR_NO_IO_PAGE_TABLE;
+	if (auto error = gcm_map_taken(ppu, gcm_cfg, ea, found << 20, size, false))
+	{
+		return error;
+	}
+
+	*offset = found << 20;
+	return CELL_OK;
 }
 
 error_code cellGcmReserveIoMapSize(u32 size)
@@ -1142,37 +1215,77 @@ error_code cellGcmReserveIoMapSize(u32 size)
 	}
 
 	auto& gcm_cfg = g_fxo->get<gcm_config>();
-	std::lock_guard lock(gcm_cfg.gcmio_mutex);
+	const u32 main_mem_size = rsx::get_current_renderer()->main_mem_size;
 
-	if (size > cellGcmGetMaxIoMapSize())
+	// Checked and added in one compare-and-swap
+	if (!gcm_cfg.reserved_size.fetch_op([&](u32& reserved)
+	{
+		if (size > main_mem_size - reserved)
+		{
+			return false;
+		}
+
+		reserved += size;
+		return true;
+	}).second)
 	{
 		return CELL_GCM_ERROR_INVALID_VALUE;
 	}
 
-	gcm_cfg.reserved_size += size;
 	return CELL_OK;
 }
 
-error_code GcmUnmapIoAddress(ppu_thread& ppu, gcm_config& gcm_cfg, u32 io)
+// The pages are looked up and marked in turn, unmapped on this thread, and
+// cleared from the tables in turn. io_of reads the IO address in the turn
+template <typename F>
+static error_code gcm_unmap(ppu_thread& ppu, gcm_config& gcm_cfg, F&& io_of)
 {
-	if (u32 ea = gcm_cfg.offsetTable.eaAddress[io >>= 20], size = gcm_cfg.IoMapTable[ea]; size)
+	u32 io = 0, ea = 0, size = 0;
+
+	const bool taken = turn_call(&gcm_cfg.io_turns, [&]
 	{
-		if (auto error = sys_rsx_context_iounmap(ppu, 0x55555555, io << 20, size << 20))
+		io = io_of();
+
+		if (io >= rsx::get_current_renderer()->main_mem_size)
 		{
-			return error;
+			return false;
 		}
 
-		for (u32 i = 0; i < size; i++)
-		{
-			gcm_cfg.offsetTable.ioAddress[ea + i] = 0xFFFF;
-			gcm_cfg.offsetTable.eaAddress[io + i] = 0xFFFF;
-		}
+		ea = gcm_cfg.offsetTable.eaAddress[io >>= 20];
+		size = gcm_cfg.IoMapTable[ea];
+		return size && gcm_io_take(gcm_cfg, io, size);
+	});
 
-		gcm_cfg.IoMapTable[ea] = 0;
-		return CELL_OK;
+	if (!taken)
+	{
+		return CELL_GCM_ERROR_FAILURE;
 	}
 
-	return CELL_GCM_ERROR_FAILURE;
+	const error_code error = sys_rsx_context_iounmap(ppu, 0x55555555, io << 20, size << 20);
+	const bool unmapped = !error;
+
+	turn_call(&gcm_cfg.io_turns, [&]
+	{
+		if (unmapped)
+		{
+			for (u32 i = 0; i < size; i++)
+			{
+				gcm_cfg.offsetTable.ioAddress[ea + i] = 0xFFFF;
+				gcm_cfg.offsetTable.eaAddress[io + i] = 0xFFFF;
+			}
+
+			gcm_cfg.IoMapTable[ea] = 0;
+		}
+
+		gcm_io_give(gcm_cfg, io, size);
+	});
+
+	if (!unmapped)
+	{
+		return error;
+	}
+
+	return CELL_OK;
 }
 
 error_code cellGcmUnmapEaIoAddress(ppu_thread& ppu, u32 ea)
@@ -1188,15 +1301,7 @@ error_code cellGcmUnmapEaIoAddress(ppu_thread& ppu, u32 ea)
 	}
 
 	auto& gcm_cfg = g_fxo->get<gcm_config>();
-	std::lock_guard lock(gcm_cfg.gcmio_mutex);
-
-	if (const u32 io = gcm_cfg.offsetTable.ioAddress[ea] << 20;
-		io < rsx::get_current_renderer()->main_mem_size)
-	{
-		return GcmUnmapIoAddress(ppu, gcm_cfg, io);
-	}
-
-	return CELL_GCM_ERROR_FAILURE;
+	return gcm_unmap(ppu, gcm_cfg, [&]() -> u32 { return gcm_cfg.offsetTable.ioAddress[ea] << 20; });
 }
 
 error_code cellGcmUnmapIoAddress(ppu_thread& ppu, u32 io)
@@ -1204,9 +1309,7 @@ error_code cellGcmUnmapIoAddress(ppu_thread& ppu, u32 io)
 	cellGcmSys.warning("cellGcmUnmapIoAddress(io=0x%x)", io);
 
 	auto& gcm_cfg = g_fxo->get<gcm_config>();
-	std::lock_guard lock(gcm_cfg.gcmio_mutex);
-
-	return GcmUnmapIoAddress(ppu, gcm_cfg, io);
+	return gcm_unmap(ppu, gcm_cfg, [&] { return io; });
 }
 
 error_code cellGcmUnreserveIoMapSize(u32 size)
@@ -1219,14 +1322,22 @@ error_code cellGcmUnreserveIoMapSize(u32 size)
 	}
 
 	auto& gcm_cfg = g_fxo->get<gcm_config>();
-	std::lock_guard lock(gcm_cfg.gcmio_mutex);
 
-	if (size > gcm_cfg.reserved_size)
+	// Checked and taken off in one compare-and-swap
+	if (!gcm_cfg.reserved_size.fetch_op([&](u32& reserved)
+	{
+		if (size > reserved)
+		{
+			return false;
+		}
+
+		reserved -= size;
+		return true;
+	}).second)
 	{
 		return CELL_GCM_ERROR_INVALID_VALUE;
 	}
 
-	gcm_cfg.reserved_size -= size;
 	return CELL_OK;
 }
 

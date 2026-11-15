@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Emu/CPU/turn_calls.h"
 #include "Emu/RSX/GCM.h"
 #include "Emu/Memory/vm_ptr.h"
 
@@ -32,7 +33,14 @@ struct gcm_config
 
 	CellGcmOffsetTable offsetTable{};
 	u16 IoMapTable[0xC00]{};
-	shared_mutex gcmio_mutex;
+
+	// The offset tables and IoMapTable change in turn (turn_calls.h): no
+	// lock. The IO pages a map or unmap is working on while it makes its
+	// syscall, out of the turn, are marked here: a search for free pages
+	// passes them over, and another map or unmap of one of them meanwhile is
+	// refused
+	turn_calls_cpp io_turns;
+	u64 io_pending[0x200 / 64]{};
 
 	u64 system_mode = 0;
 	u32 local_size = 0;
