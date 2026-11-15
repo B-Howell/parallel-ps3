@@ -132,7 +132,6 @@ private:
 	rsx::reports::occlusion_query_info *m_active_query_info = nullptr;
 	std::vector<vk::occlusion_data> m_occlusion_map;
 
-	shared_mutex m_secondary_cb_guard;
 	vk::command_pool m_secondary_command_buffer_pool;
 	vk::command_buffer_chain<VK_MAX_ASYNC_CB_COUNT> m_secondary_cb_list;
 
@@ -207,7 +206,9 @@ private:
 
 	std::vector<u8> m_draw_buffers;
 
-	shared_mutex m_flush_queue_mutex;
+	// The renderer's own: set while it flushes for a request or a sync, so a
+	// local task met inside that flush does not flush again
+	bool m_flush_queue_busy = false;
 	vk::flush_request_task m_flush_requests;
 
 	ullong m_last_cond_render_eval_hint = 0;

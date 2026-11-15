@@ -1026,10 +1026,10 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 	return true;
 }
 
+// The renderer's: the ranges are handed to it (handle_invalidated_memory_range,
+// do_local_task), so the secondary command buffers need no lock
 void VKGSRender::on_invalidate_memory_range(const utils::address_range32 &range, rsx::invalidation_cause cause)
 {
-	std::lock_guard lock(m_secondary_cb_guard);
-
 	auto data = m_texture_cache.invalidate_range(*m_secondary_cb_list.next(), range, cause);
 	AUDIT(data.empty());
 
@@ -1085,9 +1085,8 @@ bool VKGSRender::on_vram_exhausted(rsx::problem_severity severity)
 			scan_array(rsx::method_registers.fragment_textures);
 			scan_array(rsx::method_registers.vertex_textures);
 
-			// Hold the secondary lock guard to prevent threads from trying to touch access violation handler stuff
-			std::lock_guard lock(m_secondary_cb_guard);
-
+			// No other thread enters the texture cache: faults and unmaps are
+			// handed to the renderer
 			rsx_log.warning("Texture cache is overallocated. Will evict unnecessary textures.");
 			texture_cache_relieved = m_texture_cache.evict_unused(exclusion_list);
 		}
@@ -1729,7 +1728,6 @@ void VKGSRender::sync_hint(rsx::FIFO::interrupt_hint hint, rsx::reports::sync_hi
 		{
 			// Schedule a sync on the next loop iteration
 			m_flush_requests.post(false);
-			m_flush_requests.remove_one();
 		}
 
 		m_last_cond_render_eval_hint = now;
@@ -1749,7 +1747,7 @@ void VKGSRender::sync_hint(rsx::FIFO::interrupt_hint hint, rsx::reports::sync_hi
 
 		// Unavoidable hard sync coming up, flush immediately
 		// This heavyweight hint should be used with caution
-		std::lock_guard lock(m_flush_queue_mutex);
+		m_flush_queue_busy = true;
 		flush_command_queue();
 
 		if (m_flush_requests.pending())
@@ -1757,6 +1755,7 @@ void VKGSRender::sync_hint(rsx::FIFO::interrupt_hint hint, rsx::reports::sync_hi
 			// Clear without wait
 			m_flush_requests.clear_pending_flag();
 		}
+		m_flush_queue_busy = false;
 		break;
 	}
 	}
@@ -1785,15 +1784,16 @@ void VKGSRender::do_local_task(rsx::FIFO::state state)
 
 	if (m_flush_requests.pending())
 	{
-		if (m_flush_queue_mutex.try_lock())
+		// Not inside a flush the renderer is making already
+		if (!m_flush_queue_busy)
 		{
 			// TODO: Determine if a hard sync is necessary
 			// Pipeline barriers later may do a better job synchronizing than wholly stalling the pipeline
+			m_flush_queue_busy = true;
 			flush_command_queue();
 
 			m_flush_requests.clear_pending_flag();
-			m_flush_requests.consumer_wait();
-			m_flush_queue_mutex.unlock();
+			m_flush_queue_busy = false;
 		}
 	}
 	else if (!in_begin_end && state != rsx::FIFO::state::lock_wait)
@@ -2893,13 +2893,14 @@ void VKGSRender::get_occlusion_query_result(rsx::reports::occlusion_query_info* 
 	{
 		if (data.is_current(m_current_command_buffer))
 		{
-			std::lock_guard lock(m_flush_queue_mutex);
+			m_flush_queue_busy = true;
 			flush_command_queue();
 
 			if (m_flush_requests.pending())
 			{
 				m_flush_requests.clear_pending_flag();
 			}
+			m_flush_queue_busy = false;
 
 			rsx_log.warning("[Performance warning] Unexpected ZCULL read caused a hard sync");
 			busy_wait();

@@ -226,10 +226,11 @@ namespace vk
 		}
 	};
 
+	// A flush the renderer is asked to make at its next look: only the
+	// renderer posts and serves it, so nobody waits on it
 	struct flush_request_task
 	{
 		atomic_t<bool> pending_state{ false };  //Flush request status; true if rsx::thread is yet to service this request
-		atomic_t<int> num_waiters{ 0 };  //Number of threads waiting for this request to be serviced
 		bool hard_sync = false;
 
 		flush_request_task() = default;
@@ -238,12 +239,6 @@ namespace vk
 		{
 			hard_sync = (hard_sync || _hard_sync);
 			pending_state = true;
-			num_waiters++;
-		}
-
-		void remove_one()
-		{
-			num_waiters--;
 		}
 
 		void clear_pending_flag()
@@ -255,22 +250,6 @@ namespace vk
 		bool pending() const
 		{
 			return pending_state.load();
-		}
-
-		void consumer_wait() const
-		{
-			utils::spin_wait(num_waiters, [](auto v)
-			{
-				return v == 0;
-			});
-		}
-
-		void producer_wait() const
-		{
-			utils::spin_wait(pending_state, [](auto v)
-			{
-				return !v;
-			});
 		}
 	};
 
