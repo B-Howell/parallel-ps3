@@ -3,7 +3,6 @@
 #include "sys_sync.h"
 #include "sys_event.h"
 #include "libretro/libretro_audio_ring.h"
-#include "Utilities/transactional_storage.h"
 #include "Utilities/cond.h"
 #include "Emu/system_config_types.h"
 #include "Emu/Memory/vm_ptr.h"
@@ -519,7 +518,7 @@ private:
 
 	void post_event(int event);
 
-	// The ports set_new_stream_param sets (one at a time: hw_param_ts's
+	// The ports set_new_stream_param sets (one at a time: the HLE thread's
 	// operations), through a sequence count this thread reads them by
 	rsxaudio_state new_ra_state{};
 	retro_seqlock_t ra_state_seq{};
@@ -634,11 +633,22 @@ public:
 
 	static constexpr auto thread_name = "RsxAudioData Thread"sv;
 
+	friend struct rsxaudio_backend_test;
+
 private:
 
 	rsxaudio_data_container::buf_t output_buf{};
 
-	transactional_storage<rsxaudio_hw_param_t> hw_param_ts{std::make_shared<universal_pool>(), std::make_shared<rsxaudio_hw_param_t>()};
+	// The hardware's parameters are the HLE thread's: every change runs
+	// there (hle_call), one at a time, with what it sets off (the backend's
+	// new ports, the timers' rates), and is published through a sequence
+	// count for this thread to read each period. No lock, and nothing made
+	// for a change.
+	rsxaudio_hw_param_t hw_param{};
+	rsxaudio_hw_param_t hw_param_published{};
+	retro_seqlock_t hw_param_seq{};
+	void publish_hw_param();
+	rsxaudio_hw_param_t hw_param_now();
 	rsxaudio_periodic_tmr timer{};
 
 	void advance_all_timers();

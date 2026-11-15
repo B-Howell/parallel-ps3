@@ -6,6 +6,8 @@
 #include "Emu/system_config.h"
 #include "Emu/Audio/audio_utils.h"
 #include "Emu/Cell/PPUThread.h"
+#include "Emu/Cell/timers.hpp"
+#include "Emu/Cell/Modules/hle_service.h"
 #include "util/bit_set.hpp"
 #include "util/video_provider.h"
 
@@ -774,7 +776,29 @@ bool rsxaudio_data_container::data_was_used()
 	return data_was_written;
 }
 
-rsxaudio_data_thread::rsxaudio_data_thread() {}
+rsxaudio_data_thread::rsxaudio_data_thread()
+{
+	retro_seqlock_init(&hw_param_seq);
+}
+
+// The HLE thread's, after a change
+void rsxaudio_data_thread::publish_hw_param()
+{
+	retro_seqlock_write_begin(&hw_param_seq);
+	hw_param_published = hw_param;
+	retro_seqlock_write_end(&hw_param_seq);
+}
+
+rsxaudio_hw_param_t rsxaudio_data_thread::hw_param_now()
+{
+	for (;;)
+	{
+		const int seq = retro_seqlock_read_begin(&hw_param_seq);
+		rsxaudio_hw_param_t param = hw_param_published;
+		if (!retro_seqlock_read_retry(&hw_param_seq, seq))
+			return param;
+	}
+}
 
 void rsxaudio_data_thread::operator()()
 {
@@ -842,7 +866,7 @@ void rsxaudio_data_thread::extract_audio_data()
 	}
 
 	rsxaudio_shmem* sh_page = rsxaudio_obj->get_rw_shared_page();
-	const auto hw_cfg       = hw_param_ts.get_current();
+	const rsxaudio_hw_param_t hw_cfg = hw_param_now();
 	const u64 crnt_time     = get_hw_clock_time();
 
 	auto process_rb = [&](RsxaudioPort dst, bool dma_en)
@@ -853,7 +877,7 @@ void rsxaudio_data_thread::extract_audio_data()
 		rsxaudio_ringbuf_reader::set_timestamp(sh_page->ctrl.ringbuf[dst_raw], timer.vtimer_get_sched_time(dst_raw));
 
 		const auto [data_present, rb_addr] = get_ringbuf_addr(dst, *rsxaudio_obj);
-		bool reset_periods = !enqueue_data(dst, rb_addr == nullptr, rb_addr, *hw_cfg);
+		bool reset_periods = !enqueue_data(dst, rb_addr == nullptr, rb_addr, hw_cfg);
 
 		if (dma_en)
 		{
@@ -881,17 +905,17 @@ void rsxaudio_data_thread::extract_audio_data()
 
 	if (timer.is_vtimer_behind(static_cast<u32>(RsxaudioPort::SERIAL), crnt_time))
 	{
-		process_rb(RsxaudioPort::SERIAL, hw_cfg->serial.dma_en);
+		process_rb(RsxaudioPort::SERIAL, hw_cfg.serial.dma_en);
 	}
 
 	if (timer.is_vtimer_behind(static_cast<u32>(RsxaudioPort::SPDIF_0), crnt_time))
 	{
-		process_rb(RsxaudioPort::SPDIF_0, hw_cfg->spdif[0].dma_en);
+		process_rb(RsxaudioPort::SPDIF_0, hw_cfg.spdif[0].dma_en);
 	}
 
 	if (timer.is_vtimer_behind(static_cast<u32>(RsxaudioPort::SPDIF_1), crnt_time))
 	{
-		process_rb(RsxaudioPort::SPDIF_1, hw_cfg->spdif[1].dma_en);
+		process_rb(RsxaudioPort::SPDIF_1, hw_cfg.spdif[1].dma_en);
 	}
 }
 
@@ -937,30 +961,30 @@ void rsxaudio_data_thread::update_hw_param(std::function<void(rsxaudio_hw_param_
 {
 	ensure(update_callback);
 
-	hw_param_ts.add_op([&]()
+	hle_call([&]()
 	{
-		auto new_hw_param = std::make_shared<rsxaudio_hw_param_t>(*hw_param_ts.get_current());
+		rsxaudio_hw_param_t new_hw_param = hw_param;
 
-		update_callback(*new_hw_param);
+		update_callback(new_hw_param);
 
-		const bool serial_active = calc_port_active_state(RsxaudioPort::SERIAL, *new_hw_param);
+		const bool serial_active = calc_port_active_state(RsxaudioPort::SERIAL, new_hw_param);
 		const bool spdif_active[SYS_RSXAUDIO_SPDIF_CNT] =
 		{
-			calc_port_active_state(RsxaudioPort::SPDIF_0, *new_hw_param),
-			calc_port_active_state(RsxaudioPort::SPDIF_1, *new_hw_param)
+			calc_port_active_state(RsxaudioPort::SPDIF_0, new_hw_param),
+			calc_port_active_state(RsxaudioPort::SPDIF_1, new_hw_param)
 		};
 
 		std::array<rsxaudio_backend_thread::port_config, SYS_RSXAUDIO_AVPORT_CNT> port_cfg{};
-		port_cfg[static_cast<u8>(RsxaudioAvportIdx::AVMULTI)] = {static_cast<AudioFreq>(new_hw_param->serial_freq_base / new_hw_param->serial.freq_div), AudioChannelCnt::STEREO};
+		port_cfg[static_cast<u8>(RsxaudioAvportIdx::AVMULTI)] = {static_cast<AudioFreq>(new_hw_param.serial_freq_base / new_hw_param.serial.freq_div), AudioChannelCnt::STEREO};
 
 		auto gen_spdif_port_cfg = [&](u8 spdif_idx)
 		{
-			if (new_hw_param->spdif[spdif_idx].use_serial_buf)
+			if (new_hw_param.spdif[spdif_idx].use_serial_buf)
 			{
 				return port_cfg[static_cast<u8>(RsxaudioAvportIdx::AVMULTI)];
 			}
 
-			return rsxaudio_backend_thread::port_config{static_cast<AudioFreq>(new_hw_param->spdif_freq_base / new_hw_param->spdif[spdif_idx].freq_div), AudioChannelCnt::STEREO};
+			return rsxaudio_backend_thread::port_config{static_cast<AudioFreq>(new_hw_param.spdif_freq_base / new_hw_param.spdif[spdif_idx].freq_div), AudioChannelCnt::STEREO};
 		};
 
 		port_cfg[static_cast<u8>(RsxaudioAvportIdx::SPDIF_0)] = gen_spdif_port_cfg(0);
@@ -968,25 +992,25 @@ void rsxaudio_data_thread::update_hw_param(std::function<void(rsxaudio_hw_param_
 
 		auto gen_hdmi_port_cfg = [&](u8 hdmi_idx)
 		{
-			if (new_hw_param->hdmi[hdmi_idx].use_spdif_1)
+			if (new_hw_param.hdmi[hdmi_idx].use_spdif_1)
 			{
-				return rsxaudio_backend_thread::port_config{port_cfg[static_cast<u8>(RsxaudioAvportIdx::SPDIF_1)].freq, new_hw_param->hdmi[hdmi_idx].ch_cfg.total_ch_cnt};
+				return rsxaudio_backend_thread::port_config{port_cfg[static_cast<u8>(RsxaudioAvportIdx::SPDIF_1)].freq, new_hw_param.hdmi[hdmi_idx].ch_cfg.total_ch_cnt};
 			}
 
-			return rsxaudio_backend_thread::port_config{port_cfg[static_cast<u8>(RsxaudioAvportIdx::AVMULTI)].freq, new_hw_param->hdmi[hdmi_idx].ch_cfg.total_ch_cnt};
+			return rsxaudio_backend_thread::port_config{port_cfg[static_cast<u8>(RsxaudioAvportIdx::AVMULTI)].freq, new_hw_param.hdmi[hdmi_idx].ch_cfg.total_ch_cnt};
 		};
 
 		port_cfg[static_cast<u8>(RsxaudioAvportIdx::HDMI_0)] = gen_hdmi_port_cfg(0);
 		port_cfg[static_cast<u8>(RsxaudioAvportIdx::HDMI_1)] = gen_hdmi_port_cfg(1);
 		// TODO: ideally, old data must be flushed from backend buffers if channel became inactive or its src changed
-		g_fxo->get<rsx_audio_backend>().set_new_stream_param(port_cfg, calc_avport_mute_state(*new_hw_param));
+		g_fxo->get<rsx_audio_backend>().set_new_stream_param(port_cfg, calc_avport_mute_state(new_hw_param));
 
 		{
 			if (serial_active)
 			{
 				// 2 channels per stream, streams go in parallel
 				const u32 new_timer_rate = static_cast<u32>(port_cfg[static_cast<u8>(RsxaudioAvportIdx::AVMULTI)].freq) *
-											static_cast<u8>(new_hw_param->serial.depth) *
+											static_cast<u8>(new_hw_param.serial.depth) *
 											SYS_RSXAUDIO_CH_PER_STREAM;
 
 				timer.request_vtimer(static_cast<u32>(RsxaudioPort::SERIAL), new_timer_rate);
@@ -1000,11 +1024,11 @@ void rsxaudio_data_thread::update_hw_param(std::function<void(rsxaudio_hw_param_
 			{
 				const u32 vtimer_id = static_cast<u32>(RsxaudioPort::SPDIF_0) + spdif_idx;
 
-				if (spdif_active[spdif_idx] && !new_hw_param->spdif[spdif_idx].use_serial_buf)
+				if (spdif_active[spdif_idx] && !new_hw_param.spdif[spdif_idx].use_serial_buf)
 				{
 					// 2 channels per stream, single stream
 					const u32 new_timer_rate = static_cast<u32>(port_cfg[static_cast<u8>(RsxaudioAvportIdx::SPDIF_0) + spdif_idx].freq) *
-												static_cast<u8>(new_hw_param->spdif[spdif_idx].depth) *
+												static_cast<u8>(new_hw_param.spdif[spdif_idx].depth) *
 												SYS_RSXAUDIO_CH_PER_STREAM;
 
 					timer.request_vtimer(vtimer_id, new_timer_rate);
@@ -1016,31 +1040,32 @@ void rsxaudio_data_thread::update_hw_param(std::function<void(rsxaudio_hw_param_
 			}
 		}
 
-		return new_hw_param;
+		hw_param = new_hw_param;
+		publish_hw_param();
 	});
 }
 
 void rsxaudio_data_thread::update_mute_state(RsxaudioPort port, bool muted)
 {
-	hw_param_ts.add_op([&]()
+	hle_call([&]()
 	{
-		auto new_hw_param = std::make_shared<rsxaudio_hw_param_t>(*hw_param_ts.get_current());
+		rsxaudio_hw_param_t new_hw_param = hw_param;
 
 		switch (port)
 		{
 		case RsxaudioPort::SERIAL:
 		{
-			new_hw_param->serial.muted = muted;
+			new_hw_param.serial.muted = muted;
 			break;
 		}
 		case RsxaudioPort::SPDIF_0:
 		{
-			new_hw_param->spdif[0].muted = muted;
+			new_hw_param.spdif[0].muted = muted;
 			break;
 		}
 		case RsxaudioPort::SPDIF_1:
 		{
-			new_hw_param->spdif[1].muted = muted;
+			new_hw_param.spdif[1].muted = muted;
 			break;
 		}
 		default:
@@ -1049,17 +1074,18 @@ void rsxaudio_data_thread::update_mute_state(RsxaudioPort port, bool muted)
 		}
 		}
 
-		g_fxo->get<rsx_audio_backend>().set_mute_state(calc_avport_mute_state(*new_hw_param));
+		g_fxo->get<rsx_audio_backend>().set_mute_state(calc_avport_mute_state(new_hw_param));
 
-		return new_hw_param;
+		hw_param = new_hw_param;
+		publish_hw_param();
 	});
 }
 
 void rsxaudio_data_thread::update_av_mute_state(RsxaudioAvportIdx avport, bool muted, bool force_mute, bool set)
 {
-	hw_param_ts.add_op([&]()
+	hle_call([&]()
 	{
-		auto new_hw_param = std::make_shared<rsxaudio_hw_param_t>(*hw_param_ts.get_current());
+		rsxaudio_hw_param_t new_hw_param = hw_param;
 
 		switch (avport)
 		{
@@ -1070,12 +1096,12 @@ void rsxaudio_data_thread::update_av_mute_state(RsxaudioAvportIdx avport, bool m
 
 			if (muted)
 			{
-				new_hw_param->hdmi[hdmi_idx].muted = set;
+				new_hw_param.hdmi[hdmi_idx].muted = set;
 			}
 
 			if (force_mute)
 			{
-				new_hw_param->hdmi[hdmi_idx].force_mute = set;
+				new_hw_param.hdmi[hdmi_idx].force_mute = set;
 			}
 			break;
 		}
@@ -1083,7 +1109,7 @@ void rsxaudio_data_thread::update_av_mute_state(RsxaudioAvportIdx avport, bool m
 		{
 			if (muted)
 			{
-				new_hw_param->avmulti_av_muted = set;
+				new_hw_param.avmulti_av_muted = set;
 			}
 			break;
 		}
@@ -1093,9 +1119,10 @@ void rsxaudio_data_thread::update_av_mute_state(RsxaudioAvportIdx avport, bool m
 		}
 		}
 
-		g_fxo->get<rsx_audio_backend>().set_mute_state(calc_avport_mute_state(*new_hw_param));
+		g_fxo->get<rsx_audio_backend>().set_mute_state(calc_avport_mute_state(new_hw_param));
 
-		return new_hw_param;
+		hw_param = new_hw_param;
+		publish_hw_param();
 	});
 }
 
@@ -1698,7 +1725,7 @@ void rsxaudio_backend_thread::set_new_stream_param(const std::array<port_config,
 		}
 	});
 
-	// One writer at a time (hw_param_ts's operations): the ports, for the
+	// One writer at a time (the HLE thread, where the hardware's parameters change): the ports, for the
 	// backend thread to read through the sequence count
 	if (new_ra_state.port != cfg)
 	{

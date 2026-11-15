@@ -18,6 +18,10 @@
 //   data thread carries out before it next writes, and goes on writing
 //   after; the stream's new ports and the other news reach it as bits of
 //   one word and through a sequence count;
+// - the hardware's parameters change on the HLE thread, one change at a
+//   time, and reach the data thread through a sequence count: three
+//   threads changing them at once lose no change, and the data thread
+//   never sees half of one;
 // - sys_uart's two rings (retro_spsc) against the ring they were, the same
 //   bytes and counts through 200000 writes and reads;
 // - with RSXAUDIO_BENCH=1 it is timed: a callback's worth in
@@ -30,12 +34,16 @@
 #include "Emu/Cell/lv2/sys_rsxaudio.h"
 #include "Emu/Audio/AudioBackend.h"
 #include "Emu/Cell/lv2/sys_uart.h"
+#include "Emu/IdManager.h"
 #include "reference_ringbuf.h"
 
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <vector>
+#include <thread>
+#include <atomic>
 
 static int failures = 0;
 
@@ -90,6 +98,7 @@ struct rsxaudio_backend_test
 		}
 	}
 	static bool cfg_changed(rsxaudio_backend_thread& thread) { return thread.callback_cfg_now().cfg_changed; }
+	static rsxaudio_hw_param_t hw_param(rsxaudio_data_thread& thread) { return thread.hw_param_now(); }
 
 	static config stereo(bool s16, u16 volume)
 	{
@@ -371,6 +380,78 @@ int main()
 		CHECK(T::take_events(t) & 2);
 		CHECK(T::cfg_changed(t));
 		std::printf("test_rsxaudio_ring: the backend thread's requests: a flush asked for and carried out by the writer, the dump's ring taken up, the ports posted\n");
+	}
+
+	// The hardware's parameters: three threads change them, one reads
+	{
+		g_fxo->reset();
+		g_fxo->init<rsx_audio_backend>();
+		// Large (its output buffer): on the heap, not the stack
+		const auto data_ptr = std::make_unique<rsxaudio_data_thread>();
+		rsxaudio_data_thread& data = *data_ptr;
+		constexpr int n = 3000;
+		std::atomic<bool> go{false}, stop{false};
+		std::atomic<u32> torn{0}, reads{0};
+		// Each change counts one on: the count in bytes far apart in the
+		// parameters, all alike
+		const auto changer = [&]()
+		{
+			return std::thread([&]
+			{
+				while (!go) {}
+				for (int i = 0; i < n; i++)
+				{
+					data.update_hw_param([](rsxaudio_hw_param_t& p)
+					{
+						const u8 next = static_cast<u8>(p.spdif[0].cs_data[0] + 1);
+						// Slow to change it (no matter on the HLE thread, where
+						// changes are one at a time)
+						std::this_thread::yield();
+						p.spdif[0].cs_data.fill(next);
+						p.hdmi[1].info_frame.fill(next);
+					});
+				}
+			});
+		};
+		// From a count of 0, all alike
+		data.update_hw_param([](rsxaudio_hw_param_t& p)
+		{
+			p.spdif[0].cs_data.fill(0);
+			p.hdmi[1].info_frame.fill(0);
+		});
+		std::thread a = changer(), b = changer();
+		std::thread c([&]
+		{
+			while (!go) {}
+			for (int i = 0; i < n; i++)
+				data.update_mute_state(RsxaudioPort::SERIAL, i & 1);
+		});
+		std::thread reader([&]
+		{
+			while (!go) {}
+			while (!stop)
+			{
+				const rsxaudio_hw_param_t p = T::hw_param(data);
+				const u8 count = p.spdif[0].cs_data[0];
+				for (u8 v : p.spdif[0].cs_data)
+					torn += v != count;
+				for (u8 v : p.hdmi[1].info_frame)
+					torn += v != count;
+				reads++;
+			}
+		});
+		go = true;
+		a.join();
+		b.join();
+		c.join();
+		stop = true;
+		reader.join();
+		const rsxaudio_hw_param_t last = T::hw_param(data);
+		CHECK(last.spdif[0].cs_data[0] == static_cast<u8>(2 * n) && last.hdmi[1].info_frame[0] == static_cast<u8>(2 * n));
+		CHECK(last.serial.muted == ((n - 1) & 1));
+		CHECK(torn == 0);
+		std::printf("test_rsxaudio_ring: the hardware's parameters: %d changes from each of three threads, the count at %u (%u expected), %u torn in %u reads\n",
+			n, last.spdif[0].cs_data[0], static_cast<u8>(2 * n), torn.load(), reads.load());
 	}
 
 	std::printf("test_rsxaudio_ring: %s\n", failures ? "FAIL" : "ok");

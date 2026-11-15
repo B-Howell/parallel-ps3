@@ -3,6 +3,7 @@
 #include "Emu/System.h"
 #include "Emu/system_config.h"
 #include "Emu/Cell/PPUThread.h"
+#include "Emu/Cell/timers.hpp"
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Cell/lv2/sys_sync.h"
 #include "Emu/Cell/lv2/sys_rsxaudio.h"
