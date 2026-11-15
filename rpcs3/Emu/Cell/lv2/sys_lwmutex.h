@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sys_sync.h"
+#include "Emu/CPU/turn_calls.h"
 
 #include "Emu/Memory/vm_ptr.h"
 
@@ -59,7 +60,11 @@ struct lv2_lwmutex final : lv2_obj
 	const vm::ptr<sys_lwmutex_t> control;
 	const be_t<u64> name;
 
-	shared_mutex mutex;
+	// What is not one compare-and-swap of the control word - giving it to a
+	// waiter, taking a waiter out of the queue's middle, a destroy - is done
+	// in turn (turn_calls.h): no lock. An lwcond's turn may take this one
+	// inside it; this one never takes an lwcond's
+	turn_calls_cpp turns;
 	atomic_t<s32> lwcond_waiters{0};
 
 	struct alignas(16) control_data_t

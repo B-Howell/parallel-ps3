@@ -74,25 +74,31 @@ error_code _sys_lwmutex_destroy(ppu_thread& ppu, u32 lwmutex_id)
 				return CELL_ESRCH;
 			}
 
-			std::lock_guard lock(mutex.mutex);
-
-			if (mutex.load_sq())
+			const CellError found = turn_call(&mutex.turns, [&]() -> CellError
 			{
-				return CELL_EBUSY;
-			}
+				if (mutex.load_sq())
+				{
+					return CELL_EBUSY;
+				}
 
-			old_val = mutex.lwcond_waiters.or_fetch(smin);
+				old_val = mutex.lwcond_waiters.or_fetch(smin);
 
-			if (old_val != smin)
+				if (old_val != smin)
+				{
+					// Repeat loop: there are lwcond waiters
+					return CELL_EAGAIN;
+				}
+
+				return {};
+			});
+
+			if (found == CELL_EAGAIN)
 			{
-				// Deschedule if waiters were found
+				// Deschedule if waiters were found: this thread's own, out of the turn
 				lv2_obj::sleep(ppu);
-
-				// Repeat loop: there are lwcond waiters
-				return CELL_EAGAIN;
 			}
 
-			return {};
+			return found;
 		});
 
 		if (!ptr)
@@ -260,15 +266,23 @@ error_code _sys_lwmutex_lock(ppu_thread& ppu, u32 lwmutex_id, u64 timeout)
 
 		if (is_stopped(state))
 		{
-			std::lock_guard lock(mutex->mutex);
-
-			for (auto cpu = mutex->load_sq(); cpu; cpu = cpu->next_cpu)
+			const bool queued = turn_call(&mutex->turns, [&]
 			{
-				if (cpu == &ppu)
+				for (auto cpu = mutex->load_sq(); cpu; cpu = cpu->next_cpu)
 				{
-					ppu.state += cpu_flag::again;
-					return {};
+					if (cpu == &ppu)
+					{
+						return true;
+					}
 				}
+
+				return false;
+			});
+
+			if (queued)
+			{
+				ppu.state += cpu_flag::again;
+				return {};
 			}
 
 			break;
@@ -296,39 +310,35 @@ error_code _sys_lwmutex_lock(ppu_thread& ppu, u32 lwmutex_id, u64 timeout)
 
 				ppu.state += cpu_flag::wait;
 
-				if (!mutex->load_sq())
-				{
-					// Sleep queue is empty, so the thread must have been signaled
-					mutex->mutex.lock_unlock();
-					break;
-				}
-
-				std::lock_guard lock(mutex->mutex);
-
+				// Off the queue in the lwmutex's turn, or given it by an unlock,
+				// whose turn has woken it by the time this one runs
 				bool success = false;
 
-				mutex->change_control([&](lv2_lwmutex::control_data_t& data)
+				turn_call(&mutex->turns, [&]
 				{
-					success = false;
-
-					ppu_thread* sq = static_cast<ppu_thread*>(data.sq);
-
-					const bool retval = &ppu == sq;
-
-					if (!mutex->unqueue<false>(sq, &ppu))
+					mutex->change_control([&](lv2_lwmutex::control_data_t& data)
 					{
-						return false;
-					}
+						success = false;
 
-					success = true;
+						ppu_thread* sq = static_cast<ppu_thread*>(data.sq);
 
-					if (!retval)
-					{
-						return false;
-					}
+						const bool retval = &ppu == sq;
 
-					data.sq = sq;
-					return true;
+						if (!mutex->unqueue<false>(sq, &ppu))
+						{
+							return false;
+						}
+
+						success = true;
+
+						if (!retval)
+						{
+							return false;
+						}
+
+						data.sq = sq;
+						return true;
+					});
 				});
 
 				if (success)
@@ -430,18 +440,24 @@ error_code _sys_lwmutex_unlock(ppu_thread& ppu, u32 lwmutex_id)
 			return;
 		}
 
-		std::lock_guard lock(mutex.mutex);
-
-		if (const auto cpu = mutex.reown<ppu_thread>())
+		// Given to a waiter in the lwmutex's turn; true for an unlock to be done again
+		if (turn_call(&mutex.turns, [&]
 		{
-			if (static_cast<ppu_thread*>(cpu)->state & cpu_flag::again)
+			if (const auto cpu = mutex.reown<ppu_thread>())
 			{
-				ppu.state += cpu_flag::again;
-				return;
+				if (static_cast<ppu_thread*>(cpu)->state & cpu_flag::again)
+				{
+					return true;
+				}
+
+				mutex.awake(cpu);
+				notify.cleanup(); // lv2_lwmutex::mutex is not really active 99% of the time, can be ignored
 			}
 
-			mutex.awake(cpu);
-			notify.cleanup(); // lv2_lwmutex::mutex is not really active 99% of the time, can be ignored
+			return false;
+		}))
+		{
+			ppu.state += cpu_flag::again;
 		}
 	}(*mutex);
 	}
@@ -483,19 +499,25 @@ error_code _sys_lwmutex_unlock2(ppu_thread& ppu, u32 lwmutex_id)
 			return;
 		}
 
-		std::lock_guard lock(mutex.mutex);
-
-		if (const auto cpu = mutex.reown<ppu_thread>(true))
+		// Given to a waiter in the lwmutex's turn; true for an unlock to be done again
+		if (turn_call(&mutex.turns, [&]
 		{
-			if (static_cast<ppu_thread*>(cpu)->state & cpu_flag::again)
+			if (const auto cpu = mutex.reown<ppu_thread>(true))
 			{
-				ppu.state += cpu_flag::again;
-				return;
+				if (static_cast<ppu_thread*>(cpu)->state & cpu_flag::again)
+				{
+					return true;
+				}
+
+				static_cast<ppu_thread*>(cpu)->gpr[3] = CELL_EBUSY;
+				mutex.awake(cpu);
+				notify.cleanup(); // lv2_lwmutex::mutex is not really active 99% of the time, can be ignored
 			}
 
-			static_cast<ppu_thread*>(cpu)->gpr[3] = CELL_EBUSY;
-			mutex.awake(cpu);
-			notify.cleanup(); // lv2_lwmutex::mutex is not really active 99% of the time, can be ignored
+			return false;
+		}))
+		{
+			ppu.state += cpu_flag::again;
 		}
 	}(*mutex);
 	}

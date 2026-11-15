@@ -710,7 +710,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 458
+LOCK_GUARD_MAX := 445
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -858,6 +858,8 @@ check: all
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|reader_lock|->mutex\.|\.mutex\.|lock\((cond\.|cond->)?mutex(->|\.)mutex\)" ../../Emu/Cell/lv2/sys_mutex.cpp ../../Emu/Cell/lv2/sys_mutex.h ../../Emu/Cell/lv2/sys_cond.cpp; then echo "sys_mutex/sys_cond: a lock is back - the queues change in the mutex's turn (turn_call)"; exit 1; else echo "sys_mutex/sys_cond: no lock, the queues in the mutex's turn"; fi
 	@# Reader-writer locks take no lock: their queues, and the owner word with them, change in the rwlock's turn (turn_calls.h)
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|reader_lock|->mutex|\.mutex|lock_unlock" ../../Emu/Cell/lv2/sys_rwlock.cpp ../../Emu/Cell/lv2/sys_rwlock.h; then echo "sys_rwlock: a lock is back - the queues change in the rwlock's turn (turn_call)"; exit 1; else echo "sys_rwlock: no lock, the queues in the rwlock's turn"; fi
+	@# Lightweight mutexes and conditions take no lock: their queues change in the lwmutex's turn, and the lwcond's with the lwmutex's inside it (turn_calls.h)
+	@if grep -nE "shared_mutex|lock_guard|unique_lock|scoped_lock|reader_lock|->mutex\b|\.mutex\b|lock_unlock" ../../Emu/Cell/lv2/sys_lwmutex.cpp ../../Emu/Cell/lv2/sys_lwmutex.h ../../Emu/Cell/lv2/sys_lwcond.cpp ../../Emu/Cell/lv2/sys_lwcond.h; then echo "sys_lwmutex/sys_lwcond: a lock is back - the queues change in their turns (turn_call)"; exit 1; else echo "sys_lwmutex/sys_lwcond: no lock, the queues in their turns"; fi
 	@# Event queues take no lock: their events and waiters change in the queue's turn (turn_calls.h), an SPU group's lock taken inside it
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|reader_lock|lock_unlock|[.>]mutex\b" ../../Emu/Cell/lv2/sys_event.cpp ../../Emu/Cell/lv2/sys_event.h | grep -v "id_manager::g_mutex"; then echo "sys_event: a lock is back - the queue changes in its turn (turn_call)"; exit 1; elif grep -nE "queue(->|\.)mutex" ../../Emu/Cell/SPUThread.cpp ../../Emu/Cell/lv2/sys_rsx.cpp; then echo "sys_event: a queue's lock is taken again - its turn is (turn_call)"; exit 1; else echo "sys_event: no lock, the queues in their turns"; fi
 	@# LLVM's SHA-1, SHA-256 and old atomics are gone: libretro-common's lrc_hash and retro_atomic stand in for them

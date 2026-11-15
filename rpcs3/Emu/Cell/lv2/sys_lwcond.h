@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sys_sync.h"
+#include "Emu/CPU/turn_calls.h"
 
 #include "Emu/Memory/vm_ptr.h"
 
@@ -30,7 +31,9 @@ struct lv2_lwcond final : lv2_obj
 	const lv2_protocol protocol;
 	vm::ptr<sys_lwcond_t> control;
 
-	shared_mutex mutex;
+	// The queue changes in turn (turn_calls.h): no lock. Its lwmutex's turn
+	// is taken inside this one where both change
+	turn_calls_cpp turns;
 	ppu_thread* sq{};
 
 	atomic_t<s32> lwmutex_waiters = 0;
