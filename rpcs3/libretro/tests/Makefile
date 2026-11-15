@@ -773,6 +773,8 @@ check: all
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|steady_clock|thread_ctrl::wait" ../../Emu/Cell/Modules/cellMic.cpp ../../Emu/Cell/Modules/cellMic.h ../../Emu/Io/usb_microphone.cpp; then echo "microphones: a lock or a clock of the host's is back - they are the microphone thread's (mic_call), on the guest's clock"; exit 1; else echo "microphones: no lock, the microphone thread's, on the guest's clock"; fi
 	@# The camera is the camera thread's (camera_call), timed on the guest's clock
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|reader_lock|steady_clock|thread_ctrl::wait|get_system_time[ ]*\(" ../../Emu/Cell/Modules/cellCamera.cpp ../../Emu/Cell/Modules/cellCamera.h || grep -n "g_camera.mutex" ../../Emu/Cell/Modules/cellGem.cpp; then echo "camera: a lock or a clock of the host's is back - it is the camera thread's (camera_call), on the guest's clock"; exit 1; else echo "camera: no lock, the camera thread's, on the guest's clock"; fi
+	@# The audio hand-over and sys_io's gate: neither side spins or waits for the other
+	@if grep -nE "yield\(\)|while \(!retro_atomic_cas|begin_exclusive|m_access" ../libretro_audio.cpp ../libretro_audio.h ../../Emu/Cell/Modules/sys_io_.cpp; then echo "audio hand-over / sys_io gate: a spin is back - nothing there waits for the other side"; exit 1; else echo "audio hand-over and sys_io gate: no spin"; fi
 	@# The pads take no lock: pad::g_pad_mutex is gone, and a merge of
 	@# upstream's code that takes it does not bring it back
 	@if grep -rn "g_pad_mutex" ../../Emu ../../Input ../*.cpp ../*.h ../*.c; then echo "pads: pad::g_pad_mutex is back - the pads take no lock (AGENTS.md)"; exit 1; else echo "pads: no pad lock"; fi
