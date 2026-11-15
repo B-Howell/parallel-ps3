@@ -79,12 +79,29 @@ private:
 	std::unique_ptr<vk::buffer> m_cond_render_buffer;
 	u64 m_cond_render_sync_tag = 0;
 
-	shared_mutex m_sampler_mutex;
 	atomic_t<bool> m_samplers_dirty = { true };
 
-	// Set by a guest thread that wrote over a texture and handed the page
-	// back itself (on_access_violation); taken by load_texture_env
+	// Set by any thread that wants every sampler looked at again - a guest
+	// thread that wrote over a texture (on_access_violation), an unmap or a
+	// tile unbind - and taken by load_texture_env when it next loads them:
+	// where a lock was taken against the load, so a reload asked for during
+	// one was not lost, and the asking thread waited for the load to end
 	retro_atomic_int_t m_guest_wrote_textures{};
+
+	// Every sampler to be looked at again: at once on the renderer's own
+	// thread (a draw retrying after running out of memory looks at
+	// m_samplers_dirty), at its next texture load from any other
+	void request_samplers_reload()
+	{
+		if (is_current_thread())
+		{
+			m_samplers_dirty.store(true);
+		}
+		else
+		{
+			retro_atomic_store_release_int(&m_guest_wrote_textures, 1);
+		}
+	}
 	std::unique_ptr<vk::sampler> m_stencil_mirror_sampler;
 	std::array<vk::sampler*, rsx::limits::fragment_textures_count> fs_sampler_handles{};
 	std::array<vk::sampler*, rsx::limits::vertex_textures_count> vs_sampler_handles{};

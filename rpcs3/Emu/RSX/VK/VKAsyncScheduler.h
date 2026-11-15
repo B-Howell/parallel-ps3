@@ -2,7 +2,7 @@
 
 #include "vkutils/commands.h"
 #include "vkutils/sync.h"
-#include "Utilities/mutex.h"
+#include "Emu/CPU/turn_calls.h"
 #include "Emu/system_config_types.h"
 
 #define VK_MAX_ASYNC_COMPUTE_QUEUES 256
@@ -22,7 +22,7 @@ namespace vk
 		atomic_t<u64> m_submit_count = 0;
 
 		// Scheduler
-		shared_mutex m_config_mutex;
+		turn_calls_cpp m_config_turns;
 		bool m_options_initialized = false;
 		bool m_use_host_scheduler = false;
 
@@ -38,7 +38,9 @@ namespace vk
 		std::vector<std::unique_ptr<vk::semaphore>> m_semaphore_pool;
 		atomic_t<u64> m_next_semaphore_id = 0;
 
-		shared_mutex m_submit_mutex;
+		// Choosing, syncing and submitting the command buffer are done in turn
+		// (turn_calls.h): no lock
+		turn_calls_cpp m_submit_turns;
 
 		void init_config_options(vk_gpu_scheduler_mode mode, const VkDependencyInfoKHR& queue_dependency);
 		void delayed_init();

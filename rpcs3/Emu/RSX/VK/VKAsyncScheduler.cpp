@@ -30,17 +30,19 @@ namespace vk
 
 	void AsyncTaskScheduler::init_config_options(vk_gpu_scheduler_mode mode, const VkDependencyInfoKHR& queue_dependency)
 	{
-		std::lock_guard lock(m_config_mutex);
-		if (std::exchange(m_options_initialized, true))
+		turn_call(&m_config_turns, [&]
 		{
-			// Nothing to do
-			return;
-		}
+			if (std::exchange(m_options_initialized, true))
+			{
+				// Nothing to do
+				return;
+			}
 
-		m_use_host_scheduler = (mode == vk_gpu_scheduler_mode::safe) || g_cfg.video.strict_rendering_mode;
-		rsx_log.notice("Asynchronous task scheduler is active running in %s mode", m_use_host_scheduler? "'Safe'" : "'Fast'");
+			m_use_host_scheduler = (mode == vk_gpu_scheduler_mode::safe) || g_cfg.video.strict_rendering_mode;
+			rsx_log.notice("Asynchronous task scheduler is active running in %s mode", m_use_host_scheduler? "'Safe'" : "'Fast'");
 
-		m_dependency_info = queue_dependency;
+			m_dependency_info = queue_dependency;
+		});
 	}
 
 	void AsyncTaskScheduler::delayed_init()
@@ -80,43 +82,45 @@ namespace vk
 
 	command_buffer* AsyncTaskScheduler::get_current()
 	{
-		std::lock_guard lock(m_submit_mutex);
-		m_sync_required = true;
+		return turn_call(&m_submit_turns, [&]() -> command_buffer*
+		{
+			m_sync_required = true;
 
-		// 0. Anything still active?
-		if (m_current_cb)
-		{
-			return m_current_cb;
-		}
-
-		// 1. Check if there is a 'next' entry
-		if (m_async_command_queue.empty())
-		{
-			delayed_init();
-		}
-		else if (m_next_cb_index < m_async_command_queue.size())
-		{
-			m_current_cb = &m_async_command_queue[m_next_cb_index];
-		}
-
-		// 2. Create entry
-		if (!m_current_cb)
-		{
-			if (m_next_cb_index == VK_MAX_ASYNC_COMPUTE_QUEUES)
+			// 0. Anything still active?
+			if (m_current_cb)
 			{
-				m_next_cb_index = 0;
+				return m_current_cb;
+			}
+
+			// 1. Check if there is a 'next' entry
+			if (m_async_command_queue.empty())
+			{
+				delayed_init();
+			}
+			else if (m_next_cb_index < m_async_command_queue.size())
+			{
 				m_current_cb = &m_async_command_queue[m_next_cb_index];
 			}
-			else
-			{
-				m_async_command_queue.emplace_back();
-				m_current_cb = &m_async_command_queue.back();
-				m_current_cb->create(m_command_pool);
-			}
-		}
 
-		m_next_cb_index++;
-		return m_current_cb;
+			// 2. Create entry
+			if (!m_current_cb)
+			{
+				if (m_next_cb_index == VK_MAX_ASYNC_COMPUTE_QUEUES)
+				{
+					m_next_cb_index = 0;
+					m_current_cb = &m_async_command_queue[m_next_cb_index];
+				}
+				else
+				{
+					m_async_command_queue.emplace_back();
+					m_current_cb = &m_async_command_queue.back();
+					m_current_cb->create(m_command_pool);
+				}
+			}
+
+			m_next_cb_index++;
+			return m_current_cb;
+		});
 	}
 
 	event* AsyncTaskScheduler::get_primary_sync_label()
@@ -125,10 +129,12 @@ namespace vk
 
 		if (m_sync_required) [[unlikely]]
 		{
-			std::lock_guard lock(m_submit_mutex); // For some reason this is inexplicably expensive. WTF!
-			ensure(m_current_cb);
-			insert_sync_event();
-			m_sync_required = false;
+			turn_call(&m_submit_turns, [&]
+			{
+				ensure(m_current_cb);
+				insert_sync_event();
+				m_sync_required = false;
+			});
 		}
 
 		return std::exchange(m_sync_label, nullptr);
@@ -155,20 +161,22 @@ namespace vk
 
 		submit_info.queue = get_current_renderer()->get_transfer_queue();
 
-		std::lock_guard lock(m_submit_mutex);
-		if (m_sync_required && !m_use_host_scheduler)
+		turn_call(&m_submit_turns, [&]
 		{
-			insert_sync_event();
-		}
+			if (m_sync_required && !m_use_host_scheduler)
+			{
+				insert_sync_event();
+			}
 
-		m_current_cb->end();
-		m_current_cb->submit(submit_info, force_flush);
+			m_current_cb->end();
+			m_current_cb->submit(submit_info, force_flush);
 
-		m_submit_count++;
+			m_submit_count++;
 
-		m_last_used_cb = m_current_cb;
-		m_current_cb = nullptr;
-		m_sync_required = false;
+			m_last_used_cb = m_current_cb;
+			m_current_cb = nullptr;
+			m_sync_required = false;
+		});
 	}
 
 	void AsyncTaskScheduler::destroy()

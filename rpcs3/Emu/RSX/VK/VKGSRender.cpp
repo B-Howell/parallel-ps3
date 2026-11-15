@@ -938,8 +938,8 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 	// waiting for the renderer
 	if (is_writing && !is_current_thread() && m_texture_cache.note_guest_write(address))
 	{
-		// Not m_sampler_mutex, which the renderer holds for as long as it
-		// loads a draw's textures: a flag it takes when it next does
+		// A flag the renderer takes when it next loads a draw's textures, not
+		// a wait for the load it may be doing
 		retro_atomic_store_release_int(&m_guest_wrote_textures, 1);
 		return true;
 	}
@@ -1002,8 +1002,7 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 
 	if (result.invalidate_samplers)
 	{
-		std::lock_guard lock(m_sampler_mutex);
-		m_samplers_dirty.store(true);
+		request_samplers_reload();
 	}
 
 	if (!result.violation_handled)
@@ -1039,10 +1038,7 @@ void VKGSRender::on_invalidate_memory_range(const utils::address_range32 &range,
 		if (data.violation_handled)
 		{
 			m_texture_cache.purge_unreleased_sections();
-			{
-				std::lock_guard lock(m_sampler_mutex);
-				m_samplers_dirty.store(true);
-			}
+			request_samplers_reload();
 		}
 
 		vk::unmap_dma(range.start, range.length());
@@ -1190,10 +1186,7 @@ void VKGSRender::notify_tile_unbound(u32 tile)
 		m_rtts.invalidate_surface_address(addr, false);
 	}
 
-	{
-		std::lock_guard lock(m_sampler_mutex);
-		m_samplers_dirty.store(true);
-	}
+	request_samplers_reload();
 }
 
 void VKGSRender::check_present_status()
