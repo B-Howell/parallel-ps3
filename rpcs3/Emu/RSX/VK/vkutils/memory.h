@@ -86,7 +86,8 @@ namespace vk
 
 		virtual void destroy() = 0;
 
-		virtual mem_handle_t alloc(const memory_allocation_request& request) = 0;
+		// The memory type it came from in memory_type, for the block to account its free with
+		virtual mem_handle_t alloc(const memory_allocation_request& request, u32& memory_type) = 0;
 		virtual void free(mem_handle_t mem_handle) = 0;
 		virtual void* map(mem_handle_t mem_handle, u64 offset, u64 size) = 0;
 		virtual void unmap(mem_handle_t mem_handle) = 0;
@@ -114,7 +115,7 @@ namespace vk
 
 		void destroy() override;
 
-		mem_handle_t alloc(const memory_allocation_request& request) override;
+		mem_handle_t alloc(const memory_allocation_request& request, u32& memory_type) override;
 
 		void free(mem_handle_t mem_handle) override;
 		void* map(mem_handle_t mem_handle, u64 offset, u64 /*size*/) override;
@@ -144,7 +145,7 @@ namespace vk
 
 		void destroy() override {}
 
-		mem_handle_t alloc(const memory_allocation_request& request) override;
+		mem_handle_t alloc(const memory_allocation_request& request, u32& memory_type) override;
 
 		void free(mem_handle_t mem_handle) override;
 		void* map(mem_handle_t mem_handle, u64 offset, u64 size) override;
@@ -179,6 +180,11 @@ namespace vk
 		vk::mem_allocator_base* m_mem_allocator = nullptr;
 		mem_allocator_base::mem_handle_t m_mem_handle;
 		u64 m_size;
+
+		// What the allocation counted against, given back on its free: the
+		// totals are counters, with no table of allocations to look it up in
+		u32 m_memory_type = ~0u;
+		vmm_allocation_pool m_pool = VMM_ALLOCATION_POOL_UNDEFINED;
 	};
 
 	struct memory_block_host : public memory_block
@@ -202,8 +208,8 @@ namespace vk
 	};
 
 	// Tracking for memory usage. Constrained largely by amount of VRAM + shared video memory.
-	void vmm_notify_memory_allocated(void* handle, u32 memory_type, u64 memory_size, vmm_allocation_pool pool);
-	void vmm_notify_memory_freed(void* handle);
+	void vmm_notify_memory_allocated(u32 memory_type, u64 memory_size, vmm_allocation_pool pool);
+	void vmm_notify_memory_freed(u32 memory_type, u64 memory_size, vmm_allocation_pool pool);
 	void vmm_reset();
 	void vmm_check_memory_usage();
 	u64  vmm_get_application_memory_usage(const memory_type_info& memory_type);

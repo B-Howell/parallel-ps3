@@ -322,12 +322,5 @@ namespace vk
 		}
 	};
 
-	struct vmm_allocation_t
-	{
-		u64 size;
-		u32 type_index;
-		vmm_allocation_pool pool;
-	};
-
 	resource_manager* get_resource_manager();
 }

@@ -217,7 +217,7 @@ namespace vk
 		vmaDestroyAllocator(m_allocator);
 	}
 
-	mem_allocator_vk::mem_handle_t mem_allocator_vma::alloc(const memory_allocation_request& request)
+	mem_allocator_vk::mem_handle_t mem_allocator_vma::alloc(const memory_allocation_request& request, u32& memory_type)
 	{
 		VmaAllocation vma_alloc;
 		VkMemoryRequirements mem_req = {};
@@ -249,7 +249,8 @@ namespace vk
 			const auto [status, type] = do_vma_alloc();
 			if (status == VK_SUCCESS)
 			{
-				vmm_notify_memory_allocated(vma_alloc, type, request.size, request.pool);
+				vmm_notify_memory_allocated(type, request.size, request.pool);
+				memory_type = type;
 				return vma_alloc;
 			}
 		}
@@ -265,7 +266,8 @@ namespace vk
 				if (status == VK_SUCCESS)
 				{
 					rsx_log.warning("Renderer ran out of video memory but successfully recovered.");
-					vmm_notify_memory_allocated(vma_alloc, type, request.size, request.pool);
+					vmm_notify_memory_allocated(type, request.size, request.pool);
+					memory_type = type;
 					return vma_alloc;
 				}
 			}
@@ -282,7 +284,6 @@ namespace vk
 
 	void mem_allocator_vma::free(mem_handle_t mem_handle)
 	{
-		vmm_notify_memory_freed(mem_handle);
 		vmaFreeMemory(m_allocator, static_cast<VmaAllocation>(mem_handle));
 	}
 
@@ -357,7 +358,7 @@ namespace vk
 		m_allocation_flags = VMA_ALLOCATION_CREATE_STRATEGY_MIN_TIME_BIT;
 	}
 
-	mem_allocator_vk::mem_handle_t mem_allocator_vk::alloc(const memory_allocation_request& request)
+	mem_allocator_vk::mem_handle_t mem_allocator_vk::alloc(const memory_allocation_request& request, u32& memory_type)
 	{
 		VkResult error_code = VK_ERROR_UNKNOWN;
 		VkDeviceMemory memory;
@@ -385,7 +386,8 @@ namespace vk
 			const auto [status, type] = do_vk_alloc();
 			if (status == VK_SUCCESS)
 			{
-				vmm_notify_memory_allocated(memory, type, request.size, request.pool);
+				vmm_notify_memory_allocated(type, request.size, request.pool);
+				memory_type = type;
 				return memory;
 			}
 		}
@@ -401,7 +403,8 @@ namespace vk
 				if (status == VK_SUCCESS)
 				{
 					rsx_log.warning("Renderer ran out of video memory but successfully recovered.");
-					vmm_notify_memory_allocated(memory, type, request.size, request.pool);
+					vmm_notify_memory_allocated(type, request.size, request.pool);
+					memory_type = type;
 					return memory;
 				}
 			}
@@ -418,7 +421,6 @@ namespace vk
 
 	void mem_allocator_vk::free(mem_handle_t mem_handle)
 	{
-		vmm_notify_memory_freed(mem_handle);
 		vkFreeMemory(m_device, static_cast<VkDeviceMemory>(mem_handle), nullptr);
 	}
 
@@ -455,16 +457,17 @@ namespace vk
 	}
 
 	memory_block::memory_block(VkDevice dev, const memory_allocation_request& alloc_request)
-		: m_device(dev), m_size(alloc_request.size)
+		: m_device(dev), m_size(alloc_request.size), m_pool(alloc_request.pool)
 	{
 		m_mem_allocator = get_current_mem_allocator();
-		m_mem_handle    = m_mem_allocator->alloc(alloc_request);
+		m_mem_handle    = m_mem_allocator->alloc(alloc_request, m_memory_type);
 	}
 
 	memory_block::~memory_block()
 	{
 		if (m_mem_allocator && m_mem_handle)
 		{
+			vmm_notify_memory_freed(m_memory_type, m_size, m_pool);
 			m_mem_allocator->free(m_mem_handle);
 		}
 	}

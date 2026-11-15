@@ -29,6 +29,7 @@
 #include "Emu/Cell/Modules/cellVoice.h"
 #include "Emu/NP/np_dnshook.h"
 #include "Emu/RSX/Overlays/overlay_message.h"
+#include "Emu/RSX/VK/vkutils/memory.h"
 #include "Emu/emu_callbacks.h"
 #include "Emu/system_config.h"
 #include "util/serialization.hpp"
@@ -226,6 +227,36 @@ int main()
 		CHECK(in_list == want && lv2_timers_count(&thread.timers) == want);
 		std::printf("test_held_queues: timers handed over from 4 threads: %zu kept of 2000, %zu wrong\n", in_list, wrong);
 
+	}
+
+	// Vulkan memory accounted from four threads at once, as the renderer and
+	// the threads that make and drop resources do: the totals are counters
+	// with no table behind them, so every allocation counted in is counted
+	// out again, and they end where they started
+	{
+		const u64 pool_before = vk::vmm_get_application_pool_usage(vk::VMM_ALLOCATION_POOL_TEXTURE_CACHE);
+
+		std::thread accountants[4];
+		for (u32 t = 0; t < 4; t++)
+		{
+			accountants[t] = std::thread([t]
+			{
+				for (u64 i = 0; i < 200000; i++)
+				{
+					const u64 size = 0x1000 * (1 + ((i + t) & 7));
+					vk::vmm_notify_memory_allocated(t, size, vk::VMM_ALLOCATION_POOL_TEXTURE_CACHE);
+					vk::vmm_notify_memory_freed(t, size, vk::VMM_ALLOCATION_POOL_TEXTURE_CACHE);
+				}
+			});
+		}
+
+		for (auto& t : accountants)
+			t.join();
+
+		const u64 pool_after = vk::vmm_get_application_pool_usage(vk::VMM_ALLOCATION_POOL_TEXTURE_CACHE);
+		CHECK(pool_after == pool_before);
+		std::printf("test_held_queues: Vulkan memory counted in and out by 4 threads: pool total %llu after, %llu before\n",
+			static_cast<unsigned long long>(pool_after), static_cast<unsigned long long>(pool_before));
 	}
 
 	// A periodic timer's expiry checked from four threads at once, as the

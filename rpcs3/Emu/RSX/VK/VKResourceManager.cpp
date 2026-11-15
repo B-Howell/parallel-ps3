@@ -9,15 +9,11 @@ namespace vk
 {
 	struct vmm_memory_stats
 	{
-		// What was allocated, by handle: under the mutex, by those that
-		// allocate and free
-		std::unordered_map<uptr, vmm_allocation_t> allocations;
-		shared_mutex mutex;
-
-		// The totals, by memory type and by pool: counters added to and read
-		// with no lock. They were maps behind the mutex, which every look at
-		// a total took shared - the sampler count on every trim, the memory
-		// in use on every check of the load.
+		// The totals, by memory type and by pool: counters added to and taken
+		// from with no lock. An allocation's type, size and pool are kept by
+		// its memory_block and given back on its free, where a table of every
+		// allocation, behind a mutex, was looked up - and grew a node at
+		// every allocation. The totals were maps behind the mutex too.
 		static constexpr u32 memory_types = 32; // VK_MAX_MEMORY_TYPES
 		static constexpr u32 pools = 8;
 		retro_atomic_64_t memory_usage[memory_types]{};
@@ -25,17 +21,13 @@ namespace vk
 
 		void clear()
 		{
-			if (!allocations.empty())
+			for (u32 i = 0; i < pools; i++)
 			{
-				rsx_log.error("Leaking memory allocations!");
-				for (auto& leak : allocations)
+				if (const s64 left = retro_atomic_load_acquire_64(&pool_usage[i]))
 				{
-					rsx_log.error("Memory handle 0x%llx (%llu bytes) allocated from pool %d was not freed.",
-						leak.first, leak.second.size, static_cast<int>(leak.second.pool));
+					rsx_log.error("Leaking memory allocations! %lld bytes allocated from pool %u were not freed.", static_cast<long long>(left), i);
 				}
 			}
-
-			allocations.clear();
 
 			for (auto& v : memory_usage)
 				retro_atomic_store_release_64(&v, 0);
@@ -124,19 +116,8 @@ namespace vk
 		return size / (1024.f * 1024.f * 1024.f);
 	}
 
-	void vmm_notify_memory_allocated(void* handle, u32 memory_type, u64 memory_size, vmm_allocation_pool pool)
+	void vmm_notify_memory_allocated(u32 memory_type, u64 memory_size, vmm_allocation_pool pool)
 	{
-		auto key = reinterpret_cast<uptr>(handle);
-		const vmm_allocation_t info = { memory_size, memory_type, pool };
-
-		std::lock_guard lock(g_vmm_stats.mutex);
-
-		if (const auto ins = g_vmm_stats.allocations.insert_or_assign(key, info);
-			!ins.second)
-		{
-			rsx_log.error("Duplicate vmm entry with memory handle 0x%llx", key);
-		}
-
 		retro_atomic_fetch_add_64(&::at32(g_vmm_stats.pool_usage, pool), static_cast<s64>(memory_size));
 
 		const u64 vmm_size = static_cast<u64>(retro_atomic_fetch_add_64(&::at32(g_vmm_stats.memory_usage, memory_type), static_cast<s64>(memory_size))) + memory_size;
@@ -148,25 +129,14 @@ namespace vk
 		}
 	}
 
-	void vmm_notify_memory_freed(void* handle)
+	void vmm_notify_memory_freed(u32 memory_type, u64 memory_size, vmm_allocation_pool pool)
 	{
-		std::lock_guard lock(g_vmm_stats.mutex);
-
-		auto key = reinterpret_cast<uptr>(handle);
-		if (auto found = g_vmm_stats.allocations.find(key);
-			found != g_vmm_stats.allocations.end())
-		{
-			const auto& info = found->second;
-			retro_atomic_fetch_add_64(&::at32(g_vmm_stats.memory_usage, info.type_index), -static_cast<s64>(info.size));
-			retro_atomic_fetch_add_64(&::at32(g_vmm_stats.pool_usage, info.pool), -static_cast<s64>(info.size));
-			g_vmm_stats.allocations.erase(found);
-		}
+		retro_atomic_fetch_add_64(&::at32(g_vmm_stats.memory_usage, memory_type), -static_cast<s64>(memory_size));
+		retro_atomic_fetch_add_64(&::at32(g_vmm_stats.pool_usage, pool), -static_cast<s64>(memory_size));
 	}
 
 	void vmm_reset()
 	{
-		std::lock_guard lock(g_vmm_stats.mutex);
-
 		g_vmm_stats.clear();
 		g_event_ctr = 0;
 		g_last_completed_event = 0;
