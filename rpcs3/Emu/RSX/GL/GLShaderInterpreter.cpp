@@ -56,38 +56,36 @@ namespace gl
 
 		// Second stage. Propagate base pipelines to all compatible
 		ctr = 0;
-		std::lock_guard lock(m_program_cache_lock);
-
-		for (const auto& variant : variants.pipelines)
+		turn_call(&m_turns, [&]
 		{
-			const u64 compiler_options = variant.vs_opts.shader_opt | variant.fs_opts.shader_opt;
-			if (m_program_cache.find(compiler_options) != m_program_cache.end())
+			for (const auto& variant : variants.pipelines)
 			{
-				// Base variant
-				continue;
-			}
+				const u64 compiler_options = variant.vs_opts.shader_opt | variant.fs_opts.shader_opt;
+				if (m_program_cache.find(compiler_options) != m_program_cache.end())
+				{
+					// Base variant
+					continue;
+				}
 
-			const u64 compatible_options = variant.vs_opts.compatible_shader_opts | variant.fs_opts.compatible_shader_opts;
-			auto base_pipeline = m_program_cache.find(compatible_options);
-			if (base_pipeline == m_program_cache.end())
-			{
-				fmt::throw_exception("Base variant was not found in the cache.");
-			}
+				const u64 compatible_options = variant.vs_opts.compatible_shader_opts | variant.fs_opts.compatible_shader_opts;
+				auto base_pipeline = m_program_cache.find(compatible_options);
+				if (base_pipeline == m_program_cache.end())
+				{
+					fmt::throw_exception("Base variant was not found in the cache.");
+				}
 
-			auto data = new interpreter::cached_program();
-			data->flags = base_pipeline->second->flags | CACHED_PIPE_UNOPTIMIZED;
-			data->build_compiler_options = base_pipeline->second->build_compiler_options;
-			data->vertex_shader = base_pipeline->second->vertex_shader;
-			data->fragment_shader = base_pipeline->second->fragment_shader;
-			data->prog = base_pipeline->second->prog;
-			m_program_cache[compiler_options].reset(data);
-		}
+				auto data = new interpreter::cached_program();
+				data->flags = base_pipeline->second->flags | CACHED_PIPE_UNOPTIMIZED;
+				data->build_compiler_options = base_pipeline->second->build_compiler_options;
+				data->vertex_shader = base_pipeline->second->vertex_shader;
+				data->fragment_shader = base_pipeline->second->fragment_shader;
+				data->prog = base_pipeline->second->prog;
+				m_program_cache[compiler_options].reset(data);
+			}
+		});
 
 		ctr = limit2;
 		update_progress(1);
-
-		// Minor stall to avoid visual flashing
-		std::this_thread::sleep_for(16ms);
 	}
 
 	void shader_interpreter::destroy()
@@ -155,13 +153,15 @@ namespace gl
 
 		auto previous = m_current_interpreter ? m_current_interpreter.get() : nullptr;
 		m_current_interpreter.reset();
+		m_current_interpreter = turn_call(&m_turns, [&]() -> std::shared_ptr<interpreter::cached_program>
 		{
-			reader_lock lock(m_program_cache_lock);
 			if (auto it = m_program_cache.find(opt); it != m_program_cache.end()) [[likely]]
 			{
-				m_current_interpreter = it->second;
+				return it->second;
 			}
-
+			return {};
+		});
+		{
 			if (!m_current_interpreter || m_current_interpreter.get() != previous)
 			{
 				// Rebind all textures
@@ -198,12 +198,15 @@ namespace gl
 	{
 		compiler_options &= COMPILER_OPT_ALL_VS_MASK;
 		{
-			reader_lock lock(m_vs_cache_lock);
-
-			if (auto found = m_vs_cache.find(compiler_options);
-				found != m_vs_cache.end())
+			auto found = turn_call(&m_turns, [&]() -> std::shared_ptr<glsl::shader>
 			{
-				prog_data.vertex_shader = found->second;
+				const auto it = m_vs_cache.find(compiler_options);
+				return it != m_vs_cache.end() ? it->second : nullptr;
+			});
+
+			if (found)
+			{
+				prog_data.vertex_shader = std::move(found);
 				return;
 			}
 		}
@@ -270,14 +273,17 @@ namespace gl
 		prog_data.vertex_shader->compile();
 
 		{
-			std::lock_guard lock(m_vs_cache_lock);
+			// Another thread's, made meanwhile, is kept: ours goes, out of the turn
+			auto kept = turn_call(&m_turns, [&]
+			{
+				return m_vs_cache.try_emplace(compiler_options, prog_data.vertex_shader).first->second;
+			});
 
-			const auto [found, inserted] = m_vs_cache.try_emplace(compiler_options, prog_data.vertex_shader);
-			if (!inserted)
+			if (kept != prog_data.vertex_shader)
 			{
 				// Cache hit
 				prog_data.vertex_shader->remove();
-				prog_data.vertex_shader = found->second;
+				prog_data.vertex_shader = std::move(kept);
 			}
 		}
 	}
@@ -287,12 +293,15 @@ namespace gl
 		// Cache lookup
 		compiler_options &= COMPILER_OPT_ALL_FS_MASK;
 		{
-			reader_lock lock(m_fs_cache_lock);
-
-			if (auto found = m_fs_cache.find(compiler_options);
-				found != m_fs_cache.end())
+			auto found = turn_call(&m_turns, [&]() -> std::shared_ptr<glsl::shader>
 			{
-				prog_data.fragment_shader = found->second;
+				const auto it = m_fs_cache.find(compiler_options);
+				return it != m_fs_cache.end() ? it->second : nullptr;
+			});
+
+			if (found)
+			{
+				prog_data.fragment_shader = std::move(found);
 				return;
 			}
 		}
@@ -426,14 +435,17 @@ namespace gl
 		prog_data.fragment_shader->compile();
 
 		{
-			std::lock_guard lock(m_fs_cache_lock);
+			// Another thread's, made meanwhile, is kept: ours goes, out of the turn
+			auto kept = turn_call(&m_turns, [&]
+			{
+				return m_fs_cache.try_emplace(compiler_options, prog_data.fragment_shader).first->second;
+			});
 
-			const auto [found, inserted] = m_fs_cache.try_emplace(compiler_options, prog_data.fragment_shader);
-			if (!inserted)
+			if (kept != prog_data.fragment_shader)
 			{
 				// Cache hit
 				prog_data.fragment_shader->remove();
-				prog_data.fragment_shader = found->second;
+				prog_data.fragment_shader = std::move(kept);
 			}
 		}
 	}
@@ -514,8 +526,10 @@ namespace gl
 	{
 		data->build_compiler_options = compiler_options;
 
-		std::lock_guard lock(m_program_cache_lock);
-		m_program_cache[compiler_options] = data;
+		turn_call(&m_turns, [&]
+		{
+			m_program_cache[compiler_options] = data;
+		});
 	}
 
 	bool shader_interpreter::is_interpreter(const glsl::program* program) const

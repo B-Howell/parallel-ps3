@@ -6,6 +6,8 @@
 
 #include <unordered_map>
 
+#include "Emu/CPU/turn_calls.h"
+
 namespace rsx
 {
 	struct shader_loading_dialog;
@@ -100,9 +102,10 @@ namespace gl
 		using pipeline_cache_t = std::unordered_map<u64, std::shared_ptr<interpreter::cached_program>>;
 		using async_build_callback_t = std::function<void(const std::shared_ptr<interpreter::cached_program>&)>;
 
-		shared_mutex m_vs_cache_lock;
-		shared_mutex m_fs_cache_lock;
-		shared_mutex m_program_cache_lock;
+		// The three caches change in turn (turn_calls.h), from the renderer
+		// and the pipeline compiler's threads: no lock. GL calls are made
+		// out of the turn, on the thread whose context they are
+		turn_calls_cpp m_turns;
 
 		shader_cache_t m_vs_cache;
 		shader_cache_t m_fs_cache;
