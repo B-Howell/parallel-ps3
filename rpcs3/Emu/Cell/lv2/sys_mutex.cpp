@@ -115,20 +115,21 @@ error_code sys_mutex_destroy(ppu_thread& ppu, u32 mutex_id)
 
 	const auto mutex = idm::withdraw<lv2_obj, lv2_mutex>(mutex_id, [](lv2_mutex& mutex) -> CellError
 	{
-		std::lock_guard lock(mutex.mutex);
-
-		if (mutex.control_owner())
+		return turn_call(&mutex.turns, [&]() -> CellError
 		{
-			return CELL_EBUSY;
-		}
+			if (mutex.control_owner())
+			{
+				return CELL_EBUSY;
+			}
 
-		if (mutex.cond_count)
-		{
-			return CELL_EPERM;
-		}
+			if (mutex.cond_count)
+			{
+				return CELL_EPERM;
+			}
 
-		lv2_obj::on_id_destroy(mutex, mutex.key);
-		return {};
+			lv2_obj::on_id_destroy(mutex, mutex.key);
+			return {};
+		});
 	});
 
 	if (!mutex)
@@ -158,17 +159,26 @@ static CellError mutex_unlock(ppu_thread& ppu, lv2_mutex& mutex)
 
 	if (result == CELL_EBUSY)
 	{
-		std::lock_guard lock(mutex.mutex);
-
-		if (auto cpu = mutex.reown<ppu_thread>())
+		// Given to a waiter in the mutex's turn; waking it is for any thread
+		const bool again = turn_call(&mutex.turns, [&]
 		{
-			if (cpu->state & cpu_flag::again)
+			if (auto cpu = mutex.reown<ppu_thread>())
 			{
-				ppu.state += cpu_flag::again;
-				return {};
+				if (cpu->state & cpu_flag::again)
+				{
+					return true;
+				}
+
+				mutex.awake(cpu);
 			}
 
-			mutex.awake(cpu);
+			return false;
+		});
+
+		if (again)
+		{
+			ppu.state += cpu_flag::again;
+			return {};
 		}
 
 		result = {};
@@ -319,15 +329,23 @@ error_code sys_mutex_lock(ppu_thread& ppu, u32 mutex_id, u64 timeout)
 
 		if (is_stopped(state))
 		{
-			std::lock_guard lock(mutex->mutex);
-
-			for (auto cpu = mutex->control_sq(); cpu; cpu = cpu->next_cpu)
+			const bool queued = turn_call(&mutex->turns, [&]
 			{
-				if (cpu == &ppu)
+				for (auto cpu = mutex->control_sq(); cpu; cpu = cpu->next_cpu)
 				{
-					ppu.state += cpu_flag::again;
-					return {};
+					if (cpu == &ppu)
+					{
+						return true;
+					}
 				}
+
+				return false;
+			});
+
+			if (queued)
+			{
+				ppu.state += cpu_flag::again;
+				return {};
 			}
 
 			break;
@@ -355,51 +373,47 @@ error_code sys_mutex_lock(ppu_thread& ppu, u32 mutex_id, u64 timeout)
 
 				ppu.state += cpu_flag::wait;
 
-				if (!mutex->control_sq())
-				{
-					// Waiters queue is empty, so the thread must have been signaled
-					mutex->mutex.lock_unlock();
-					break;
-				}
-
-				std::lock_guard lock(mutex->mutex);
-
+				// Off the queue in the mutex's turn, or given the mutex by an
+				// unlock, whose turn has made it the owner by the time this one runs
 				bool success = false;
 
-				const auto change = [&](lv2_mutex::control_data_t& data)
+				turn_call(&mutex->turns, [&]
 				{
-					success = false;
-
-					ppu_thread* sq = static_cast<ppu_thread*>(data.sq);
-
-					const bool retval = &ppu == sq;
-
-					if (!mutex->unqueue<false>(sq, &ppu))
+					const auto change = [&](lv2_mutex::control_data_t& data)
 					{
-						return false;
-					}
+						success = false;
 
-					success = true;
+						ppu_thread* sq = static_cast<ppu_thread*>(data.sq);
 
-					if (!retval)
+						const bool retval = &ppu == sq;
+
+						if (!mutex->unqueue<false>(sq, &ppu))
+						{
+							return false;
+						}
+
+						success = true;
+
+						if (!retval)
+						{
+							return false;
+						}
+
+						data.sq = sq;
+						return true;
+					};
+
+					for (;;)
 					{
-						return false;
+						const retro_u128_t seen = retro_atomic_load_acquire_128(&mutex->control);
+						lv2_mutex::control_data_t data = lv2_mutex::control_of(seen);
+
+						if (!change(data) || retro_atomic_cas_128(&mutex->control, seen, lv2_mutex::word_of(data)))
+						{
+							break;
+						}
 					}
-
-					data.sq = sq;
-					return true;
-				};
-
-				for (;;)
-				{
-					const retro_u128_t seen = retro_atomic_load_acquire_128(&mutex->control);
-					lv2_mutex::control_data_t data = lv2_mutex::control_of(seen);
-
-					if (!change(data) || retro_atomic_cas_128(&mutex->control, seen, lv2_mutex::word_of(data)))
-					{
-						break;
-					}
-				}
+				});
 
 				if (success)
 				{

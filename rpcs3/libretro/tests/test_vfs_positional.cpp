@@ -1128,19 +1128,20 @@ int main()
 			const u32 slot = n % slots;
 			const u32 id = static_cast<u32>(retro_atomic_load_acquire_int(&s_ids[slot]));
 
-			// As sys_mutex_destroy: not while it has an owner
+			// As sys_mutex_destroy: not while it has an owner, in the mutex's turn
 			const auto gone = idm::withdraw<lv2_obj, lv2_mutex>(id, [&](lv2_mutex& mutex) -> CellError
 			{
-				std::lock_guard lock(mutex.mutex);
+				return turn_call(&mutex.turns, [&]() -> CellError
+				{
+					if (mutex.control_owner())
+						return CELL_EBUSY;
 
-				if (mutex.control_owner())
-					return CELL_EBUSY;
+					// Nobody may hold it and have been told so
+					if (retro_atomic_load_acquire_int(&s_held[place(id)]))
+						retro_atomic_fetch_add_int(&s_bad, 1);
 
-				// Nobody may hold it and have been told so
-				if (retro_atomic_load_acquire_int(&s_held[place(id)]))
-					retro_atomic_fetch_add_int(&s_bad, 1);
-
-				return {};
+					return {};
+				});
 			});
 
 			if (gone && !gone.ret)

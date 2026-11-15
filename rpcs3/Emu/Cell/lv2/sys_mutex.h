@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sys_sync.h"
+#include "Emu/CPU/turn_calls.h"
 
 #include "Emu/Memory/vm_ptr.h"
 
@@ -36,7 +37,12 @@ struct lv2_mutex final : lv2_obj
 	const u64 name;
 
 	u32 cond_count = 0; // Condition Variables
-	shared_mutex mutex;
+
+	// What is not one compare-and-swap of the control word - giving the
+	// mutex to a waiter, taking a waiter out of the queue's middle, its
+	// conditions' queues, a destroy - is done in turn (turn_calls.h): no
+	// lock. Taking it free and queueing at the head are a compare-and-swap
+	turn_calls_cpp turns;
 	retro_atomic_int_t lock_count{}; // Recursive Locks (a u32)
 
 	struct alignas(16) control_data_t
