@@ -913,16 +913,23 @@ struct fs_aio_thread : ppu_thread
 			if (!file || (type == 1 && file->flags & CELL_FS_O_WRONLY) || (type == 2 && !(file->flags & CELL_FS_O_ACCMODE)))
 			{
 			}
-			else if (std::lock_guard lock(file->mp->mutex); file->file)
+			else
 			{
-				const auto old_pos = file->file.pos(); file->file.seek(aio->offset);
+				// On sys_fs's thread, as what moves a handle's position runs
+				fs_call([&]()
+				{
+					if (!file->file)
+						return;
 
-				result = type == 2
-					? file->op_write(aio->buf, aio->size)
-					: file->op_read(aio->buf, aio->size);
+					const auto old_pos = file->file.pos(); file->file.seek(aio->offset);
 
-				file->file.seek(old_pos);
-				error = CELL_OK;
+					result = type == 2
+						? file->op_write(aio->buf, aio->size)
+						: file->op_read(aio->buf, aio->size);
+
+					file->file.seek(old_pos);
+					error = CELL_OK;
+				});
 			}
 
 			func(*this, aio, error, xid, result);

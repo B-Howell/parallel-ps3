@@ -4,7 +4,11 @@
  *   every call of the four runs on it, one at a time.
  * - Stopped, as at a game's unload, and started again by the next call:
  *   3 long rounds and 400 short ones whose four threads start at once,
- *   every call runs on the thread then running. */
+ *   every call runs on the thread then running.
+ * - A thread of the same kind of one's own (sys_fs's, service_thread_t)
+ *   runs apart from the HLE thread: its calls run on it and not on the
+ *   HLE thread, a call of its own makes a call on the HLE thread and gets
+ *   back, and it stops and starts again on its own. */
 
 #include "../../Emu/Cell/Modules/hle_service.h"
 #include "test_common.h"
@@ -33,6 +37,27 @@ static void the_call(void *p)
    }
    was = plain;
    plain = was + 1;
+}
+
+static service_thread_t s_own;
+static retro_atomic_int_t own_here, own_on_hle, hle_from_own;
+
+static void hle_from_own_call(void *p)
+{
+   (void)p;
+   if (hle_service_on_thread())
+      retro_atomic_fetch_add_int(&hle_from_own, 1);
+}
+
+static void own_call(void *p)
+{
+   (void)p;
+   if (service_thread_on(&s_own))
+      retro_atomic_fetch_add_int(&own_here, 1);
+   if (hle_service_on_thread())
+      retro_atomic_fetch_add_int(&own_on_hle, 1);
+   /* From the one thread to the other, and back */
+   owner_calls_call(hle_service_calls(), hle_from_own_call, NULL);
 }
 
 static void *caller_main(void *arg)
@@ -78,6 +103,29 @@ int main(void)
          continue;
       printf("test_hle_service: round %d: %u of %d calls run on the thread, %d elsewhere\n",
             round, plain, CALLERS * calls_each, retro_atomic_load_acquire_int(&elsewhere));
+   }
+
+   /* A thread of one's own */
+   {
+      int i;
+      retro_atomic_int_init(&own_here, 0);
+      retro_atomic_int_init(&own_on_hle, 0);
+      retro_atomic_int_init(&hle_from_own, 0);
+      for (i = 0; i < 1000; i++)
+      {
+         owner_calls_call(service_thread_calls(&s_own), own_call, NULL);
+         if (i % 250 == 249)
+         {
+            service_thread_stop(&s_own);
+            TEST_CHECK(!service_thread_on(&s_own));
+         }
+      }
+      hle_service_stop();
+      TEST_CHECK(retro_atomic_load_acquire_int(&own_here) == 1000);
+      TEST_CHECK(retro_atomic_load_acquire_int(&own_on_hle) == 0);
+      TEST_CHECK(retro_atomic_load_acquire_int(&hle_from_own) == 1000);
+      printf("test_hle_service: a thread of one's own: %d of 1000 calls run there, %d on the HLE thread, %d calls from it run on the HLE thread\n",
+            retro_atomic_load_acquire_int(&own_here), retro_atomic_load_acquire_int(&own_on_hle), retro_atomic_load_acquire_int(&hle_from_own));
    }
 
    printf("test_hle_service: %s\n", test_failures ? "FAIL" : "ok");

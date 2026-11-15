@@ -993,8 +993,9 @@ error_code cellGameContentPermit(ppu_thread& ppu, vm::ptr<char[CELL_GAME_PATH_MA
 
 		const std::string real_dir = vfs::get(dir) + "/";
 
-		std::lock_guard lock(g_mp_sys_dev_hdd0.mutex);
-
+		// On sys_fs's thread, as what took the hdd's lock runs
+		fs_call([&]()
+		{
 		// Create PARAM.SFO
 		fs::pending_file temp(perm.temp + "/PARAM.SFO");
 		temp.file.write(psf::save_object(perm.sfo));
@@ -1040,6 +1041,7 @@ error_code cellGameContentPermit(ppu_thread& ppu, vm::ptr<char[CELL_GAME_PATH_MA
 		{
 			cellGame.error("cellGameContentPermit(): failed to initialize directory '%s' (%s)", dir, fs::g_tls_error);
 		}
+		});
 	}
 	else if (perm.can_create)
 	{

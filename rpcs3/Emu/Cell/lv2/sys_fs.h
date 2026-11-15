@@ -4,7 +4,7 @@
 #include "Emu/Cell/ErrorCodes.h"
 #include "Utilities/File.h"
 #include "Utilities/StrUtil.h"
-#include "Utilities/mutex.h"
+#include "Emu/Cell/Modules/hle_service.h"
 
 #include <retro_atomic.h>
 #include <rthreads/retro_waitaddr.h>
@@ -160,9 +160,22 @@ struct lv2_fs_mount_point
 	const u32 block_size = 4096;
 	const bs_t<lv2_mp_flag> flags{};
 	lv2_fs_mount_point* const next = nullptr;
-
-	mutable shared_mutex mutex;
 };
+
+// sys_fs's own thread: what took a mount point's lock - opening, writing,
+// closing, the names on a mount, its mounting - runs there, one at a time
+// (fs_call), so nothing is locked. A read at an offset stays on the
+// caller's thread (lv2_file::io_begin). Stopped when the game is unloaded.
+extern service_thread_t g_fs_service;
+
+template <typename F>
+auto fs_call(F&& f) -> decltype(f())
+{
+	const bool here = service_thread_on(&g_fs_service);
+	return cpu_owner_call(here ? nullptr : service_thread_calls(&g_fs_service), here, std::forward<F>(f));
+}
+
+void sys_fs_service_stop();
 
 extern lv2_fs_mount_point g_mp_sys_dev_hdd0;
 extern lv2_fs_mount_point g_mp_sys_no_device;
@@ -301,8 +314,8 @@ struct lv2_file final : lv2_fs_object
 	// opened again by a rename) only once no read is in flight, and no read
 	// begins while it is away: io_begin and io_end around a read, io_block
 	// before the handle goes and io_unblock when another is there. io_block
-	// and io_unblock are called under the mount point's lock, as the handle
-	// was always changed.
+	// and io_unblock are called on sys_fs's thread (fs_call), where the
+	// handle is always changed.
 	retro_atomic_int_t io_reads{};
 	retro_atomic_int_t io_away{}; // 0 here, 1 away for now, 2 closed
 
@@ -708,9 +721,13 @@ struct CellFsMountInfo
 CHECK_SIZE(CellFsMountInfo, 0x94);
 
 // Default IO container
+// sys_fs's thread's (fs_call): no lock
 struct default_sys_fs_container
 {
-	shared_mutex mutex;
+	default_sys_fs_container() = default;
+	default_sys_fs_container(const default_sys_fs_container&) = delete;
+	default_sys_fs_container& operator=(const default_sys_fs_container&) = delete;
+
 	u32 id   = 0;
 	u32 cap  = 0;
 	u32 used = 0;

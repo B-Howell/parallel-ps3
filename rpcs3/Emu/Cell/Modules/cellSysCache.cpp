@@ -168,8 +168,10 @@ error_code cellSysCacheClear()
 	// Clear existing cache
 	if (!cache.cache_id.empty())
 	{
-		std::lock_guard lock0(g_mp_sys_dev_hdd1.mutex);
-		cache.clear(false);
+		fs_call([&]()
+		{
+			cache.clear(false);
+		});
 	}
 
 	return not_an_error(CELL_SYSCACHE_RET_OK_CLEARED);
@@ -209,55 +211,56 @@ error_code cellSysCacheMount(vm::ptr<CellSysCacheParam> param)
 	{
 	});
 
-	std::lock_guard lock0(g_mp_sys_dev_hdd1.mutex);
-
-	// Check if can reuse existing cache (won't if cache id is an empty string or cache is damaged/incomplete)
-	if (!cache_name.empty() && cache_id == cache.cache_id)
+	return fs_call([&]() -> error_code
 	{
-		// Isn't mounted yet on first call to cellSysCacheMount
+		// Check if can reuse existing cache (won't if cache id is an empty string or cache is damaged/incomplete)
+		if (!cache_name.empty() && cache_id == cache.cache_id)
+		{
+			// Isn't mounted yet on first call to cellSysCacheMount
+			if (vfs::mount("/dev_hdd1", new_path))
+				g_fxo->get<lv2_fs_mount_info_map>().add("/dev_hdd1", &g_mp_sys_dev_hdd1);
+
+			cellSysutil.success("Mounted existing cache at %s", new_path);
+			return not_an_error(CELL_SYSCACHE_RET_OK_RELAYED);
+		}
+
+		const bool can_create = cache.cache_id != cache_id || !cache.cache_id.empty();
+
+		if (!cache.cache_id.empty())
+		{
+			// Clear previous cache
+			cache.clear(true);
+		}
+
+		// Set new cache id
+		cache.cache_id = std::move(cache_id);
+
+		if (can_create)
+		{
+			const bool created = fs::create_dir(new_path);
+
+			if (!created)
+			{
+				if (fs::g_tls_error != fs::error::exist)
+				{
+					fmt::throw_exception("Failed to create HDD1 cache! (path='%s', reason='%s')", new_path, fs::g_tls_error);
+				}
+
+				// Clear new cache
+				cache.clear(false);
+			}
+		}
+
+		if (!fs::write_file<true>(get_syscache_state_corruption_indicator_file_path(new_path), fs::write_new))
+		{
+			fmt::throw_exception("Failed to create HDD1 corruption indicator file! (path='%s', reason='%s')", new_path, fs::g_tls_error);
+		}
+
 		if (vfs::mount("/dev_hdd1", new_path))
 			g_fxo->get<lv2_fs_mount_info_map>().add("/dev_hdd1", &g_mp_sys_dev_hdd1);
 
-		cellSysutil.success("Mounted existing cache at %s", new_path);
-		return not_an_error(CELL_SYSCACHE_RET_OK_RELAYED);
-	}
-
-	const bool can_create = cache.cache_id != cache_id || !cache.cache_id.empty();
-
-	if (!cache.cache_id.empty())
-	{
-		// Clear previous cache
-		cache.clear(true);
-	}
-
-	// Set new cache id
-	cache.cache_id = std::move(cache_id);
-
-	if (can_create)
-	{
-		const bool created = fs::create_dir(new_path);
-
-		if (!created)
-		{
-			if (fs::g_tls_error != fs::error::exist)
-			{
-				fmt::throw_exception("Failed to create HDD1 cache! (path='%s', reason='%s')", new_path, fs::g_tls_error);
-			}
-
-			// Clear new cache
-			cache.clear(false);
-		}
-	}
-
-	if (!fs::write_file<true>(get_syscache_state_corruption_indicator_file_path(new_path), fs::write_new))
-	{
-		fmt::throw_exception("Failed to create HDD1 corruption indicator file! (path='%s', reason='%s')", new_path, fs::g_tls_error);
-	}
-
-	if (vfs::mount("/dev_hdd1", new_path))
-		g_fxo->get<lv2_fs_mount_info_map>().add("/dev_hdd1", &g_mp_sys_dev_hdd1);
-
-	return not_an_error(CELL_SYSCACHE_RET_OK_CLEARED);
+		return not_an_error(CELL_SYSCACHE_RET_OK_CLEARED);
+	});
 }
 
 

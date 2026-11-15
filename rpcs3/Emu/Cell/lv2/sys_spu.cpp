@@ -659,12 +659,19 @@ error_code sys_spu_image_open_by_fd(ppu_thread& ppu, vm::ptr<sys_spu_image> img,
 		return CELL_ENOEXEC;
 	}
 
-	std::lock_guard lock(file->mp->mutex);
-
-	if (!file->file)
+	// The handle in use with no lock: counted as a read in flight, which a
+	// close or a rename waits out (lv2_file::io_begin), as the module loads
+	// from it on this thread
+	if (!file->io_begin())
 	{
 		return CELL_EBADF;
 	}
+
+	struct read_in_flight
+	{
+		lv2_file* file;
+		~read_in_flight() { file->io_end(); }
+	} reading{file.get()};
 
 	u128 klic = g_fxo->get<loaded_npdrm_keys>().last_key();
 

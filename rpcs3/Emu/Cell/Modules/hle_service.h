@@ -13,6 +13,21 @@
 extern "C" {
 #endif
 
+/* A thread of this kind of one's own (sys_fs's): zeroed to begin with, its
+ * calls started at the first, stopped with service_thread_stop */
+typedef struct service_thread
+{
+   owner_calls_t calls;
+   void *thread; /* sthread_t */
+   retro_atomic_size_t thread_id; /* the thread's, once it runs */
+   retro_atomic_int_t state;      /* 0 not started, 1 starting, 2 running */
+   retro_atomic_int_t stop;
+} service_thread_t;
+
+owner_calls_t *service_thread_calls(service_thread_t *svc);
+int service_thread_on(service_thread_t *svc);
+void service_thread_stop(service_thread_t *svc);
+
 /* The calls of the thread, started if it was not */
 owner_calls_t *hle_service_calls(void);
 

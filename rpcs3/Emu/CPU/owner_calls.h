@@ -80,7 +80,7 @@ auto owner_calls_on(owner_calls_t *calls, bool on_owner, F&& f) -> decltype(f())
 
    struct call_t
    {
-      F* f;
+      std::remove_reference_t<F>* f;
       std::conditional_t<std::is_void_v<result_t>, char, std::optional<result_t>> result;
    } call{&f, {}};
 

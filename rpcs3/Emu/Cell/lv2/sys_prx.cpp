@@ -471,12 +471,19 @@ error_code _sys_prx_load_module_by_fd(ppu_thread& ppu, s32 fd, u64 offset, u64 f
 		return CELL_EBADF;
 	}
 
-	std::lock_guard lock(file->mp->mutex);
-
-	if (!file->file)
+	// The handle in use with no lock: counted as a read in flight, which a
+	// close or a rename waits out (lv2_file::io_begin), as the module loads
+	// from it on this thread
+	if (!file->io_begin())
 	{
 		return CELL_EBADF;
 	}
+
+	struct read_in_flight
+	{
+		lv2_file* file;
+		~read_in_flight() { file->io_end(); }
+	} reading{file.get()};
 
 	return prx_load_module(offset ? fmt::format("%s_x%x", file->name.data(), offset) : file->name.data(), flags, pOpt, lv2_file::make_view(file, offset), offset);
 }

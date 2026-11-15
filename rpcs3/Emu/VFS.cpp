@@ -1101,14 +1101,22 @@ bool vfs::host::rename(const std::string& from, const std::string& to, const lv2
 	// Lock mount point, close file descriptors, retry
 	const auto from0 = std::string_view(from).substr(0, from.find_last_not_of(fs::delim) + 1);
 
-	std::vector<std::pair<shared_ptr<lv2_file>, std::string>> escaped_real;
-
-	std::unique_lock mp_lock(mp->mutex, std::defer_lock);
-
-	if (lock)
+	// What took the mount point's lock runs on sys_fs's thread, one at a time
+	if (lock && !service_thread_on(&g_fs_service))
 	{
-		mp_lock.lock();
+		// Its error, which is per thread, given to this one
+		fs::error error{};
+		const bool renamed = fs_call([&]()
+		{
+			const bool done = vfs::host::rename(from, to, mp, overwrite, false);
+			error = fs::g_tls_error;
+			return done;
+		});
+		fs::g_tls_error = error;
+		return renamed;
 	}
+
+	std::vector<std::pair<shared_ptr<lv2_file>, std::string>> escaped_real;
 
 	if (fs::rename(from, to, overwrite))
 	{
