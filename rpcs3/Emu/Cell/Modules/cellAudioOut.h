@@ -3,6 +3,9 @@
 #include "Emu/Audio/AudioBackend.h"
 #include "Emu/Memory/vm_ptr.h"
 
+#include <cstring>
+#include <retro_atomic.h>
+
 // Error codes
 enum CellAudioOutError : u32
 {
@@ -202,19 +205,75 @@ typedef s32(CellAudioOutCallback)(u32 slot, u32 audioOut, u32 deviceIndex, u32 e
 
 struct audio_out_configuration
 {
-	shared_mutex mtx;
-
-	struct audio_out
+	// What can change of an output's configuration, all of it read and
+	// changed in one go (audio_out::settings_word): no lock
+	struct audio_out_settings
 	{
 		u32 state = CELL_AUDIO_OUT_OUTPUT_STATE_ENABLED;
 		u32 channels = CELL_AUDIO_OUT_CHNUM_2;
 		u32 encoder = CELL_AUDIO_OUT_CODING_TYPE_LPCM;
 		u32 downmixer = CELL_AUDIO_OUT_DOWNMIXER_NONE;
 		u32 copy_control = CELL_AUDIO_OUT_COPY_CONTROL_COPY_FREE;
-		std::vector<CellAudioOutSoundMode> sound_modes;
 		CellAudioOutSoundMode sound_mode{};
 
 		std::pair<AudioChannelCnt, AudioChannelCnt> get_channel_count_and_downmixer() const;
+	};
+
+	struct audio_out
+	{
+		// Made with the configuration (and loaded with a savestate), before
+		// any thread reads it; never changed after
+		std::vector<CellAudioOutSoundMode> sound_modes;
+
+		// The settings, one 128-bit word: the sound mode's eight bytes, then
+		// state, channels, encoder, downmixer and copy control a byte each
+		retro_atomic_128_t settings_word{};
+
+		static retro_u128_t pack(const audio_out_settings& s)
+		{
+			retro_u128_t w{};
+			std::memcpy(&w.lo, &s.sound_mode, sizeof(s.sound_mode));
+			w.hi = u64{s.state & 0xff} | u64{s.channels & 0xff} << 8 | u64{s.encoder & 0xff} << 16 | u64{s.downmixer & 0xff} << 24 | u64{s.copy_control & 0xff} << 32;
+			return w;
+		}
+
+		static audio_out_settings unpack(retro_u128_t w)
+		{
+			audio_out_settings s;
+			std::memcpy(&s.sound_mode, &w.lo, sizeof(s.sound_mode));
+			s.state = static_cast<u32>(w.hi & 0xff);
+			s.channels = static_cast<u32>(w.hi >> 8 & 0xff);
+			s.encoder = static_cast<u32>(w.hi >> 16 & 0xff);
+			s.downmixer = static_cast<u32>(w.hi >> 24 & 0xff);
+			s.copy_control = static_cast<u32>(w.hi >> 32 & 0xff);
+			return s;
+		}
+
+		audio_out_settings settings()
+		{
+			return unpack(retro_atomic_load_acquire_128(&settings_word));
+		}
+
+		void set_settings(const audio_out_settings& s)
+		{
+			retro_atomic_store_release_128(&settings_word, pack(s));
+		}
+
+		// @f changes the settings it is given; true when it changed them.
+		// Done again on what another thread changed meanwhile
+		template <typename F>
+		bool change_settings(F&& f)
+		{
+			retro_u128_t seen = retro_atomic_load_acquire_128(&settings_word);
+			for (;;)
+			{
+				audio_out_settings s = unpack(seen);
+				if (!f(s))
+					return false;
+				if (retro_atomic_cas_seen_128(&settings_word, &seen, pack(s)))
+					return true;
+			}
+		}
 	};
 
 	std::array<audio_out, 2> out;
@@ -222,5 +281,7 @@ struct audio_out_configuration
 	SAVESTATE_INIT_POS(8.9); // Is a dependency of cellAudio
 	audio_out_configuration();
 	audio_out_configuration(utils::serial& ar);
+	audio_out_configuration(const audio_out_configuration&) = delete;
+	audio_out_configuration& operator=(const audio_out_configuration&) = delete;
 	void save(utils::serial& ar);
 };

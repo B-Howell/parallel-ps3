@@ -172,15 +172,12 @@ void AudioBackend::normalize(u32 sample_cnt, const f32* src, f32* dst)
 std::pair<AudioChannelCnt, AudioChannelCnt> AudioBackend::get_channel_count_and_downmixer(u32 device_index)
 {
 	audio_out_configuration& audio_out_cfg = g_fxo->get<audio_out_configuration>();
-	std::lock_guard lock(audio_out_cfg.mtx);
-	const audio_out_configuration::audio_out& out = ::at32(audio_out_cfg.out, device_index);
-	return out.get_channel_count_and_downmixer();
+	return ::at32(audio_out_cfg.out, device_index).settings().get_channel_count_and_downmixer();
 }
 
 AudioChannelCnt AudioBackend::get_max_channel_count(u32 device_index)
 {
 	audio_out_configuration& audio_out_cfg = g_fxo->get<audio_out_configuration>();
-	std::lock_guard lock(audio_out_cfg.mtx);
 	const audio_out_configuration::audio_out& out = ::at32(audio_out_cfg.out, device_index);
 
 	AudioChannelCnt count = AudioChannelCnt::STEREO;

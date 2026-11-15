@@ -13,14 +13,19 @@
 // - while cellAudio's thread opens, closes and sets the callback over and
 //   over, a run never waits for it: no run takes a millisecond;
 // - nor does cellAudio's thread wait for a run: opening, closing and
-//   ending the lend while retro_run has samples of the ring on loan.
+//   ending the lend while retro_run has samples of the ring on loan;
+// - an audio output's settings (cellAudioOut), one word without a lock:
+//   three threads changing parts of them at once lose none of the
+//   changes, and a reader never sees half of one.
 //
 // Built by `make check` from the core's own objects and archives, the same
 // link as the core's with this main.
 
 #include "stdafx.h"
 #include "libretro_audio.h"
+#include "Emu/Cell/Modules/cellAudioOut.h"
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -358,6 +363,62 @@ int main()
 		CHECK(s_got_f32.size() == 800u * 2 && wrong == 0);
 		backend.Close();
 		std::printf("test_audio_frontend: cellAudio's thread reopened the stream in %.3f ms while retro_run held a loan for 50 ms\n", worst_ms);
+	}
+
+	// cellAudioOut's settings: the game configuring, cellAudio's reset
+	// switching the output off and on and copy control set, all at once
+	{
+		audio_out_configuration::audio_out out;
+		audio_out_configuration::audio_out_settings first{};
+		first.sound_mode.channel = 2;
+		first.sound_mode.type = CELL_AUDIO_OUT_CODING_TYPE_LPCM;
+		out.set_settings(first);
+
+		constexpr int n = 200000;
+		std::atomic<bool> go{false}, stop{false};
+		std::atomic<u32> torn{0};
+		const auto counter = [&](u32 audio_out_configuration::audio_out_settings::*field)
+		{
+			return std::thread([&, field]
+			{
+				while (!go) {}
+				for (int i = 0; i < n; i++)
+					out.change_settings([field](audio_out_configuration::audio_out_settings& s) { s.*field = (s.*field + 1) & 0xff; return true; });
+			});
+		};
+		std::thread a = counter(&audio_out_configuration::audio_out_settings::downmixer);
+		std::thread b = counter(&audio_out_configuration::audio_out_settings::copy_control);
+		std::thread c([&]
+		{
+			while (!go) {}
+			for (int i = 0; i < n; i++)
+			{
+				const u8 ch = (i & 1) ? 6 : 2;
+				out.change_settings([ch](audio_out_configuration::audio_out_settings& s) { s.channels = ch; s.sound_mode.channel = ch; return true; });
+			}
+		});
+		std::thread reader([&]
+		{
+			while (!go) {}
+			while (!stop)
+			{
+				const auto s = out.settings();
+				if (s.channels != s.sound_mode.channel)
+					torn++;
+			}
+		});
+		go = true;
+		a.join();
+		b.join();
+		c.join();
+		stop = true;
+		reader.join();
+		const auto last = out.settings();
+		CHECK(last.downmixer == static_cast<u32>(n & 0xff));
+		CHECK(last.copy_control == static_cast<u32>(n & 0xff));
+		CHECK(torn == 0);
+		std::printf("test_audio_frontend: cellAudioOut's settings: %d changes each from three threads, downmixer %u and copy control %u counted (%u expected), %u torn reads\n",
+			n, last.downmixer, last.copy_control, n & 0xff, torn.load());
 	}
 
 	std::printf("test_audio_frontend: %s\n", failures ? "FAIL" : "ok");

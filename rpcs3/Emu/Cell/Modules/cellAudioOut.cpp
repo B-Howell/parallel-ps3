@@ -56,10 +56,12 @@ audio_out_configuration::audio_out_configuration()
 	if (supports_dts)      cellSysutil.notice("cellAudioOut: found support for DTS 5.1 Ch.");
 
 	std::array<bool, 2> initial_mode_selected = {};
+	std::array<audio_out_settings, 2> initial{};
 
 	const auto add_sound_mode = [&](u32 index, u8 type, u8 channel, u8 fs, u32 layout, bool supported)
 	{
 		audio_out& output = ::at32(out, index);
+		audio_out_settings& settings = ::at32(initial, index);
 		bool& selected = ::at32(initial_mode_selected, index);
 
 		CellAudioOutSoundMode mode{};
@@ -72,9 +74,9 @@ audio_out_configuration::audio_out_configuration()
 		if (!selected && supported)
 		{
 			// Pre-select the first available sound mode
-			output.channels = channel;
-			output.encoder  = type;
-			output.sound_mode = output.sound_modes.back();
+			settings.channels = channel;
+			settings.encoder  = type;
+			settings.sound_mode = output.sound_modes.back();
 
 			selected = true;
 		}
@@ -175,8 +177,13 @@ audio_out_configuration::audio_out_configuration()
 		cellSysutil.notice("cellAudioOut: added secondary mode: type=%d, channel=%d, fs=%d, layout=%d", mode.type, mode.channel, mode.fs, mode.layout);
 	}
 
-	cellSysutil.notice("cellAudioOut: initial primary output configuration: channels=%d, encoder=%d, downmixer=%d", primary_output.channels, primary_output.encoder, primary_output.downmixer);
-	cellSysutil.notice("cellAudioOut: initial secondary output configuration: channels=%d, encoder=%d, downmixer=%d", secondary_output.channels, secondary_output.encoder, secondary_output.downmixer);
+	primary_output.set_settings(::at32(initial, CELL_AUDIO_OUT_PRIMARY));
+	secondary_output.set_settings(::at32(initial, CELL_AUDIO_OUT_SECONDARY));
+
+	const audio_out_settings& primary = ::at32(initial, CELL_AUDIO_OUT_PRIMARY);
+	const audio_out_settings& secondary = ::at32(initial, CELL_AUDIO_OUT_SECONDARY);
+	cellSysutil.notice("cellAudioOut: initial primary output configuration: channels=%d, encoder=%d, downmixer=%d", primary.channels, primary.encoder, primary.downmixer);
+	cellSysutil.notice("cellAudioOut: initial secondary output configuration: channels=%d, encoder=%d, downmixer=%d", secondary.channels, secondary.encoder, secondary.downmixer);
 }
 
 audio_out_configuration::audio_out_configuration(utils::serial& ar)
@@ -190,13 +197,17 @@ void audio_out_configuration::save(utils::serial& ar)
 {
 	GET_OR_USE_SERIALIZATION_VERSION(ar.is_writing(), cellAudioOut);
 
-	for (auto& state : out)
+	for (auto& output : out)
 	{
-		ar(state.state, state.channels, state.encoder, state.downmixer, state.copy_control, state.sound_modes, state.sound_mode);
+		audio_out_settings state = output.settings();
+		ar(state.state, state.channels, state.encoder, state.downmixer, state.copy_control, output.sound_modes, state.sound_mode);
+
+		if (!ar.is_writing())
+			output.set_settings(state);
 	}
 }
 
-std::pair<AudioChannelCnt, AudioChannelCnt> audio_out_configuration::audio_out::get_channel_count_and_downmixer() const
+std::pair<AudioChannelCnt, AudioChannelCnt> audio_out_configuration::audio_out_settings::get_channel_count_and_downmixer() const
 {
 	std::pair<AudioChannelCnt, AudioChannelCnt> ret;
 
@@ -238,7 +249,6 @@ error_code cellAudioOutGetSoundAvailability(u32 audioOut, u32 type, u32 fs, u32 
 
 	// Check if the requested audio parameters are available and find the max supported channel count
 	audio_out_configuration& cfg = g_fxo->get<audio_out_configuration>();
-	std::lock_guard lock(cfg.mtx);
 	const audio_out_configuration::audio_out& out = ::at32(cfg.out, audioOut);
 
 	for (const CellAudioOutSoundMode& mode : out.sound_modes)
@@ -265,7 +275,6 @@ error_code cellAudioOutGetSoundAvailability2(u32 audioOut, u32 type, u32 fs, u32
 
 	// Check if the requested audio parameters are available
 	audio_out_configuration& cfg = g_fxo->get<audio_out_configuration>();
-	std::lock_guard lock(cfg.mtx);
 	const audio_out_configuration::audio_out& out = ::at32(cfg.out, audioOut);
 
 	for (const CellAudioOutSoundMode& mode : out.sound_modes)
@@ -319,8 +328,7 @@ error_code cellAudioOutGetState(u32 audioOut, u32 deviceIndex, vm::ptr<CellAudio
 	case CELL_AUDIO_OUT_SECONDARY:
 	{
 		audio_out_configuration& cfg = g_fxo->get<audio_out_configuration>();
-		std::lock_guard lock(cfg.mtx);
-		const audio_out_configuration::audio_out& out = ::at32(cfg.out, audioOut);
+		const audio_out_configuration::audio_out_settings out = ::at32(cfg.out, audioOut).settings();
 
 		_state.state = out.state;
 		_state.encoder = out.encoder;
@@ -358,65 +366,58 @@ error_code cellAudioOutConfigure(u32 audioOut, vm::ptr<CellAudioOutConfiguration
 	bool needs_reset = false;
 
 	audio_out_configuration& cfg = g_fxo->get<audio_out_configuration>();
+	audio_out_configuration::audio_out& output = ::at32(cfg.out, audioOut);
+	const CellAudioOutConfiguration wanted = *config;
+
+	// Apparently the set config does not necessarily have to exist in the list of sound modes.
+	needs_reset = output.change_settings([&](audio_out_configuration::audio_out_settings& out)
 	{
-		std::lock_guard lock(cfg.mtx);
+		if (out.channels == wanted.channel && out.encoder == wanted.encoder && out.downmixer == wanted.downMixer)
+			return false;
 
-		audio_out_configuration::audio_out& out = ::at32(cfg.out, audioOut);
+		out.channels = wanted.channel;
+		out.encoder = wanted.encoder;
 
-		// Apparently the set config does not necessarily have to exist in the list of sound modes.
-
-		if (out.channels != config->channel || out.encoder != config->encoder || out.downmixer != config->downMixer)
+		if (wanted.downMixer > CELL_AUDIO_OUT_DOWNMIXER_TYPE_B) // PS3 ignores invalid downMixer values and keeps the previous valid one instead
 		{
-			out.channels = config->channel;
-			out.encoder = config->encoder;
-
-			if (config->downMixer > CELL_AUDIO_OUT_DOWNMIXER_TYPE_B) // PS3 ignores invalid downMixer values and keeps the previous valid one instead
-			{
-				cellSysutil.warning("cellAudioOutConfigure: Invalid downmixing mode configured: %d. Keeping old mode: downMixer=%d",
-					config->downMixer, out.downmixer);
-			}
-			else
-			{
-				out.downmixer = config->downMixer;
-			}
-
-			// Try to find the best sound mode for this configuration
-			const auto it = std::find_if(out.sound_modes.cbegin(), out.sound_modes.cend(), [&out](const CellAudioOutSoundMode& mode)
-				{
-					return mode.type == out.encoder && mode.channel == out.channels;
-				});
-
-			if (it != out.sound_modes.cend())
-			{
-				out.sound_mode = *it;
-			}
-			else
-			{
-				cellSysutil.warning("cellAudioOutConfigure: Could not find an ideal sound mode for %d channel output. Keeping old mode: channels=%d, encoder=%d, fs=%d",
-					config->channel, out.sound_mode.channel, out.sound_mode.type, out.sound_mode.fs);
-			}
-
-			needs_reset = true;
+			cellSysutil.warning("cellAudioOutConfigure: Invalid downmixing mode configured: %d. Keeping old mode: downMixer=%d",
+				wanted.downMixer, out.downmixer);
 		}
-	}
+		else
+		{
+			out.downmixer = wanted.downMixer;
+		}
+
+		// Try to find the best sound mode for this configuration
+		const auto it = std::find_if(output.sound_modes.cbegin(), output.sound_modes.cend(), [&out](const CellAudioOutSoundMode& mode)
+			{
+				return mode.type == out.encoder && mode.channel == out.channels;
+			});
+
+		if (it != output.sound_modes.cend())
+		{
+			out.sound_mode = *it;
+		}
+		else
+		{
+			cellSysutil.warning("cellAudioOutConfigure: Could not find an ideal sound mode for %d channel output. Keeping old mode: channels=%d, encoder=%d, fs=%d",
+				wanted.channel, out.sound_mode.channel, out.sound_mode.type, out.sound_mode.fs);
+		}
+
+		return true;
+	});
 
 	if (needs_reset)
 	{
 		const auto reset_audio = [audioOut]() -> void
 		{
-			audio_out_configuration& cfg = g_fxo->get<audio_out_configuration>();
-			{
-				std::lock_guard lock(cfg.mtx);
-				::at32(cfg.out, audioOut).state = CELL_AUDIO_OUT_OUTPUT_STATE_DISABLED;
-			}
+			audio_out_configuration::audio_out& output = ::at32(g_fxo->get<audio_out_configuration>().out, audioOut);
+			output.change_settings([](audio_out_configuration::audio_out_settings& out) { out.state = CELL_AUDIO_OUT_OUTPUT_STATE_DISABLED; return true; });
 
 			audio::configure_audio(true);
 			audio::configure_rsxaudio();
 
-			{
-				std::lock_guard lock(cfg.mtx);
-				::at32(cfg.out, audioOut).state = CELL_AUDIO_OUT_OUTPUT_STATE_ENABLED;
-			}
+			output.change_settings([](audio_out_configuration::audio_out_settings& out) { out.state = CELL_AUDIO_OUT_OUTPUT_STATE_ENABLED; return true; });
 		};
 
 		if (waitForEvent)
@@ -454,9 +455,7 @@ error_code cellAudioOutGetConfiguration(u32 audioOut, vm::ptr<CellAudioOutConfig
 	}
 
 	audio_out_configuration& cfg = g_fxo->get<audio_out_configuration>();
-	std::lock_guard lock(cfg.mtx);
-
-	const audio_out_configuration::audio_out& out = ::at32(cfg.out, audioOut);
+	const audio_out_configuration::audio_out_settings out = ::at32(cfg.out, audioOut).settings();
 
 	// Return the active config.
 	CellAudioOutConfiguration _config{};
@@ -515,7 +514,6 @@ error_code cellAudioOutGetDeviceInfo(u32 audioOut, u32 deviceIndex, vm::ptr<Cell
 	}
 
 	audio_out_configuration& cfg = g_fxo->get<audio_out_configuration>();
-	std::lock_guard lock(cfg.mtx);
 	const audio_out_configuration::audio_out& out = ::at32(cfg.out, audioOut);
 	ensure(out.sound_modes.size() <= 16);
 
@@ -555,9 +553,7 @@ error_code cellAudioOutSetCopyControl(u32 audioOut, u32 control)
 	}
 
 	audio_out_configuration& cfg = g_fxo->get<audio_out_configuration>();
-	std::lock_guard lock(cfg.mtx);
-
-	::at32(cfg.out, audioOut).copy_control = control;
+	::at32(cfg.out, audioOut).change_settings([control](audio_out_configuration::audio_out_settings& out) { out.copy_control = control; return true; });
 
 	return CELL_OK;
 }
