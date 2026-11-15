@@ -205,7 +205,6 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/rpcs3/Crypto/ec.cpp \
 	$(CORE_DIR)/rpcs3/Crypto/key_vault.cpp \
 	$(CORE_DIR)/rpcs3/Crypto/lz.cpp \
-	$(CORE_DIR)/rpcs3/Crypto/md5.cpp \
 	$(CORE_DIR)/rpcs3/Crypto/sha1.cpp \
 	$(CORE_DIR)/rpcs3/Crypto/sha256.cpp \
 	$(CORE_DIR)/rpcs3/Crypto/unedat.cpp \

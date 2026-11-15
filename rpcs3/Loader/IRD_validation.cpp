@@ -8,7 +8,7 @@
 #include "Emu/system_utils.hpp"
 #include "Utilities/File.h"
 #include "Utilities/StrUtil.h"
-#include "Crypto/md5.h"
+#include <lrc_hash.h>
 #include "Crypto/utils.h"
 
 #include <encodings/crc32.h>
@@ -56,17 +56,14 @@ static std::vector<u8> generate_lic_dat(const std::string& game_id)
 // MD5 hash (lowercase hex) of a buffer, i.e. of a file rebuilt in memory rather than read from the drive
 static std::string md5_of_buffer(const std::vector<u8>& buffer)
 {
-	mbedtls_md5_context md5_ctx;
+	MD5_CTX md5_ctx;
 	unsigned char md5_hash[16];
 	std::string hash;
 
-	mbedtls_md5_starts_ret(&md5_ctx);
-	mbedtls_md5_update_ret(&md5_ctx, buffer.data(), buffer.size());
-
-	if (mbedtls_md5_finish_ret(&md5_ctx, md5_hash) != 0)
-	{
-		return {};
-	}
+	// The files rebuilt in memory are a few kilobytes at most
+	MD5_Init(&md5_ctx);
+	MD5_Update(&md5_ctx, buffer.data(), static_cast<unsigned long>(buffer.size()));
+	MD5_Final(md5_hash, &md5_ctx);
 
 	bytes_to_hex(hash, md5_hash, 16);
 	return hash;

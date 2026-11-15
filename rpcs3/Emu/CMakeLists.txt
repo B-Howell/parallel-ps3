@@ -128,7 +128,6 @@ target_sources(rpcs3_emu PRIVATE
     ../Crypto/ec.cpp
     ../Crypto/key_vault.cpp
     ../Crypto/lz.cpp
-    ../Crypto/md5.cpp
     ../Crypto/sha1.cpp
     ../Crypto/sha256.cpp
     ../Crypto/unedat.cpp

@@ -6,7 +6,7 @@
 #include "Emu/system_utils.hpp"
 #include "Utilities/File.h"
 #include "Utilities/rXml.h"
-#include "Crypto/md5.h"
+#include <lrc_hash.h>
 #include "Crypto/utils.h"
 
 LOG_CHANNEL(sys_log, "VALIDATION");
@@ -193,11 +193,11 @@ bool content_validation::hash_file(const fs::file& file, u64 padded_size, std::v
 
 	const u64 block_size = buffer.size();
 	u8* const buf = buffer.data();
-	mbedtls_md5_context md5_ctx;
+	MD5_CTX md5_ctx;
 	unsigned char md5_hash[16];
 	u64 size = 0;
 
-	mbedtls_md5_starts_ret(&md5_ctx);
+	MD5_Init(&md5_ctx);
 
 	// Only a read returning nothing at all ends the file: a short one is not to be trusted as the end of it,
 	// since a file held by an ISO image is read back extent by extent
@@ -210,7 +210,8 @@ bool content_validation::hash_file(const fs::file& file, u64 padded_size, std::v
 			break;
 		}
 
-		mbedtls_md5_update_ret(&md5_ctx, buf, read);
+		// A block is never more than s_hash_block_size, so it fits an unsigned long on every host
+		MD5_Update(&md5_ctx, buf, static_cast<unsigned long>(read));
 
 		size += read;
 		m_bytes_read += read;
@@ -234,7 +235,7 @@ bool content_validation::hash_file(const fs::file& file, u64 padded_size, std::v
 		{
 			const u64 chunk = std::min<u64>(left, block_size);
 
-			mbedtls_md5_update_ret(&md5_ctx, buf, chunk);
+			MD5_Update(&md5_ctx, buf, static_cast<unsigned long>(chunk));
 
 			left -= chunk;
 			m_bytes_read += chunk;
@@ -246,12 +247,7 @@ bool content_validation::hash_file(const fs::file& file, u64 padded_size, std::v
 		return false;
 	}
 
-	if (mbedtls_md5_finish_ret(&md5_ctx, md5_hash) != 0)
-	{
-		sys_log.error("hash_file: Failed to calculate MD5 hash on file: %s", m_name);
-		return false;
-	}
-
+	MD5_Final(md5_hash, &md5_ctx);
 	bytes_to_hex(hash, md5_hash, 16);
 	return true;
 }
