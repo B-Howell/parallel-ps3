@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Emu/Cell/Modules/hle_service.h"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/IdManager.h"
 
@@ -37,7 +38,11 @@ enum class sub_display_status : u32
 
 struct sub_display_manager
 {
-	shared_mutex mutex;
+	// The HLE thread's: every call that touches it runs there (hle_call), so it takes no lock
+	sub_display_manager() = default;
+	sub_display_manager(const sub_display_manager&) = delete;
+	sub_display_manager& operator=(const sub_display_manager&) = delete;
+
 	sub_display_status status = sub_display_status::uninitialized;
 	CellSubDisplayParam param{};
 	vm::ptr<CellSubDisplayHandler> func = vm::null;
@@ -117,33 +122,34 @@ error_code cellSubDisplayInit(vm::ptr<CellSubDisplayParam> pParam, vm::ptr<CellS
 	cellSubDisplay.todo("cellSubDisplayInit(pParam=*0x%x, func=*0x%x, userdata=*0x%x, container=0x%x)", pParam, func, userdata, container);
 
 	auto& manager = g_fxo->get<sub_display_manager>();
-	std::lock_guard lock(manager.mutex);
-
-	if (manager.func)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_SUBDISPLAY_ERROR_NOT_INITIALIZED;
-	}
+		if (manager.func)
+		{
+			return CELL_SUBDISPLAY_ERROR_NOT_INITIALIZED;
+		}
 
-	if (error_code error = check_param(pParam.get_ptr()))
-	{
-		return error;
-	}
+		if (error_code error = check_param(pParam.get_ptr()))
+		{
+			return error;
+		}
 
-	if (!func)
-	{
-		return CELL_SUBDISPLAY_ERROR_INVALID_VALUE;
-	}
+		if (!func)
+		{
+			return CELL_SUBDISPLAY_ERROR_INVALID_VALUE;
+		}
 
-	manager.param = *pParam;
-	manager.func = func;
-	manager.userdata = userdata;
+		manager.param = *pParam;
+		manager.func = func;
+		manager.userdata = userdata;
 
-	if (true) // TODO
-	{
-		return CELL_SUBDISPLAY_ERROR_ZERO_REGISTERED;
-	}
+		if (true) // TODO
+		{
+			return CELL_SUBDISPLAY_ERROR_ZERO_REGISTERED;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellSubDisplayEnd()
@@ -151,25 +157,26 @@ error_code cellSubDisplayEnd()
 	cellSubDisplay.todo("cellSubDisplayEnd()");
 
 	auto& manager = g_fxo->get<sub_display_manager>();
-	std::lock_guard lock(manager.mutex);
-
-	if (!manager.func)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_SUBDISPLAY_ERROR_NOT_INITIALIZED;
-	}
+		if (!manager.func)
+		{
+			return CELL_SUBDISPLAY_ERROR_NOT_INITIALIZED;
+		}
 
-	if (manager.status == sub_display_status::started)
-	{
-		// TODO:
-		// cellSubDisplayStop();
-	}
+		if (manager.status == sub_display_status::started)
+		{
+			// TODO:
+			// cellSubDisplayStop();
+		}
 
-	manager.param = {};
-	manager.func = vm::null;
-	manager.userdata = vm::null;
-	manager.status = sub_display_status::uninitialized;
+		manager.param = {};
+		manager.func = vm::null;
+		manager.userdata = vm::null;
+		manager.status = sub_display_status::uninitialized;
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellSubDisplayGetRequiredMemory(vm::ptr<CellSubDisplayParam> pParam)
@@ -197,18 +204,19 @@ error_code cellSubDisplayStart()
 	cellSubDisplay.todo("cellSubDisplayStart()");
 
 	auto& manager = g_fxo->get<sub_display_manager>();
-	std::lock_guard lock(manager.mutex);
-
-	if (manager.status == sub_display_status::uninitialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_SUBDISPLAY_ERROR_NOT_INITIALIZED;
-	}
+		if (manager.status == sub_display_status::uninitialized)
+		{
+			return CELL_SUBDISPLAY_ERROR_NOT_INITIALIZED;
+		}
 
-	manager.status = sub_display_status::started;
+		manager.status = sub_display_status::started;
 
-	// TODO
+		// TODO
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellSubDisplayStop()
@@ -216,18 +224,19 @@ error_code cellSubDisplayStop()
 	cellSubDisplay.todo("cellSubDisplayStop()");
 
 	auto& manager = g_fxo->get<sub_display_manager>();
-	std::lock_guard lock(manager.mutex);
-
-	if (manager.status == sub_display_status::uninitialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_SUBDISPLAY_ERROR_NOT_INITIALIZED;
-	}
+		if (manager.status == sub_display_status::uninitialized)
+		{
+			return CELL_SUBDISPLAY_ERROR_NOT_INITIALIZED;
+		}
 
-	manager.status = sub_display_status::stopped;
+		manager.status = sub_display_status::stopped;
 
-	// TODO
+		// TODO
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellSubDisplayGetVideoBuffer(s32 groupId, vm::pptr<void> ppVideoBuf, vm::ptr<u32> pSize)
@@ -235,22 +244,23 @@ error_code cellSubDisplayGetVideoBuffer(s32 groupId, vm::pptr<void> ppVideoBuf, 
 	cellSubDisplay.todo("cellSubDisplayGetVideoBuffer(groupId=%d, ppVideoBuf=**0x%x, pSize=*0x%x)", groupId, ppVideoBuf, pSize);
 
 	auto& manager = g_fxo->get<sub_display_manager>();
-	std::lock_guard lock(manager.mutex);
-
-	if (manager.status == sub_display_status::uninitialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_SUBDISPLAY_ERROR_NOT_INITIALIZED;
-	}
+		if (manager.status == sub_display_status::uninitialized)
+		{
+			return CELL_SUBDISPLAY_ERROR_NOT_INITIALIZED;
+		}
 
-	if (groupId != 0 || !ppVideoBuf || !pSize)
-	{
-		return CELL_SUBDISPLAY_ERROR_INVALID_VALUE;
-	}
+		if (groupId != 0 || !ppVideoBuf || !pSize)
+		{
+			return CELL_SUBDISPLAY_ERROR_INVALID_VALUE;
+		}
 
-	*pSize = manager.buf_size;
-	*ppVideoBuf = manager.video_buffer;
+		*pSize = manager.buf_size;
+		*ppVideoBuf = manager.video_buffer;
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellSubDisplayAudioOutBlocking(s32 groupId, vm::ptr<void> pvData, s32 samples)
@@ -258,26 +268,27 @@ error_code cellSubDisplayAudioOutBlocking(s32 groupId, vm::ptr<void> pvData, s32
 	cellSubDisplay.todo("cellSubDisplayAudioOutBlocking(groupId=%d, pvData=*0x%x, samples=%d)", groupId, pvData, samples);
 
 	auto& manager = g_fxo->get<sub_display_manager>();
-	std::lock_guard lock(manager.mutex);
-
-	if (manager.status == sub_display_status::uninitialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_SUBDISPLAY_ERROR_NOT_INITIALIZED;
-	}
+		if (manager.status == sub_display_status::uninitialized)
+		{
+			return CELL_SUBDISPLAY_ERROR_NOT_INITIALIZED;
+		}
 
-	if (groupId != 0 || samples < 0)
-	{
-		return CELL_SUBDISPLAY_ERROR_INVALID_VALUE;
-	}
+		if (groupId != 0 || samples < 0)
+		{
+			return CELL_SUBDISPLAY_ERROR_INVALID_VALUE;
+		}
 
-	if (samples % 1024)
-	{
-		return CELL_SUBDISPLAY_ERROR_SET_SAMPLE;
-	}
+		if (samples % 1024)
+		{
+			return CELL_SUBDISPLAY_ERROR_SET_SAMPLE;
+		}
 
-	// TODO
+		// TODO
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellSubDisplayAudioOutNonBlocking(s32 groupId, vm::ptr<void> pvData, s32 samples)
@@ -285,32 +296,33 @@ error_code cellSubDisplayAudioOutNonBlocking(s32 groupId, vm::ptr<void> pvData, 
 	cellSubDisplay.todo("cellSubDisplayAudioOutNonBlocking(groupId=%d, pvData=*0x%x, samples=%d)", groupId, pvData, samples);
 
 	auto& manager = g_fxo->get<sub_display_manager>();
-	std::lock_guard lock(manager.mutex);
-
-	if (manager.status == sub_display_status::uninitialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_SUBDISPLAY_ERROR_NOT_INITIALIZED;
-	}
+		if (manager.status == sub_display_status::uninitialized)
+		{
+			return CELL_SUBDISPLAY_ERROR_NOT_INITIALIZED;
+		}
 
-	if (groupId != 0 || samples < 0)
-	{
-		return CELL_SUBDISPLAY_ERROR_INVALID_VALUE;
-	}
+		if (groupId != 0 || samples < 0)
+		{
+			return CELL_SUBDISPLAY_ERROR_INVALID_VALUE;
+		}
 
-	if (samples % 1024)
-	{
-		return CELL_SUBDISPLAY_ERROR_SET_SAMPLE;
-	}
+		if (samples % 1024)
+		{
+			return CELL_SUBDISPLAY_ERROR_SET_SAMPLE;
+		}
 
-	if (manager.audio_is_busy)
-	{
-		return CELL_SUBDISPLAY_ERROR_AUDIOOUT_IS_BUSY;
-	}
+		if (manager.audio_is_busy)
+		{
+			return CELL_SUBDISPLAY_ERROR_AUDIOOUT_IS_BUSY;
+		}
 
-	// TODO: fetch audio async
-	// manager.audio_is_busy = true;
+		// TODO: fetch audio async
+		// manager.audio_is_busy = true;
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellSubDisplayGetPeerNum(s32 groupId)
@@ -318,21 +330,22 @@ error_code cellSubDisplayGetPeerNum(s32 groupId)
 	cellSubDisplay.todo("cellSubDisplayGetPeerNum(groupId=%d)", groupId);
 
 	auto& manager = g_fxo->get<sub_display_manager>();
-	std::lock_guard lock(manager.mutex);
-
-	if (manager.status == sub_display_status::uninitialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_SUBDISPLAY_ERROR_NOT_INITIALIZED;
-	}
+		if (manager.status == sub_display_status::uninitialized)
+		{
+			return CELL_SUBDISPLAY_ERROR_NOT_INITIALIZED;
+		}
 
-	if (groupId != 0)
-	{
-		return CELL_SUBDISPLAY_ERROR_INVALID_VALUE;
-	}
+		if (groupId != 0)
+		{
+			return CELL_SUBDISPLAY_ERROR_INVALID_VALUE;
+		}
 
-	s32 peer_num = 0; // TODO
+		s32 peer_num = 0; // TODO
 
-	return not_an_error(peer_num);
+		return not_an_error(peer_num);
+	});
 }
 
 error_code cellSubDisplayGetPeerList(s32 groupId, vm::ptr<CellSubDisplayPeerInfo> pInfo, vm::ptr<s32> pNum)
@@ -340,28 +353,29 @@ error_code cellSubDisplayGetPeerList(s32 groupId, vm::ptr<CellSubDisplayPeerInfo
 	cellSubDisplay.todo("cellSubDisplayGetPeerList(groupId=%d, pInfo=*0x%x, pNum=*0x%x)", groupId, pInfo, pNum);
 
 	auto& manager = g_fxo->get<sub_display_manager>();
-	std::lock_guard lock(manager.mutex);
-
-	if (manager.status == sub_display_status::uninitialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_SUBDISPLAY_ERROR_NOT_INITIALIZED;
-	}
+		if (manager.status == sub_display_status::uninitialized)
+		{
+			return CELL_SUBDISPLAY_ERROR_NOT_INITIALIZED;
+		}
 
-	if (groupId != 0)
-	{
+		if (groupId != 0)
+		{
+			return CELL_OK;
+		}
+
+		if (!pInfo || !pNum || *pNum < 1)
+		{
+			return CELL_SUBDISPLAY_ERROR_INVALID_VALUE;
+		}
+
+		*pNum = 0;
+
+		// TODO
+
 		return CELL_OK;
-	}
-
-	if (!pInfo || !pNum || *pNum < 1)
-	{
-		return CELL_SUBDISPLAY_ERROR_INVALID_VALUE;
-	}
-
-	*pNum = 0;
-
-	// TODO
-
-	return CELL_OK;
+	});
 }
 
 error_code cellSubDisplayGetTouchInfo(s32 groupId, vm::ptr<CellSubDisplayTouchInfo> pTouchInfo, vm::ptr<s32> pNumTouchInfo)
@@ -374,21 +388,22 @@ error_code cellSubDisplayGetTouchInfo(s32 groupId, vm::ptr<CellSubDisplayTouchIn
 	}
 
 	auto& manager = g_fxo->get<sub_display_manager>();
-	std::lock_guard lock(manager.mutex);
-
-	if (manager.param.version != CELL_SUBDISPLAY_VERSION_0003)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_SUBDISPLAY_ERROR_NOT_SUPPORTED;
-	}
+		if (manager.param.version != CELL_SUBDISPLAY_VERSION_0003)
+		{
+			return CELL_SUBDISPLAY_ERROR_NOT_SUPPORTED;
+		}
 
-	if (*pNumTouchInfo > CELL_SUBDISPLAY_TOUCH_MAX_TOUCH_INFO)
-	{
-		*pNumTouchInfo = CELL_SUBDISPLAY_TOUCH_MAX_TOUCH_INFO;
-	}
+		if (*pNumTouchInfo > CELL_SUBDISPLAY_TOUCH_MAX_TOUCH_INFO)
+		{
+			*pNumTouchInfo = CELL_SUBDISPLAY_TOUCH_MAX_TOUCH_INFO;
+		}
 
-	std::memcpy(pTouchInfo.get_ptr(), manager.touch_info.data(), *pNumTouchInfo * sizeof(CellSubDisplayTouchInfo));
+		std::memcpy(pTouchInfo.get_ptr(), manager.touch_info.data(), *pNumTouchInfo * sizeof(CellSubDisplayTouchInfo));
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 DECLARE(ppu_module_manager::cellSubDisplay)("cellSubDisplay", []()

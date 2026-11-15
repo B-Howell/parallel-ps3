@@ -1205,7 +1205,11 @@ struct CellHttpsData
 
 struct http_manager
 {
-	shared_mutex mtx;
+	// The HLE thread's: every call that touches it runs there (hle_call), so it takes no lock
+	http_manager() = default;
+	http_manager(const http_manager&) = delete;
+	http_manager& operator=(const http_manager&) = delete;
+
 	bool initialized = false;
 	bool cookie_initialized = false;
 	bool cache_initialized = false;

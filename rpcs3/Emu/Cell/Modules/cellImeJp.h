@@ -109,7 +109,8 @@ struct CellImeJpPredictItem
 
 struct ime_jp_manager
 {
-	shared_mutex mutex;
+	// The HLE thread's: every cellImeJp call that touches it runs there
+	// (hle_call, hle_service.h), so it takes no lock
 
 	atomic_t<bool> is_initialized{ false };
 

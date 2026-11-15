@@ -672,7 +672,10 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 
 # The core's own code, searched for host clocks and sleeps
 # std::lock_guard left in the core's own code (falls with each patch)
-LOCK_GUARD_MAX := 907
+# Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
+HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp
+
+LOCK_GUARD_MAX := 741
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -760,6 +763,8 @@ check: all
 	@if grep -nE "thread_ctrl::wait_for|get_system_time[ ]*\(" ../../Emu/Cell/Modules/cellAudio.cpp; then echo "cellAudio: a sleep or a clock of the host's is back - its periods go by the guest's clock (audio_ringbuffer::get_timestamp, wait_guest)"; exit 1; else echo "cellAudio: periods on the guest's clock"; fi
 	@# The keyboards are the HLE thread's (hle_call): no lock in their handler, cellKb or the overlays' use
 	@if grep -nE "m_mutex|lock_guard" ../../Emu/Io/KeyboardHandler.h ../../Emu/Io/KeyboardHandler.cpp ../../Emu/Cell/Modules/cellKb.cpp || grep -n "kb_handler.m_mutex" ../../Emu/RSX/Overlays/overlays.cpp; then echo "keyboards: a lock is back - their state is the HLE thread's (hle_call)"; exit 1; else echo "keyboards: no lock, the HLE thread's"; fi
+	@# Modules whose state is the HLE thread's (hle_call): no lock in them
+	@if grep -nE "shared_mutex|std::mutex|lock_guard|unique_lock|scoped_lock" $(HLE_OWNED); then echo "HLE modules: a lock is back - their state is the HLE thread's (hle_call)"; exit 1; else echo "HLE modules: no lock in $(words $(HLE_OWNED)) files, the HLE thread's"; fi
 	@# The pads take no lock: pad::g_pad_mutex is gone, and a merge of
 	@# upstream's code that takes it does not bring it back
 	@if grep -rn "g_pad_mutex" ../../Emu ../../Input ../*.cpp ../*.h ../*.c; then echo "pads: pad::g_pad_mutex is back - the pads take no lock (AGENTS.md)"; exit 1; else echo "pads: no pad lock"; fi

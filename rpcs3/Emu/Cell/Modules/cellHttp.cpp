@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Emu/Cell/Modules/hle_service.h"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/IdManager.h"
 
@@ -1096,40 +1097,41 @@ error_code cellHttpAuthCacheExport(vm::ptr<u32> buf, u32 len, vm::ptr<u32> outsi
 	cellHttp.todo("cellHttpAuthCacheExport(buf=*0x%x, len=%d, outsize=*0x%x)", buf, len, outsize);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
-
-	if (!buf)
-	{
-		if (!outsize)
+		if (!man.initialized)
 		{
-			return CELL_HTTP_ERROR_NO_BUFFER;
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
 		}
-	}
-	else
-	{
-		if (len < 9)
+
+		if (!buf)
 		{
-			return CELL_HTTP_ERROR_INSUFFICIENT;
+			if (!outsize)
+			{
+				return CELL_HTTP_ERROR_NO_BUFFER;
+			}
 		}
+		else
+		{
+			if (len < 9)
+			{
+				return CELL_HTTP_ERROR_INSUFFICIENT;
+			}
+
+			// TODO
+		}
+
+		[[maybe_unused]] u32 size = 0;
 
 		// TODO
-	}
 
-	[[maybe_unused]] u32 size = 0;
+		if (outsize)
+		{
+			*outsize = 0;
+		}
 
-	// TODO
-
-	if (outsize)
-	{
-		*outsize = 0;
-	}
-
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpAuthCacheFlush()
@@ -1137,14 +1139,15 @@ error_code cellHttpAuthCacheFlush()
 	cellHttp.todo("cellHttpAuthCacheFlush()");
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpAuthCacheGetEntryMax(u32 unk_ptr)
@@ -1152,19 +1155,20 @@ error_code cellHttpAuthCacheGetEntryMax(u32 unk_ptr)
 	cellHttp.todo("cellHttpAuthCacheGetEntryMax(unk_ptr=*0x%x)", unk_ptr);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (!unk_ptr)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!unk_ptr)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpAuthCacheImport(vm::ptr<char> unk1, u32 unk2)
@@ -1172,29 +1176,30 @@ error_code cellHttpAuthCacheImport(vm::ptr<char> unk1, u32 unk2)
 	cellHttp.todo("cellHttpAuthCacheImport(unk1=*0x%x, unk2=0x%x)", unk1, unk2);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (!unk1 || !unk2)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!unk1 || !unk2)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	if (unk2 < 9)
-	{
-		return CELL_HTTP_ERROR_INSUFFICIENT;
-	}
+		if (unk2 < 9)
+		{
+			return CELL_HTTP_ERROR_INSUFFICIENT;
+		}
 
-	if (unk1[0] != '\x01')
-	{
-		return CELL_HTTP_ERROR_INVALID_DATA;
-	}
+		if (unk1[0] != '\x01')
+		{
+			return CELL_HTTP_ERROR_INVALID_DATA;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpAuthCacheSetEntryMax(u32 unk)
@@ -1202,14 +1207,15 @@ error_code cellHttpAuthCacheSetEntryMax(u32 unk)
 	cellHttp.todo("cellHttpAuthCacheSetEntryMax(unk=0x%x)", unk);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpInit(vm::ptr<void> pool, u32 poolSize)
@@ -1217,20 +1223,21 @@ error_code cellHttpInit(vm::ptr<void> pool, u32 poolSize)
 	cellHttp.notice("cellHttpInit(pool=*0x%x, poolSize=0x%x)", pool, poolSize);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_ALREADY_INITIALIZED;
-	}
+		if (man.initialized)
+		{
+			return CELL_HTTP_ERROR_ALREADY_INITIALIZED;
+		}
 
-	if (!pool || !poolSize)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!pool || !poolSize)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	man.initialized = true;
-	return CELL_OK;
+		man.initialized = true;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpEnd()
@@ -1238,15 +1245,16 @@ error_code cellHttpEnd()
 	cellHttp.notice("cellHttpEnd()");
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	man.initialized = false;
-	return CELL_OK;
+		man.initialized = false;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpsInit(u32 caCertNum, vm::cptr<CellHttpsData> caList)
@@ -1254,15 +1262,16 @@ error_code cellHttpsInit(u32 caCertNum, vm::cptr<CellHttpsData> caList)
 	cellHttp.todo("cellHttpsInit(caCertNum=0x%x, caList=*0x%x)", caCertNum, caList);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (man.https_initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_ALREADY_INITIALIZED;
-	}
+		if (man.https_initialized)
+		{
+			return CELL_HTTP_ERROR_ALREADY_INITIALIZED;
+		}
 
-	man.https_initialized = true;
-	return CELL_OK;
+		man.https_initialized = true;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpsEnd()
@@ -1270,21 +1279,22 @@ error_code cellHttpsEnd()
 	cellHttp.todo("cellHttpsEnd()");
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.https_initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.https_initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (!_cellSslIsInitd())
-	{
-		return CELL_SSL_ERROR_NOT_INITIALIZED;
-	}
+		if (!_cellSslIsInitd())
+		{
+			return CELL_SSL_ERROR_NOT_INITIALIZED;
+		}
 
-	man.https_initialized = false;
+		man.https_initialized = false;
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpSetProxy(vm::cptr<CellHttpUri> proxy)
@@ -1292,22 +1302,23 @@ error_code cellHttpSetProxy(vm::cptr<CellHttpUri> proxy)
 	cellHttp.todo("cellHttpSetProxy(proxy=*0x%x)", proxy);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
-
-	if (proxy)
-	{
-		if (!proxy->hostname || !proxy->hostname[0])
+		if (!man.initialized)
 		{
-			return CELL_HTTP_ERROR_INVALID_URI;
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
 		}
-	}
 
-	return CELL_OK;
+		if (proxy)
+		{
+			if (!proxy->hostname || !proxy->hostname[0])
+			{
+				return CELL_HTTP_ERROR_INVALID_URI;
+			}
+		}
+
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpGetCookie(vm::ptr<void> buf)
@@ -1332,24 +1343,25 @@ error_code cellHttpGetProxy(vm::ptr<CellHttpUri> proxy, vm::ptr<void> pool, u32 
 	cellHttp.todo("cellHttpGetProxy(proxy=*0x%x, pool=*0x%x, poolSize=0x%x, required=*0x%x)", proxy, pool, poolSize, required);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	//if (todo)
-	//{
-	//	return cellHttpUtilCopyUri(proxy, some CellHttpUri, pool, poolSize, required);
-	//}
+		//if (todo)
+		//{
+		//	return cellHttpUtilCopyUri(proxy, some CellHttpUri, pool, poolSize, required);
+		//}
 
-	if (required)
-	{
-		*required = 0;
-	}
+		if (required)
+		{
+			*required = 0;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpInitCookie(vm::ptr<void> pool, u32 poolSize)
@@ -1362,15 +1374,16 @@ error_code cellHttpInitCookie(vm::ptr<void> pool, u32 poolSize)
 	}
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (man.cookie_initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_ALREADY_INITIALIZED;
-	}
+		if (man.cookie_initialized)
+		{
+			return CELL_HTTP_ERROR_ALREADY_INITIALIZED;
+		}
 
-	man.cookie_initialized = true;
-	return CELL_OK;
+		man.cookie_initialized = true;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpEndCookie()
@@ -1378,15 +1391,16 @@ error_code cellHttpEndCookie()
 	cellHttp.todo("cellHttpEndCookie()");
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.cookie_initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.cookie_initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	man.cookie_initialized = false;
-	return CELL_OK;
+		man.cookie_initialized = false;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpAddCookieWithClientId(vm::cptr<CellHttpUri> uri, vm::cptr<char> cookie, CellHttpClientId clientId)
@@ -1422,14 +1436,15 @@ error_code cellHttpCookieExport(vm::ptr<void> buffer, u32 size, vm::ptr<u32> exp
 	}
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.cookie_initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.cookie_initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpCookieExportWithClientId(vm::ptr<void> buffer, u32 size, vm::ptr<u32> exportSize, CellHttpClientId clientId)
@@ -1442,14 +1457,15 @@ error_code cellHttpCookieExportWithClientId(vm::ptr<void> buffer, u32 size, vm::
 	}
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.cookie_initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.cookie_initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpCookieFlush()
@@ -1457,14 +1473,15 @@ error_code cellHttpCookieFlush()
 	cellHttp.todo("cellHttpCookieFlush()");
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.cookie_initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.cookie_initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpCookieImport(vm::cptr<void> buffer, u32 size)
@@ -1485,14 +1502,15 @@ error_code cellHttpCookieImportWithClientId(vm::cptr<void> buffer, u32 size, Cel
 	cellHttp.todo("cellHttpCookieImportWithClientId(buffer=*0x%x, size=0x%x, clientId=0x%x)", buffer, size, clientId);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.cookie_initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.cookie_initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetCookieSendCallback(CellHttpClientId clientId, vm::ptr<CellHttpCookieSendCallback> cbfunc, vm::ptr<void> userArg)
@@ -1500,19 +1518,20 @@ error_code cellHttpClientSetCookieSendCallback(CellHttpClientId clientId, vm::pt
 	cellHttp.todo("cellHttpClientSetCookieSendCallback(clientId=0x%x, cbfunc=*0x%x, userArg=*0x%x)", clientId, cbfunc, userArg);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetCookieRecvCallback(CellHttpClientId clientId, vm::ptr<CellHttpsSslCallback> cbfunc, vm::ptr<void> userArg)
@@ -1520,19 +1539,20 @@ error_code cellHttpClientSetCookieRecvCallback(CellHttpClientId clientId, vm::pt
 	cellHttp.todo("cellHttpClientSetCookieRecvCallback(clientId=0x%x, cbfunc=*0x%x, userArg=*0x%x)", clientId, cbfunc, userArg);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpCreateClient(vm::ptr<CellHttpClientId> clientId)
@@ -1540,19 +1560,20 @@ error_code cellHttpCreateClient(vm::ptr<CellHttpClientId> clientId)
 	cellHttp.todo("cellHttpCreateClient(clientId=*0x%x)", clientId);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (!clientId)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!clientId)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpDestroyClient(CellHttpClientId clientId)
@@ -1560,19 +1581,20 @@ error_code cellHttpDestroyClient(CellHttpClientId clientId)
 	cellHttp.todo("cellHttpDestroyClient(clientId=0x%x)", clientId);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetAuthenticationCallback(CellHttpClientId clientId, vm::ptr<CellHttpAuthenticationCallback> cbfunc, vm::ptr<void> userArg)
@@ -1580,19 +1602,20 @@ error_code cellHttpClientSetAuthenticationCallback(CellHttpClientId clientId, vm
 	cellHttp.todo("cellHttpClientSetAuthenticationCallback(clientId=0x%x, cbfunc=*0x%x, userArg=*0x%x)", clientId, cbfunc, userArg);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetCacheStatus(CellHttpClientId clientId, b8 enable)
@@ -1600,19 +1623,20 @@ error_code cellHttpClientSetCacheStatus(CellHttpClientId clientId, b8 enable)
 	cellHttp.todo("cellHttpClientSetCacheStatus(clientId=0x%x, enable=%d)", clientId, enable);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetTransactionStateCallback(CellHttpClientId clientId, vm::ptr<CellHttpTransactionStateCallback> cbfunc, vm::ptr<void> userArg)
@@ -1620,19 +1644,20 @@ error_code cellHttpClientSetTransactionStateCallback(CellHttpClientId clientId, 
 	cellHttp.todo("cellHttpClientSetTransactionStateCallback(clientId=0x%x, cbfunc=*0x%x, userArg=*0x%x)", clientId, cbfunc, userArg);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetRedirectCallback(CellHttpClientId clientId, vm::ptr<CellHttpRedirectCallback> cbfunc, vm::ptr<void> userArg)
@@ -1640,19 +1665,20 @@ error_code cellHttpClientSetRedirectCallback(CellHttpClientId clientId, vm::ptr<
 	cellHttp.todo("cellHttpClientSetRedirectCallback(clientId=0x%x, cbfunc=*0x%x, userArg=*0x%x)", clientId, cbfunc, userArg);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetProxy(CellHttpClientId clientId, vm::cptr<CellHttpUri> proxy)
@@ -1660,27 +1686,28 @@ error_code cellHttpClientSetProxy(CellHttpClientId clientId, vm::cptr<CellHttpUr
 	cellHttp.todo("cellHttpClientSetProxy(clientId=0x%x, proxy=*0x%x)", clientId, proxy);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
-
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
-
-	if (proxy)
-	{
-		if (!proxy->hostname || !proxy->hostname[0])
+		if (!man.initialized)
 		{
-			return CELL_HTTP_ERROR_INVALID_URI;
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
 		}
-	}
 
-	return CELL_OK;
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
+
+		if (proxy)
+		{
+			if (!proxy->hostname || !proxy->hostname[0])
+			{
+				return CELL_HTTP_ERROR_INVALID_URI;
+			}
+		}
+
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetProxy(CellHttpClientId clientId, vm::ptr<CellHttpUri> proxy, vm::ptr<void> pool, u32 poolSize, vm::ptr<u32> required)
@@ -1688,19 +1715,20 @@ error_code cellHttpClientGetProxy(CellHttpClientId clientId, vm::ptr<CellHttpUri
 	cellHttp.todo("cellHttpClientGetProxy(clientId=0x%x, proxy=*0x%x, pool=*0x%x, poolSize=0x%x, required=*0x%x)", clientId, proxy, pool, poolSize, required);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetVersion(CellHttpClientId clientId, u32 major, u32 minor)
@@ -1708,19 +1736,20 @@ error_code cellHttpClientSetVersion(CellHttpClientId clientId, u32 major, u32 mi
 	cellHttp.todo("cellHttpClientSetPipeline(clientId=0x%x, major=0x%x, minor=0x%x)", clientId, major, minor);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetVersion(CellHttpClientId clientId, vm::ptr<u32> major, vm::ptr<u32> minor)
@@ -1728,24 +1757,25 @@ error_code cellHttpClientGetVersion(CellHttpClientId clientId, vm::ptr<u32> majo
 	cellHttp.todo("cellHttpClientGetVersion(clientId=0x%x, major=*0x%x, minor=*0x%x)", clientId, major, minor);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!major || !minor)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!major || !minor)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetPipeline(CellHttpClientId clientId, b8 enable)
@@ -1753,19 +1783,20 @@ error_code cellHttpClientSetPipeline(CellHttpClientId clientId, b8 enable)
 	cellHttp.todo("cellHttpClientSetPipeline(clientId=0x%x, enable=%d)", clientId, enable);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetPipeline(CellHttpClientId clientId, vm::ptr<b8> enable)
@@ -1773,24 +1804,25 @@ error_code cellHttpClientGetPipeline(CellHttpClientId clientId, vm::ptr<b8> enab
 	cellHttp.todo("cellHttpClientGetPipeline(clientId=0x%x, enable=*0x%x)", clientId, enable);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!enable)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!enable)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetKeepAlive(CellHttpClientId clientId, b8 enable)
@@ -1798,19 +1830,20 @@ error_code cellHttpClientSetKeepAlive(CellHttpClientId clientId, b8 enable)
 	cellHttp.todo("cellHttpClientSetKeepAlive(clientId=0x%x, enable=%d)", clientId, enable);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetKeepAlive(CellHttpClientId clientId, vm::ptr<b8> enable)
@@ -1818,24 +1851,25 @@ error_code cellHttpClientGetKeepAlive(CellHttpClientId clientId, vm::ptr<b8> ena
 	cellHttp.todo("cellHttpClientGetKeepAlive(clientId=0x%x, enable=*0x%x)", clientId, enable);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!enable)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!enable)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetAutoRedirect(CellHttpClientId clientId, b8 enable)
@@ -1843,19 +1877,20 @@ error_code cellHttpClientSetAutoRedirect(CellHttpClientId clientId, b8 enable)
 	cellHttp.todo("cellHttpClientSetAutoRedirect(clientId=0x%x, enable=%d)", clientId, enable);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetAutoRedirect(CellHttpClientId clientId, vm::ptr<b8> enable)
@@ -1863,24 +1898,25 @@ error_code cellHttpClientGetAutoRedirect(CellHttpClientId clientId, vm::ptr<b8> 
 	cellHttp.todo("cellHttpClientGetAutoRedirect(clientId=0x%x, enable=*0x%x)", clientId, enable);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!enable)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!enable)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetAutoAuthentication(CellHttpClientId clientId, b8 enable)
@@ -1888,19 +1924,20 @@ error_code cellHttpClientSetAutoAuthentication(CellHttpClientId clientId, b8 ena
 	cellHttp.todo("cellHttpClientSetAutoAuthentication(clientId=0x%x, enable=%d)", clientId, enable);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetAutoAuthentication(CellHttpClientId clientId, vm::ptr<b8> enable)
@@ -1908,24 +1945,25 @@ error_code cellHttpClientGetAutoAuthentication(CellHttpClientId clientId, vm::pt
 	cellHttp.todo("cellHttpClientGetAutoAuthentication(clientId=0x%x, enable=*0x%x)", clientId, enable);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!enable)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!enable)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetAuthenticationCacheStatus(CellHttpClientId clientId, b8 enable)
@@ -1933,19 +1971,20 @@ error_code cellHttpClientSetAuthenticationCacheStatus(CellHttpClientId clientId,
 	cellHttp.todo("cellHttpClientSetAuthenticationCacheStatus(clientId=0x%x, enable=%d)", clientId, enable);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetAuthenticationCacheStatus(CellHttpClientId clientId, vm::ptr<b8> enable)
@@ -1953,24 +1992,25 @@ error_code cellHttpClientGetAuthenticationCacheStatus(CellHttpClientId clientId,
 	cellHttp.todo("cellHttpClientGetAuthenticationCacheStatus(clientId=0x%x, enable=*0x%x)", clientId, enable);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!enable)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!enable)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetCookieStatus(CellHttpClientId clientId, b8 enable)
@@ -1978,19 +2018,20 @@ error_code cellHttpClientSetCookieStatus(CellHttpClientId clientId, b8 enable)
 	cellHttp.todo("cellHttpClientSetCookieStatus(clientId=0x%x, enable=%d)", clientId, enable);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetCookieStatus(CellHttpClientId clientId, vm::ptr<b8> enable)
@@ -1998,24 +2039,25 @@ error_code cellHttpClientGetCookieStatus(CellHttpClientId clientId, vm::ptr<b8> 
 	cellHttp.todo("cellHttpClientGetCookieStatus(clientId=0x%x, enable=*0x%x)", clientId, enable);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!enable)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!enable)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetUserAgent(CellHttpClientId clientId, vm::cptr<char> userAgent)
@@ -2023,24 +2065,25 @@ error_code cellHttpClientSetUserAgent(CellHttpClientId clientId, vm::cptr<char> 
 	cellHttp.todo("cellHttpClientSetUserAgent(clientId=0x%x, userAgent=%s)", clientId, userAgent);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!userAgent)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!userAgent)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetUserAgent(CellHttpClientId clientId, vm::ptr<char> userAgent, u32 size, vm::ptr<u32> required)
@@ -2048,27 +2091,28 @@ error_code cellHttpClientGetUserAgent(CellHttpClientId clientId, vm::ptr<char> u
 	cellHttp.todo("cellHttpClientGetUserAgent(clientId=0x%x, userAgent=*0x%x, size=%d, required=*0x%x)", clientId, size, userAgent, required);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
-
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
-
-	if (!userAgent || !size)
-	{
-		if (!required)
+		if (!man.initialized)
 		{
-			return CELL_HTTP_ERROR_NO_BUFFER;
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
 		}
-	}
 
-	return CELL_OK;
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
+
+		if (!userAgent || !size)
+		{
+			if (!required)
+			{
+				return CELL_HTTP_ERROR_NO_BUFFER;
+			}
+		}
+
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetResponseBufferMax(CellHttpClientId clientId, u32 max)
@@ -2076,24 +2120,25 @@ error_code cellHttpClientSetResponseBufferMax(CellHttpClientId clientId, u32 max
 	cellHttp.todo("cellHttpClientSetResponseBufferMax(clientId=0x%x, max=%d)", clientId, max);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (max < 1500)
-	{
-		max = 1500;
-	}
+		if (max < 1500)
+		{
+			max = 1500;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetResponseBufferMax(CellHttpClientId clientId, vm::ptr<u32> max)
@@ -2101,24 +2146,25 @@ error_code cellHttpClientGetResponseBufferMax(CellHttpClientId clientId, vm::ptr
 	cellHttp.todo("cellHttpClientGetResponseBufferMax(clientId=0x%x, max=*0x%x)", clientId, max);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!max)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!max)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientCloseAllConnections(CellHttpClientId clientId)
@@ -2126,19 +2172,20 @@ error_code cellHttpClientCloseAllConnections(CellHttpClientId clientId)
 	cellHttp.todo("cellHttpClientCloseAllConnections(clientId=0x%x)", clientId);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientCloseConnections(CellHttpClientId clientId, vm::cptr<CellHttpUri> uri)
@@ -2146,19 +2193,20 @@ error_code cellHttpClientCloseConnections(CellHttpClientId clientId, vm::cptr<Ce
 	cellHttp.todo("cellHttpClientCloseConnections(clientId=0x%x, uri=*0x%x)", clientId, uri);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientPollConnections(CellHttpClientId clientId, vm::ptr<CellHttpTransId> transId, s64 usec)
@@ -2166,19 +2214,20 @@ error_code cellHttpClientPollConnections(CellHttpClientId clientId, vm::ptr<Cell
 	cellHttp.todo("cellHttpClientPollConnections(clientId=0x%x, transId=*0x%x, usec=%d)", clientId, transId, usec);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetConnectionStateCallback(CellHttpClientId clientId, vm::ptr<void> cbfunc, vm::ptr<void> userArg)
@@ -2198,19 +2247,20 @@ error_code cellHttpClientSetConnectionWaitStatus(CellHttpClientId clientId, b8 e
 	cellHttp.todo("cellHttpClientSetConnectionWaitStatus(clientId=0x%x, enable=%d)", clientId, enable);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetConnectionWaitStatus(CellHttpClientId clientId, vm::ptr<b8> enable)
@@ -2218,24 +2268,25 @@ error_code cellHttpClientGetConnectionWaitStatus(CellHttpClientId clientId, vm::
 	cellHttp.todo("cellHttpClientGetConnectionWaitStatus(clientId=0x%x, enable=*0x%x)", clientId, enable);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!enable)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!enable)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetConnectionWaitTimeout(CellHttpClientId clientId, s64 usec)
@@ -2243,19 +2294,20 @@ error_code cellHttpClientSetConnectionWaitTimeout(CellHttpClientId clientId, s64
 	cellHttp.todo("cellHttpClientSetConnectionWaitTimeout(clientId=0x%x, usec=%d)", clientId, usec);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetConnectionWaitTimeout(CellHttpClientId clientId, vm::ptr<s64> usec)
@@ -2263,24 +2315,25 @@ error_code cellHttpClientGetConnectionWaitTimeout(CellHttpClientId clientId, vm:
 	cellHttp.todo("cellHttpClientGetConnectionWaitTimeout(clientId=0x%x, usec=*0x%x)", clientId, usec);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!usec)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!usec)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetRecvTimeout(CellHttpClientId clientId, s64 usec)
@@ -2288,19 +2341,20 @@ error_code cellHttpClientSetRecvTimeout(CellHttpClientId clientId, s64 usec)
 	cellHttp.todo("cellHttpClientSetRecvTimeout(clientId=0x%x, usec=%d)", clientId, usec);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetRecvTimeout(CellHttpClientId clientId, vm::ptr<s64> usec)
@@ -2308,24 +2362,25 @@ error_code cellHttpClientGetRecvTimeout(CellHttpClientId clientId, vm::ptr<s64> 
 	cellHttp.todo("cellHttpClientGetRecvTimeout(clientId=0x%x, usec=*0x%x)", clientId, usec);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!usec) // TODO
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!usec) // TODO
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetSendTimeout(CellHttpClientId clientId, s64 usec)
@@ -2333,19 +2388,20 @@ error_code cellHttpClientSetSendTimeout(CellHttpClientId clientId, s64 usec)
 	cellHttp.todo("cellHttpClientSetSendTimeout(clientId=0x%x, usec=%d)", clientId, usec);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetSendTimeout(CellHttpClientId clientId, vm::ptr<s64> usec)
@@ -2353,24 +2409,25 @@ error_code cellHttpClientGetSendTimeout(CellHttpClientId clientId, vm::ptr<s64> 
 	cellHttp.todo("cellHttpClientGetSendTimeout(clientId=0x%x, usec=*0x%x)", clientId, usec);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!usec) // TODO
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!usec) // TODO
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetConnTimeout(CellHttpClientId clientId, s64 usec)
@@ -2378,19 +2435,20 @@ error_code cellHttpClientSetConnTimeout(CellHttpClientId clientId, s64 usec)
 	cellHttp.todo("cellHttpClientSetConnTimeout(clientId=0x%x, usec=%d)", clientId, usec);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetConnTimeout(CellHttpClientId clientId, vm::ptr<s64> usec)
@@ -2398,24 +2456,25 @@ error_code cellHttpClientGetConnTimeout(CellHttpClientId clientId, vm::ptr<s64> 
 	cellHttp.todo("cellHttpClientGetConnTimeout(clientId=0x%x, usec=*0x%x)", clientId, usec);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!usec)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!usec)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetTotalPoolSize(CellHttpClientId clientId, u32 poolSize)
@@ -2423,19 +2482,20 @@ error_code cellHttpClientSetTotalPoolSize(CellHttpClientId clientId, u32 poolSiz
 	cellHttp.todo("cellHttpClientSetTotalPoolSize(clientId=0x%x, poolSize=%d)", clientId, poolSize);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetTotalPoolSize(CellHttpClientId clientId, vm::ptr<u32> poolSize)
@@ -2443,24 +2503,25 @@ error_code cellHttpClientGetTotalPoolSize(CellHttpClientId clientId, vm::ptr<u32
 	cellHttp.todo("cellHttpClientGetTotalPoolSize(clientId=0x%x, poolSize=*0x%x)", clientId, poolSize);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!poolSize)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!poolSize)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetPerHostPoolSize(CellHttpClientId clientId, u32 poolSize)
@@ -2468,19 +2529,20 @@ error_code cellHttpClientSetPerHostPoolSize(CellHttpClientId clientId, u32 poolS
 	cellHttp.todo("cellHttpClientSetPerHostPoolSize(clientId=0x%x, poolSize=%d)", clientId, poolSize);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetPerHostPoolSize(CellHttpClientId clientId, vm::ptr<u32> poolSize)
@@ -2488,24 +2550,25 @@ error_code cellHttpClientGetPerHostPoolSize(CellHttpClientId clientId, vm::ptr<u
 	cellHttp.todo("cellHttpClientGetPerHostPoolSize(clientId=0x%x, poolSize=*0x%x)", clientId, poolSize);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!poolSize)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!poolSize)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetPerHostKeepAliveMax(CellHttpClientId clientId, u32 maxSize)
@@ -2513,19 +2576,20 @@ error_code cellHttpClientSetPerHostKeepAliveMax(CellHttpClientId clientId, u32 m
 	cellHttp.todo("cellHttpClientSetPerHostKeepAliveMax(clientId=0x%x, maxSize=%d)", clientId, maxSize);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetPerHostKeepAliveMax(CellHttpClientId clientId, vm::ptr<u32> maxSize)
@@ -2533,24 +2597,25 @@ error_code cellHttpClientGetPerHostKeepAliveMax(CellHttpClientId clientId, vm::p
 	cellHttp.todo("cellHttpClientGetPerHostKeepAliveMax(clientId=0x%x, maxSize=*0x%x)", clientId, maxSize);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!maxSize)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!maxSize)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetPerPipelineMax(CellHttpClientId clientId, u32 pipeMax)
@@ -2558,19 +2623,20 @@ error_code cellHttpClientSetPerPipelineMax(CellHttpClientId clientId, u32 pipeMa
 	cellHttp.todo("cellHttpClientSetPerPipelineMax(clientId=0x%x, pipeMax=%d)", clientId, pipeMax);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetPerPipelineMax(CellHttpClientId clientId, vm::ptr<u32> pipeMax)
@@ -2578,24 +2644,25 @@ error_code cellHttpClientGetPerPipelineMax(CellHttpClientId clientId, vm::ptr<u3
 	cellHttp.todo("cellHttpClientGetPerPipelineMax(clientId=0x%x, pipeMax=*0x%x)", clientId, pipeMax);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!pipeMax)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!pipeMax)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetRecvBufferSize(CellHttpClientId clientId, s32 size)
@@ -2603,19 +2670,20 @@ error_code cellHttpClientSetRecvBufferSize(CellHttpClientId clientId, s32 size)
 	cellHttp.todo("cellHttpClientSetRecvBufferSize(clientId=0x%x, size=%d)", clientId, size);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetRecvBufferSize(CellHttpClientId clientId, vm::ptr<s32> size)
@@ -2623,24 +2691,25 @@ error_code cellHttpClientGetRecvBufferSize(CellHttpClientId clientId, vm::ptr<s3
 	cellHttp.todo("cellHttpClientGetRecvBufferSize(clientId=0x%x, size=*0x%x)", clientId, size);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!size)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!size)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetSendBufferSize(CellHttpClientId clientId, s32 size)
@@ -2648,19 +2717,20 @@ error_code cellHttpClientSetSendBufferSize(CellHttpClientId clientId, s32 size)
 	cellHttp.todo("cellHttpClientSetSendBufferSize(clientId=0x%x, size=%d)", clientId, size);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetSendBufferSize(CellHttpClientId clientId, vm::ptr<s32> size)
@@ -2668,24 +2738,25 @@ error_code cellHttpClientGetSendBufferSize(CellHttpClientId clientId, vm::ptr<s3
 	cellHttp.todo("cellHttpClientGetSendBufferSize(clientId=0x%x, size=*0x%x)", clientId, size);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!size)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!size)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetAllHeaders(CellHttpClientId clientId, vm::pptr<CellHttpHeader> headers, vm::ptr<u32> items, vm::ptr<void> pool, u32 poolSize, vm::ptr<u32> required)
@@ -2693,24 +2764,25 @@ error_code cellHttpClientGetAllHeaders(CellHttpClientId clientId, vm::pptr<CellH
 	cellHttp.todo("cellHttpClientGetAllHeaders(clientId=0x%x, headers=*0x%x, items=*0x%x, pool=*0x%x, poolSize=0x%x, required=*0x%x)", clientId, headers, items, pool, poolSize, required);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if ((!pool || !headers) && !required)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if ((!pool || !headers) && !required)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetHeader(CellHttpClientId clientId, vm::cptr<CellHttpHeader> header)
@@ -2718,24 +2790,25 @@ error_code cellHttpClientSetHeader(CellHttpClientId clientId, vm::cptr<CellHttpH
 	cellHttp.todo("cellHttpClientSetHeader(clientId=0x%x, header=*0x%x)", clientId, header);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!header)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!header)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetHeader(CellHttpClientId clientId, vm::ptr<CellHttpHeader> header, vm::cptr<char> name, vm::ptr<void> pool, u32 poolSize, vm::ptr<u32> required)
@@ -2743,24 +2816,25 @@ error_code cellHttpClientGetHeader(CellHttpClientId clientId, vm::ptr<CellHttpHe
 	cellHttp.todo("cellHttpClientGetHeader(clientId=0x%x, header=*0x%x, name=%s, pool=*0x%x, poolSize=0x%x, required=*0x%x)", clientId, header, name, pool, poolSize, required);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!name)
-	{
-		return CELL_HTTP_ERROR_NO_STRING;
-	}
+		if (!name)
+		{
+			return CELL_HTTP_ERROR_NO_STRING;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientAddHeader(CellHttpClientId clientId, vm::cptr<CellHttpHeader> header)
@@ -2768,19 +2842,20 @@ error_code cellHttpClientAddHeader(CellHttpClientId clientId, vm::cptr<CellHttpH
 	cellHttp.todo("cellHttpClientAddHeader(clientId=0x%x, header=*0x%x)", clientId, header);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientDeleteHeader(CellHttpClientId clientId, vm::cptr<char> name)
@@ -2788,19 +2863,20 @@ error_code cellHttpClientDeleteHeader(CellHttpClientId clientId, vm::cptr<char> 
 	cellHttp.todo("cellHttpClientDeleteHeader(clientId=0x%x, name=%s)", clientId, name);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetSslCallback(CellHttpClientId clientId, vm::ptr<CellHttpsSslCallback> cbfunc, vm::ptr<void> userArg)
@@ -2808,19 +2884,20 @@ error_code cellHttpClientSetSslCallback(CellHttpClientId clientId, vm::ptr<CellH
 	cellHttp.todo("cellHttpClientSetSslCallback(clientId=0x%x, cbfunc=*0x%x, userArg=*0x%x)", clientId, cbfunc, userArg);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetSslClientCertificate(CellHttpClientId clientId, vm::cptr<CellHttpsData> cert, vm::cptr<CellHttpsData> privKey)
@@ -2828,29 +2905,30 @@ error_code cellHttpClientSetSslClientCertificate(CellHttpClientId clientId, vm::
 	cellHttp.todo("cellHttpClientSetSslClientCertificate(clientId=0x%x, cert=*0x%x, privKey=*0x%x)", clientId, cert, privKey);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!cert && privKey)
-	{
-		return CELL_HTTPS_ERROR_KEY_NEEDS_CERT;
-	}
+		if (!cert && privKey)
+		{
+			return CELL_HTTPS_ERROR_KEY_NEEDS_CERT;
+		}
 
-	if (cert && !privKey)
-	{
-		return CELL_HTTPS_ERROR_CERT_NEEDS_KEY;
-	}
+		if (cert && !privKey)
+		{
+			return CELL_HTTPS_ERROR_CERT_NEEDS_KEY;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpCreateTransaction(vm::ptr<CellHttpTransId> transId, CellHttpClientId clientId, vm::cptr<char> method, vm::cptr<CellHttpUri> uri)
@@ -2858,24 +2936,25 @@ error_code cellHttpCreateTransaction(vm::ptr<CellHttpTransId> transId, CellHttpC
 	cellHttp.todo("cellHttpCreateTransaction(transId=*0x%x, clientId=0x%x, method=%s, uri=*0x%x)", transId, clientId, method, uri);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	//if (error_code error = syscall_sys_memory_get_page_attribute(clientId))
-	//{
-	//	return error;
-	//}
+		//if (error_code error = syscall_sys_memory_get_page_attribute(clientId))
+		//{
+		//	return error;
+		//}
 
-	if (!uri || !uri->hostname || !uri->hostname[0])
-	{
-		return CELL_HTTP_ERROR_INVALID_URI;
-	}
+		if (!uri || !uri->hostname || !uri->hostname[0])
+		{
+			return CELL_HTTP_ERROR_INVALID_URI;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpDestroyTransaction(CellHttpTransId transId)
@@ -2883,19 +2962,20 @@ error_code cellHttpDestroyTransaction(CellHttpTransId transId)
 	cellHttp.todo("cellHttpDestroyTransaction(transId=0x%x)", transId);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpTransactionGetUri(CellHttpTransId transId, vm::ptr<CellHttpUri> uri, vm::ptr<void> pool, u32 poolSize, vm::ptr<u32> required)
@@ -2903,19 +2983,20 @@ error_code cellHttpTransactionGetUri(CellHttpTransId transId, vm::ptr<CellHttpUr
 	cellHttp.todo("cellHttpTransactionGetUri(transId=0x%x, uri=*0x%x, pool=*0x%x, poolSize=0x%x, required=*0x%x)", transId, uri, pool, poolSize, required);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpTransactionSetUri(CellHttpTransId transId, vm::cptr<CellHttpUri> uri) // TODO: more params?
@@ -2923,29 +3004,30 @@ error_code cellHttpTransactionSetUri(CellHttpTransId transId, vm::cptr<CellHttpU
 	cellHttp.todo("cellHttpTransactionSetUri(transId=0x%x, uri=*0x%x)", transId, uri);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	if (!uri || !uri->hostname || !uri->hostname[0])
-	{
-		return CELL_HTTP_ERROR_INVALID_URI;
-	}
+		if (!uri || !uri->hostname || !uri->hostname[0])
+		{
+			return CELL_HTTP_ERROR_INVALID_URI;
+		}
 
-	if (uri->scheme && false) // TODO
-	{
-		return CELL_HTTP_ERROR_INVALID_URI;
-	}
+		if (uri->scheme && false) // TODO
+		{
+			return CELL_HTTP_ERROR_INVALID_URI;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpTransactionCloseConnection(CellHttpTransId transId)
@@ -2953,19 +3035,20 @@ error_code cellHttpTransactionCloseConnection(CellHttpTransId transId)
 	cellHttp.todo("cellHttpTransactionCloseConnection(transId=0x%x)", transId);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpTransactionReleaseConnection(CellHttpTransId transId, vm::ptr<s32> sid)
@@ -2973,24 +3056,25 @@ error_code cellHttpTransactionReleaseConnection(CellHttpTransId transId, vm::ptr
 	cellHttp.todo("cellHttpTransactionReleaseConnection(transId=0x%x, sid=*0x%x)", transId, sid);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	if (!sid)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!sid)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpTransactionAbortConnection(CellHttpTransId transId)
@@ -2998,19 +3082,20 @@ error_code cellHttpTransactionAbortConnection(CellHttpTransId transId)
 	cellHttp.todo("cellHttpTransactionAbortConnection(transId=0x%x)", transId);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpSendRequest(CellHttpTransId transId, vm::cptr<char> buf, u32 size, vm::ptr<u32> sent)
@@ -3018,19 +3103,20 @@ error_code cellHttpSendRequest(CellHttpTransId transId, vm::cptr<char> buf, u32 
 	cellHttp.todo("cellHttpSendRequest(transId=0x%x, buf=*0x%x, size=0x%x, sent=*0x%x)", transId, buf, size, sent);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpRequestSetContentLength(CellHttpTransId transId, u64 totalSize)
@@ -3038,19 +3124,20 @@ error_code cellHttpRequestSetContentLength(CellHttpTransId transId, u64 totalSiz
 	cellHttp.todo("cellHttpRequestSetContentLength(transId=0x%x, totalSize=0x%x)", transId, totalSize);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpRequestGetContentLength(CellHttpTransId transId, vm::ptr<u64> totalSize)
@@ -3058,29 +3145,30 @@ error_code cellHttpRequestGetContentLength(CellHttpTransId transId, vm::ptr<u64>
 	cellHttp.todo("cellHttpRequestGetContentLength(transId=0x%x, totalSize=*0x%x)", transId, totalSize);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	if (!totalSize)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!totalSize)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_NO_CONTENT_LENGTH;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_NO_CONTENT_LENGTH;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpRequestSetChunkedTransferStatus(CellHttpTransId transId, b8 enable)
@@ -3088,19 +3176,20 @@ error_code cellHttpRequestSetChunkedTransferStatus(CellHttpTransId transId, b8 e
 	cellHttp.todo("cellHttpRequestSetChunkedTransferStatus(transId=0x%x, enable=%d)", transId, enable);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpRequestGetChunkedTransferStatus(CellHttpTransId transId, vm::ptr<b8> enable)
@@ -3108,24 +3197,25 @@ error_code cellHttpRequestGetChunkedTransferStatus(CellHttpTransId transId, vm::
 	cellHttp.todo("cellHttpRequestGetChunkedTransferStatus(transId=0x%x, enable=*0x%x)", transId, enable);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	if (!enable)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!enable)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpRequestGetAllHeaders(CellHttpTransId transId, vm::pptr<CellHttpHeader> headers, vm::ptr<u32> items, vm::ptr<void> pool, u32 poolSize, vm::ptr<u32> required)
@@ -3133,24 +3223,25 @@ error_code cellHttpRequestGetAllHeaders(CellHttpTransId transId, vm::pptr<CellHt
 	cellHttp.todo("cellHttpRequestGetAllHeaders(transId=0x%x, headers=*0x%x, items=*0x%x, pool=*0x%x, poolSize=0x%x, required=*0x%x)", transId, headers, items, pool, poolSize, required);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	if (!required && (!pool || !headers))
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!required && (!pool || !headers))
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpRequestSetHeader(CellHttpTransId transId, vm::cptr<CellHttpHeader> header)
@@ -3158,24 +3249,25 @@ error_code cellHttpRequestSetHeader(CellHttpTransId transId, vm::cptr<CellHttpHe
 	cellHttp.todo("cellHttpRequestSetHeader(transId=0x%x, header=*0x%x)", transId, header);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	if (!header)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!header)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpRequestGetHeader(CellHttpTransId transId, vm::ptr<CellHttpHeader> header, vm::cptr<char> name, vm::ptr<void> pool, u32 poolSize, vm::ptr<u32> required)
@@ -3183,24 +3275,25 @@ error_code cellHttpRequestGetHeader(CellHttpTransId transId, vm::ptr<CellHttpHea
 	cellHttp.todo("cellHttpRequestGetHeader(transId=0x%x, header=*0x%x, name=%s, pool=*0x%x, poolSize=0x%x, required=*0x%x)", transId, header, name, pool, poolSize, required);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	if (!name)
-	{
-		return CELL_HTTP_ERROR_NO_STRING;
-	}
+		if (!name)
+		{
+			return CELL_HTTP_ERROR_NO_STRING;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpRequestAddHeader(CellHttpTransId transId, vm::cptr<CellHttpHeader> header)
@@ -3208,24 +3301,25 @@ error_code cellHttpRequestAddHeader(CellHttpTransId transId, vm::cptr<CellHttpHe
 	cellHttp.todo("cellHttpRequestAddHeader(transId=0x%x, header=*0x%x)", transId, header);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	if (!header)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!header)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpRequestDeleteHeader(CellHttpTransId transId, vm::cptr<char> name)
@@ -3233,24 +3327,25 @@ error_code cellHttpRequestDeleteHeader(CellHttpTransId transId, vm::cptr<char> n
 	cellHttp.todo("cellHttpRequestDeleteHeader(transId=0x%x, name=%s)", transId, name);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	if (!name)
-	{
-		return CELL_HTTP_ERROR_NO_STRING;
-	}
+		if (!name)
+		{
+			return CELL_HTTP_ERROR_NO_STRING;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpRecvResponse(CellHttpTransId transId, vm::ptr<char> buf, u32 size, vm::ptr<u32> recvd)
@@ -3258,19 +3353,20 @@ error_code cellHttpRecvResponse(CellHttpTransId transId, vm::ptr<char> buf, u32 
 	cellHttp.todo("cellHttpRecvResponse(transId=0x%x, buf=*0x%x, size=0x%x, recvd=*0x%x)", transId, buf, size, recvd);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpResponseGetAllHeaders(CellHttpTransId transId, vm::pptr<CellHttpHeader> headers, vm::ptr<u32> items, vm::ptr<void> pool, u32 poolSize, vm::ptr<u32> required)
@@ -3278,24 +3374,25 @@ error_code cellHttpResponseGetAllHeaders(CellHttpTransId transId, vm::pptr<CellH
 	cellHttp.todo("cellHttpResponseGetAllHeaders(transId=0x%x, headers=*0x%x, items=*0x%x, pool=*0x%x, poolSize=0x%x, required=*0x%x)", transId, headers, items, pool, poolSize, required);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	if (!required && (!pool || !headers))
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!required && (!pool || !headers))
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpResponseGetHeader(CellHttpTransId transId, vm::ptr<CellHttpHeader> header, vm::cptr<char> name, vm::ptr<void> pool, u32 poolSize, vm::ptr<u32> required)
@@ -3303,24 +3400,25 @@ error_code cellHttpResponseGetHeader(CellHttpTransId transId, vm::ptr<CellHttpHe
 	cellHttp.todo("cellHttpResponseGetHeader(transId=0x%x, header=*0x%x, name=%s, pool=*0x%x, poolSize=0x%x, required=*0x%x)", transId, header, name, pool, poolSize, required);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	if (!name)
-	{
-		return CELL_HTTP_ERROR_NO_STRING;
-	}
+		if (!name)
+		{
+			return CELL_HTTP_ERROR_NO_STRING;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpResponseGetContentLength(CellHttpTransId transId, vm::ptr<u64> length)
@@ -3328,29 +3426,30 @@ error_code cellHttpResponseGetContentLength(CellHttpTransId transId, vm::ptr<u64
 	cellHttp.todo("cellHttpResponseGetContentLength(transId=0x%x, length=*0x%x)", transId, length);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	if (!length)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!length)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_NO_CONTENT_LENGTH;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_NO_CONTENT_LENGTH;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpResponseGetStatusCode(CellHttpTransId transId, vm::ptr<s32> code)
@@ -3358,24 +3457,25 @@ error_code cellHttpResponseGetStatusCode(CellHttpTransId transId, vm::ptr<s32> c
 	cellHttp.todo("cellHttpResponseGetStatusCode(transId=0x%x, code=*0x%x)", transId, code);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	if (!code)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!code)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpResponseGetStatusLine(CellHttpTransId transId, vm::ptr<CellHttpStatusLine> status, vm::ptr<void> pool, u32 poolSize, vm::ptr<u32> required)
@@ -3383,19 +3483,20 @@ error_code cellHttpResponseGetStatusLine(CellHttpTransId transId, vm::ptr<CellHt
 	cellHttp.todo("cellHttpResponseGetStatusLine(transId=0x%x, status=*0x%x, pool=*0x%x, poolSize=0x%x, required=*0x%x)", transId, status, pool, poolSize, required);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpTransactionGetSslCipherName(CellHttpTransId transId, vm::ptr<char> name, u32 size, vm::ptr<u32> required)
@@ -3403,19 +3504,20 @@ error_code cellHttpTransactionGetSslCipherName(CellHttpTransId transId, vm::ptr<
 	cellHttp.todo("cellHttpTransactionGetSslCipherName(transId=0x%x, name=*0x%x, size=0x%x, required=*0x%x)", transId, name, size, required);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpTransactionGetSslCipherId(CellHttpTransId transId, vm::ptr<s32> id)
@@ -3423,19 +3525,20 @@ error_code cellHttpTransactionGetSslCipherId(CellHttpTransId transId, vm::ptr<s3
 	cellHttp.todo("cellHttpTransactionGetSslCipherId(transId=0x%x, id=*0x%x)", transId, id);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpTransactionGetSslCipherVersion(CellHttpTransId transId, vm::ptr<char> version, u32 size, vm::ptr<u32> required)
@@ -3443,19 +3546,20 @@ error_code cellHttpTransactionGetSslCipherVersion(CellHttpTransId transId, vm::p
 	cellHttp.todo("cellHttpTransactionGetSslCipherVersion(transId=0x%x, version=*0x%x, size=0x%x, required=*0x%x)", transId, version, size, required);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpTransactionGetSslCipherBits(CellHttpTransId transId, vm::ptr<s32> effectiveBits, vm::ptr<s32> algorithmBits)
@@ -3463,19 +3567,20 @@ error_code cellHttpTransactionGetSslCipherBits(CellHttpTransId transId, vm::ptr<
 	cellHttp.todo("cellHttpTransactionGetSslCipherBits(transId=0x%x, effectiveBits=*0x%x, effectiveBits=*0x%x)", transId, effectiveBits, algorithmBits);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpTransactionGetSslCipherString(CellHttpTransId transId, vm::ptr<char> buffer, u32 size)
@@ -3483,19 +3588,20 @@ error_code cellHttpTransactionGetSslCipherString(CellHttpTransId transId, vm::pt
 	cellHttp.todo("cellHttpTransactionGetSslCipherString(transId=0x%x, buffer=*0x%x, size=0x%x)", transId, buffer, size);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpTransactionGetSslVersion(CellHttpTransId transId, vm::ptr<s32> version)
@@ -3503,19 +3609,20 @@ error_code cellHttpTransactionGetSslVersion(CellHttpTransId transId, vm::ptr<s32
 	cellHttp.todo("cellHttpTransactionGetSslVersion(transId=0x%x, version=*0x%x)", transId, version);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpTransactionGetSslId(CellHttpTransId transId, vm::pptr<void> id)
@@ -3523,19 +3630,20 @@ error_code cellHttpTransactionGetSslId(CellHttpTransId transId, vm::pptr<void> i
 	cellHttp.todo("cellHttpTransactionGetSslId(transId=0x%x, id=*0x%x)", transId, id);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_TRANS;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_TRANS;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetSslVersion(CellHttpClientId clientId, s32 version)
@@ -3543,19 +3651,20 @@ error_code cellHttpClientSetSslVersion(CellHttpClientId clientId, s32 version)
 	cellHttp.todo("cellHttpClientSetSslVersion(clientId=0x%x, version=%d)", clientId, version);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientGetSslVersion(CellHttpClientId clientId, vm::ptr<s32> version)
@@ -3563,24 +3672,25 @@ error_code cellHttpClientGetSslVersion(CellHttpClientId clientId, vm::ptr<s32> v
 	cellHttp.todo("cellHttpClientGetSslVersion(clientId=0x%x, version=*0x%x)", clientId, version);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	if (!version)
-	{
-		return CELL_HTTP_ERROR_NO_BUFFER;
-	}
+		if (!version)
+		{
+			return CELL_HTTP_ERROR_NO_BUFFER;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpClientSetMinSslVersion(CellHttpClientId clientId, s32 version)
@@ -3622,19 +3732,20 @@ error_code cellHttpClientSetSslIdDestroyCallback(CellHttpClientId clientId, vm::
 	cellHttp.todo("cellHttpClientSetSslIdDestroyCallback(clientId=0x%x, cbfunc=*0x%x, userArg=*0x%x)", clientId, cbfunc, userArg);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_NOT_INITIALIZED;
-	}
+		if (!man.initialized)
+		{
+			return CELL_HTTP_ERROR_NOT_INITIALIZED;
+		}
 
-	if (false) // TODO
-	{
-		return CELL_HTTP_ERROR_BAD_CLIENT;
-	}
+		if (false) // TODO
+		{
+			return CELL_HTTP_ERROR_BAD_CLIENT;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpFlushCache()
@@ -3642,14 +3753,15 @@ error_code cellHttpFlushCache()
 	cellHttp.todo("cellHttpFlushCache()");
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.cache_initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_CACHE_NOT_INITIALIZED;
-	}
+		if (!man.cache_initialized)
+		{
+			return CELL_HTTP_ERROR_CACHE_NOT_INITIALIZED;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpEndCache()
@@ -3657,15 +3769,16 @@ error_code cellHttpEndCache()
 	cellHttp.todo("cellHttpEndCache()");
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.cache_initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_CACHE_NOT_INITIALIZED;
-	}
+		if (!man.cache_initialized)
+		{
+			return CELL_HTTP_ERROR_CACHE_NOT_INITIALIZED;
+		}
 
-	man.cache_initialized = false;
-	return CELL_OK;
+		man.cache_initialized = false;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpInitCache(u32 unk)
@@ -3673,15 +3786,16 @@ error_code cellHttpInitCache(u32 unk)
 	cellHttp.todo("cellHttpInitCache(unk=0x%x)", unk);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (man.cache_initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_CACHE_ALREADY_INITIALIZED;
-	}
+		if (man.cache_initialized)
+		{
+			return CELL_HTTP_ERROR_CACHE_ALREADY_INITIALIZED;
+		}
 
-	man.cache_initialized = true;
-	return CELL_OK;
+		man.cache_initialized = true;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpEndExternalCache()
@@ -3689,15 +3803,16 @@ error_code cellHttpEndExternalCache()
 	cellHttp.todo("cellHttpEndExternalCache()");
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.ext_cache_initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_CACHE_NOT_INITIALIZED;
-	}
+		if (!man.ext_cache_initialized)
+		{
+			return CELL_HTTP_ERROR_CACHE_NOT_INITIALIZED;
+		}
 
-	man.ext_cache_initialized = false;
-	return CELL_OK;
+		man.ext_cache_initialized = false;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpInitExternalCache(vm::ptr<void> buf, u32 size)
@@ -3705,25 +3820,26 @@ error_code cellHttpInitExternalCache(vm::ptr<void> buf, u32 size)
 	cellHttp.todo("cellHttpInitExternalCache(buf=*0x%x, size=0x%x)", buf, size);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (man.ext_cache_initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_CACHE_ALREADY_INITIALIZED;
-	}
+		if (man.ext_cache_initialized)
+		{
+			return CELL_HTTP_ERROR_CACHE_ALREADY_INITIALIZED;
+		}
 
-	if (buf)
-	{
-		std::memset(buf.get_ptr(), 0, size);
-	}
+		if (buf)
+		{
+			std::memset(buf.get_ptr(), 0, size);
+		}
 
-	if (size >= 512)
-	{
-		// TODO
-	}
+		if (size >= 512)
+		{
+			// TODO
+		}
 
-	man.ext_cache_initialized = true;
-	return CELL_OK;
+		man.ext_cache_initialized = true;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpFlushExternalCache()
@@ -3731,14 +3847,15 @@ error_code cellHttpFlushExternalCache()
 	cellHttp.todo("cellHttpFlushExternalCache()");
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.ext_cache_initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_CACHE_NOT_INITIALIZED;
-	}
+		if (!man.ext_cache_initialized)
+		{
+			return CELL_HTTP_ERROR_CACHE_NOT_INITIALIZED;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpGetCacheInfo(vm::ptr<void> buf)
@@ -3746,14 +3863,15 @@ error_code cellHttpGetCacheInfo(vm::ptr<void> buf)
 	cellHttp.todo("cellHttpGetCacheInfo(buf=*0x%x)", buf);
 
 	auto& man = g_fxo->get<http_manager>();
-	std::lock_guard lock(man.mtx);
-
-	if (!man.cache_initialized)
+	return hle_call([&]() -> error_code
 	{
-		return CELL_HTTP_ERROR_CACHE_NOT_INITIALIZED;
-	}
+		if (!man.cache_initialized)
+		{
+			return CELL_HTTP_ERROR_CACHE_NOT_INITIALIZED;
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code cellHttpGetMemoryInfo(vm::ptr<u32> heapSize, vm::ptr<u32> param_2, vm::ptr<u32> param_3)
