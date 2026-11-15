@@ -1372,8 +1372,7 @@ bool GLGSRender::on_access_violation(u32 address, bool is_writing)
 
 	if (result.invalidate_samplers)
 	{
-		std::lock_guard lock(m_sampler_mutex);
-		m_samplers_dirty.store(true);
+		request_samplers_reload();
 	}
 
 	if (!result.violation_handled)
@@ -1395,10 +1394,7 @@ void GLGSRender::on_invalidate_memory_range(const utils::address_range32 &range,
 	if (cause == rsx::invalidation_cause::unmap && data.violation_handled)
 	{
 		m_gl_texture_cache.purge_unreleased_sections();
-		{
-			std::lock_guard lock(m_sampler_mutex);
-			m_samplers_dirty.store(true);
-		}
+		request_samplers_reload();
 	}
 }
 
@@ -1476,10 +1472,7 @@ void GLGSRender::notify_tile_unbound(u32 tile)
 		m_rtts.invalidate_surface_address(addr, false);
 	}
 
-	{
-		std::lock_guard lock(m_sampler_mutex);
-		m_samplers_dirty.store(true);
-	}
+	request_samplers_reload();
 }
 
 bool GLGSRender::release_GCM_label(u32 type, u32 address, u32 args)

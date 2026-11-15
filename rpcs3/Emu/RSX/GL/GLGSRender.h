@@ -124,8 +124,23 @@ class GLGSRender : public GSRender, public ::rsx::reports::ZCULL_control
 	// VAOs are mandatory for core profile
 	gl::vao m_vao;
 
-	shared_mutex m_sampler_mutex;
+	// The renderer's: every sampler is looked at again at the next load
 	atomic_t<bool> m_samplers_dirty = {true};
+	// Another thread's ask for that (a tile unbound), taken by the renderer
+	// at its next load, so no lock keeps one from being lost meanwhile
+	retro_atomic_int_t m_samplers_reload_asked{};
+
+	void request_samplers_reload()
+	{
+		if (is_current_thread())
+		{
+			m_samplers_dirty.store(true);
+		}
+		else
+		{
+			retro_atomic_store_release_int(&m_samplers_reload_asked, 1);
+		}
+	}
 	std::unordered_map<GLenum, std::unique_ptr<gl::viewable_image>> m_null_textures;
 	rsx::simple_array<u8> m_scratch_buffer;
 

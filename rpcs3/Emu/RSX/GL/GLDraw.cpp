@@ -314,7 +314,14 @@ void GLGSRender::load_texture_env()
 {
 	// Load textures
 	gl::command_context cmd{ gl_state };
-	std::lock_guard lock(m_sampler_mutex);
+
+	// A reload was asked for by another thread since the textures were last
+	// loaded: every sampler is looked at again. Taken before the look, so one
+	// asked for during it counts for the next.
+	if (retro_atomic_load_relaxed_int(&m_samplers_reload_asked) && retro_atomic_exchange_int(&m_samplers_reload_asked, 0))
+	{
+		m_samplers_dirty.store(true);
+	}
 
 	for (u32 textures_ref = current_fp_metadata.referenced_textures_mask, i = 0; textures_ref; textures_ref >>= 1, ++i)
 	{
