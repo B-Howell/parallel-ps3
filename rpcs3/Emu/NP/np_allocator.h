@@ -3,7 +3,7 @@
 #include <map>
 
 #include "Emu/Memory/vm_ptr.h"
-#include "Utilities/mutex.h"
+#include "Emu/CPU/turn_calls.h"
 #include "util/asm.hpp"
 #include "util/logs.hpp"
 
@@ -23,20 +23,24 @@ namespace np
 
 		void setup(vm::ptr<void> ptr_pool, u32 size)
 		{
-			std::lock_guard lock(m_mutex);
-			m_pool  = ptr_pool;
-			m_size  = size;
-			m_avail = size;
-			m_allocs.clear();
+			return turn_call(&m_turns, [&]()
+			{
+				m_pool  = ptr_pool;
+				m_size  = size;
+				m_avail = size;
+				m_allocs.clear();
+			});
 		}
 
 		void release()
 		{
-			std::lock_guard lock(m_mutex);
-			m_pool  = vm::null;
-			m_size  = 0;
-			m_avail = 0;
-			m_allocs.clear();
+			return turn_call(&m_turns, [&]()
+			{
+				m_pool  = vm::null;
+				m_size  = 0;
+				m_avail = 0;
+				m_allocs.clear();
+			});
 		}
 
 		std::tuple<u32, u32, u32> get_stats() const
@@ -46,89 +50,94 @@ namespace np
 
 		u32 allocate(u32 size)
 		{
-			std::lock_guard lock(m_mutex);
-			if (!size)
+			return turn_call(&m_turns, [&]() -> u32
 			{
-				np_mem_allocator.error("Can't allocate 0 size buffer!");
-				return 0;
-			}
-
-			// Align allocs
-			const u32 alloc_size = utils::align(size, 4);
-			if (alloc_size > m_avail)
-			{
-				np_mem_allocator.error("Not enough memory available in NP pool!");
-				return 0;
-			}
-
-			u32 last_free    = 0;
-			bool found_space = false;
-
-			for (const auto& a : m_allocs)
-			{
-				if ((a.first - last_free) >= alloc_size)
+				if (!size)
 				{
-					found_space = true;
-					break;
-				}
-
-				last_free = a.first + a.second;
-			}
-
-			if (!found_space)
-			{
-				if ((m_size - last_free) < alloc_size)
-				{
-					np_mem_allocator.error("Not enough memory available in NP pool(continuous block)!");
+					np_mem_allocator.error("Can't allocate 0 size buffer!");
 					return 0;
 				}
-			}
 
-			m_allocs.emplace(last_free, alloc_size);
-			m_avail -= alloc_size;
+				// Align allocs
+				const u32 alloc_size = utils::align(size, 4);
+				if (alloc_size > m_avail)
+				{
+					np_mem_allocator.error("Not enough memory available in NP pool!");
+					return 0;
+				}
 
-			const u32 usage = m_size - m_avail;
-			if (usage > m_max_usage)
-			{
-				m_max_usage = usage;
-			}
+				u32 last_free    = 0;
+				bool found_space = false;
 
-			memset((static_cast<u8*>(m_pool.get_ptr())) + last_free, 0, alloc_size);
+				for (const auto& a : m_allocs)
+				{
+					if ((a.first - last_free) >= alloc_size)
+					{
+						found_space = true;
+						break;
+					}
 
-			np_mem_allocator.trace("Allocation off:%d size:%d psize:%d, pavail:%d", last_free, alloc_size, m_size, m_avail);
+					last_free = a.first + a.second;
+				}
 
-			return m_pool.addr() + last_free;
+				if (!found_space)
+				{
+					if ((m_size - last_free) < alloc_size)
+					{
+						np_mem_allocator.error("Not enough memory available in NP pool(continuous block)!");
+						return 0;
+					}
+				}
+
+				m_allocs.emplace(last_free, alloc_size);
+				m_avail -= alloc_size;
+
+				const u32 usage = m_size - m_avail;
+				if (usage > m_max_usage)
+				{
+					m_max_usage = usage;
+				}
+
+				memset((static_cast<u8*>(m_pool.get_ptr())) + last_free, 0, alloc_size);
+
+				np_mem_allocator.trace("Allocation off:%d size:%d psize:%d, pavail:%d", last_free, alloc_size, m_size, m_avail);
+
+				return m_pool.addr() + last_free;
+			});
 		}
 
 		void free(u32 addr)
 		{
-			std::lock_guard lock(m_mutex);
+			return turn_call(&m_turns, [&]()
+			{
+				ensure(addr >= m_pool.addr() && addr < (m_pool.addr() + m_size), "memory_allocator::free: addr is out of bounds!");
 
-			ensure(addr >= m_pool.addr() && addr < (m_pool.addr() + m_size), "memory_allocator::free: addr is out of bounds!");
+				const u32 offset = addr - m_pool.addr();
+				ensure(m_allocs.contains(offset), "memory_allocator::free: m_allocs doesn't contain the allocation!");
 
-			const u32 offset = addr - m_pool.addr();
-			ensure(m_allocs.contains(offset), "memory_allocator::free: m_allocs doesn't contain the allocation!");
-
-			m_avail += ::at32(m_allocs, offset);
-			m_allocs.erase(offset);
+				m_avail += ::at32(m_allocs, offset);
+				m_allocs.erase(offset);
+			});
 		}
 
 		void shrink_allocation(u32 addr, u32 new_size)
 		{
-			std::lock_guard lock(m_mutex);
+			return turn_call(&m_turns, [&]()
+			{
+				ensure(addr >= m_pool.addr() && addr < (m_pool.addr() + m_size), "memory_allocator::reduce_allocation: addr is out of bounds!");
 
-			ensure(addr >= m_pool.addr() && addr < (m_pool.addr() + m_size), "memory_allocator::reduce_allocation: addr is out of bounds!");
+				const u32 offset = addr - m_pool.addr();
+				ensure(m_allocs.contains(offset), "memory_allocator::reduce_allocation: m_allocs doesn't contain the allocation!");
+				ensure(m_allocs[offset] >= new_size, "memory_allocator::reduce_allocation: New size is bigger than current allocation!");
 
-			const u32 offset = addr - m_pool.addr();
-			ensure(m_allocs.contains(offset), "memory_allocator::reduce_allocation: m_allocs doesn't contain the allocation!");
-			ensure(m_allocs[offset] >= new_size, "memory_allocator::reduce_allocation: New size is bigger than current allocation!");
-
-			m_avail += (::at32(m_allocs, offset) - new_size);
-			m_allocs[offset] = new_size;
+				m_avail += (::at32(m_allocs, offset) - new_size);
+				m_allocs[offset] = new_size;
+			});
 		}
 
 	private:
-		shared_mutex m_mutex;
+		// The allocations change in turn (turn_calls.h): no lock
+		turn_calls_cpp m_turns;
 		vm::ptr<void> m_pool{};
 		u32 m_size  = 0;
 		u32 m_avail = 0;

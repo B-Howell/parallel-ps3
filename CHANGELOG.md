@@ -4,6 +4,7 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- NP: the memory pool the NP libraries hand guest buffers out of takes no lock: setting it up, allocating, freeing and shrinking change its allocations in a turn (`turn_calls`), where each took a `shared_mutex`. Five `std::lock_guard`s fewer (LOCK_GUARD_MAX 312); CI checks it stays gone. Not yet run in a game.
 - NP: the matching GUI's room cache takes no lock: its rooms and members change and are read in a turn (`turn_calls`), where each of five calls took a `shared_mutex`. Five `std::lock_guard`s fewer (LOCK_GUARD_MAX 317); CI checks it stays gone. Not yet run in a game.
 - NP: the DNS hook takes no lock. The sockets it spies on and the replies it makes for them - added and removed by the game's socket calls, filled when a lookup is answered, taken by the receive - change in a turn (`turn_calls`), where each of six calls took a `shared_mutex`. Six `std::lock_guard`s fewer (LOCK_GUARD_MAX 322); CI checks it stays gone. Not yet run in a game.
 - Game enumeration (the Big Picture game grid's scan) takes no lock: the games found and the paths to look in, filled from the scanning threads, change in a turn of their own each (`turn_calls`), where each had a `shared_mutex`. Seven `std::lock_guard`s and a `std::scoped_lock` fewer (LOCK_GUARD_MAX 328); CI checks they stay gone. Not yet run in a game.
