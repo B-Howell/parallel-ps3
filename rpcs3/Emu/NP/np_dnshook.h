@@ -5,7 +5,7 @@
 #include <optional>
 
 #include "util/types.hpp"
-#include "Utilities/mutex.h"
+#include "Emu/CPU/turn_calls.h"
 
 namespace np
 {
@@ -43,7 +43,8 @@ namespace np
 		std::optional<u32> get_redir(const std::string& hostname);
 
 	private:
-		shared_mutex mutex;
+		// The spied sockets and their replies change in turn (turn_calls.h): no lock
+		turn_calls_cpp m_turns;
 		// The sockets watched, and the replies waiting on them in the order made
 		dns_socks_t m_dns_spylist{};
 		dns_replies_t m_dns_replies{};
