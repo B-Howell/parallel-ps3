@@ -28,13 +28,14 @@ void hle_service_stop(void);
 
 #include "Emu/CPU/CPUThread.h"
 
-/* C++: @f run on the HLE thread and its result given back. A PPU thread
- * waiting here counts as waiting (cpu_flag::wait), so a suspend_all made
- * meanwhile does not wait for it; it looks at its state again after */
+/* C++: @f run on the owner of @calls (at once when @on_owner) and its
+ * result given back. A PPU thread waiting there counts as waiting
+ * (cpu_flag::wait), so a suspend_all made meanwhile does not wait for it;
+ * it looks at its state again after */
 template <typename F>
-auto hle_call(F&& f) -> decltype(f())
+auto cpu_owner_call(owner_calls_t *calls, bool on_owner, F&& f) -> decltype(f())
 {
-   if (hle_service_on_thread())
+   if (on_owner)
       return f();
 
    cpu_thread* const cpu = cpu_thread::get_current();
@@ -49,6 +50,14 @@ auto hle_call(F&& f) -> decltype(f())
       ~after_t() { if (cpu) cpu->check_state(); }
    } after{flagged ? cpu : nullptr};
 
-   return owner_calls_on(hle_service_calls(), false, std::forward<F>(f));
+   return owner_calls_on(calls, false, std::forward<F>(f));
+}
+
+/* C++: @f run on the HLE thread and its result given back */
+template <typename F>
+auto hle_call(F&& f) -> decltype(f())
+{
+   const bool here = hle_service_on_thread();
+   return cpu_owner_call(here ? nullptr : hle_service_calls(), here, std::forward<F>(f));
 }
 #endif

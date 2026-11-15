@@ -675,7 +675,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp
 
-LOCK_GUARD_MAX := 741
+LOCK_GUARD_MAX := 730
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -765,6 +765,8 @@ check: all
 	@if grep -nE "m_mutex|lock_guard" ../../Emu/Io/KeyboardHandler.h ../../Emu/Io/KeyboardHandler.cpp ../../Emu/Cell/Modules/cellKb.cpp || grep -n "kb_handler.m_mutex" ../../Emu/RSX/Overlays/overlays.cpp; then echo "keyboards: a lock is back - their state is the HLE thread's (hle_call)"; exit 1; else echo "keyboards: no lock, the HLE thread's"; fi
 	@# Modules whose state is the HLE thread's (hle_call): no lock in them
 	@if grep -nE "shared_mutex|std::mutex|lock_guard|unique_lock|scoped_lock" $(HLE_OWNED); then echo "HLE modules: a lock is back - their state is the HLE thread's (hle_call)"; exit 1; else echo "HLE modules: no lock in $(words $(HLE_OWNED)) files, the HLE thread's"; fi
+	@# cellAudio's state is its thread's (audio_call): no lock of its own
+	@if grep -nE "shared_mutex|lock_audio|g_audio\.mutex|emu_cfg_upd_m|lock_guard lock\(mutex\)|unique_lock lock\(mutex\)" ../../Emu/Cell/Modules/cellAudio.cpp ../../Emu/Cell/Modules/cellAudio.h; then echo "cellAudio: a lock is back - its state is the cellAudio thread's (audio_call)"; exit 1; else echo "cellAudio: no lock, the cellAudio thread's"; fi
 	@# The pads take no lock: pad::g_pad_mutex is gone, and a merge of
 	@# upstream's code that takes it does not bring it back
 	@if grep -rn "g_pad_mutex" ../../Emu ../../Input ../*.cpp ../*.h ../*.c; then echo "pads: pad::g_pad_mutex is back - the pads take no lock (AGENTS.md)"; exit 1; else echo "pads: no pad lock"; fi

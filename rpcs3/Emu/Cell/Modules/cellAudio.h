@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Emu/CPU/owner_calls.h"
+
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/Cell/ErrorCodes.h"
 #include "Utilities/Thread.h"
@@ -384,11 +386,17 @@ private:
 	void reset_counters();
 
 public:
-	shared_mutex emu_cfg_upd_m{};
 	cell_audio_config cfg{};
-	atomic_t<audio_backend_update> m_update_configuration = audio_backend_update::NONE;
+	// configure_audio's request of the thread: 1 to look at the
+	// configuration, 2 to reset anyway
+	retro_atomic_int_t m_config_check{};
 
-	shared_mutex mutex{};
+	// Everything below is the cellAudio thread's: the game's calls run what
+	// touches it there (audio_call, on these calls), so nothing is locked.
+	// A call that also maps or unmaps memory does that on its own thread, in
+	// between its parts on the cellAudio thread
+	owner_calls_t calls{};
+	bool initialising = false; // cellAudioInit between its parts
 	atomic_t<u8> init = 0;
 	u32 shared_area = 0;
 	u32 shared_address = 0;
@@ -450,9 +458,31 @@ public:
 	void save(utils::serial& ar);
 
 	audio_port* open_port();
-	error_code allocate_port(ppu_thread& ppu, audio_port& port);
-	void close_port(ppu_thread& ppu, audio_port& port);
-	void release_shared_memory(ppu_thread& ppu);
+
+	// What closing a port leaves for its caller to unmap and let go of
+	struct port_unmap
+	{
+		bool mapped = false;
+		u32 addr = 0;
+		shared_ptr<lv2_memory> memory;
+	};
+
+	// The cellAudio thread's: the port closed and given back
+	port_unmap take_port(audio_port& port);
+	// The caller's: what take_port left
+	static void unmap_port(ppu_thread& ppu, port_unmap& gone);
+
+	// The cellAudio thread's: one reference to the shared memory given up;
+	// its address when it is the last one, for the caller to unmap
+	u32 take_shared_ref();
+	// The caller's: what take_shared_ref left
+	static void unmap_shared(ppu_thread& ppu, u32 address);
+
+	cell_audio_thread& operator=(thread_state)
+	{
+		owner_calls_wake(&calls);
+		return *this;
+	}
 
 	static constexpr auto thread_name = "cellAudio Thread"sv;
 };
