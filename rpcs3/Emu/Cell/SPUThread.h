@@ -2,6 +2,7 @@
 
 #include <retro_atomic.h>
 #include "Emu/CPU/CPUThread.h"
+#include "Emu/CPU/turn_calls.h"
 #include "Emu/CPU/Hypervisor.h"
 #include "Emu/Cell/SPUInterpreter.h"
 #include "Emu/Memory/vm.h"
@@ -703,7 +704,8 @@ public:
 
 	// MFC proxy command data
 	spu_mfc_cmd mfc_prxy_cmd{};
-	shared_mutex mfc_prxy_mtx;
+	// The proxy command, written a register at a time, changes in turn (turn_calls.h): no lock
+	turn_calls_cpp mfc_prxy_turns;
 	atomic_t<u32> mfc_prxy_mask = 0;
 
 	// Tracks writes to MFC proxy command data
