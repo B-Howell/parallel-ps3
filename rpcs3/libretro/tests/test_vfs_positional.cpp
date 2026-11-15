@@ -1275,7 +1275,7 @@ int main()
 
 		// Event flags: threads queue themselves by ID the way
 		// sys_event_flag_wait now does - a counted reference, the flag's
-		// lock, into the queue, then the second look, out again if it says
+		// turn, into the queue, then the second look, out again if it says
 		// no - while another thread destroys and recreates the flags the way
 		// sys_event_flag_destroy does, refusing while the queue has a thread.
 		{
@@ -1313,25 +1313,28 @@ int main()
 						if (x & 0x100)
 							std::this_thread::yield();
 
-						std::lock_guard lock(flag->mutex);
-						atomic_storage<ppu_thread*>::store(flag->sq, self);
-
-						if (!idm::still_named<lv2_obj, lv2_event_flag>(id, flag.get()))
+						// In the flag's turn, as sys_event_flag_wait has it
+						turn_call(&flag->turns, [&]
 						{
-							atomic_storage<ppu_thread*>::store(flag->sq, nullptr);
-							retro_atomic_fetch_add_int(&s_left, 1);
-							continue;
-						}
+							atomic_storage<ppu_thread*>::store(flag->sq, self);
 
-						// In the queue: a destroy must fail until the thread leaves
-						retro_atomic_fetch_add_int(&s_in_queue[(id >> 8) & 8191], 1);
-						retro_atomic_fetch_add_int(&s_queued, 1);
-						for (int spin = 0; spin < 20; spin++)
-							(void)retro_atomic_load_relaxed_int(&s_stop3);
-						if (idm::check_unlocked<lv2_obj, lv2_event_flag>(id) != flag.get())
-							retro_atomic_fetch_add_int(&s_bad3, 1);
-						retro_atomic_fetch_sub_int(&s_in_queue[(id >> 8) & 8191], 1);
-						atomic_storage<ppu_thread*>::store(flag->sq, nullptr);
+							if (!idm::still_named<lv2_obj, lv2_event_flag>(id, flag.get()))
+							{
+								atomic_storage<ppu_thread*>::store(flag->sq, nullptr);
+								retro_atomic_fetch_add_int(&s_left, 1);
+								return;
+							}
+
+							// In the queue: a destroy must fail until the thread leaves
+							retro_atomic_fetch_add_int(&s_in_queue[(id >> 8) & 8191], 1);
+							retro_atomic_fetch_add_int(&s_queued, 1);
+							for (int spin = 0; spin < 20; spin++)
+								(void)retro_atomic_load_relaxed_int(&s_stop3);
+							if (idm::check_unlocked<lv2_obj, lv2_event_flag>(id) != flag.get())
+								retro_atomic_fetch_add_int(&s_bad3, 1);
+							retro_atomic_fetch_sub_int(&s_in_queue[(id >> 8) & 8191], 1);
+							atomic_storage<ppu_thread*>::store(flag->sq, nullptr);
+						});
 					}
 				});
 			}

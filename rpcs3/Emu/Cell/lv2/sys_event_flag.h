@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sys_sync.h"
+#include "Emu/CPU/turn_calls.h"
 
 #include "Emu/Memory/vm_ptr.h"
 
@@ -40,7 +41,9 @@ struct lv2_event_flag final : lv2_obj
 	const s32 type;
 	const u64 name;
 
-	shared_mutex mutex;
+	// The waiters are changed in turn (turn_calls.h): no lock. The pattern
+	// is a word of its own, taken with compare-and-swap
+	turn_calls_cpp turns;
 	retro_atomic_64_t pattern;
 	ppu_thread* sq{};
 

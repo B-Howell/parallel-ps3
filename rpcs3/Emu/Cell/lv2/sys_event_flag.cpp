@@ -186,35 +186,64 @@ error_code sys_event_flag_wait(ppu_thread& ppu, u32 id, u64 bitptn, u32 mode, vm
 
 			lv2_obj::prepare_for_sleep(ppu);
 
-			std::lock_guard lock(flag.mutex);
+			// The thread is a waiter once it is on the queue, and may be
+			// woken before it has gone to sleep: that sleep is then cancelled
+			// (lv2_obj::sleep gives false), as sys_semaphore has it
+			ppu.cancel_sleep = 1;
 
-			if (lv2_event_flag::check_pattern(flag.pattern, bitptn, mode, &ppu.gpr[6]))
+			// The queue changes in the flag's turn; going to sleep is this
+			// thread's own, after it
+			const CellError entered = turn_call(&flag.turns, [&]() -> CellError
 			{
-				return {};
+				if (lv2_event_flag::check_pattern(flag.pattern, bitptn, mode, &ppu.gpr[6]))
+				{
+					return {};
+				}
+
+				if (flag.type == SYS_SYNC_WAITER_SINGLE && flag.sq)
+				{
+					return CELL_EPERM;
+				}
+
+				// The lock over all IDs kept a destroy from coming between the
+				// flag being found and the thread waiting on it. This keeps
+				// it: sys_event_flag_destroy marks the ID before it looks for
+				// waiters, and the thread asks whether the ID still names the
+				// flag (waiting for a destroy that is deciding) after it has
+				// queued itself. Either the destroy saw the waiter and failed,
+				// or the thread leaves the queue again. Nobody else touches
+				// the queue meanwhile: that is done in the flag's turn, this one.
+				lv2_obj::emplace(flag.sq, &ppu);
+
+				if (!idm::still_named<lv2_obj, lv2_event_flag>(id, &flag)) [[unlikely]]
+				{
+					flag.unqueue(flag.sq, &ppu);
+					return CELL_ESRCH;
+				}
+
+				return CELL_EBUSY;
+			});
+
+			if (entered != CELL_EBUSY)
+			{
+				ppu.cancel_sleep = 0;
+				return entered;
 			}
 
-			if (flag.type == SYS_SYNC_WAITER_SINGLE && flag.sq)
+			if (!flag.sleep(ppu, timeout))
 			{
-				return CELL_EPERM;
+				// Woken (set or cancelled) before it went to sleep: gpr[3] and
+				// gpr[6] are what the waker gave it
+				ppu.cancel_sleep = 0;
+				return CELL_EAGAIN;
 			}
 
-			// The lock over all IDs kept a destroy from coming between the
-			// flag being found and the thread waiting on it. This keeps
-			// it: sys_event_flag_destroy marks the ID before it looks for
-			// waiters, and the thread asks whether the ID still names the
-			// flag (waiting for a destroy that is deciding) after it has
-			// queued itself. Either the destroy saw the waiter and failed,
-			// or the thread leaves the queue again. Nobody else touches
-			// the queue meanwhile: that takes the flag's lock, held here.
-			lv2_obj::emplace(flag.sq, &ppu);
-
-			if (!idm::still_named<lv2_obj, lv2_event_flag>(id, &flag)) [[unlikely]]
+			if (ppu.cancel_sleep != 1)
 			{
-				flag.unqueue(flag.sq, &ppu);
-				return CELL_ESRCH;
+				notify.cleanup();
 			}
 
-			flag.sleep(ppu, timeout);
+			ppu.cancel_sleep = 0;
 			return CELL_EBUSY;
 		}(*flag.ptr);
 	}
@@ -222,6 +251,12 @@ error_code sys_event_flag_wait(ppu_thread& ppu, u32 id, u64 bitptn, u32 mode, vm
 	if (!flag)
 	{
 		return CELL_ESRCH;
+	}
+
+	if (flag.ret == CELL_EAGAIN)
+	{
+		store.val = ppu.gpr[6];
+		return not_an_error(ppu.gpr[3]);
 	}
 
 	if (flag.ret)
@@ -246,15 +281,23 @@ error_code sys_event_flag_wait(ppu_thread& ppu, u32 id, u64 bitptn, u32 mode, vm
 
 		if (is_stopped(state))
 		{
-			std::lock_guard lock(flag->mutex);
-
-			for (auto cpu = +flag->sq; cpu; cpu = cpu->next_cpu)
+			const bool queued = turn_call(&flag->turns, [&]
 			{
-				if (cpu == &ppu)
+				for (auto cpu = +flag->sq; cpu; cpu = cpu->next_cpu)
 				{
-					ppu.state += cpu_flag::again;
-					return {};
+					if (cpu == &ppu)
+					{
+						return true;
+					}
 				}
+
+				return false;
+			});
+
+			if (queued)
+			{
+				ppu.state += cpu_flag::again;
+				return {};
 			}
 
 			break;
@@ -282,22 +325,18 @@ error_code sys_event_flag_wait(ppu_thread& ppu, u32 id, u64 bitptn, u32 mode, vm
 
 				ppu.state += cpu_flag::wait;
 
-				if (!atomic_storage<ppu_thread*>::load(flag->sq))
+				// Off the queue in the flag's turn, or taken off it by a set or a
+				// cancel, whose turn has given the thread its gpr[3] and gpr[6]
+				// by the time this one runs
+				turn_call(&flag->turns, [&]
 				{
-					// Waiters queue is empty, so the thread must have been signaled
-					flag->mutex.lock_unlock();
-					break;
-				}
+					if (flag->unqueue(flag->sq, &ppu))
+					{
+						ppu.gpr[3] = CELL_ETIMEDOUT;
+						ppu.gpr[6] = static_cast<u64>(retro_atomic_load_acquire_64(&flag->pattern));
+					}
+				});
 
-				std::lock_guard lock(flag->mutex);
-
-				if (!flag->unqueue(flag->sq, &ppu))
-				{
-					break;
-				}
-
-				ppu.gpr[3] = CELL_ETIMEDOUT;
-				ppu.gpr[6] = static_cast<u64>(retro_atomic_load_acquire_64(&flag->pattern));
 				break;
 			}
 		}
@@ -379,18 +418,18 @@ error_code sys_event_flag_set(cpu_thread& cpu, u32 id, u64 bitptn)
 		return CELL_OK;
 	}
 
-	if (lv2_obj::notify_all_t notify; true)
-	{
-		std::lock_guard lock(flag->mutex);
+	lv2_obj::notify_all_t notify;
 
+	// The waiters are looked at, woken and taken off in the flag's turn.
+	// Waking a thread is for any thread to do; only going to sleep is the
+	// thread's own. Gives false for a set to be done again
+	const bool done = turn_call(&flag->turns, [&]
+	{
 		for (auto ppu = +flag->sq; ppu; ppu = ppu->next_cpu)
 		{
 			if (ppu->state & cpu_flag::again)
 			{
-				cpu.state += cpu_flag::again;
-
-				// Fake error for abort
-				return not_an_error(CELL_EAGAIN);
+				return false;
 			}
 		}
 
@@ -497,7 +536,7 @@ error_code sys_event_flag_set(cpu_thread& cpu, u32 id, u64 bitptn)
 
 		if (!count)
 		{
-			return CELL_OK;
+			return true;
 		}
 
 		// Remove waiters
@@ -517,6 +556,15 @@ error_code sys_event_flag_set(cpu_thread& cpu, u32 id, u64 bitptn)
 		};
 
 		lv2_obj::awake_all();
+		return true;
+	});
+
+	if (!done)
+	{
+		cpu.state += cpu_flag::again;
+
+		// Fake error for abort
+		return not_an_error(CELL_EAGAIN);
 	}
 
 	return CELL_OK;
@@ -559,33 +607,42 @@ error_code sys_event_flag_cancel(ppu_thread& ppu, u32 id, vm::ptr<u32> num)
 	{
 		lv2_obj::notify_all_t notify;
 
-		std::lock_guard lock(flag->mutex);
-
-		for (auto cpu = +flag->sq; cpu; cpu = cpu->next_cpu)
+		// In the flag's turn, as a set; false for a cancel to be done again
+		const bool done = turn_call(&flag->turns, [&]
 		{
-			if (cpu->state & cpu_flag::again)
+			for (auto cpu = +flag->sq; cpu; cpu = cpu->next_cpu)
 			{
-				ppu.state += cpu_flag::again;
-				return {};
+				if (cpu->state & cpu_flag::again)
+				{
+					return false;
+				}
 			}
-		}
 
-		// Get current pattern
-		const u64 pattern = static_cast<u64>(retro_atomic_load_acquire_64(&flag->pattern));
+			// Get current pattern
+			const u64 pattern = static_cast<u64>(retro_atomic_load_acquire_64(&flag->pattern));
 
-		// Signal all threads to return CELL_ECANCELED (protocol does not matter)
-		while (auto ppu = flag->schedule<ppu_thread>(flag->sq, SYS_SYNC_FIFO))
+			// Signal all threads to return CELL_ECANCELED (protocol does not matter)
+			while (auto ppu = flag->schedule<ppu_thread>(flag->sq, SYS_SYNC_FIFO))
+			{
+				ppu->gpr[3] = CELL_ECANCELED;
+				ppu->gpr[6] = pattern;
+
+				value++;
+				flag->append(ppu);
+			}
+
+			if (value)
+			{
+				lv2_obj::awake_all();
+			}
+
+			return true;
+		});
+
+		if (!done)
 		{
-			ppu->gpr[3] = CELL_ECANCELED;
-			ppu->gpr[6] = pattern;
-
-			value++;
-			flag->append(ppu);
-		}
-
-		if (value)
-		{
-			lv2_obj::awake_all();
+			ppu.state += cpu_flag::again;
+			return {};
 		}
 	}
 
