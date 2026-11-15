@@ -25,7 +25,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PseudoProbe.h"
 #include "llvm/ProfileData/SampleProf.h"
-#include "llvm/Support/CRC.h"
+#include <encodings/crc32.h> // libretro-common's CRC-32, in place of LLVM's
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/Utils/Instrumentation.h"
@@ -266,7 +266,7 @@ const Instruction *SampleProfileProber::getOriginalTerminator(
 void SampleProfileProber::computeCFGHash(
     const DenseSet<BasicBlock *> &BlocksToIgnore) {
   std::vector<uint8_t> Indexes;
-  JamCRC JC;
+  uint32_t JC = 0xFFFFFFFFU; // JamCRC: CRC-32 with no final inversion
   for (auto &BB : *F) {
     if (BlocksToIgnore.contains(&BB))
       continue;
@@ -283,10 +283,10 @@ void SampleProfileProber::computeCFGHash(
     }
   }
 
-  JC.update(Indexes);
+  JC = ~encoding_crc32(~JC, Indexes.data(), Indexes.size());
 
   FunctionHash = (uint64_t)CallProbeIds.size() << 48 |
-                 (uint64_t)Indexes.size() << 32 | JC.getCRC();
+                 (uint64_t)Indexes.size() << 32 | JC;
   // Reserve bit 60-63 for other information purpose.
   FunctionHash &= 0x0FFFFFFFFFFFFFFF;
   assert(FunctionHash && "Function checksum should not be zero");

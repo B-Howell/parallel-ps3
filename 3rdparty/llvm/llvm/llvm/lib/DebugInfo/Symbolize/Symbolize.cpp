@@ -27,7 +27,7 @@
 #include "llvm/Object/ELFObjectFile.h"
 #include "llvm/Object/MachO.h"
 #include "llvm/Object/MachOUniversal.h"
-#include "llvm/Support/CRC.h"
+#include <encodings/crc32.h> // libretro-common's CRC-32, in place of LLVM's
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/DataExtractor.h"
 #include "llvm/Support/Errc.h"
@@ -317,7 +317,8 @@ bool checkFileCRC(StringRef Path, uint32_t CRCHash) {
       MemoryBuffer::getFileOrSTDIN(Path);
   if (!MB)
     return false;
-  return CRCHash == llvm::crc32(arrayRefFromStringRef(MB.get()->getBuffer()));
+  const StringRef Buffer = MB.get()->getBuffer();
+  return CRCHash == encoding_crc32(0, reinterpret_cast<const uint8_t *>(Buffer.data()), Buffer.size());
 }
 
 bool getGNUDebuglinkContents(const ObjectFile *Obj, std::string &DebugName,

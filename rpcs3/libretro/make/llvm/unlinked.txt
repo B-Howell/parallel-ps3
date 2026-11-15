@@ -694,3 +694,5 @@ lib/Transforms/Vectorize/Vectorize.cpp
 #removed lib/Support/SHA1.cpp
 #removed lib/Support/SHA256.cpp
 #removed lib/Support/Atomic.cpp
+# Its CRC-32 and JamCRC too: libretro-common's encoding_crc32 at the callers
+#removed lib/Support/CRC.cpp

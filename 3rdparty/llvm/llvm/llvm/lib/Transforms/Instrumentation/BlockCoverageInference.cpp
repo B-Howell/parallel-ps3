@@ -30,7 +30,7 @@
 #include "llvm/Transforms/Instrumentation/BlockCoverageInference.h"
 #include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/Support/CRC.h"
+#include <encodings/crc32.h> // libretro-common's CRC-32, in place of LLVM's
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/GraphWriter.h"
 #include "llvm/Support/raw_ostream.h"
@@ -75,17 +75,17 @@ BlockCoverageInference::getDependencies(const BasicBlock &BB) const {
 }
 
 uint64_t BlockCoverageInference::getInstrumentedBlocksHash() const {
-  JamCRC JC;
+  uint32_t JC = 0xFFFFFFFFU; // JamCRC: CRC-32 with no final inversion
   uint64_t Index = 0;
   for (auto &BB : F) {
     if (shouldInstrumentBlock(BB)) {
       uint8_t Data[8];
       support::endian::write64le(Data, Index);
-      JC.update(Data);
+      JC = ~encoding_crc32(~JC, Data, sizeof(Data));
     }
     Index++;
   }
-  return JC.getCRC();
+  return JC;
 }
 
 bool BlockCoverageInference::shouldInstrumentBlock(const BasicBlock &BB) const {

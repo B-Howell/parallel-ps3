@@ -97,7 +97,7 @@
 #include "llvm/ProfileData/InstrProf.h"
 #include "llvm/ProfileData/InstrProfReader.h"
 #include "llvm/Support/BranchProbability.h"
-#include "llvm/Support/CRC.h"
+#include <encodings/crc32.h> // libretro-common's CRC-32, in place of LLVM's
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compiler.h"
@@ -700,7 +700,7 @@ public:
 template <class Edge, class BBInfo>
 void FuncPGOInstrumentation<Edge, BBInfo>::computeCFGHash() {
   std::vector<uint8_t> Indexes;
-  JamCRC JC;
+  uint32_t JC = 0xFFFFFFFFU; // JamCRC: CRC-32 with no final inversion
   for (auto &BB : F) {
     for (BasicBlock *Succ : successors(&BB)) {
       auto BI = findBBInfo(Succ);
@@ -711,14 +711,14 @@ void FuncPGOInstrumentation<Edge, BBInfo>::computeCFGHash() {
         Indexes.push_back((uint8_t)(Index >> (J * 8)));
     }
   }
-  JC.update(Indexes);
+  JC = ~encoding_crc32(~JC, Indexes.data(), Indexes.size());
 
-  JamCRC JCH;
+  uint32_t JCH = 0xFFFFFFFFU;
   // The higher 32 bits.
   auto updateJCH = [&JCH](uint64_t Num) {
     uint8_t Data[8];
     support::endian::write64le(Data, Num);
-    JCH.update(Data);
+    JCH = ~encoding_crc32(~JCH, Data, sizeof(Data));
   };
   updateJCH((uint64_t)SIVisitor.getNumOfSelectInsts());
   updateJCH((uint64_t)ValueSites[IPVK_IndirectCallTarget].size());
@@ -731,7 +731,7 @@ void FuncPGOInstrumentation<Edge, BBInfo>::computeCFGHash() {
 
   // Hash format for context sensitive profile. Reserve 4 bits for other
   // information.
-  FunctionHash = (((uint64_t)JCH.getCRC()) << 28) + JC.getCRC();
+  FunctionHash = (((uint64_t)JCH) << 28) + JC;
 
   // Reserve bit 60-63 for other information purpose.
   FunctionHash &= NamedInstrProfRecord::FUNC_HASH_MASK;

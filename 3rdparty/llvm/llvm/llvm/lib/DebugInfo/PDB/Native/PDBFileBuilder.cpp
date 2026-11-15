@@ -22,7 +22,7 @@
 #include "llvm/DebugInfo/PDB/Native/RawTypes.h"
 #include "llvm/DebugInfo/PDB/Native/TpiStreamBuilder.h"
 #include "llvm/Support/BinaryStreamWriter.h"
-#include "llvm/Support/CRC.h"
+#include <encodings/crc32.h> // libretro-common's CRC-32, in place of LLVM's
 #include "llvm/Support/Path.h"
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/xxhash.h"
@@ -181,8 +181,9 @@ Error PDBFileBuilder::finalizeMsfLayout() {
 
   if (!InjectedSources.empty()) {
     for (const auto &IS : InjectedSources) {
-      JamCRC CRC(0);
-      CRC.update(arrayRefFromStringRef(IS.Content->getBuffer()));
+      const StringRef Content = IS.Content->getBuffer();
+      // JamCRC from 0: CRC-32 with no inversions
+      const uint32_t CRC = ~encoding_crc32(~0U, reinterpret_cast<const uint8_t *>(Content.data()), Content.size());
 
       SrcHeaderBlockEntry Entry;
       ::memset(&Entry, 0, sizeof(SrcHeaderBlockEntry));
@@ -194,7 +195,7 @@ Error PDBFileBuilder::finalizeMsfLayout() {
       Entry.IsVirtual = 0;
       Entry.Version =
           static_cast<uint32_t>(PdbRaw_SrcHeaderBlockVer::SrcVerOne);
-      Entry.CRC = CRC.getCRC();
+      Entry.CRC = CRC;
       StringRef VName = getStringTableBuilder().getStringForId(IS.VNameIndex);
       InjectedSourceTable.set_as(VName, std::move(Entry),
                                  InjectedSourceHashTraits);

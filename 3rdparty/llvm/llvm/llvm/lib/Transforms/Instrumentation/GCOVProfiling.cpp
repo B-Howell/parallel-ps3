@@ -29,7 +29,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/ProfileData/InstrProf.h"
-#include "llvm/Support/CRC.h"
+#include <encodings/crc32.h> // libretro-common's CRC-32, in place of LLVM's
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"
@@ -928,9 +928,8 @@ bool GCOVProfiler::emitProfileNotes(
     }
 
     char Tmp[4];
-    JamCRC JC;
-    JC.update(EdgeDestinations);
-    uint32_t Stamp = JC.getCRC();
+    // JamCRC: CRC-32 with no final inversion
+    const uint32_t Stamp = ~encoding_crc32(0, EdgeDestinations.data(), EdgeDestinations.size());
     FileChecksums.push_back(Stamp);
 
     if (Options.EmitNotes) {

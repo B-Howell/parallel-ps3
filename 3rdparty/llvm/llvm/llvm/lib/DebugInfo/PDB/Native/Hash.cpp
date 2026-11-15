@@ -8,7 +8,7 @@
 
 #include "llvm/DebugInfo/PDB/Native/Hash.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/Support/CRC.h"
+#include <encodings/crc32.h> // libretro-common's CRC-32, in place of LLVM's
 #include "llvm/Support/Endian.h"
 #include <cstdint>
 
@@ -78,7 +78,5 @@ uint32_t pdb::hashStringV2(StringRef Str) {
 
 // Corresponds to `SigForPbCb` in langapi/shared/crc32.h.
 uint32_t pdb::hashBufferV8(ArrayRef<uint8_t> Buf) {
-  JamCRC JC(/*Init=*/0U);
-  JC.update(Buf);
-  return JC.getCRC();
+  return ~encoding_crc32(~0U, Buf.data(), Buf.size());
 }

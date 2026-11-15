@@ -44,8 +44,7 @@
 
 namespace llvm {
 
-LLVM_ABI uint64_t xxHash64(llvm::StringRef Data);
-LLVM_ABI uint64_t xxHash64(llvm::ArrayRef<uint8_t> Data);
+// XXH64 is libretro-common's: xxh64() in encodings/xxh64.h
 
 LLVM_ABI uint64_t xxh3_64bits(ArrayRef<uint8_t> data);
 inline uint64_t xxh3_64bits(StringRef data) {

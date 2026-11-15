@@ -48,6 +48,8 @@
 #include <llvm/PassInfo.h>
 #include <llvm/PassRegistry.h>
 #include <llvm/Support/DynamicLibrary.h>
+#include <llvm/Support/Hash.h>
+#include <llvm/Support/MD5.h>
 
 #include <thread>
 #ifdef _MSC_VER
@@ -390,8 +392,35 @@ static void threads_in_llvm()
 	CHECK(llvm::sys::DynamicLibrary::SearchForAddressOfSymbol("memcpy") != nullptr);
 }
 
+// LLVM's hashes on libretro-common's (MD5 in utils/md5.c, XXH64 in
+// encodings/encoding_xxh64.c), against the published test vectors: the
+// MD5 that names a global's GUID (MD5Hash), a running MD5 looked at
+// midway (result()) and carried on, and the KCFI type ID (XXH64's low half)
+static void llvm_hashes()
+{
+	llvm::MD5 md5;
+	md5.update(llvm::StringRef("abc"));
+	CHECK(md5.result().digest() == "900150983cd24fb0d6963f7d28e17f72");
+	md5.update(llvm::StringRef("def"));
+	CHECK(md5.final().digest() == "e80b5017098950fc58aad83c8c14978e");
+	CHECK(llvm::MD5Hash("abc") == 0xb04fd23c98500190ull);
+	CHECK(llvm::MD5::hash(llvm::ArrayRef<uint8_t>()).digest() == "d41d8cd98f00b204e9800998ecf8427e");
+
+	// Over the 64-octet block, in pieces that cross it
+	std::string a(1000, 'a');
+	llvm::MD5 pieces;
+	pieces.update(llvm::StringRef(a).substr(0, 3));
+	pieces.update(llvm::StringRef(a).substr(3, 700));
+	pieces.update(llvm::StringRef(a).substr(703));
+	CHECK(pieces.final().digest() == "cabe45dcc9ae5b66ba86600cca6b8ba8");
+
+	CHECK(llvm::getKCFITypeID("", llvm::KCFIHashAlgorithm::xxHash64) == 0x51d8e999u);
+	CHECK(llvm::getKCFITypeID("abc", llvm::KCFIHashAlgorithm::xxHash64) == 0xad770999u);
+}
+
 int main()
 {
+	llvm_hashes();
 	threads_in_llvm();
 
 	jit_compiler jit({}, jit_compiler::cpu(""));

@@ -89,22 +89,11 @@ public:
   LLVM_ABI static MD5Result hash(ArrayRef<uint8_t> Data);
 
 private:
-  // Any 32-bit or wider unsigned integer data type will do.
-  using MD5_u32plus = uint32_t;
-
-  // Internal State
-  struct {
-    MD5_u32plus a = 0x67452301;
-    MD5_u32plus b = 0xefcdab89;
-    MD5_u32plus c = 0x98badcfe;
-    MD5_u32plus d = 0x10325476;
-    MD5_u32plus hi = 0;
-    MD5_u32plus lo = 0;
-    uint8_t buffer[64];
-    MD5_u32plus block[16];
-  } InternalState;
-
-  LLVM_ABI const uint8_t *body(ArrayRef<uint8_t> Data);
+  // libretro-common's MD5_CTX (lrc_hash.h), held as bytes so that this
+  // header does not bring libretro-common's into everything that includes
+  // it: MD5.cpp hashes with libretro-common's MD5_Init, MD5_Update and
+  // MD5_Final, and checks the size
+  alignas(4) unsigned char InternalState[152];
 };
 
 /// Helper to compute and return lower 64 bits of the given string's MD5 hash.

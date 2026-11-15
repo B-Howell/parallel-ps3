@@ -30,7 +30,7 @@
 #include "llvm/MC/MCValue.h"
 #include "llvm/MC/MCWinCOFFObjectWriter.h"
 #include "llvm/MC/StringTableBuilder.h"
-#include "llvm/Support/CRC.h"
+#include <encodings/crc32.h> // libretro-common's CRC-32, in place of LLVM's
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/EndianStream.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -587,9 +587,7 @@ uint32_t WinCOFFWriter::writeSectionContents(const MCSection &MCSec) {
 
   // Calculate our CRC with an initial value of '0', this is not how
   // JamCRC is specified but it aligns with the expected output.
-  JamCRC JC(/*Init=*/0);
-  JC.update(ArrayRef(reinterpret_cast<uint8_t *>(Buf.data()), Buf.size()));
-  return JC.getCRC();
+  return ~encoding_crc32(~0U, reinterpret_cast<const uint8_t *>(Buf.data()), Buf.size());
 }
 
 void WinCOFFWriter::writeSection(const COFFSection &Sec) {

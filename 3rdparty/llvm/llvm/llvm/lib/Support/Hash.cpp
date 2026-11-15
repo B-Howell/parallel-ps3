@@ -11,7 +11,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/Hash.h"
-#include "llvm/Support/xxhash.h"
+#include "llvm/Support/ErrorHandling.h"
+#include <encodings/xxh64.h> // libretro-common's XXH64, in place of LLVM's
 
 using namespace llvm;
 
@@ -37,7 +38,7 @@ uint32_t llvm::getKCFITypeID(StringRef MangledTypeName,
   switch (Algorithm) {
   case KCFIHashAlgorithm::xxHash64:
     // Use lower 32 bits of xxHash64
-    return static_cast<uint32_t>(xxHash64(MangledTypeName));
+    return static_cast<uint32_t>(xxh64(MangledTypeName.data(), MangledTypeName.size(), 0));
   case KCFIHashAlgorithm::FNV1a:
     // FNV-1a hash (32-bit)
     uint32_t Hash = 2166136261u; // FNV offset basis

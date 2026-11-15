@@ -10,7 +10,7 @@
 
 #include "llvm/DebugInfo/CodeView/TypeDeserializer.h"
 #include "llvm/DebugInfo/PDB/Native/Hash.h"
-#include "llvm/Support/CRC.h"
+#include <encodings/crc32.h> // libretro-common's CRC-32, in place of LLVM's
 
 using namespace llvm;
 using namespace llvm::codeview;
@@ -123,7 +123,5 @@ Expected<uint32_t> llvm::pdb::hashTypeRecord(const CVType &Rec) {
   }
 
   // Run CRC32 over the bytes. This corresponds to `hashBufv8`.
-  JamCRC JC(/*Init=*/0U);
-  JC.update(Rec.data());
-  return JC.getCRC();
+  return ~encoding_crc32(~0U, Rec.data().data(), Rec.data().size());
 }
