@@ -206,10 +206,21 @@ def main():
             if line and not line.startswith("#"):
                 unlinked.add("$(LLVM_SRC)/" + line)
 
+    # Files taken out of the tree, whatever the target - LLVM's SHA-1 and
+    # SHA-256 and its old atomics, which libretro-common's lrc_hash and
+    # retro_atomic stand in for (CHANGELOG): gone from every list
+    removed = set()
+    for line in open(listed) if os.path.exists(listed) else []:
+        line = line.strip()
+        if line.startswith("#removed "):
+            removed.add("$(LLVM_SRC)/" + line[len("#removed "):].strip())
+
     def emit_objs(name, objs, tree):
         entries = []
         for obj in objs:
             src, incs, defs, is_c = compiles[obj]
+            if rw.path(src) in removed:
+                continue
             if tree == "$(LLVM_OBJ)" and rw.path(src) in unlinked:
                 continue
             entries.append((rw.path(src), group_of(incs, defs), is_c))

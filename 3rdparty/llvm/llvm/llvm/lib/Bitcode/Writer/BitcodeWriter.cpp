@@ -72,7 +72,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
-#include "llvm/Support/SHA1.h"
+#include <lrc_hash.h> // libretro-common's SHA-1, in place of LLVM's
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
 #include <algorithm>
@@ -302,7 +302,7 @@ class ModuleBitcodeWriter : public ModuleBitcodeWriterBase {
   /// into ModHash.
   ModuleHash *ModHash;
 
-  SHA1 Hasher;
+  struct sha1_state Hasher;
 
   /// The start bit of the identification block.
   uint64_t BitcodeStartBit;
@@ -317,7 +317,9 @@ public:
       : ModuleBitcodeWriterBase(M, StrtabBuilder, Stream,
                                 ShouldPreserveUseListOrder, Index),
         GenerateHash(GenerateHash), ModHash(ModHash),
-        BitcodeStartBit(Stream.GetCurrentBitNo()) {}
+        BitcodeStartBit(Stream.GetCurrentBitNo()) {
+    sha1_stream_init(&Hasher);
+  }
 
   /// Emit the current module to the bitstream.
   void write();
@@ -1420,7 +1422,8 @@ static unsigned getEncodedUnnamedAddr(const GlobalValue &GV) {
 
 size_t ModuleBitcodeWriter::addToStrtab(StringRef Str) {
   if (GenerateHash)
-    Hasher.update(Str);
+    sha1_stream_update(&Hasher, reinterpret_cast<const uint8_t *>(Str.data()),
+                       Str.size());
   return StrtabBuilder.add(Str);
 }
 
@@ -5336,9 +5339,10 @@ void ModuleBitcodeWriter::writeModuleHash(StringRef View) {
   // MODULE_CODE_HASH: [5*i32]
   if (GenerateHash) {
     uint32_t Vals[5];
-    Hasher.update(ArrayRef<uint8_t>(
-        reinterpret_cast<const uint8_t *>(View.data()), View.size()));
-    std::array<uint8_t, 20> Hash = Hasher.result();
+    sha1_stream_update(&Hasher, reinterpret_cast<const uint8_t *>(View.data()),
+                       View.size());
+    std::array<uint8_t, 20> Hash;
+    sha1_stream_final(&Hasher, Hash.data());
     for (int Pos = 0; Pos < 20; Pos += 4) {
       Vals[Pos / 4] = support::endian::read32be(Hash.data() + Pos);
     }

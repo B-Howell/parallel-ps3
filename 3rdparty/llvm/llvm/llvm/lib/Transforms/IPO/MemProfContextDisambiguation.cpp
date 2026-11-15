@@ -41,7 +41,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/GraphWriter.h"
 #include "llvm/Support/InterleavedRange.h"
-#include "llvm/Support/SHA1.h"
+#include <lrc_hash.h> // libretro-common's SHA-1, in place of LLVM's
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/Utils/CallPromotionUtils.h"
@@ -5429,7 +5429,8 @@ bool CallsiteContextGraph<DerivedCCG, FuncTy, CallTy>::assignFunctions() {
 // Compute a SHA1 hash of the callsite and alloc version information of clone I
 // in the summary, to use in detection of duplicate clones.
 uint64_t ComputeHash(const FunctionSummary *FS, unsigned I) {
-  SHA1 Hasher;
+  struct sha1_state Hasher;
+  sha1_stream_init(&Hasher);
   // Update hash with any callsites that call non-default (non-zero) callee
   // versions.
   for (auto &SN : FS->callsites()) {
@@ -5443,7 +5444,7 @@ uint64_t ComputeHash(const FunctionSummary *FS, unsigned I) {
       continue;
     uint8_t Data[sizeof(SN.Clones[I])];
     support::endian::write32le(Data, SN.Clones[I]);
-    Hasher.update(Data);
+    sha1_stream_update(&Hasher, Data, sizeof(Data));
   }
   // Update hash with any allocs that have non-default (non-None) hints.
   for (auto &AN : FS->allocs()) {
@@ -5455,9 +5456,11 @@ uint64_t ComputeHash(const FunctionSummary *FS, unsigned I) {
     if (AN.Versions.size() <= I ||
         (AllocationType)AN.Versions[I] == AllocationType::None)
       continue;
-    Hasher.update(ArrayRef<uint8_t>(&AN.Versions[I], 1));
+    sha1_stream_update(&Hasher, &AN.Versions[I], 1);
   }
-  return support::endian::read64le(Hasher.result().data());
+  uint8_t Hash[20];
+  sha1_stream_final(&Hasher, Hash);
+  return support::endian::read64le(Hash);
 }
 
 static SmallVector<std::unique_ptr<ValueToValueMapTy>, 4> createFunctionClones(

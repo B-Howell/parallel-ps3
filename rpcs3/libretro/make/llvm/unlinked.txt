@@ -686,3 +686,11 @@ lib/Transforms/Vectorize/VPlanUtils.cpp
 lib/Transforms/Vectorize/VPlanVerifier.cpp
 lib/Transforms/Vectorize/VectorCombine.cpp
 lib/Transforms/Vectorize/Vectorize.cpp
+
+# Taken out of the tree, from every list, the host's tools' too: LLVM's
+# SHA-1 and SHA-256 (libretro-common's lrc_hash in their place, where
+# they were used) and its old atomics (used by nothing; retro_atomic is
+# the core's)
+#removed lib/Support/SHA1.cpp
+#removed lib/Support/SHA256.cpp
+#removed lib/Support/Atomic.cpp

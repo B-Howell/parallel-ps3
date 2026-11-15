@@ -12,7 +12,7 @@
 #include "llvm/Bitstream/BitCodes.h"
 #include "llvm/Bitstream/BitstreamReader.h"
 #include "llvm/Support/Format.h"
-#include "llvm/Support/SHA1.h"
+#include <lrc_hash.h> // libretro-common's SHA-1, in place of LLVM's
 #include <optional>
 
 using namespace llvm;
@@ -920,14 +920,17 @@ Error BitcodeAnalyzer::parseBlock(unsigned BlockID, unsigned IndentLevel,
           O->OS << " (invalid)";
         else {
           // Recompute the hash and compare it to the one in the bitcode
-          SHA1 Hasher;
+          struct sha1_state Hasher;
           std::array<uint8_t, 20> Hash;
-          Hasher.update(*CheckHash);
+          sha1_stream_init(&Hasher);
+          sha1_stream_update(&Hasher,
+                             reinterpret_cast<const uint8_t *>(CheckHash->data()),
+                             CheckHash->size());
           {
             int BlockSize = (CurrentRecordPos / 8) - BlockEntryPos;
             auto Ptr = Stream.getPointerToByte(BlockEntryPos, BlockSize);
-            Hasher.update(ArrayRef<uint8_t>(Ptr, BlockSize));
-            Hash = Hasher.result();
+            sha1_stream_update(&Hasher, Ptr, BlockSize);
+            sha1_stream_final(&Hasher, Hash.data());
           }
           std::array<uint8_t, 20> RecordedHash;
           int Pos = 0;
