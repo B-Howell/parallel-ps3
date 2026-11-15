@@ -8,14 +8,16 @@
 #include <Emu/IdManager.h>
 #include <Emu/system_config.h>
 #include <Utilities/address_range.h>
-#include <Utilities/mutex.h>
+#include <Emu/CPU/turn_calls.h>
 
 #include <Emu/RSX/Common/guest_page_locks.h>
 
 namespace rsx
 {
 	rsx::simple_array<MM_block> g_deferred_mprotect_queue;
-	shared_mutex g_mprotect_queue_lock;
+	// The queue changes in turn (turn_calls.h): no lock. What is done in it -
+	// memory protection, the offloader asked to flush - is for any thread
+	turn_calls_cpp g_mprotect_turns;
 
 	void mm_sanitize_queue_internal()
 	{
@@ -159,73 +161,80 @@ namespace rsx
 		const auto start = reinterpret_cast<u64>(ptr);
 		const auto range = utils::address_range64::start_length(start, length);
 
-		std::lock_guard lock(g_mprotect_queue_lock);
-
-		if (prot == utils::protection::rw || prot == utils::protection::wx)
+		turn_call(&g_mprotect_turns, [&]
 		{
-			// Basically an unlock op. Flush the conflicting prefix block if any overlap is detected.
-			if (u32 count = mm_find_conflict_internal(FN(x.overlaps(range))))
+			if (prot == utils::protection::rw || prot == utils::protection::wx)
 			{
-				// Check for degenerate ranges that we'll be crushing
-				for (auto pblock = &g_deferred_mprotect_queue[count - 1];
-					count > 0 && pblock->range.inside(range);
-					count--, pblock--)
+				// Basically an unlock op. Flush the conflicting prefix block if any overlap is detected.
+				if (u32 count = mm_find_conflict_internal(FN(x.overlaps(range))))
 				{
-					pblock->range.invalidate();
+					// Check for degenerate ranges that we'll be crushing
+					for (auto pblock = &g_deferred_mprotect_queue[count - 1];
+						count > 0 && pblock->range.inside(range);
+						count--, pblock--)
+					{
+						pblock->range.invalidate();
+					}
+
+					if (count)
+					{
+						mm_flush_mprotect_queue_internal(count);
+					}
+					else
+					{
+						mm_sanitize_queue_internal();
+					}
 				}
 
-				if (count)
-				{
-					mm_flush_mprotect_queue_internal(count);
-				}
-				else
-				{
-					mm_sanitize_queue_internal();
-				}
+				utils::memory_protect(ptr, length, prot);
+				return;
 			}
 
-			utils::memory_protect(ptr, length, prot);
-			return;
-		}
-
-		// No, Ro, etc.
-		mm_defer_mprotect_internal(start, length, prot);
+			// No, Ro, etc.
+			mm_defer_mprotect_internal(start, length, prot);
+		});
 	}
 
 	void mm_flush()
 	{
-		std::lock_guard lock(g_mprotect_queue_lock);
-		mm_flush_mprotect_queue_internal(g_deferred_mprotect_queue.size());
+		turn_call(&g_mprotect_turns, [&]
+		{
+			mm_flush_mprotect_queue_internal(g_deferred_mprotect_queue.size());
+		});
 	}
 
 	void mm_flush(u32 vm_address)
 	{
-		std::lock_guard lock(g_mprotect_queue_lock);
-		if (g_deferred_mprotect_queue.empty())
+		turn_call(&g_mprotect_turns, [&]
 		{
-			return;
-		}
+			if (g_deferred_mprotect_queue.empty())
+			{
+				return;
+			}
 
-		const auto addr = reinterpret_cast<u64>(vm::base(vm_address));
-		if (const u32 count = mm_find_conflict_internal(FN(x.overlaps(addr))))
-		{
-			mm_flush_mprotect_queue_internal(count);
-		}
+			const auto addr = reinterpret_cast<u64>(vm::base(vm_address));
+			if (const u32 count = mm_find_conflict_internal(FN(x.overlaps(addr))))
+			{
+				mm_flush_mprotect_queue_internal(count);
+			}
+		});
 	}
 
 	void mm_flush(const rsx::simple_array<utils::address_range64>& ranges)
 	{
-		std::lock_guard lock(g_mprotect_queue_lock);
-		if (g_deferred_mprotect_queue.empty() || ranges.empty())
+		turn_call(&g_mprotect_turns, [&]
 		{
-			return;
-		}
+			if (g_deferred_mprotect_queue.empty() || ranges.empty())
+			{
+				return;
+			}
 
-		const auto block_overlaps_ranges = [&](const MM_block& block) { return ranges.any(FN(block.overlaps(x))); };
-		if (const u32 count = mm_find_conflict_internal(block_overlaps_ranges))
-		{
-			mm_flush_mprotect_queue_internal(count);
-		}
+			const auto block_overlaps_ranges = [&](const MM_block& block) { return ranges.any(FN(block.overlaps(x))); };
+			if (const u32 count = mm_find_conflict_internal(block_overlaps_ranges))
+			{
+				mm_flush_mprotect_queue_internal(count);
+			}
+		});
 	}
 
 	void mm_flush_lazy()
@@ -236,33 +245,36 @@ namespace rsx
 			return;
 		}
 
-		std::lock_guard lock(g_mprotect_queue_lock);
-		if (g_deferred_mprotect_queue.empty())
+		turn_call(&g_mprotect_turns, [&]
 		{
-			return;
-		}
+			if (g_deferred_mprotect_queue.empty())
+			{
+				return;
+			}
 
-		auto& rsxdma = g_fxo->get<rsx::dma_manager>();
-		rsxdma.backend_ctrl(mm_backend_ctrl::cmd_mm_flush, nullptr);
+			auto& rsxdma = g_fxo->get<rsx::dma_manager>();
+			rsxdma.backend_ctrl(mm_backend_ctrl::cmd_mm_flush, nullptr);
+		});
 	}
 
 	void mm_flush_partial(u64 last_tag)
 	{
-		std::lock_guard lock(g_mprotect_queue_lock);
-
-		u32 count = 0;
-		for (const auto& block : g_deferred_mprotect_queue)
+		turn_call(&g_mprotect_turns, [&]
 		{
-			if (block.sync_tag > last_tag)
+			u32 count = 0;
+			for (const auto& block : g_deferred_mprotect_queue)
 			{
-				break;
+				if (block.sync_tag > last_tag)
+				{
+					break;
+				}
+				count++;
 			}
-			count++;
-		}
 
-		if (count)
-		{
-			mm_flush_mprotect_queue_internal(count);
-		}
+			if (count)
+			{
+				mm_flush_mprotect_queue_internal(count);
+			}
+		});
 	}
 }
