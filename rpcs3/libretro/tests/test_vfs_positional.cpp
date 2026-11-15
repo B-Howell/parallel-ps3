@@ -608,6 +608,76 @@ int main()
 		fs::remove_file(path + ".gz");
 	}
 
+	// The log file with no lock: four threads logging at once, the writer
+	// thread writing out as they go (it waits on their lines, where it
+	// slept 10 ms at a time); every line of each thread is there, once, in
+	// its order, and sync waits for the writer instead of spinning
+	{
+		const std::string path = std::string(dir) + "/threads.log";
+		constexpr u32 threads = 4, lines = 5000;
+		timespec started;
+		clock_gettime(CLOCK_MONOTONIC, &started); // not pacing: the stopwatch
+		{
+			std::unique_ptr<logs::listener> file = logs::make_file_listener(path, 64 * 1024 * 1024);
+			logs::set_ceiling(logs::level::trace);
+			std::vector<std::thread> loggers;
+			for (u32 t = 0; t < threads; t++)
+			{
+				loggers.emplace_back([t]
+				{
+					for (u32 i = 0; i < lines; i++)
+						test_log.notice("thread %u line %u.", t, i);
+				});
+			}
+			for (auto& th : loggers)
+				th.join();
+			// Written out by the writer as they come, without a sync: the
+			// file has them all within 2 s (a writer that is not woken by
+			// the lines has none of them)
+			u64 seen = 0;
+			for (int wait = 0; wait < 200 && seen < u64{threads} * lines * 20; wait++)
+			{
+				seen = fs::file(path).size();
+				if (seen < u64{threads} * lines * 20)
+					std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+			CHECK(seen >= u64{threads} * lines * 20);
+			file->sync();
+			logs::listener::remove(file.get());
+		}
+		logs::set_ceiling(logs::level::fatal);
+		timespec ended;
+		clock_gettime(CLOCK_MONOTONIC, &ended); // not pacing: the stopwatch
+		std::printf("test_vfs_positional: (the log file case took %.0f ms)\n", ((ended.tv_sec - started.tv_sec) * 1e9 + (ended.tv_nsec - started.tv_nsec)) / 1e6);
+
+		std::string text;
+		CHECK(fs::file(path).read(text, fs::file(path).size()));
+		u32 in_order = 0, twice = 0;
+		for (u32 t = 0; t < threads; t++)
+		{
+			usz at = 0;
+			for (u32 i = 0; i < lines; i++)
+			{
+				char line[64];
+				std::snprintf(line, sizeof(line), "thread %u line %u.\n", t, i);
+				const usz pos = text.find(line, at);
+				if (pos == umax)
+					break;
+				at = pos;
+				in_order++;
+			}
+		}
+		// None twice: as many lines in all as were logged
+		usz total = 0;
+		for (usz at = text.find(" line "); at != umax; at = text.find(" line ", at + 1))
+			total++;
+		twice = static_cast<u32>(total - std::min<usz>(total, threads * lines));
+		CHECK(in_order == threads * lines);
+		CHECK(twice == 0 && total == threads * lines);
+		std::printf("test_vfs_positional: the log file, %u threads at once: %u of %u lines there in their order, %u twice\n", threads, in_order, threads * lines, twice);
+		fs::remove_file(path);
+	}
+
 	// atomic_t's wait and notify, which go through libretro-common's
 	// retro_waitaddr: a thread asleep on a word is woken by a notify of it, by
 	// notify_one and by notify_all; a wait with a bound comes back when the

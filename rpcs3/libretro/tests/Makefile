@@ -675,7 +675,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 545
+LOCK_GUARD_MAX := 531
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -791,6 +791,8 @@ check: all
 	@if test -e ../../../Utilities/transactional_storage.h || grep -n "hw_param_ts\|universal_pool" ../../Emu/Cell/lv2/sys_rsxaudio.cpp ../../Emu/Cell/lv2/sys_rsxaudio.h; then echo "rsxaudio: transactional_storage is back - the hardware's parameters are the HLE thread's, published through a sequence count"; exit 1; else echo "rsxaudio: the hardware's parameters without a lock"; fi
 	@# sys_rsxaudio: the object the data thread's (rsxaudio_data_call), no lock left in the file
 	@if grep -nE "shared_mutex|lock_guard|reader_lock|unique_lock" ../../Emu/Cell/lv2/sys_rsxaudio.cpp ../../Emu/Cell/lv2/sys_rsxaudio.h; then echo "sys_rsxaudio: a lock is back - the object is the data thread's (rsxaudio_data_call)"; exit 1; else echo "sys_rsxaudio: no lock"; fi
+	@# The log: no lock, and its writer thread waits on the lines instead of sleeping or spinning
+	@if grep -nE "shared_mutex|lock_guard|g_mutex|yield\(\)|sleep_for" ../../util/logs.cpp; then echo "logs: a lock, a spin or a sleep is back - the registry is made before any thread, the writer waits on its lines' word"; exit 1; else echo "logs: no lock, no spin, no sleep"; fi
 	@# The pads take no lock: pad::g_pad_mutex is gone, and a merge of
 	@# upstream's code that takes it does not bring it back
 	@if grep -rn "g_pad_mutex" ../../Emu ../../Input ../*.cpp ../*.h ../*.c; then echo "pads: pad::g_pad_mutex is back - the pads take no lock (AGENTS.md)"; exit 1; else echo "pads: no pad lock"; fi

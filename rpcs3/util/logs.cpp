@@ -1,6 +1,5 @@
 #include "util/logs.hpp"
 #include "Utilities/File.h"
-#include "Utilities/mutex.h"
 #include "Utilities/Thread.h"
 #include "Utilities/StrFmt.h"
 #include <cstring>
@@ -12,6 +11,10 @@
 #include <cstring>
 #include <cerrno>
 #include <regex>
+
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
+#include <queues/mpsc_stack.h>
 
 using namespace std::literals::chrono_literals;
 
@@ -82,13 +85,24 @@ namespace logs
 		u64 m_max_size{};
 
 		std::unique_ptr<uchar[]> m_fptr{};
-		shared_mutex m_m{};
 
 		atomic_t<u64, 128> m_buf{0}; // MSB (39 bits): push begin, LSB (25 bis): push size
 		atomic_t<u64, 128> m_out{0}; // Amount of bytes written to file
 
-		// Write buffered logs immediately
+		// No lock: only the writer thread writes to the file. A log line
+		// bumps m_commits once its bytes are in (the writer waits on it);
+		// the writer bumps m_flushes after each write out (sync waits on
+		// it); m_close asks the writer to close the file (1), and is 2 once
+		// it has. A line that finds the buffer full is dropped, counted in
+		// m_dropped: the thread logging never waits for the disk.
+		retro_atomic_int_t m_commits{0};
+		retro_atomic_int_t m_flushes{0};
+		retro_atomic_int_t m_close{0};
+		retro_atomic_64_t m_dropped{0};
+
+		// The writer thread's: write buffered logs out
 		bool flush(u64 bufv);
+		void wake_writer();
 
 	public:
 		file_writer(const std::string& name, u64 max_size);
@@ -139,8 +153,9 @@ namespace logs
 		// Channel registry
 		std::unordered_multimap<std::string, channel*> channels{};
 
-		// Messages for delayed listener initialization
-		std::vector<stored_message> messages{};
+		// Messages for delayed listener initialization: pushed by any
+		// thread, newest first, taken by set_init
+		mpsc_stack_t messages{};
 	};
 
 	static root_listener* get_logger()
@@ -183,31 +198,43 @@ namespace logs
 		return timebase.get();
 	}
 
-	// Channel registry mutex
-	static shared_mutex g_mutex;
+	// No lock: the channel registry is made at static initialisation, before
+	// any thread, and only read after; a channel's level is an atomic; the
+	// listeners are added and removed while nothing is logging (the core
+	// tearing its logging down, see listener::remove).
+
+	// A message stored until set_init
+	struct stored_node
+	{
+		mpsc_stack_node_t node;
+		stored_message msg;
+	};
 
 	// Must be set to true in main()
 	static atomic_t<bool> g_init{false};
 
 	// Nothing above this level is let through, whatever a channel is set to
-	// (set_ceiling). Written and read under g_mutex.
-	static level g_ceiling = level::trace;
+	// (set_ceiling)
+	static retro_atomic_int_t g_ceiling{static_cast<int>(level::trace)};
+
+	static level ceiling()
+	{
+		return static_cast<level>(retro_atomic_load_acquire_int(&g_ceiling));
+	}
 
 	void reset()
 	{
-		std::lock_guard lock(g_mutex);
+		const level top = ceiling();
 
 		for (auto&& pair : get_logger()->channels)
 		{
-			pair.second->enabled.release(std::min(level::_default, g_ceiling));
+			pair.second->enabled.release(std::min(level::_default, top));
 		}
 	}
 
 	void set_ceiling(level value)
 	{
-		std::lock_guard lock(g_mutex);
-
-		g_ceiling = value;
+		retro_atomic_store_release_int(&g_ceiling, static_cast<int>(value));
 
 		for (auto&& pair : get_logger()->channels)
 		{
@@ -217,8 +244,6 @@ namespace logs
 
 	void silence()
 	{
-		std::lock_guard lock(g_mutex);
-
 		for (auto&& pair : get_logger()->channels)
 		{
 			pair.second->enabled.release(level::always);
@@ -227,7 +252,7 @@ namespace logs
 
 	void set_level(const std::string& ch_name, level value)
 	{
-		std::lock_guard lock(g_mutex);
+		const level top = ceiling();
 
 		if (ch_name.find_first_of(".+*?^$()[]{}|\\") != umax)
 		{
@@ -240,7 +265,7 @@ namespace logs
 
 				if (std::regex_match(channel_pair.first, sm, ex))
 				{
-					channel_pair.second->enabled.release(std::min(value, g_ceiling));
+					channel_pair.second->enabled.release(std::min(value, top));
 				}
 			}
 
@@ -251,15 +276,13 @@ namespace logs
 
 		while (found.first != found.second)
 		{
-			found.first->second->enabled.release(std::min(value, g_ceiling));
+			found.first->second->enabled.release(std::min(value, top));
 			found.first++;
 		}
 	}
 
 	level get_level(const std::string& ch_name)
 	{
-		std::lock_guard lock(g_mutex);
-
 		const auto found = get_logger()->channels.equal_range(ch_name);
 
 		if (found.first != found.second)
@@ -282,8 +305,6 @@ namespace logs
 	{
 		std::set<std::string> result;
 
-		std::lock_guard lock(g_mutex);
-
 		for (auto&& p : get_logger()->channels)
 		{
 			if (!p.first.empty())
@@ -296,27 +317,36 @@ namespace logs
 	}
 
 	// Must be called in main() to stop accumulating messages in g_messages
+	// The messages stored so far, oldest first, sent to the listeners and freed
+	static void replay_stored()
+	{
+		mpsc_stack_node_t* node = mpsc_stack_reverse(mpsc_stack_drain(&get_logger()->messages));
+
+		while (node)
+		{
+			stored_node* const stored = reinterpret_cast<stored_node*>(node);
+			node = node->next;
+			get_logger()->broadcast(stored->msg);
+			delete stored;
+		}
+	}
+
 	void set_init(std::initializer_list<stored_message> init_msg)
 	{
 		if (!g_init)
 		{
-			std::lock_guard lock(g_mutex);
-
 			// Prepend main messages
 			for (const auto& msg : init_msg)
 			{
 				get_logger()->broadcast(msg);
 			}
 
-			// Send initial messages
-			for (const auto& msg : get_logger()->messages)
-			{
-				get_logger()->broadcast(msg);
-			}
-
-			// Clear it
-			get_logger()->messages.clear();
+			// Send initial messages; then those a thread stored while this
+			// ran. (One stored after that was sent to the listeners there
+			// were as it was logged; it is not sent again.)
+			replay_stored();
 			g_init = true;
+			replay_stored();
 		}
 	}
 }
@@ -343,8 +373,6 @@ void logs::listener::add(logs::listener* _new)
 	// Get first (main) listener
 	listener* lis = get_logger();
 
-	std::lock_guard lock(g_mutex);
-
 	// Install new listener at the end of linked list
 	listener* null = nullptr;
 
@@ -358,8 +386,6 @@ void logs::listener::add(logs::listener* _new)
 void logs::listener::remove(logs::listener* old)
 {
 	listener* lis = get_logger();
-
-	std::lock_guard lock(g_mutex);
 
 	// Unlink it from the list add() built
 	while (listener* next = lis->m_next)
@@ -401,8 +427,6 @@ void logs::listener::sync_all()
 
 void logs::listener::shutdown_all()
 {
-	std::lock_guard lock(g_mutex);
-
 	for (listener* lis = get_logger()->m_next.exchange(nullptr); lis;)
 	{
 		lis = lis->m_next.exchange(nullptr);
@@ -419,8 +443,7 @@ void logs::listener::close_all_prematurely()
 
 logs::registerer::registerer(channel& _ch)
 {
-	std::lock_guard lock(g_mutex);
-
+	// At static initialisation, before any thread
 	get_logger()->channels.emplace(_ch.name, &_ch);
 }
 
@@ -462,19 +485,15 @@ void logs::message::broadcast(const char* fmt, const fmt_type_info* sup, ...) co
 
 	if (!g_init)
 	{
-		std::lock_guard lock(g_mutex);
-
-		if (!g_init)
+		while (lis)
 		{
-			while (lis)
-			{
-				lis->log(stamp, *this, prefix, text);
-				lis = lis->m_next;
-			}
-
-			// Store message additionally
-			get_logger()->messages.emplace_back(stored_message{*this, stamp, std::move(prefix), text});
+			lis->log(stamp, *this, prefix, text);
+			lis = lis->m_next;
 		}
+
+		// Store message additionally, for set_init
+		stored_node* const stored = new stored_node{{}, stored_message{*this, stamp, std::move(prefix), text}};
+		mpsc_stack_push(&get_logger()->messages, &stored->node);
 	}
 
 	// Send message to all listeners
@@ -513,24 +532,41 @@ logs::file_writer::file_writer(const std::string& name, u64 max_size)
 
 		while (true)
 		{
+			// Read before looking: a line committed after wakes the wait
+			const int commits = retro_atomic_load_acquire_int(&m_commits);
 			const u64 bufv = m_buf;
+
+			if (retro_atomic_load_acquire_int(&m_close) == 1)
+			{
+				m_fout.close();
+				retro_atomic_store_release_int(&m_close, 2);
+				retro_atomic_inc_int(&m_flushes);
+				retro_waitaddr_notify_all(&m_flushes);
+			}
 
 			if (bufv % s_log_size)
 			{
-				// Wait if threads are writing logs
-				std::this_thread::yield();
+				// A thread is putting its line in: until it has
+				const retro_waitaddr_t list[1] = {{&m_commits, static_cast<u32>(commits)}};
+				retro_waitaddr_wait(list, 1, -1);
 				continue;
 			}
 
-			if (!flush(bufv))
+			if (flush(bufv))
 			{
-				if (m_out == umax)
-				{
-					break;
-				}
-
-				std::this_thread::sleep_for(10ms);
+				retro_atomic_inc_int(&m_flushes);
+				retro_waitaddr_notify_all(&m_flushes);
+				continue;
 			}
+
+			if (m_out == umax)
+			{
+				break;
+			}
+
+			// Nothing to write: until a line is
+			const retro_waitaddr_t list[1] = {{&m_commits, static_cast<u32>(commits)}};
+			retro_waitaddr_wait(list, 1, -1);
 		}
 	});
 }
@@ -546,13 +582,18 @@ logs::file_writer::~file_writer()
 	file_writer::sync();
 
 	m_out = -1;
+	wake_writer();
 	m_writer.join();
+}
+
+void logs::file_writer::wake_writer()
+{
+	retro_atomic_inc_int(&m_commits);
+	retro_waitaddr_notify_all(&m_commits);
 }
 
 bool logs::file_writer::flush(u64 bufv)
 {
-	std::lock_guard lock(m_m);
-
 	const u64 read_pos = m_out;
 	const u64 out_index = read_pos % s_log_size;
 	const u64 pushed = (bufv / s_log_size) % s_log_size;
@@ -608,23 +649,12 @@ void logs::file_writer::log(const char* text, usz size)
 				return;
 			}
 
-			if ((bufv % s_log_size) + size >= s_log_size || bufv % s_log_size)
-			{
-				// Concurrency limit reached
-				std::this_thread::yield();
-			}
-			else if (!m_m.is_free())
-			{
-				// Wait for another flush call to complete
-				m_m.lock_unlock();
-			}
-			else
-			{
-				// Queue is full, need to write out
-				flush(bufv);
-			}
-
-			continue;
+			// The buffer is full: the line is dropped, and the writer woken.
+			// A thread logging never waits for the disk
+			(void)bufv;
+			retro_atomic_fetch_add_64(&m_dropped, 1);
+			wake_writer();
+			return;
 		}
 
 		if (pos - m_fptr.get() + size > s_log_size)
@@ -639,6 +669,10 @@ void logs::file_writer::log(const char* text, usz size)
 		}
 
 		m_buf += (size * s_log_size) - size;
+
+		// The writer, if it waits for this line
+		retro_atomic_inc_int(&m_commits);
+		retro_waitaddr_notify_one(&m_commits);
 		break;
 	}
 }
@@ -650,15 +684,19 @@ void logs::file_writer::sync()
 		return;
 	}
 
-	// Wait for the writer thread
-	while ((m_out % s_log_size) * s_log_size != m_buf % (s_log_size * s_log_size))
+	// Wait for the writer thread to have written out what is in
+	for (;;)
 	{
-		if (m_out >= m_max_size)
+		const int flushes = retro_atomic_load_acquire_int(&m_flushes);
+
+		if ((m_out % s_log_size) * s_log_size == m_buf % (s_log_size * s_log_size) || m_out >= m_max_size)
 		{
 			break;
 		}
 
-		std::this_thread::yield();
+		wake_writer();
+		const retro_waitaddr_t list[1] = {{&m_flushes, static_cast<u32>(flushes)}};
+		retro_waitaddr_wait(list, 1, -1);
 	}
 
 	if (thread_ctrl::get_current())
@@ -683,11 +721,16 @@ void logs::file_writer::close_prematurely()
 	// Ensure written to disk
 	sync();
 
-	std::lock_guard lock(m_m);
-
-	if (m_fout)
+	// The writer thread closes it, between its writes
+	retro_atomic_store_release_int(&m_close, 1);
+	for (;;)
 	{
-		m_fout.close();
+		const int flushes = retro_atomic_load_acquire_int(&m_flushes);
+		if (retro_atomic_load_acquire_int(&m_close) == 2)
+			break;
+		wake_writer();
+		const retro_waitaddr_t list[1] = {{&m_flushes, static_cast<u32>(flushes)}};
+		retro_waitaddr_wait(list, 1, -1);
 	}
 }
 
