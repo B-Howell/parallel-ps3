@@ -30,6 +30,10 @@ namespace libretro_vfs
 	// URIs. nullptr without the VFS
 	stx::shared_ptr<fs::device_base> get_uri_device();
 
+	// Stops the thread that the files of a frontend without reads and
+	// writes at an offset are used on; the next use starts it again
+	void stop_serial_thread();
+
 	// Create a VFS-backed file_base for use with fs::file
 	// Returns nullptr if VFS is not available or open fails
 	std::unique_ptr<fs::file_base> create_vfs_file_base(const std::string& path, unsigned int mode);

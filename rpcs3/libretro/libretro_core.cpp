@@ -1971,6 +1971,10 @@ void retro_deinit(void)
         s_logs_hooked = false;
     }
 
+    // The thread a frontend without positional reads and writes has its
+    // files used on: nothing uses one any more
+    libretro_vfs::stop_serial_thread();
+
 
 
 #ifdef _WIN32
@@ -3050,7 +3054,7 @@ bool retro_load_game_special(unsigned game_type, const struct retro_game_info* i
 void retro_unload_game(void)
 {
     // The HLE modules' thread: started again by the next game's first call
-    struct stop_hle { ~stop_hle() { hle_service_stop(); sys_fs_service_stop(); } } stop_hle_at_end;
+    struct stop_hle { ~stop_hle() { hle_service_stop(); sys_fs_service_stop(); libretro_vfs::stop_serial_thread(); } } stop_hle_at_end;
 
     s_pkg_install_only = false;
     s_pkg_install_frames = 0;

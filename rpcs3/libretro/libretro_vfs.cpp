@@ -4,7 +4,7 @@
 #include "Utilities/File.h"
 #include <cctype>
 #include <cstring>
-#include <mutex>
+#include "Emu/Cell/Modules/hle_service.h"
 
 #ifdef _WIN32
 #include <io.h>
@@ -20,6 +20,26 @@ namespace libretro_vfs
 	static const struct retro_vfs_interface* s_vfs_interface = nullptr;
 	// The version the frontend gave: its members past that are not there
 	static unsigned s_vfs_version = 0;
+
+	// A frontend with no reads and writes at an offset (before VFS v6) has
+	// one position per handle, shared by seek, read and write, while
+	// fs::file is used from several threads at once (the SPU cache is
+	// appended to by every SPU worker): an operation's seek and its read
+	// or write have to stay together. They run on a thread of their own,
+	// one at a time, so nothing is locked.
+	static service_thread_t s_serial{};
+
+	template <typename F>
+	static auto serial_call(F&& f) -> decltype(f())
+	{
+		const bool here = service_thread_on(&s_serial);
+		return cpu_owner_call(here ? nullptr : service_thread_calls(&s_serial), here, std::forward<F>(f));
+	}
+
+	void stop_serial_thread()
+	{
+		service_thread_stop(&s_serial);
+	}
 
 	void set_vfs_interface(const struct retro_vfs_interface* vfs_interface, unsigned version)
 	{
@@ -82,12 +102,9 @@ namespace libretro_vfs
 		// nothing here touches the handle's own position, and nothing locks.
 		const bool m_at;
 		// Without that (an older frontend, or a platform where it has no
-		// positional I/O) the handle has one position shared by seek, read
-		// and write, while fs::file is used from several threads at once (the
-		// SPU cache is appended to by every SPU worker): no way round a lock
-		// there, so that an operation's seek and its read or write stay
-		// together.
-		std::mutex m_mutex;
+		// positional I/O) what uses the handle's position runs on the
+		// serial thread (serial_call), so a seek and the read or write after
+		// it stay together.
 
 		void raise_end(s64 end)
 		{
@@ -151,8 +168,7 @@ namespace libretro_vfs
 				return true;
 			}
 
-			std::lock_guard lock(m_mutex);
-			return s_vfs_interface->truncate(m_handle, length) >= 0;
+			return serial_call([&] { return s_vfs_interface->truncate(m_handle, length) >= 0; });
 		}
 
 		u64 read(void* buffer, u64 count) override
@@ -183,18 +199,21 @@ namespace libretro_vfs
 			}
 			else
 			{
-				std::lock_guard lock(m_mutex);
-				const s64 pos = retro_atomic_load_relaxed_64(&m_pos);
-
-				// Seek to current position first
-				if (s_vfs_interface->seek)
+				result = serial_call([&]
 				{
-					s_vfs_interface->seek(m_handle, pos, RETRO_VFS_SEEK_POSITION_START);
-				}
+					const s64 pos = retro_atomic_load_relaxed_64(&m_pos);
 
-				result = s_vfs_interface->read(m_handle, buffer, count);
-				if (result > 0)
-					retro_atomic_store_relaxed_64(&m_pos, pos + result);
+					// Seek to current position first
+					if (s_vfs_interface->seek)
+					{
+						s_vfs_interface->seek(m_handle, pos, RETRO_VFS_SEEK_POSITION_START);
+					}
+
+					const int64_t got = s_vfs_interface->read(m_handle, buffer, count);
+					if (got > 0)
+						retro_atomic_store_relaxed_64(&m_pos, pos + got);
+					return got;
+				});
 			}
 
 			return result > 0 ? static_cast<u64>(result) : 0;
@@ -213,15 +232,16 @@ namespace libretro_vfs
 			}
 			else
 			{
-				std::lock_guard lock(m_mutex);
-
-				// Seek to offset
-				if (s_vfs_interface->seek)
+				result = serial_call([&]
 				{
-					s_vfs_interface->seek(m_handle, offset, RETRO_VFS_SEEK_POSITION_START);
-				}
+					// Seek to offset
+					if (s_vfs_interface->seek)
+					{
+						s_vfs_interface->seek(m_handle, offset, RETRO_VFS_SEEK_POSITION_START);
+					}
 
-				result = s_vfs_interface->read(m_handle, buffer, count);
+					return s_vfs_interface->read(m_handle, buffer, count);
+				});
 			}
 
 			return result > 0 ? static_cast<u64>(result) : 0;
@@ -256,25 +276,28 @@ namespace libretro_vfs
 			}
 			else
 			{
-				std::lock_guard lock(m_mutex);
-				s64 pos = retro_atomic_load_relaxed_64(&m_pos);
-
-				// Seek to current position first (the end in append mode; the
-				// frontend's size() is the size at open, so ask tell() instead)
-				if (m_append && s_vfs_interface->seek && s_vfs_interface->tell)
+				result = serial_call([&]
 				{
-					s_vfs_interface->seek(m_handle, 0, RETRO_VFS_SEEK_POSITION_END);
-					const int64_t end = s_vfs_interface->tell(m_handle);
-					if (end >= 0)
-						pos = end;
-				}
-				else if (s_vfs_interface->seek)
-				{
-					s_vfs_interface->seek(m_handle, pos, RETRO_VFS_SEEK_POSITION_START);
-				}
+					s64 pos = retro_atomic_load_relaxed_64(&m_pos);
 
-				result = s_vfs_interface->write(m_handle, buffer, count);
-				retro_atomic_store_relaxed_64(&m_pos, result > 0 ? pos + result : pos);
+					// Seek to current position first (the end in append mode; the
+					// frontend's size() is the size at open, so ask tell() instead)
+					if (m_append && s_vfs_interface->seek && s_vfs_interface->tell)
+					{
+						s_vfs_interface->seek(m_handle, 0, RETRO_VFS_SEEK_POSITION_END);
+						const int64_t end = s_vfs_interface->tell(m_handle);
+						if (end >= 0)
+							pos = end;
+					}
+					else if (s_vfs_interface->seek)
+					{
+						s_vfs_interface->seek(m_handle, pos, RETRO_VFS_SEEK_POSITION_START);
+					}
+
+					const int64_t put = s_vfs_interface->write(m_handle, buffer, count);
+					retro_atomic_store_relaxed_64(&m_pos, put > 0 ? pos + put : pos);
+					return put;
+				});
 			}
 
 			return result > 0 ? static_cast<u64>(result) : 0;
@@ -295,16 +318,18 @@ namespace libretro_vfs
 			}
 			else
 			{
-				// An older frontend: through the handle's position, under the
-				// file's lock, which is then put back where it was
-				std::lock_guard lock(m_mutex);
-
+				// An older frontend: through the handle's position, on the
+				// serial thread, which is then put back where it was
 				if (!s_vfs_interface->seek)
 					return 0;
 
-				s_vfs_interface->seek(m_handle, offset, RETRO_VFS_SEEK_POSITION_START);
-				result = s_vfs_interface->write(m_handle, buffer, count);
-				s_vfs_interface->seek(m_handle, retro_atomic_load_relaxed_64(&m_pos), RETRO_VFS_SEEK_POSITION_START);
+				result = serial_call([&]
+				{
+					s_vfs_interface->seek(m_handle, offset, RETRO_VFS_SEEK_POSITION_START);
+					const int64_t put = s_vfs_interface->write(m_handle, buffer, count);
+					s_vfs_interface->seek(m_handle, retro_atomic_load_relaxed_64(&m_pos), RETRO_VFS_SEEK_POSITION_START);
+					return put;
+				});
 			}
 
 			return result > 0 ? static_cast<u64>(result) : 0;
@@ -334,43 +359,45 @@ namespace libretro_vfs
 			if (!s_vfs_interface->seek)
 				return static_cast<u64>(retro_atomic_load_acquire_64(&m_pos));
 
-			std::lock_guard lock(m_mutex);
-			s64 pos = retro_atomic_load_relaxed_64(&m_pos);
-
-			int vfs_whence;
-			switch (whence)
+			return serial_call([&]() -> u64
 			{
-			case fs::seek_set: vfs_whence = RETRO_VFS_SEEK_POSITION_START; break;
-			case fs::seek_cur: vfs_whence = RETRO_VFS_SEEK_POSITION_CURRENT; break;
-			case fs::seek_end: vfs_whence = RETRO_VFS_SEEK_POSITION_END; break;
-			default: vfs_whence = RETRO_VFS_SEEK_POSITION_START; break;
-			}
+				s64 pos = retro_atomic_load_relaxed_64(&m_pos);
 
-			int64_t result = s_vfs_interface->seek(m_handle, offset, vfs_whence);
-			// VFS seek returns 0 on success, not the new position
-			if (result == 0)
-			{
-				// Calculate new position based on whence
+				int vfs_whence;
 				switch (whence)
 				{
-				case fs::seek_set:
-					pos = offset;
-					break;
-				case fs::seek_cur:
-					pos += offset;
-					break;
-				case fs::seek_end:
-					if (s_vfs_interface->tell)
-					{
-						const int64_t end = s_vfs_interface->tell(m_handle);
-						if (end >= 0)
-							pos = end;
-					}
-					break;
+				case fs::seek_set: vfs_whence = RETRO_VFS_SEEK_POSITION_START; break;
+				case fs::seek_cur: vfs_whence = RETRO_VFS_SEEK_POSITION_CURRENT; break;
+				case fs::seek_end: vfs_whence = RETRO_VFS_SEEK_POSITION_END; break;
+				default: vfs_whence = RETRO_VFS_SEEK_POSITION_START; break;
 				}
-				retro_atomic_store_relaxed_64(&m_pos, pos);
-			}
-			return static_cast<u64>(pos);
+
+				int64_t result = s_vfs_interface->seek(m_handle, offset, vfs_whence);
+				// VFS seek returns 0 on success, not the new position
+				if (result == 0)
+				{
+					// Calculate new position based on whence
+					switch (whence)
+					{
+					case fs::seek_set:
+						pos = offset;
+						break;
+					case fs::seek_cur:
+						pos += offset;
+						break;
+					case fs::seek_end:
+						if (s_vfs_interface->tell)
+						{
+							const int64_t end = s_vfs_interface->tell(m_handle);
+							if (end >= 0)
+								pos = end;
+						}
+						break;
+					}
+					retro_atomic_store_relaxed_64(&m_pos, pos);
+				}
+				return static_cast<u64>(pos);
+			});
 		}
 
 		u64 size() override
@@ -386,9 +413,11 @@ namespace libretro_vfs
 			// Every read and write seeks first, so moving the handle is fine.
 			if (s_vfs_interface->seek && s_vfs_interface->tell)
 			{
-				std::lock_guard lock(m_mutex);
-				s_vfs_interface->seek(m_handle, 0, RETRO_VFS_SEEK_POSITION_END);
-				const int64_t end = s_vfs_interface->tell(m_handle);
+				const int64_t end = serial_call([&]
+				{
+					s_vfs_interface->seek(m_handle, 0, RETRO_VFS_SEEK_POSITION_END);
+					return s_vfs_interface->tell(m_handle);
+				});
 				if (end >= 0)
 					return static_cast<u64>(end);
 			}

@@ -691,7 +691,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 506
+LOCK_GUARD_MAX := 499
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -813,6 +813,8 @@ check: all
 	@if grep -nE "shared_mutex|lock_guard|g_mutex|yield\(\)|sleep_for" ../../util/logs.cpp; then echo "logs: a lock, a spin or a sleep is back - the registry is made before any thread, the writer waits on its lines' word"; exit 1; else echo "logs: no lock, no spin, no sleep"; fi
 	@# sys_fs: no mount point lock; what took it runs on sys_fs's thread (fs_call), a read at an offset on the caller's
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|mp->mutex" ../../Emu/Cell/lv2/sys_fs.cpp ../../Emu/Cell/lv2/sys_fs.h || grep -rnE "mp->mutex|g_mp_sys_[a-z0-9_]+\.mutex" ../../Emu; then echo "sys_fs: a lock is back - what took a mount point's lock runs on sys_fs's thread (fs_call)"; exit 1; else echo "sys_fs: no lock"; fi
+	@# The frontend's files take no lock: with no reads and writes at an offset, what uses the handle's position runs on one thread
+	@if grep -nE "std::mutex|lock_guard|unique_lock|shared_mutex" ../libretro_vfs.cpp ../libretro_vfs.h; then echo "libretro_vfs: a lock is back - an older frontend's file is used on the serial thread (serial_call)"; exit 1; else echo "libretro_vfs: no lock"; fi
 	@# The pads take no lock: pad::g_pad_mutex is gone, and a merge of
 	@# upstream's code that takes it does not bring it back
 	@if grep -rn "g_pad_mutex" ../../Emu ../../Input ../*.cpp ../*.h ../*.c; then echo "pads: pad::g_pad_mutex is back - the pads take no lock (AGENTS.md)"; exit 1; else echo "pads: no pad lock"; fi
@@ -843,7 +845,7 @@ check: all
 	@# A file read or write that goes through a buffer of the core's does not allocate one
 	@if grep -n "std::vector<uchar> local_buf" ../../Emu/Cell/lv2/sys_fs.cpp; then echo "sys_fs: a vector allocated and zeroed for every read or write is back in op_read/op_write (CHANGELOG)"; exit 1; else echo "sys_fs: no buffer allocated for a read or a write"; fi
 	@# The Vulkan shader interpreter's caches are looked up and added to with no lock, and time nothing
-	@if grep -n "reader_lock\|shared_mutex\|lock_guard\|std::mutex\|steady_clock" ../../Emu/RSX/VK/VKShaderInterpreter.cpp ../../Emu/RSX/VK/VKShaderInterpreter.h; then echo "interpreter: a lock or a clock is back in the Vulkan shader interpreter - its caches are lock-free (AGENTS.md)"; exit 1; else echo "interpreter: no lock, no clock"; fi
+	@if grep -n "reader_lock\|shared_mutex\|lock_guard\|std::mutex\|steady_clock\|sleep_for" ../../Emu/RSX/VK/VKShaderInterpreter.cpp ../../Emu/RSX/VK/VKShaderInterpreter.h; then echo "interpreter: a lock, a clock or a sleep is back in the Vulkan shader interpreter - its caches are lock-free, its warm-up waits on its count (AGENTS.md)"; exit 1; else echo "interpreter: no lock, no clock, no sleep"; fi
 	@# The pool of spare Vulkan images is put into and taken from with no lock
 	@if grep -n "m_cached_pool_lock\|cached_images_erase\|m_cache_is_exiting" ../../Emu/RSX/VK/VKTextureCache.cpp ../../Emu/RSX/VK/VKTextureCache.h; then echo "image pool: the lock on the Vulkan texture cache's pool of spare images is back - it is a lock-free pool (Utilities/lf_item_pool.h)"; exit 1; else echo "image pool: no lock"; fi
 	@# The Vulkan framebuffer cache is looked up with no lock
