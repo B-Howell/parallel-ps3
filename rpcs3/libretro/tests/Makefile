@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_turn_calls test_turn_calls_tsan
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -509,6 +509,21 @@ test_owner_calls_tsan: $(OWNER_CALLS_DEPS)
 	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/owner_calls_tsan.o ../../Emu/CPU/owner_calls.c
 	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ obj/test_owner_calls_tsan.o obj/owner_calls_tsan.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
 
+# Calls on one object taken in turn: the primitive and the test as C89
+TURN_CALLS_DEPS := test_turn_calls.c test_common.h ../../Emu/CPU/turn_calls.c ../../Emu/CPU/turn_calls.h
+
+test_turn_calls: $(TURN_CALLS_DEPS)
+	@mkdir -p obj
+	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -c -o obj/test_turn_calls.o test_turn_calls.c
+	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -DTURN_CALLS_TEST_WINDOW=sched_yield -include sched.h -c -o obj/turn_calls.o ../../Emu/CPU/turn_calls.c
+	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS $(SANITIZE) -o $@ obj/test_turn_calls.o obj/turn_calls.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
+
+test_turn_calls_tsan: $(TURN_CALLS_DEPS)
+	@mkdir -p obj
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -DCALLS=10000 -c -o obj/test_turn_calls_tsan.o test_turn_calls.c
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -DTURN_CALLS_TEST_WINDOW=sched_yield -include sched.h -c -o obj/turn_calls_tsan.o ../../Emu/CPU/turn_calls.c
+	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ obj/test_turn_calls_tsan.o obj/turn_calls_tsan.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
+
 # The HLE modules' thread: the module and the test as C89
 HLE_SERVICE_DEPS := test_hle_service.c test_common.h ../../Emu/Cell/Modules/hle_service.c ../../Emu/Cell/Modules/hle_service.h $(OWNER_CALLS_DEPS)
 
@@ -691,7 +706,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 499
+LOCK_GUARD_MAX := 495
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -757,6 +772,8 @@ check: all
 	./test_guest_faults_tsan
 	./test_vk_interp_uploads
 	./test_vk_interp_dynamic
+	./test_turn_calls
+	./test_turn_calls_tsan
 	./test_eeprom_table
 	./test_eeprom_table_tsan
 	./test_object_pack
@@ -815,6 +832,8 @@ check: all
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|mp->mutex" ../../Emu/Cell/lv2/sys_fs.cpp ../../Emu/Cell/lv2/sys_fs.h || grep -rnE "mp->mutex|g_mp_sys_[a-z0-9_]+\.mutex" ../../Emu; then echo "sys_fs: a lock is back - what took a mount point's lock runs on sys_fs's thread (fs_call)"; exit 1; else echo "sys_fs: no lock"; fi
 	@# The frontend's files take no lock: with no reads and writes at an offset, what uses the handle's position runs on one thread
 	@if grep -nE "std::mutex|lock_guard|unique_lock|shared_mutex" ../libretro_vfs.cpp ../libretro_vfs.h; then echo "libretro_vfs: a lock is back - an older frontend's file is used on the serial thread (serial_call)"; exit 1; else echo "libretro_vfs: no lock"; fi
+	@# Semaphores take no lock: their queue and count change in the semaphore's turn (turn_calls.h)
+	@if grep -nE "shared_mutex|lock_guard|unique_lock|->mutex|\.mutex" ../../Emu/Cell/lv2/sys_semaphore.cpp ../../Emu/Cell/lv2/sys_semaphore.h; then echo "sys_semaphore: a lock is back - the queue changes in the semaphore's turn (turn_call)"; exit 1; else echo "sys_semaphore: no lock"; fi
 	@# The pads take no lock: pad::g_pad_mutex is gone, and a merge of
 	@# upstream's code that takes it does not bring it back
 	@if grep -rn "g_pad_mutex" ../../Emu ../../Input ../*.cpp ../*.h ../*.c; then echo "pads: pad::g_pad_mutex is back - the pads take no lock (AGENTS.md)"; exit 1; else echo "pads: no pad lock"; fi

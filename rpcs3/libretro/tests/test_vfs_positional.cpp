@@ -1166,7 +1166,7 @@ int main()
 			retro_atomic_load_acquire_int(&s_undone), retro_atomic_load_acquire_int(&s_destroyed));
 
 		// Semaphores: threads become waiters by ID the way sys_semaphore_wait
-		// now does - a counted reference (idm::hold), the semaphore's lock,
+		// now does - a counted reference (idm::hold), the semaphore's turn,
 		// lv2_sema::enter - while another thread destroys and recreates
 		// them the way sys_semaphore_destroy does, refusing while there is a
 		// waiter. A destroy never succeeds on a semaphore a thread waits on
@@ -1204,31 +1204,34 @@ int main()
 						if (x & 0x100)
 							std::this_thread::yield();
 
-						std::lock_guard lock(sema->mutex);
-						const s32 entered = sema->enter(id);
-
-						if (entered < 0)
+						// In the semaphore's turn, as sys_semaphore_wait has it
+						turn_call(&sema->turns, [&]
 						{
-							retro_atomic_fetch_add_int(&s_refused, 1);
-							continue;
-						}
+							const s32 entered = sema->enter(id);
 
-						if (entered > 0)
-						{
-							// There is never a count to take here
-							retro_atomic_fetch_add_int(&s_bad2, 1);
-							continue;
-						}
+							if (entered < 0)
+							{
+								retro_atomic_fetch_add_int(&s_refused, 1);
+								return;
+							}
 
-						// A waiter: a destroy must fail until the thread leaves
-						retro_atomic_fetch_add_int(&s_waiting[(id >> 8) & 8191], 1);
-						retro_atomic_fetch_add_int(&s_waited, 1);
-						for (int spin = 0; spin < 20; spin++)
-							(void)retro_atomic_load_relaxed_int(&s_stop2);
-						if (idm::check_unlocked<lv2_obj, lv2_sema>(id) != sema.get())
-							retro_atomic_fetch_add_int(&s_bad2, 1);
-						retro_atomic_fetch_sub_int(&s_waiting[(id >> 8) & 8191], 1);
-						sema->val++;
+							if (entered > 0)
+							{
+								// There is never a count to take here
+								retro_atomic_fetch_add_int(&s_bad2, 1);
+								return;
+							}
+
+							// A waiter: a destroy must fail until the thread leaves
+							retro_atomic_fetch_add_int(&s_waiting[(id >> 8) & 8191], 1);
+							retro_atomic_fetch_add_int(&s_waited, 1);
+							for (int spin = 0; spin < 20; spin++)
+								(void)retro_atomic_load_relaxed_int(&s_stop2);
+							if (idm::check_unlocked<lv2_obj, lv2_sema>(id) != sema.get())
+								retro_atomic_fetch_add_int(&s_bad2, 1);
+							retro_atomic_fetch_sub_int(&s_waiting[(id >> 8) & 8191], 1);
+							sema->val++;
+						});
 					}
 				});
 			}

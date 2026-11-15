@@ -3,6 +3,7 @@
 #include "sys_sync.h"
 
 #include "Emu/Memory/vm_ptr.h"
+#include "Emu/CPU/turn_calls.h"
 
 struct sys_semaphore_attribute_t
 {
@@ -28,7 +29,9 @@ struct lv2_sema final : lv2_obj
 	const u64 name;
 	const s32 max;
 
-	shared_mutex mutex;
+	// The waiters and the count's going below zero with them are changed
+	// in turn (turn_calls.h): no lock
+	turn_calls_cpp turns;
 	retro_atomic_int_t val;
 	ppu_thread* sq{};
 
@@ -42,7 +45,7 @@ struct lv2_sema final : lv2_obj
 	}
 
 	// For a thread that found the semaphore under @id with no lock over the
-	// IDs and holds the semaphore's own lock: takes a count (1), or makes
+	// IDs, in the semaphore's turn: takes a count (1), or makes
 	// the thread a waiter (0) - or neither, when the ID no longer names
 	// the semaphore (-1).
 	//

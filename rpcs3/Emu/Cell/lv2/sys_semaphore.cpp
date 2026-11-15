@@ -164,17 +164,45 @@ error_code sys_semaphore_wait(ppu_thread& ppu, u32 sem_id, u64 timeout)
 
 			lv2_obj::prepare_for_sleep(ppu);
 
-			std::lock_guard lock(sema.mutex);
+			// The thread is a waiter once it is on the queue, and may be
+			// woken before it has gone to sleep: that sleep is then cancelled
+			// (lv2_obj::sleep gives false), as sys_mutex has it
+			ppu.cancel_sleep = 1;
 
-			const s32 entered = sema.enter(sem_id);
-
-			if (!entered)
+			// The count and the queue change in the semaphore's turn; the
+			// scheduler is told on this thread, after
+			const s32 entered = turn_call(&sema.turns, [&]
 			{
-				sema.sleep(ppu, timeout);
-				lv2_obj::emplace(sema.sq, &ppu);
+				const s32 got = sema.enter(sem_id);
+
+				if (!got)
+				{
+					lv2_obj::emplace(sema.sq, &ppu);
+				}
+
+				return got;
+			});
+
+			if (entered)
+			{
+				ppu.cancel_sleep = 0;
+				return entered;
 			}
 
-			return entered;
+			if (!sema.sleep(ppu, timeout))
+			{
+				// Given a count before it went to sleep
+				ppu.cancel_sleep = 0;
+				return 1;
+			}
+
+			if (ppu.cancel_sleep != 1)
+			{
+				notify.cleanup();
+			}
+
+			ppu.cancel_sleep = 0;
+			return 0;
 		}(*sem.ptr);
 	}
 
@@ -199,15 +227,23 @@ error_code sys_semaphore_wait(ppu_thread& ppu, u32 sem_id, u64 timeout)
 
 		if (is_stopped(state))
 		{
-			std::lock_guard lock(sem->mutex);
-
-			for (auto cpu = +sem->sq; cpu; cpu = cpu->next_cpu)
+			const bool queued = turn_call(&sem->turns, [&]
 			{
-				if (cpu == &ppu)
+				for (auto cpu = +sem->sq; cpu; cpu = cpu->next_cpu)
 				{
-					ppu.state += cpu_flag::again;
-					return {};
+					if (cpu == &ppu)
+					{
+						return true;
+					}
 				}
+
+				return false;
+			});
+
+			if (queued)
+			{
+				ppu.state += cpu_flag::again;
+				return {};
 			}
 
 			break;
@@ -235,28 +271,35 @@ error_code sys_semaphore_wait(ppu_thread& ppu, u32 sem_id, u64 timeout)
 
 				ppu.state += cpu_flag::wait;
 
-				std::lock_guard lock(sem->mutex);
-
-				if (!sem->unqueue(sem->sq, &ppu))
+				const bool timed_out = turn_call(&sem->turns, [&]
 				{
-					break;
+					if (!sem->unqueue(sem->sq, &ppu))
+					{
+						return false;
+					}
+
+					// Give back the count the thread was waiting with
+					ensure(0 > [&]
+					{
+						for (;;)
+						{
+							const s32 val = retro_atomic_load_acquire_int(&sem->val);
+
+							if (val >= 0 || retro_atomic_cas_int(&sem->val, val, val + 1))
+							{
+								return val;
+							}
+						}
+					}());
+
+					return true;
+				});
+
+				if (timed_out)
+				{
+					ppu.gpr[3] = CELL_ETIMEDOUT;
 				}
 
-				// Give back the count the thread was waiting with
-				ensure(0 > [&]
-				{
-					for (;;)
-					{
-						const s32 val = retro_atomic_load_acquire_int(&sem->val);
-
-						if (val >= 0 || retro_atomic_cas_int(&sem->val, val, val + 1))
-						{
-							return val;
-						}
-					}
-				}());
-
-				ppu.gpr[3] = CELL_ETIMEDOUT;
 				break;
 			}
 		}
@@ -338,8 +381,8 @@ error_code sys_semaphore_post(ppu_thread& ppu, u32 sem_id, s32 count)
 		return CELL_EINVAL;
 	}
 
-	// Threads to wake: their queue is walked under the semaphore's own
-	// lock, with a reference kept
+	// Threads to wake: their queue is walked in the semaphore's turn, with a
+	// reference kept
 	const auto sem = idm::hold<lv2_obj, lv2_sema>(sem_id);
 
 	if (!sem)
@@ -349,15 +392,14 @@ error_code sys_semaphore_post(ppu_thread& ppu, u32 sem_id, s32 count)
 
 	lv2_obj::notify_all_t notify;
 
+	// What the turn found: 1 posted, 0 over the most, -1 to be done again
+	const s32 posted = turn_call(&sem->turns, [&]() -> s32
 	{
-		std::lock_guard lock(sem->mutex);
-
 		for (auto cpu = +sem->sq; cpu; cpu = cpu->next_cpu)
 		{
 			if (static_cast<ppu_thread*>(cpu)->state & cpu_flag::again)
 			{
-				ppu.state += cpu_flag::again;
-				return {};
+				return -1;
 			}
 		}
 
@@ -377,10 +419,13 @@ error_code sys_semaphore_post(ppu_thread& ppu, u32 sem_id, s32 count)
 
 		if (!ok)
 		{
-			return not_an_error(CELL_EBUSY);
+			return 0;
 		}
 
-		// Wake threads
+		// Wake threads, in the turn: a thread taken off the queue is woken
+		// before its own turn (its timeout's) can see it gone. Waking a
+		// thread is for any thread to do; only going to sleep is the
+		// thread's own, and that is done out of the turn
 		const s32 to_awake = std::min<s32>(-std::min<s32>(val, 0), count);
 
 		for (s32 i = 0; i < to_awake; i++)
@@ -392,6 +437,19 @@ error_code sys_semaphore_post(ppu_thread& ppu, u32 sem_id, s32 count)
 		{
 			lv2_obj::awake_all();
 		}
+
+		return 1;
+	});
+
+	if (posted < 0)
+	{
+		ppu.state += cpu_flag::again;
+		return {};
+	}
+
+	if (!posted)
+	{
+		return not_an_error(CELL_EBUSY);
 	}
 
 	return CELL_OK;
