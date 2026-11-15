@@ -158,13 +158,30 @@ namespace rsx
 		f64 get_cached_display_refresh_rate();
 		virtual f64 get_display_refresh_rate() const = 0;
 
-		// Invalidated memory range
-		address_range32 m_invalidated_memory_range;
+		// The invalidated memory range, its start in the low half and its end
+		// in the high half: one word, so an unmap merges its range into it and
+		// the renderer takes it off with compare-and-swap, where a lock was
+		// taken. No range is address_range32's own (start all ones, end 0)
+		static constexpr u64 no_invalidated_range = 0xffffffffull;
+		retro_atomic_64_t m_invalidated_memory_range{static_cast<s64>(no_invalidated_range)};
 
-		// Nonzero while the range above is one: set and cleared under
-		// m_mtx_task with the range, read with no lock by those that only
-		// need to know whether there is anything to do
-		retro_atomic_int_t m_memory_invalidated{};
+		static u64 pack_range(const address_range32& range)
+		{
+			return (u64{range.end} << 32) | range.start;
+		}
+
+		static address_range32 unpack_range(u64 packed)
+		{
+			address_range32 range;
+			range.start = static_cast<u32>(packed);
+			range.end = static_cast<u32>(packed >> 32);
+			return range;
+		}
+
+		u64 invalidated_range()
+		{
+			return static_cast<u64>(retro_atomic_load_acquire_64(&m_invalidated_memory_range));
+		}
 
 		// Profiler
 		rsx::profiling_timer m_profiler;
@@ -419,7 +436,6 @@ namespace rsx
 		void evaluate_cpu_usage_reduction_limits();
 
 	private:
-		shared_mutex m_mtx_task;
 
 		void handle_emu_flip(u32 buffer);
 		void handle_invalidated_memory_range();
@@ -458,7 +474,7 @@ namespace rsx
 		// unmapped memory to let go of (Common/guest_faults.h)
 		void serve_guest_faults();
 
-		// For any thread, without m_mtx_task: has the renderer handle the
+		// For any thread: has the renderer handle the
 		// invalidated memory range that is waiting, and returns when it has
 		void request_invalidated_memory_handling();
 

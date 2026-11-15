@@ -1352,14 +1352,9 @@ namespace rsx
 
 		if (state != FIFO::state::lock_wait)
 		{
-			if (!in_begin_end && retro_atomic_load_acquire_int(&m_memory_invalidated))
+			if (!in_begin_end && invalidated_range() != no_invalidated_range)
 			{
-				std::lock_guard lock(m_mtx_task);
-
-				if (m_invalidated_memory_range.valid())
-				{
-					handle_invalidated_memory_range();
-				}
+				handle_invalidated_memory_range();
 			}
 
 			if (m_eng_interrupt_mask & rsx::dma_control_interrupt && !is_stopped())
@@ -1386,10 +1381,9 @@ namespace rsx
 
 		if (is_stopped())
 		{
-			std::lock_guard lock(m_mtx_task);
-
-			m_invalidated_memory_range = utils::address_range32::start_end(0x2 << 28, constants::local_mem_base + local_mem_size - 1);
-			retro_atomic_store_release_int(&m_memory_invalidated, 1);
+			// All of it, whatever range was waiting
+			retro_atomic_store_release_64(&m_invalidated_memory_range,
+				static_cast<s64>(pack_range(utils::address_range32::start_end(0x2 << 28, constants::local_mem_base + local_mem_size - 1))));
 			handle_invalidated_memory_range();
 		}
 	}
@@ -3142,28 +3136,21 @@ namespace rsx
 	{
 		// In the case where an unmap is followed shortly after by a remap of the same address space
 		// we must block until RSX has invalidated the memory
-		// or lock m_mtx_task and do it ourselves
+		// (the renderer handles it, and this thread waits for it to)
 
 		if (!rsx_thread_running)
 			return;
 
-		// Nearly always there is no unmap waiting to be handled: one load,
-		// no lock. (An unmap sets the flag before it returns, so a map that
-		// follows it sees it.)
-		if (!retro_atomic_load_acquire_int(&m_memory_invalidated)) [[likely]]
+		// Nearly always there is no unmap waiting to be handled: one load.
+		// (An unmap puts its range in before it returns, so a map that follows
+		// it sees it; the renderer takes a range off only once it has handled it.)
+		const u64 waiting = invalidated_range();
+
+		if (waiting == no_invalidated_range) [[likely]]
 			return;
 
-		{
-			std::lock_guard lock(m_mtx_task);
-
-			const auto map_range = address_range32::start_length(address, size);
-
-			if (!m_invalidated_memory_range.valid())
-				return;
-
-			if (!m_invalidated_memory_range.overlaps(map_range))
-				return;
-		}
+		if (!unpack_range(waiting).overlaps(address_range32::start_length(address, size)))
+			return;
 
 		// The renderer does it, and this thread waits: only the renderer
 		// enters the texture cache
@@ -3174,13 +3161,7 @@ namespace rsx
 	{
 		if (is_current_thread())
 		{
-			std::lock_guard lock(m_mtx_task);
-
-			if (m_invalidated_memory_range.valid())
-			{
-				handle_invalidated_memory_range();
-			}
-
+			handle_invalidated_memory_range();
 			return;
 		}
 
@@ -3209,12 +3190,7 @@ namespace rsx
 
 			if (fault->writing == RSX_GUEST_MEMORY_UNMAPPED)
 			{
-				std::lock_guard lock(m_mtx_task);
-
-				if (m_invalidated_memory_range.valid())
-				{
-					handle_invalidated_memory_range();
-				}
+				handle_invalidated_memory_range();
 			}
 			else
 			{
@@ -3297,37 +3273,45 @@ namespace rsx
 			// Pause RSX thread momentarily to handle unmapping
 			eng_lock elock(this);
 
-			// Queue up memory invalidation
-			std::unique_lock lock(m_mtx_task);
+			// Queue up memory invalidation: merged into the word with
+			// compare-and-swap, looked at again if it changed meanwhile
 			const auto unmap_range = address_range32::start_length(address, size);
 
 			for (;;)
 			{
-				if (!m_invalidated_memory_range.valid())
+				const u64 waiting = invalidated_range();
+
+				if (waiting == no_invalidated_range)
 				{
-					m_invalidated_memory_range = unmap_range;
-					break;
+					if (retro_atomic_cas_64(&m_invalidated_memory_range, static_cast<s64>(waiting), static_cast<s64>(pack_range(unmap_range))))
+					{
+						break;
+					}
+
+					continue;
 				}
 
-				if (m_invalidated_memory_range.touches(unmap_range))
+				if (auto merged = unpack_range(waiting); merged.touches(unmap_range))
 				{
 					// Merge range-to-invalidate in case of consecutive unmaps
-					m_invalidated_memory_range.set_min_max(unmap_range);
-					break;
+					merged.set_min_max(unmap_range);
+
+					if (retro_atomic_cas_64(&m_invalidated_memory_range, static_cast<s64>(waiting), static_cast<s64>(pack_range(merged))))
+					{
+						break;
+					}
+
+					continue;
 				}
 
 				// We can only delay consecutive unmaps.
 				// Otherwise, to avoid VirtualProtect failures, the invalidation
 				// that is waiting has to be done now - by the renderer, which
 				// is paused (eng_lock) and answers from there; this thread
-				// waits for it without the lock the renderer takes, and then
-				// looks again.
-				lock.unlock();
+				// waits for it, and then looks again.
 				request_invalidated_memory_handling();
-				lock.lock();
 			}
 
-			retro_atomic_store_release_int(&m_memory_invalidated, 1);
 			m_eng_interrupt_mask |= rsx::memory_config_interrupt;
 		}
 	}
@@ -3340,29 +3324,40 @@ namespace rsx
 		}
 	}
 
-	// NOTE: m_mtx_task lock must be acquired before calling this method
+	// The renderer's: the range waiting is handled, then taken off - unless an
+	// unmap merged more into it meanwhile, when the larger one is handled again.
+	// It stays in the word while it is handled, so a map over it waits for it
 	void thread::handle_invalidated_memory_range()
 	{
-		AUDIT(!m_mtx_task.is_free());
 		m_eng_interrupt_mask.clear(rsx::memory_config_interrupt);
 
-		if (!m_invalidated_memory_range.valid())
+		for (;;)
 		{
-			return;
+			const u64 waiting = invalidated_range();
+
+			if (waiting == no_invalidated_range)
+			{
+				return;
+			}
+
+			const auto range = unpack_range(waiting);
+
+			if (is_stopped())
+			{
+				// We only need to commit host-resident memory to the guest in case of savestates or captures.
+				on_invalidate_memory_range(range, rsx::invalidation_cause::read);
+			}
+
+			// Host sync
+			rsx::mm_flush();
+
+			on_invalidate_memory_range(range, rsx::invalidation_cause::unmap);
+
+			if (retro_atomic_cas_64(&m_invalidated_memory_range, static_cast<s64>(waiting), static_cast<s64>(no_invalidated_range)))
+			{
+				return;
+			}
 		}
-
-		if (is_stopped())
-		{
-			// We only need to commit host-resident memory to the guest in case of savestates or captures.
-			on_invalidate_memory_range(m_invalidated_memory_range, rsx::invalidation_cause::read);
-		}
-
-		// Host sync
-		rsx::mm_flush();
-
-		on_invalidate_memory_range(m_invalidated_memory_range, rsx::invalidation_cause::unmap);
-		m_invalidated_memory_range.invalidate();
-		retro_atomic_store_release_int(&m_memory_invalidated, 0);
 	}
 
 	void thread::renderctl(u32 request_code, void* /*args*/)
