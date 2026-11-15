@@ -9758,7 +9758,7 @@ struct spu_fast : public spu_recompiler_base
 
 		if (added)
 		{
-			add_loc->compiled.notify_all();
+			add_loc->notify_compiled();
 		}
 
 		return fn;

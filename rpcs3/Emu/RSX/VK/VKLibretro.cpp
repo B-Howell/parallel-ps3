@@ -78,10 +78,14 @@ namespace vk::libretro
 
 		// VkPhysicalDeviceFeatures is nothing but VkBool32s, so OR them.
 		static_assert(sizeof(VkPhysicalDeviceFeatures) % sizeof(VkBool32) == 0);
-		auto* dst = reinterpret_cast<VkBool32*>(&features);
-		const auto* src = reinterpret_cast<const VkBool32*>(&s_features);
-		for (usz i = 0; i < sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32); ++i)
+		constexpr usz count = sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32);
+		VkBool32 dst[count];
+		VkBool32 src[count];
+		std::memcpy(dst, &features, sizeof(dst));
+		std::memcpy(src, &s_features, sizeof(src));
+		for (usz i = 0; i < count; ++i)
 			dst[i] = dst[i] || src[i];
+		std::memcpy(&features, dst, sizeof(dst));
 	}
 
 	// The frontend's thread's alone, within one create_device2

@@ -23,9 +23,10 @@ struct savestate_header
 
 struct hle_locks_t
 {
-	atomic_t<s64> lock_val{0};
+	// A 32-bit word, waited on as one
+	atomic_t<s32> lock_val{0};
 
-	enum states : s64
+	enum states : s32
 	{
 		waiting_for_evaluation = -1,
 		finalized = -2,

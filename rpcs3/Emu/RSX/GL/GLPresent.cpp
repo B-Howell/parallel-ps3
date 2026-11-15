@@ -563,7 +563,6 @@ void GLGSRender::flip(const rsx::display_flip_info_t& info)
 
 		const areai screen_area = coordi({}, { static_cast<int>(buffer_width), static_cast<int>(buffer_height) });
 		const bool use_full_rgb_range_output = g_cfg.video.full_rgb_range_output.get();
-		const bool backbuffer_has_alpha = m_frame->has_alpha();
 
 		if (!m_upscaler || m_output_scaling != g_cfg.video.output_scaling)
 		{

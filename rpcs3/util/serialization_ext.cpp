@@ -294,7 +294,9 @@ bool compressed_serialization_file_handler::handle_file_op(utils::serial& ar, us
 		{
 			while (true)
 			{
-				// Avoid flooding RAM, wait if there is too much pending memory
+				// Avoid flooding RAM, wait if there is too much pending memory.
+				// The wake count is read first, so a wake after the look counts
+				const u32 wake = m_pending_wake.load();
 				const usz new_value = m_pending_bytes.atomic_op([&](usz& v)
 				{
 					v &= ~pending_data_wait_bit;
@@ -316,7 +318,7 @@ bool compressed_serialization_file_handler::handle_file_op(utils::serial& ar, us
 
 				if (new_value & pending_data_wait_bit)
 				{
-					m_pending_bytes.wait(new_value);
+					m_pending_wake.wait(wake);
 				}
 				else
 				{
@@ -674,7 +676,8 @@ void compressed_serialization_file_handler::stream_data_prepare_thread_op()
 			{
 				if (m_pending_signal)
 				{
-					m_pending_bytes.notify_all();
+					m_pending_wake++;
+					m_pending_wake.notify_all();
 				}
 
 				continue;
@@ -711,7 +714,8 @@ void compressed_serialization_file_handler::file_writer_thread_op()
 
 			if (pending_sig || (new_val & pending_data_wait_bit && left < pending_compress_bytes_bound && left + last_size >= pending_compress_bytes_bound))
 			{
-				m_pending_bytes.notify_all();
+				m_pending_wake++;
+				m_pending_wake.notify_all();
 			}
 
 			// Ensure wait bit state has not changed by the update

@@ -174,6 +174,8 @@ static void lrcore_restore_timer_resolution()
 // Libretro callbacks
 static retro_environment_t environ_cb = nullptr;
 static retro_video_refresh_t video_cb = nullptr;
+// libretro.h's valid-frame marker, without the C cast it is written with
+static void* const s_hw_frame_valid = reinterpret_cast<void*>(static_cast<std::intptr_t>(-1));
 static retro_audio_sample_t audio_cb = nullptr;
 static retro_audio_sample_batch_t audio_batch_cb = nullptr;
 static retro_input_poll_t input_poll_cb = nullptr;
@@ -2541,7 +2543,7 @@ static void vk_present_frame()
         s_width = image.width;
         s_height = image.height;
         report_frame_size(s_width, s_height);
-        video_cb(RETRO_HW_FRAME_BUFFER_VALID, s_width, s_height, 0);
+        video_cb(s_hw_frame_valid, s_width, s_height, 0);
     }
     else
     {
@@ -3164,12 +3166,7 @@ void retro_run(void)
     }
     s_stopped_frames = 0;
 
-    static u64 s_run_counter = 0;
-    s_run_counter++;
     s_run_count++;
-
-#ifdef HAVE_VULKAN
-#endif
 
 
     // Check for variable updates
@@ -3281,7 +3278,7 @@ void retro_run(void)
     report_frame_size(s_gl_width, s_gl_height);
 
 
-    video_cb(has_new_frame ? RETRO_HW_FRAME_BUFFER_VALID : NULL, s_gl_width, s_gl_height, 0);
+    video_cb(has_new_frame ? s_hw_frame_valid : nullptr, s_gl_width, s_gl_height, 0);
 }
 
 // A reset is an unload and a load of the same game, done the way those are

@@ -44,9 +44,10 @@ struct lv2_timer : lv2_obj
 	// sys_timer_destroy hand the timer over to it with one of these, on the
 	// thread's mpsc_stack - each used once in the timer's life, so nothing
 	// is allocated for it
-	struct thread_handover
+	// The stack's link is its base, so the node goes back to it with a
+	// static_cast
+	struct thread_handover : mpsc_stack_node_t
 	{
-		mpsc_stack_node_t node; // first: the stack's link
 		lv2_timer* timer;
 		bool drop;
 	};

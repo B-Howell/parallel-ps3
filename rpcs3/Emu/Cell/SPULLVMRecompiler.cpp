@@ -1935,6 +1935,7 @@ public:
 
 		// Install unconditionally, possibly replacing existing one from spu_fast
 		add_loc->compiled = fn;
+		add_loc->notify_compiled();
 
 		// Rebuild trampoline if necessary
 		if (!m_spurt->rebuild_ubertrampoline(func.data[0]))
@@ -1949,8 +1950,6 @@ public:
 
 			return nullptr;
 		}
-
-		add_loc->compiled.notify_all();
 
 #if defined(ARCH_ARM64)
 		// Flush all cache lines after potentially writing executable code
@@ -1995,7 +1994,7 @@ public:
 			// Wait for the duplicate
 			while (!add_loc->compiled)
 			{
-				add_loc->compiled.wait(nullptr);
+				add_loc->compiled_ready.wait(0);
 			}
 
 			return add_loc->compiled;
@@ -4410,6 +4409,7 @@ public:
 
 		// Install unconditionally, possibly replacing existing one from spu_fast
 		add_loc->compiled = fn;
+		add_loc->notify_compiled();
 
 		// Rebuild trampoline if necessary
 		if (!m_spurt->rebuild_ubertrampoline(func.data[0]))
@@ -4424,8 +4424,6 @@ public:
 
 			return nullptr;
 		}
-
-		add_loc->compiled.notify_all();
 
 		if (g_cfg.core.spu_debug)
 		{

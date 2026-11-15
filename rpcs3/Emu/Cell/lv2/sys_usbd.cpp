@@ -754,7 +754,7 @@ void usb_handler_thread::operator()()
 
 		for (mpsc_stack_node_t* node = mpsc_stack_reverse(mpsc_stack_drain(&fake_handed)); node;)
 		{
-			UsbTransfer* const transfer = reinterpret_cast<UsbTransfer::fake_link_t*>(node)->owner;
+			UsbTransfer* const transfer = static_cast<UsbTransfer::fake_link_t*>(node)->owner;
 			node = node->next;
 			fake_transfers.push_back(transfer);
 		}
@@ -1088,7 +1088,7 @@ std::pair<u32, UsbDeviceIsoRequest> usb_handler_thread::get_isochronous_transfer
 
 void usb_handler_thread::push_fake_transfer(UsbTransfer* transfer)
 {
-	mpsc_stack_push(&fake_handed, &transfer->fake_link.node);
+	mpsc_stack_push(&fake_handed, &transfer->fake_link);
 	wake();
 }
 

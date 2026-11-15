@@ -97,14 +97,14 @@ struct lv2_timer_thread
 	{
 		lv2_timer* const ptr = timer.get();
 		ptr->for_thread = std::move(timer);
-		mpsc_stack_push(&handed, &ptr->handed_add.node);
+		mpsc_stack_push(&handed, &ptr->handed_add);
 		wake();
 	}
 
 	// Any thread: @timer out of the list again
 	void hand_over_drop(lv2_timer* timer)
 	{
-		mpsc_stack_push(&handed, &timer->handed_drop.node);
+		mpsc_stack_push(&handed, &timer->handed_drop);
 		wake();
 	}
 
@@ -114,7 +114,7 @@ struct lv2_timer_thread
 		for (mpsc_stack_node_t* node = mpsc_stack_reverse(mpsc_stack_drain(&handed)); node;)
 		{
 			// The node is the timer's: read all of it before the timer may go
-			const auto handover = reinterpret_cast<lv2_timer::thread_handover*>(node);
+			const auto handover = static_cast<lv2_timer::thread_handover*>(node);
 			lv2_timer* const timer = handover->timer;
 			const bool drop = handover->drop;
 			node = node->next;

@@ -638,7 +638,7 @@ bool hle_locks_t::try_lock()
 {
 	while (true)
 	{
-		auto [old, success] = lock_val.fetch_op([](s64& value)
+		auto [old, success] = lock_val.fetch_op([](s32& value)
 		{
 			if (value >= 0)
 			{

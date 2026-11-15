@@ -96,6 +96,9 @@ private:
 	usz m_stream_data_index = 0;
 	usz m_file_read_index = 0;
 	atomic_t<usz> m_pending_bytes = 0;
+	// Counted up at each wake for m_pending_bytes: the 32-bit word a writer
+	// waiting for pending memory to go down waits on
+	atomic_t<u32> m_pending_wake = 0;
 	atomic_t<bool> m_pending_signal = false;
 	bool m_write_inited = false;
 	bool m_read_inited = false;

@@ -26,6 +26,19 @@ static inline unsigned long long lrgl_tex_tid_hash()
 	#define LRGL_TEX_ERR(...)    do { } while (0)
 #endif
 
+// Traced builds only: a glGetError after each step of making a texture. Not
+// made otherwise - it is a round trip to the driver for nothing
+#if RPCS3_LIBRETRO_GL_TEXTURE_TRACE
+	#define LRGL_CHECK_GLERR(stage) do { \
+		const GLenum lrgl_err = glGetError(); \
+		if (lrgl_err != GL_NO_ERROR) \
+			LRGL_TEX_ERR("glGetError stage=%s err=0x%X (target=0x%X w=%u h=%u d=%u mips=%u samples=%u fmt=0x%X)", \
+				stage, static_cast<u32>(lrgl_err), target, width, height, depth, mipmaps, samples, sized_format); \
+	} while (0)
+#else
+	#define LRGL_CHECK_GLERR(stage) do { } while (0)
+#endif
+
 namespace gl
 {
 	static GLenum sizedfmt_to_ifmt(GLenum sized)
@@ -94,17 +107,7 @@ namespace gl
 		LRGL_TEX_NOTICE("ctor enter target=0x%X w=%u h=%u d=%u mips=%u samples=%u fmt=0x%X fmt_class=%u",
 			target, width, height, depth, mipmaps, samples, sized_format, static_cast<u32>(format_class));
 
-		auto lr_check_glerr = [&](const char* stage)
-		{
-			const GLenum err = glGetError();
-			if (err != GL_NO_ERROR)
-			{
-				LRGL_TEX_ERR("glGetError stage=%s err=0x%X (target=0x%X w=%u h=%u d=%u mips=%u samples=%u fmt=0x%X)",
-					stage, static_cast<u32>(err), target, width, height, depth, mipmaps, samples, sized_format);
-			}
-		};
-
-		lr_check_glerr("pre");
+		LRGL_CHECK_GLERR("pre");
 
 		// Guard against invalid dimensions for non-buffer textures
 		// GL_TEXTURE_BUFFER textures don't have traditional dimensions
@@ -147,11 +150,11 @@ namespace gl
 
 		glGenTextures(1, &m_id);
 		LRGL_TEX_NOTICE("glGenTextures id=%u", m_id);
-		lr_check_glerr("glGenTextures");
+		LRGL_CHECK_GLERR("glGenTextures");
 
 		// Must bind to initialize the new texture
 		gl::get_command_context()->bind_texture(GL_TEMP_IMAGE_SLOT(0), target, m_id, GL_TRUE);
-		lr_check_glerr("bind_texture");
+		LRGL_CHECK_GLERR("bind_texture");
 
 		const GLenum storage_fmt = sizedfmt_to_ifmt(sized_format);
 		switch (target)
@@ -161,29 +164,29 @@ namespace gl
 		case GL_TEXTURE_1D:
 			glTexStorage1D(target, mipmaps, storage_fmt, width);
 			height = depth = 1;
-			lr_check_glerr("glTexStorage1D");
+			LRGL_CHECK_GLERR("glTexStorage1D");
 			break;
 		case GL_TEXTURE_2D:
 		case GL_TEXTURE_CUBE_MAP:
 			glTexStorage2D(target, mipmaps, storage_fmt, width, height);
 			depth = 1;
-			lr_check_glerr("glTexStorage2D");
+			LRGL_CHECK_GLERR("glTexStorage2D");
 			break;
 		case GL_TEXTURE_2D_MULTISAMPLE:
 			ensure(mipmaps == 1);
 			glTexStorage2DMultisample(target, samples, storage_fmt, width, height, GL_TRUE);
 			depth = 1;
-			lr_check_glerr("glTexStorage2DMultisample");
+			LRGL_CHECK_GLERR("glTexStorage2DMultisample");
 			break;
 		case GL_TEXTURE_3D:
 		case GL_TEXTURE_2D_ARRAY:
 			glTexStorage3D(target, mipmaps, storage_fmt, width, height, depth);
-			lr_check_glerr("glTexStorage3D");
+			LRGL_CHECK_GLERR("glTexStorage3D");
 			break;
 		case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
 			ensure(mipmaps == 1);
 			glTexStorage3DMultisample(target, samples, storage_fmt, width, height, depth, GL_TRUE);
-			lr_check_glerr("glTexStorage3DMultisample");
+			LRGL_CHECK_GLERR("glTexStorage3DMultisample");
 			break;
 		case GL_TEXTURE_BUFFER:
 			break;
@@ -200,7 +203,7 @@ namespace gl
 				glTexParameteri(target, GL_TEXTURE_WRAP_R, GL_REPEAT);
 				glTexParameteri(target, GL_TEXTURE_BASE_LEVEL, 0);
 				glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, mipmaps - 1);
-				lr_check_glerr("glTexParameteri");
+				LRGL_CHECK_GLERR("glTexParameteri");
 			}
 
 			m_width = width;
@@ -283,7 +286,7 @@ namespace gl
 		m_internal_format = static_cast<internal_format>(sized_format);
 		m_component_layout = { GL_ALPHA, GL_RED, GL_GREEN, GL_BLUE };
 		m_format_class = format_class;
-		lr_check_glerr("ctor_exit");
+		LRGL_CHECK_GLERR("ctor_exit");
 		LRGL_TEX_NOTICE("ctor exit id=%u target=0x%X storage_fmt=0x%X sized_fmt=0x%X size=%ux%u d=%u mips=%u samples=%u pitch=%u aspect=0x%x",
 			m_id,
 			static_cast<u32>(target),

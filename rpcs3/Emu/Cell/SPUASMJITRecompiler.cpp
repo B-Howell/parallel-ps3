@@ -65,7 +65,7 @@ spu_function_t spu_recompiler::compile(spu_program&& _func)
 		// Wait for the duplicate
 		while (!add_loc->compiled)
 		{
-			add_loc->compiled.wait(nullptr);
+			add_loc->compiled_ready.wait(0);
 		}
 
 		return add_loc->compiled;
@@ -911,7 +911,7 @@ spu_function_t spu_recompiler::compile(spu_program&& _func)
 
 	if (added)
 	{
-		add_loc->compiled.notify_all();
+		add_loc->notify_compiled();
 	}
 
 	if (g_cfg.core.spu_debug && added)

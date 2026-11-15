@@ -158,9 +158,8 @@ struct UsbTransfer
 
 	// The USB thread's list of fake transfers to complete: handed over on its
 	// mpsc_stack with this
-	struct fake_link_t
+	struct fake_link_t : mpsc_stack_node_t // the stack's link, as its base
 	{
-		mpsc_stack_node_t node; // first: the stack's link
 		UsbTransfer* owner;
 	} fake_link{{}, this};
 

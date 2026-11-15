@@ -85,6 +85,16 @@ public:
 	// Compiled function pointer
 	atomic_t<spu_function_t> compiled = nullptr;
 
+	// Set, with a wake, once compiled is: a 32-bit word for a thread waiting
+	// on another's compile of the same block to wait on
+	atomic_t<u32> compiled_ready = 0;
+
+	void notify_compiled()
+	{
+		compiled_ready.release(1);
+		compiled_ready.notify_all();
+	}
+
 	// Ubertrampoline generated for this item when it was latest
 	atomic_t<spu_function_t> trampoline = nullptr;
 
