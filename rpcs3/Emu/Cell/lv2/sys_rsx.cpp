@@ -231,12 +231,9 @@ void _sys_rsx_drain_event_queue(rsx::thread* rsxthr, u64 event_flags = umax, u64
 	while (true)
 	{
 		// First check if the queue is empty. This is the most likely scenario.
+		if (turn_call(&queue->turns, [&] { return !retro_atomic_load_acquire_int(&queue->exists) || (lv2_events_empty(&queue->events) && queue->pq); }))
 		{
-			std::lock_guard lock(queue->mutex);
-			if (!retro_atomic_load_acquire_int(&queue->exists) || (lv2_events_empty(&queue->events) && queue->pq))
-			{
-				break;
-			}
+			break;
 		}
 
 		// Emulator still running?
@@ -245,7 +242,12 @@ void _sys_rsx_drain_event_queue(rsx::thread* rsxthr, u64 event_flags = umax, u64
 			break;
 		}
 
-		utils::spin_on_cacheline_once(queue->mutex.raw(), 0u, 100);
+		// A short spin, cut short by the queue's turn being taken (a receive or
+		// a send): where it waited for the queue's lock word to change
+		for (u32 i = 0; i < 40 && !turn_calls_busy(&queue->turns); i++)
+		{
+			busy_wait(500);
+		}
 
 		// Check for timeout
 		if (wait_timeout_ms == umax)

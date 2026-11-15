@@ -20,6 +20,7 @@
 #include "util/serialization.hpp"
 
 #include <cstdio>
+#include <thread>
 #include <cstdlib>
 #include <deque>
 #include <mutex>
@@ -49,15 +50,17 @@ static lv2_event event_of(u64 n)
 	return std::make_tuple(n, n * 3 + 1, ~n, n << 20);
 }
 
-// As sys_event_queue_receive takes one
+// As sys_event_queue_receive takes one: in the queue's turn
 static bool take(lv2_event_queue& queue, lv2_event& out)
 {
-	std::lock_guard lock(queue.mutex);
-	if (lv2_events_empty(&queue.events))
-		return false;
-	out = *lv2_events_front(&queue.events);
-	lv2_events_pop_front(&queue.events);
-	return true;
+	return turn_call(&queue.turns, [&]
+	{
+		if (lv2_events_empty(&queue.events))
+			return false;
+		out = *lv2_events_front(&queue.events);
+		lv2_events_pop_front(&queue.events);
+		return true;
+	});
 }
 
 int main()
@@ -115,13 +118,88 @@ int main()
 		CHECK(taken == sent);
 	}
 
+	// Sent from two threads and taken from two others at once, as PPU and SPU
+	// threads and the timer thread send while handlers take: each send and
+	// take in the queue's turn, so every event comes out exactly once, and in
+	// the order each sender sent its own
+	{
+		static constexpr u64 per_sender = 50000;
+		static retro_atomic_int_t s_taken_count, s_seen[2 * per_sender], s_order_bad, s_sent_all;
+		retro_atomic_store_release_int(&s_taken_count, 0);
+		retro_atomic_store_release_int(&s_order_bad, 0);
+		retro_atomic_store_release_int(&s_sent_all, 0);
+
+		std::thread threads[4];
+		for (u32 t = 0; t < 2; t++)
+		{
+			threads[t] = std::thread([t, &queue]
+			{
+				// A queue that stays full that long has lost count: given up on,
+				// and what was not sent is missed
+				for (u64 i = 0, full = 0; i < per_sender && full < 2000000;)
+				{
+					// The sender in the first word, its count in the second
+					if (queue->send(std::make_tuple(u64{t}, i, u64{0}, u64{0})) == CellError{})
+						i++, full = 0;
+					else
+						full++, std::this_thread::yield();
+				}
+			});
+		}
+		for (u32 t = 2; t < 4; t++)
+		{
+			threads[t] = std::thread([&queue]
+			{
+				u64 last[2] = {0, 0};
+				bool any[2] = {false, false};
+				lv2_event e;
+
+				while (retro_atomic_load_acquire_int(&s_taken_count) < static_cast<int>(2 * per_sender))
+				{
+					if (!take(*queue, e))
+					{
+						// All sent and none left: one lost is missed, not waited for
+						if (retro_atomic_load_acquire_int(&s_sent_all) && lv2_events_empty(&queue->events))
+							break;
+						std::this_thread::yield();
+						continue;
+					}
+
+					const u64 from = std::get<0>(e), n = std::get<1>(e);
+					if (from > 1 || n >= per_sender || (any[from] && n <= last[from]))
+						retro_atomic_fetch_add_int(&s_order_bad, 1);
+					else
+						retro_atomic_fetch_add_int(&s_seen[from * per_sender + n], 1);
+					last[from & 1] = n;
+					any[from & 1] = true;
+					retro_atomic_fetch_add_int(&s_taken_count, 1);
+				}
+			});
+		}
+		threads[0].join();
+		threads[1].join();
+		retro_atomic_store_release_int(&s_sent_all, 1);
+		threads[2].join();
+		threads[3].join();
+
+		u64 twice = 0, missed = 0;
+		for (u64 i = 0; i < 2 * per_sender; i++)
+		{
+			const int seen = retro_atomic_load_acquire_int(&s_seen[i]);
+			twice += seen > 1;
+			missed += seen == 0;
+		}
+
+		CHECK(twice == 0 && missed == 0 && retro_atomic_load_acquire_int(&s_order_bad) == 0);
+		std::printf("test_lv2_events: 2 threads sending, 2 taking: %llu events, %llu twice, %llu missed, %d out of order\n",
+			static_cast<unsigned long long>(2 * per_sender), static_cast<unsigned long long>(twice), static_cast<unsigned long long>(missed),
+			retro_atomic_load_acquire_int(&s_order_bad));
+	}
+
 	// Drained (sys_event_queue_drain), then used again
 	for (u64 n = 0; n < 50; n++)
 		CHECK(queue->send(event_of(n)) == CellError{});
-	{
-		std::lock_guard lock(queue->mutex);
-		lv2_events_clear(&queue->events);
-	}
+	turn_call(&queue->turns, [&] { lv2_events_clear(&queue->events); });
 	CHECK(lv2_events_empty(&queue->events) && !take(*queue, got));
 	for (u64 n = 500; n < 540; n++)
 		CHECK(queue->send(event_of(n)) == CellError{});

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sys_sync.h"
+#include "Emu/CPU/turn_calls.h"
 
 #include "Emu/Memory/vm_ptr.h"
 
@@ -102,7 +103,9 @@ struct lv2_event_queue final : public lv2_obj
 	const u64 name;
 	const u64 key;
 
-	shared_mutex mutex;
+	// The events and the waiters change in turn (turn_calls.h): no lock. An
+	// SPU group's lock may be taken inside the turn, never the other way
+	turn_calls_cpp turns;
 	lv2_events_t events;
 	spu_thread* sq{};
 	ppu_thread* pq{};
