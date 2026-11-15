@@ -487,6 +487,11 @@ struct lv2_dir final : lv2_fs_object
 	}
 };
 
+// The host directory's entries, through libretro-common's retro_dirent, as
+// sys_fs_opendir lists them (split_files: a split file's parts stand as one).
+// False when the directory could not be opened.
+bool lv2_dir_list_host(const std::string& local_path, bool split_files, std::vector<fs::dir_entry>& data);
+
 // sys_fs_fcntl arg base class (left empty for PODness)
 struct lv2_file_op
 {

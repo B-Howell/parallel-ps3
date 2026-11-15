@@ -1,5 +1,7 @@
 #include "stdafx.h"
 #include "sys_sync.h"
+#include <retro_dirent.h>
+#include <libretro.h>
 #include "sys_fs.h"
 #include "sys_memory.h"
 #include "util/asm.hpp"
@@ -1805,6 +1807,92 @@ error_code sys_fs_close(ppu_thread& ppu, u32 fd)
 	return CELL_OK;
 }
 
+bool lv2_dir_list_host(const std::string& local_path, bool split_files, std::vector<fs::dir_entry>& data)
+{
+	// A split file arrives as the parts ".66600" to ".66699", which lv2_file::open_raw gathers back into one
+	// This matches all but the first, the part whose name a game asks for
+	const auto is_split_file_tail = [](std::string_view name)
+	{
+		if (name.size() <= 6 || !name.substr(name.size() - 6).starts_with(".666"sv))
+		{
+			return false;
+		}
+
+		const std::string_view index = name.substr(name.size() - 2);
+
+		return index != "00"sv && index[0] >= '0' && index[0] <= '9' && index[1] >= '0' && index[1] <= '9';
+	};
+
+	// libretro-common's directory listing, with the frontend's VFS when it gives one
+	RDIR* const dir = retro_opendir_include_hidden(local_path.c_str(), true);
+
+	if (!dir)
+	{
+		return false;
+	}
+
+	while (retro_readdir(dir))
+	{
+		const char* const found = retro_dirent_get_name(dir);
+
+		if (!found)
+		{
+			continue;
+		}
+
+		fs::dir_entry entry{};
+		s64 size = 0;
+		s64 mtime = 0;
+
+		// One stat of the entry, from the search itself on Win32
+		if (const int flags = retro_dirent_stat(dir, &size, &mtime); flags & RETRO_VFS_STAT_IS_VALID)
+		{
+			entry.is_directory = (flags & RETRO_VFS_STAT_IS_DIRECTORY) != 0;
+			entry.is_writable = (flags & RETRO_VFS_STAT_IS_READONLY) == 0;
+			entry.size = entry.is_directory ? 0 : static_cast<u64>(size);
+			entry.mtime = mtime;
+			entry.ctime = mtime;
+			entry.atime = mtime;
+		}
+		else if (!fs::get_stat(local_path + "/" + found, entry))
+		{
+			// No metadata (a broken symlink): left out, as before
+			continue;
+		}
+
+		entry.name = vfs::unescape(found);
+
+		if (!entry.is_directory && entry.name == "."sv)
+		{
+			// Files hidden from emulation
+			continue;
+		}
+
+		if (split_files && !entry.is_directory)
+		{
+			std::string& name = entry.name;
+
+			// Drop the suffix off the first part, again if what is left ends in one too
+			// A name made of nothing but a suffix keeps it, since there is no name underneath
+			while (name.size() > 6 && name.ends_with(".66600"))
+			{
+				name.resize(name.size() - 6);
+			}
+
+			if (is_split_file_tail(name))
+			{
+				// Only the first part stands for the file
+				continue;
+			}
+		}
+
+		data.emplace_back(std::move(entry));
+	}
+
+	retro_closedir(dir);
+	return true;
+}
+
 error_code sys_fs_opendir(ppu_thread& ppu, vm::cptr<char> path, vm::ptr<u32> fd)
 {
 	lv2_obj::sleep(ppu);
@@ -1840,94 +1928,38 @@ error_code sys_fs_opendir(ppu_thread& ppu, vm::cptr<char> path, vm::ptr<u32> fd)
 
 	return fs_call([&]() -> error_code
 	{
-		const fs::dir dir(local_path);
-
-		if (!dir)
-		{
-			switch (const auto error = fs::g_tls_error)
-			{
-			case fs::error::noent:
-			{
-				// A Win32 search matching nothing fails like a missing path, which is how an empty volume root looks:
-				// only a stat tells the two apart, and it reports a directory through a broken reparse point as well
-				fs::stat_t info{};
-
-				if (ext.empty() && !(fs::get_stat(local_path, info) && info.is_directory && !info.is_symlink))
-				{
-					return {mp == &g_mp_sys_dev_hdd1 ? sys_fs.warning : sys_fs.error, CELL_ENOENT, path};
-				}
-
-				break;
-			}
-			case fs::error::notdir:
-			{
-				return { CELL_ENOTDIR, path };
-			}
-			default:
-			{
-				if (has_non_directory_components(local_path, ends_with_delim_dot_or_dotdot(vpath)))
-				{
-					return { CELL_ENOTDIR, path };
-				}
-
-				fmt::throw_exception("unknown error %s", error);
-			}
-			}
-		}
-
-		// A split file arrives as the parts ".66600" to ".66699", which lv2_file::open_raw gathers back into one
-		// This matches all but the first, the part whose name a game asks for
-		const auto is_split_file_tail = [](std::string_view name)
-		{
-			if (name.size() <= 6 || !name.substr(name.size() - 6).starts_with(".666"sv))
-			{
-				return false;
-			}
-
-			const std::string_view index = name.substr(name.size() - 2);
-
-			return index != "00"sv && index[0] >= '0' && index[0] <= '9' && index[1] >= '0' && index[1] <= '9';
-		};
-
 		// Build directory as a vector of entries
 		std::vector<fs::dir_entry> data;
 
-		if (dir)
-		{
-			// Add real directories
-			while (dir.read(data.emplace_back()))
-			{
-				// Preprocess entries
-				data.back().name = vfs::unescape(data.back().name);
+		const bool dir = lv2_dir_list_host(local_path, mp.mp != &g_mp_sys_dev_hdd1, data);
 
-				if (!data.back().is_directory && data.back().name == "."sv)
+		if (!dir)
+		{
+			// It gives no reason, so a stat tells a missing path from a file or an empty directory
+			fs::stat_t info{};
+
+			if (fs::get_stat(local_path, info))
+			{
+				if (!info.is_directory)
 				{
-					// Files hidden from emulation
-					data.resize(data.size() - 1);
-					continue;
+					return {CELL_ENOTDIR, path};
 				}
 
-				if (mp.mp != &g_mp_sys_dev_hdd1 && !data.back().is_directory)
+				// A Win32 search matching nothing fails, which is how an empty volume root looks: such a root lists as empty
+				// A directory through a broken reparse point is missing, as it was
+				if (ext.empty() && info.is_symlink)
 				{
-					std::string& name = data.back().name;
-
-					// Drop the suffix off the first part, again if what is left ends in one too
-					// A name made of nothing but a suffix keeps it, since there is no name underneath
-					while (name.size() > 6 && name.ends_with(".66600"))
-					{
-						name.resize(name.size() - 6);
-					}
-
-					if (is_split_file_tail(name))
-					{
-						// Only the first part stands for the file
-						data.resize(data.size() - 1);
-						continue;
-					}
+					return {mp == &g_mp_sys_dev_hdd1 ? sys_fs.warning : sys_fs.error, CELL_ENOENT, path};
 				}
 			}
-
-			data.resize(data.size() - 1);
+			else if (fs::g_tls_error == fs::error::notdir || has_non_directory_components(local_path, ends_with_delim_dot_or_dotdot(vpath)))
+			{
+				return {CELL_ENOTDIR, path};
+			}
+			else if (ext.empty())
+			{
+				return {mp == &g_mp_sys_dev_hdd1 ? sys_fs.warning : sys_fs.error, CELL_ENOENT, path};
+			}
 		}
 
 		// Add mount points (TODO)

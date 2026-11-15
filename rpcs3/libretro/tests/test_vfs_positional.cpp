@@ -778,6 +778,56 @@ int main()
 		lf_u64_map_free(&keys);
 	}
 
+	// A directory as sys_fs_opendir lists it, through libretro-common's
+	// retro_dirent (lv2_dir_list_host): every entry with its kind, size and
+	// time, hidden files too, a split file as its first part only, a
+	// broken symlink left out, escaped names given back
+	{
+		const std::string root = std::string(dir) + "/listing";
+		CHECK(fs::create_path(root + "/sub"));
+		CHECK(fs::write_file(root + "/plain.bin", fs::rewrite, std::string(100, 'p')));
+		CHECK(fs::write_file(root + "/.hidden", fs::rewrite, std::string(3, 'h')));
+		CHECK(fs::write_file(root + "/big.66600", fs::rewrite, std::string(10, 'b')));
+		CHECK(fs::write_file(root + "/big.66601", fs::rewrite, std::string(5, 'b')));
+		CHECK(fs::write_file(root + "/" + vfs::escape("q?"), fs::rewrite, std::string(7, 'q')));
+		CHECK(symlink((root + "/nowhere").c_str(), (root + "/broken").c_str()) == 0);
+		CHECK(fs::utime(root + "/plain.bin", 1000000000, 1000000000));
+
+		const auto find = [](const std::vector<fs::dir_entry>& list, std::string_view name) -> const fs::dir_entry*
+		{
+			for (const auto& e : list)
+				if (e.name == name)
+					return &e;
+			return nullptr;
+		};
+
+		std::vector<fs::dir_entry> list;
+		CHECK(lv2_dir_list_host(root, true, list));
+
+		const fs::dir_entry* plain = find(list, "plain.bin");
+		CHECK(plain && !plain->is_directory && plain->size == 100 && plain->mtime == 1000000000);
+		const fs::dir_entry* hidden = find(list, ".hidden");
+		CHECK(hidden && hidden->size == 3);
+		const fs::dir_entry* sub = find(list, "sub");
+		CHECK(sub && sub->is_directory);
+		const fs::dir_entry* big = find(list, "big");
+		CHECK(big && big->size == 10);
+		CHECK(!find(list, "big.66601") && !find(list, "big.66600"));
+		const fs::dir_entry* q = find(list, "q?");
+		CHECK(q && q->size == 7);
+		CHECK(!find(list, "broken"));
+
+		std::vector<fs::dir_entry> whole;
+		CHECK(lv2_dir_list_host(root, false, whole));
+		CHECK(find(whole, "big.66600") && find(whole, "big.66601") && !find(whole, "big"));
+
+		std::vector<fs::dir_entry> none;
+		CHECK(!lv2_dir_list_host(root + "/missing", true, none) && none.empty());
+		std::printf("  listing: %zu entries through retro_dirent\n", list.size());
+
+		fs::remove_all(root);
+	}
+
 	// A game's reads at an offset take no lock: they are counted on the file,
 	// and its handle is only taken away - closed, or closed and opened again
 	// as a rename does - when none is in flight. Three threads read while the
