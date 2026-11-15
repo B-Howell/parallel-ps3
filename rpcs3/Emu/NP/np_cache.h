@@ -3,7 +3,7 @@
 #include <map>
 #include <optional>
 
-#include "Utilities/mutex.h"
+#include "Emu/CPU/turn_calls.h"
 
 #include "Emu/Cell/Modules/sceNp.h"
 #include "Emu/Cell/Modules/sceNp2.h"
@@ -83,7 +83,9 @@ namespace np
 		std::optional<u16> get_memberid(u64 room_id, const SceNpId& npid) const;
 
 	private:
-		mutable shared_mutex mutex;
+		// The rooms change in turn (turn_calls.h), from the NP threads and the
+		// game's: no lock
+		mutable turn_calls_cpp m_turns;
 		std::map<SceNpMatching2RoomId, room_cache> rooms;
 	};
 } // namespace np
