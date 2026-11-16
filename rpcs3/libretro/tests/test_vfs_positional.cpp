@@ -1980,7 +1980,7 @@ int main()
 				writers[t] = std::thread([&shared, t]
 				{
 					for (u32 i = 0; i < 4; i++)
-						shared.install_decryption_key((u128{t + 1} << 64) | (t + 1) * 100 + i);
+						shared.install_decryption_key((u128{t + 1} << 64) | ((t + 1) * 100 + i));
 				});
 			for (std::thread& w : writers) w.join();
 
