@@ -1,7 +1,6 @@
 #pragma once
 
 #include "../VulkanAPI.h"
-#include "Emu/CPU/turn_calls.h"
 #include "util/atomic.hpp"
 
 #include "commands.h"
@@ -107,6 +106,13 @@ namespace vk
 		rsx::simple_array<VkDescriptorSetLayout> m_allocation_request_cache;
 	};
 
+	namespace descriptors
+	{
+		class dispatch_manager;
+	}
+
+	// A descriptor set is the renderer's: only its thread fills, binds and
+	// flushes it, so nothing in it is shared and nothing is taken in turn
 	class descriptor_set
 	{
 		static constexpr size_t max_cache_size = 16384;
@@ -214,16 +220,15 @@ namespace vk
 		const rsx::simple_array<WriteDescriptorSetT> peek() const { return m_pending_writes; }
 		u64 cache_id() const { return m_storage_cache_id; }
 
-		// The storage is filled and flushed in turn (turn_calls.h): no lock
-		turn_calls_cpp& storage_turns() { return m_storage_turns; }
-
 	private:
 		VkDescriptorSet m_handle = VK_NULL_HANDLE;
 		u64 m_update_after_bind_mask = 0;
 		u64 m_push_type_mask = 0;
 		bool m_in_use = false;
+		// On the renderer's list of sets to flush at the next submit
+		bool m_registered = false;
 
-		turn_calls_cpp m_storage_turns;
+		friend class descriptors::dispatch_manager;
 		atomic_t<u64> m_storage_cache_id = 0;
 
 		rsx::simple_array<VkBufferView> m_buffer_view_pool;

@@ -10,54 +10,54 @@ namespace vk
 
 	namespace descriptors
 	{
+		// The sets to flush at the next submit: the renderer's, as the sets
+		// are. A set is on the list once, however often it is bound
 		class dispatch_manager
 		{
 		public:
 			inline void flush_all()
 			{
-				turn_call(&m_turns, [&]
+				for (auto& set : m_notification_list)
 				{
-					for (auto& set : m_notification_list)
-					{
-						set->flush();
-					}
+					set->flush();
+					set->m_registered = false;
+				}
 
-					m_notification_list.clear();
-				});
+				m_notification_list.clear();
 			}
 
 			void register_(descriptor_set* set)
 			{
-				turn_call(&m_turns, [&]
+				if (!set->m_registered)
 				{
+					set->m_registered = true;
 					m_notification_list.push_back(set);
-					// rsx_log.notice("[descriptor_manager::register] Now monitoring %u descriptor sets", m_notification_list.size());
-				});
+				}
 			}
 
 			void deregister(descriptor_set* set)
 			{
-				turn_call(&m_turns, [&]
+				if (set->m_registered)
 				{
+					set->m_registered = false;
 					m_notification_list.erase_if(FN(x == set));
-					// rsx_log.notice("[descriptor_manager::deregister] Now monitoring %u descriptor sets", m_notification_list.size());
-				});
+				}
 			}
 
 			void destroy()
 			{
-				turn_call(&m_turns, [&]
+				for (auto& set : m_notification_list)
 				{
-					m_notification_list.clear();
-				});
+					set->m_registered = false;
+				}
+
+				m_notification_list.clear();
 			}
 
 			dispatch_manager() = default;
 
 		private:
 			rsx::simple_array<descriptor_set*> m_notification_list;
-			// The sets to flush change in turn (turn_calls.h): no lock
-			turn_calls_cpp m_turns;
 
 			dispatch_manager(const dispatch_manager&) = delete;
 			dispatch_manager& operator = (const dispatch_manager&) = delete;
@@ -541,20 +541,17 @@ namespace vk
 			return;
 		}
 
-		turn_call(&m_storage_turns, [&]
-		{
-			const auto num_writes = ::size32(m_pending_writes);
-			const auto num_copies = ::size32(m_pending_copies);
-			vkUpdateDescriptorSets(*g_render_device, num_writes, m_pending_writes.data(), num_copies, m_pending_copies.data());
+		const auto num_writes = ::size32(m_pending_writes);
+		const auto num_copies = ::size32(m_pending_copies);
+		vkUpdateDescriptorSets(*g_render_device, num_writes, m_pending_writes.data(), num_copies, m_pending_copies.data());
 
-			m_storage_cache_id++;
+		m_storage_cache_id++;
 
-			m_push_type_mask = 0;
-			m_pending_writes.clear();
-			m_pending_copies.clear();
-			m_image_info_pool.clear();
-			m_buffer_info_pool.clear();
-			m_buffer_view_pool.clear();
-		});
+		m_push_type_mask = 0;
+		m_pending_writes.clear();
+		m_pending_copies.clear();
+		m_image_info_pool.clear();
+		m_buffer_info_pool.clear();
+		m_buffer_view_pool.clear();
 	}
 }
