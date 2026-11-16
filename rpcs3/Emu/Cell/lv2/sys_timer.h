@@ -1,7 +1,7 @@
 #pragma once
 
 #include "sys_event.h"
-#include "Emu/CPU/turn_calls.h"
+#include "sys_timer_ctrl.h"
 #include "Emu/Memory/vm_ptr.h"
 
 #include <queues/mpsc_stack.h>
@@ -26,19 +26,30 @@ struct lv2_timer : lv2_obj
 {
 	static const u32 id_base = 0x11000000;
 
-	// Its expiry, start, stop and port are changed in turn (turn_calls.h):
-	// no lock. The state, expiry and period are words of their own, for the
-	// timer thread and get_information to read with none
-	turn_calls_cpp turns;
-	retro_atomic_int_t state{SYS_TIMER_STATE_STOP}; // a u32
+	// Running or stopped, its next expiry and its period: one 128-bit word
+	// changed with compare-and-swap, by the syscalls and the timer thread
+	// alike, none waiting for another (sys_timer_ctrl.h)
+	lv2_timer_ctrl_t ctrl;
 
-	shared_ptr<lv2_event_queue> port;
-	u64 source;
-	u64 data1;
-	u64 data2;
+	// The queue it sends to, with the event's words: made whole and put in
+	// place with one compare-and-swap, so a firing reads one connection or
+	// the other, never half of each
+	struct connection
+	{
+		shared_ptr<lv2_event_queue> port;
+		u64 source = 0;
+		u64 data1 = 0;
+		u64 data2 = 0;
+	};
 
-	retro_atomic_64_t expire{0}; // Next expiration time (a u64)
-	retro_atomic_64_t period{0}; // Period (oneshot if 0) (a u64)
+	atomic_ptr<connection> conn;
+
+	// Connected to a queue that still exists
+	bool connected() const
+	{
+		const shared_ptr<connection> c = conn.load();
+		return c && lv2_obj::check(c->port);
+	}
 
 	// The timer thread's list is the thread's alone: sys_timer_create and
 	// sys_timer_destroy hand the timer over to it with one of these, on the
@@ -56,28 +67,26 @@ struct lv2_timer : lv2_obj
 	thread_handover handed_drop{{}, this, true};
 	shared_ptr<lv2_timer> for_thread; // the thread's reference, until it takes it up
 
+	// Fires it if due at _now, sending the event: the time until it is due
+	// next, umax when stopped
 	u64 check(u64 _now) noexcept;
-	u64 check_unlocked(u64 _now) noexcept; // in the timer's turn
+
+	static void send_event(void* ctx, u64 at);
 
 	lv2_timer() noexcept
 		: lv2_obj(1)
 	{
+		lv2_timer_ctrl_init(&ctrl, 0, 0, 0);
 	}
 
-	void get_information(sys_timer_information_t& info) const
+	void get_information(sys_timer_information_t& info)
 	{
-		if (const u32 _state = static_cast<u32>(retro_atomic_load_acquire_int(&state)); _state == SYS_TIMER_STATE_RUN)
-		{
-			info.timer_state = _state;
-			info.next_expire = static_cast<u64>(retro_atomic_load_acquire_64(&expire));
-			info.period      = static_cast<u64>(retro_atomic_load_acquire_64(&period));
-		}
-		else
-		{
-			info.timer_state = SYS_TIMER_STATE_STOP;
-			info.next_expire = 0;
-			info.period      = 0;
-		}
+		unsigned running = 0;
+		u64 expire = 0, period = 0;
+		lv2_timer_ctrl_info(&ctrl, &running, &expire, &period);
+		info.timer_state = running ? SYS_TIMER_STATE_RUN : SYS_TIMER_STATE_STOP;
+		info.next_expire = expire;
+		info.period      = period;
 	}
 
 	lv2_timer(utils::serial& ar);

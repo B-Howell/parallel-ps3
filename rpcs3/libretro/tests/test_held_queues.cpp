@@ -261,8 +261,8 @@ int main()
 
 	// A periodic timer's expiry checked from four threads at once, as the
 	// timer thread and sys_timer_get_information/stop on PPU threads all do:
-	// in the timer's turn every period sends one event, in order - none
-	// twice, none missed - however the threads meet
+	// each firing claimed with one compare-and-swap, every period sends one
+	// event, in order - none twice, none missed - however the threads meet
 	{
 		usz rounds_wrong = 0, sent = 0;
 
@@ -274,11 +274,11 @@ int main()
 
 			const auto timer = idm::make_ptr<lv2_obj, lv2_timer>();
 			const u32 timer_id = idm::last_id();
-			timer->port   = queue;
-			timer->source = 1;
-			retro_atomic_store_release_64(&timer->expire, 1000);
-			retro_atomic_store_release_64(&timer->period, 100);
-			retro_atomic_store_release_int(&timer->state, SYS_TIMER_STATE_RUN);
+			auto c = make_shared<lv2_timer::connection>();
+			c->port   = queue;
+			c->source = 1;
+			timer->conn.store(std::move(c));
+			lv2_timer_ctrl_init(&timer->ctrl, 1, 1000, 100);
 
 			// Every thread looks at every moment from the first expiry to the
 			// hundredth, the same moments, all let go at once
@@ -316,7 +316,7 @@ int main()
 			sent += count;
 			rounds_wrong += !ok;
 
-			timer->port.reset();
+			timer->conn.reset();
 			retro_atomic_store_release_int(&queue->exists, 0);
 			idm::remove<lv2_obj, lv2_timer>(timer_id);
 			idm::remove<lv2_obj, lv2_event_queue>(queue_id);

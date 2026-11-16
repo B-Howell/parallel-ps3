@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_DYLIB -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_turn_calls test_turn_calls_tsan test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_vk_loader
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_turn_calls test_turn_calls_tsan test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_vk_loader
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -635,6 +635,13 @@ test_vk_interp_uploads: $(VK_INTERP_UPLOADS_DEPS)
 	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -c -o obj/vk_interpreter_uploads.o ../../Emu/RSX/VK/vk_interpreter_uploads.c
 	$(CC) $(CFLAGS) $(SANITIZE) -o $@ obj/test_vk_interp_uploads.o obj/vk_interpreter_uploads.o $(LDFLAGS) $(LDLIBS)
 
+# An lv2 timer's state: one 128-bit word changed with compare-and-swap, under ThreadSanitizer
+test_timer_ctrl: test_timer_ctrl.c test_common.h ../../Emu/Cell/lv2/sys_timer_ctrl.c ../../Emu/Cell/lv2/sys_timer_ctrl.h
+	@mkdir -p obj
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/test_timer_ctrl.o test_timer_ctrl.c
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/sys_timer_ctrl.o ../../Emu/Cell/lv2/sys_timer_ctrl.c
+	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ obj/test_timer_ctrl.o obj/sys_timer_ctrl.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
+
 # Changes posted from any thread, applied by one at a time (Utilities/lf_post.h)
 test_lf_post: test_lf_post.c test_common.h ../../../Utilities/lf_post.h
 	@mkdir -p obj
@@ -758,7 +765,7 @@ HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellIme
 LOCK_GUARD_MAX := 303
 # turn_call (turn_calls.h) is a lock without a lock object - a queued caller
 # still waits - and is going too: the count may only fall
-TURN_CALL_MAX := 124
+TURN_CALL_MAX := 117
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -841,6 +848,7 @@ check: all
 	./test_np_pool
 	./test_np_pool_tsan
 	./test_lf_post
+	./test_timer_ctrl
 	./test_vk_loader
 	./test_turn_calls
 	./test_turn_calls_tsan
@@ -912,8 +920,6 @@ check: all
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|->mutex|\.mutex" ../../Emu/Cell/lv2/sys_semaphore.cpp ../../Emu/Cell/lv2/sys_semaphore.h; then echo "sys_semaphore: a lock is back - the queue changes in the semaphore's turn (turn_call)"; exit 1; else echo "sys_semaphore: no lock"; fi
 	@# Event flags take no lock: their queue changes in the flag's turn (turn_calls.h), the pattern by compare-and-swap
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|->mutex|\.mutex|lock_unlock" ../../Emu/Cell/lv2/sys_event_flag.cpp ../../Emu/Cell/lv2/sys_event_flag.h; then echo "sys_event_flag: a lock is back - the queue changes in the flag's turn (turn_call)"; exit 1; else echo "sys_event_flag: no lock, the queue in the flag's turn"; fi
-	@# Timers take no lock: their expiry, start, stop and port change in the timer's turn (turn_calls.h)
-	@if grep -nE "shared_mutex|lock_guard|unique_lock|reader_lock|->mutex|\.mutex" ../../Emu/Cell/lv2/sys_timer.cpp ../../Emu/Cell/lv2/sys_timer.h; then echo "sys_timer: a lock is back - the timer changes in its turn (turn_call)"; exit 1; else echo "sys_timer: no lock, the timer in its turn"; fi
 	@# Mutexes and conditions take no lock: what is not one compare-and-swap of the mutex's word, and the conditions' queues, change in the mutex's turn (turn_calls.h)
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|reader_lock|->mutex\.|\.mutex\.|lock\((cond\.|cond->)?mutex(->|\.)mutex\)" ../../Emu/Cell/lv2/sys_mutex.cpp ../../Emu/Cell/lv2/sys_mutex.h ../../Emu/Cell/lv2/sys_cond.cpp; then echo "sys_mutex/sys_cond: a lock is back - the queues change in the mutex's turn (turn_call)"; exit 1; else echo "sys_mutex/sys_cond: no lock, the queues in the mutex's turn"; fi
 	@# Reader-writer locks take no lock: their queues, and the owner word with them, change in the rwlock's turn (turn_calls.h)
@@ -962,6 +968,8 @@ check: all
 	@if grep -n "gcmio_mutex" ../../Emu/Cell/Modules/cellGcmSys.cpp ../../Emu/Cell/Modules/cellGcmSys.h; then echo "cellGcmSys: the IO lock is back - the tables change in turn (io_turns), the pages a map works on are marked"; exit 1; else echo "cellGcmSys: the IO map takes no lock"; fi
 	@# P2P port: the RPCN and signaling messages go on stacks, no lock
 	@if grep -nE "s_rpcn_mutex|s_sign_mutex" ../../Emu/Cell/lv2/sys_net/*.cpp ../../Emu/Cell/lv2/sys_net/*.h; then echo "p2p: a message queue lock is back - the messages go on mpsc_stacks"; exit 1; else echo "p2p: the message queues take no lock"; fi
+	@# lv2 timers: their state one 128-bit word changed with compare-and-swap (sys_timer_ctrl.c), the queue they send to put in place whole (atomic_ptr)
+	@if grep -nE "turn_call|turn_calls|lock_guard|shared_mutex|check_unlocked" ../../Emu/Cell/lv2/sys_timer.cpp ../../Emu/Cell/lv2/sys_timer.h; then echo "sys_timer: a turn or a lock is back - the timer's state is sys_timer_ctrl.c's word"; exit 1; else echo "sys_timer: no turn, no lock"; fi
 	@# The Matching2 room cache: changes posted and applied by one thread at a time (lf_post.h), readers read the copy it publishes
 	@if grep -nE "lock_guard|shared_mutex|turn_call|turn_calls" ../../Emu/NP/np_cache.cpp ../../Emu/NP/np_cache.h; then echo "np cache: a lock or a turn is back - changes are posted (lf_post), readers read the published copy"; exit 1; else echo "np cache: changes posted, copies read, no lock, no turn"; fi
 	@# The disc locations are the boot's alone: no lock, no turn
