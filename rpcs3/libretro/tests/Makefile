@@ -737,7 +737,7 @@ HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellIme
 LOCK_GUARD_MAX := 303
 # turn_call (turn_calls.h) is a lock without a lock object - a queued caller
 # still waits - and is going too: the count may only fall
-TURN_CALL_MAX := 166
+TURN_CALL_MAX := 159
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -942,8 +942,8 @@ check: all
 	@if grep -nE "lock_guard|shared_mutex" ../../Emu/NP/np_cache.cpp ../../Emu/NP/np_cache.h; then echo "np cache: a lock is back - the rooms change in turn"; exit 1; else echo "np cache: the rooms take no lock"; fi
 	@# games.yml's list changes in turn
 	@if grep -nE "m_mutex|lock_guard" ../../Emu/games_config.cpp ../../Emu/games_config.h; then echo "games_config: a lock is back - the list changes in turn"; exit 1; else echo "games_config: no lock"; fi
-	@# Emulated pad configurations: loading, saving and each player's buttons change in turn
-	@if grep -nE "m_mutex|lock_guard" ../../Emu/Io/emulated_pad_config.h; then echo "emulated pads: a lock is back - the configuration changes in turn"; exit 1; else echo "emulated pads: no lock"; fi
+	@# Emulated pad configurations: one thread loads or saves at a time, the polls read the button table under its sequence count
+	@if grep -nE "m_mutex|lock_guard|turn_call|turn_calls" ../../Emu/Io/emulated_pad_config.h; then echo "emulated pads: a lock or a turn is back - one thread loads or saves at a time (m_writing), the polls read the table"; exit 1; else echo "emulated pads: no lock, no turn"; fi
 	@# NP DNS hook: the spied sockets and replies change in turn
 	@if grep -nE "lock_guard|shared_mutex" ../../Emu/NP/np_dnshook.cpp ../../Emu/NP/np_dnshook.h; then echo "dnshook: a lock is back"; exit 1; else echo "dnshook: no lock"; fi
 	@# NP GUI room cache changes in turn

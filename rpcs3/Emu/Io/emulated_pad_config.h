@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Utilities/Config.h"
-#include "Emu/CPU/turn_calls.h"
 #include "pad_types.h"
 #include "MouseHandler.h"
 
@@ -46,64 +45,23 @@ struct emulated_pad_config : cfg::node
 public:
 	using cfg::node::node;
 
-	pad_button get_pad_button(T id)
-	{
-		return turn_call(&m_turns, [&]() -> pad_button
-		{
-			if (const cfg_pad_btn<T>* item = get_button(id))
-			{
-				return item->get();
-			}
-
-			return pad_button::pad_button_max_enum;
-		});
-	}
-
-	pad_button default_pad_button(T id)
-	{
-		return turn_call(&m_turns, [&]() -> pad_button
-		{
-			if (const cfg_pad_btn<T>* item = get_button(id))
-			{
-				return item->get_default();
-			}
-
-			return pad_button::pad_button_max_enum;
-		});
-	}
-
-	void set_button(T id, pad_button btn_id)
-	{
-		return turn_call(&m_turns, [&]()
-		{
-			if (cfg_pad_btn<T>* item = get_button(id))
-			{
-				item->set(btn_id);
-			}
-		});
-	}
-
+	// The one writer: the load or save of the configuration of all the
+	// players (emulated_pads_config), which only one thread does at a time
 	void init_buttons()
 	{
-		return turn_call(&m_turns, [&]()
+		for (const auto& n : get_nodes())
 		{
-			for (const auto& n : get_nodes())
-			{
-				if (auto* pbtn = dynamic_cast<cfg_pad_btn<T>*>(n))
-					init_button(pbtn);
-			}
+			if (auto* pbtn = dynamic_cast<cfg_pad_btn<T>*>(n))
+				init_button(pbtn);
+		}
 
-			publish_table();
-		});
+		publish_table();
 	}
 
 	void clear_buttons()
 	{
-		return turn_call(&m_turns, [&]()
-		{
-			buttons.clear();
-			publish_table();
-		});
+		buttons.clear();
+		publish_table();
 	}
 
 	struct input_value
@@ -198,17 +156,14 @@ public:
 	}
 
 protected:
-	// For the configuration's own threads (loading, saving, the settings):
-	// the list of buttons below changes in turn (turn_calls.h). A poll takes
-	// nothing.
-	mutable turn_calls_cpp m_turns;
+	// The writer's alone (init_buttons, clear_buttons). A poll takes
+	// nothing and reads the table below.
 	std::vector<cfg_pad_btn<T>*> buttons;
 
 	// The mapping the polls read: each of the controller's buttons with the
 	// pad button it is on, as its offset and key code in the pad's data,
 	// sorted by those (buttons on the same one in the order declared). Made
-	// again whenever the buttons are (publish_table, in the turn: one
-	// writer), in atomics under a sequence count that is odd meanwhile; a
+	// again whenever the buttons are (publish_table, by the one writer), in atomics under a sequence count that is odd meanwhile; a
 	// poll copies it whole and copies again if the count moved, so it never
 	// waits, holds nothing while the caller's callback runs, and never sees
 	// half of one mapping and half of the next. It holds values, not the
@@ -233,19 +188,6 @@ protected:
 	mutable retro_seqlock_t m_table_seq{};
 	mutable retro_atomic_int_t m_table_count{};
 	mutable retro_atomic_int_t m_table[max_table][4]{};
-
-	cfg_pad_btn<T>* get_button(T id)
-	{
-		for (cfg_pad_btn<T>* item : buttons)
-		{
-			if (item && item->btn_id() == id)
-			{
-				return item;
-			}
-		}
-
-		return nullptr;
-	}
 
 	void init_button(cfg_pad_btn<T>* pbtn)
 	{
@@ -380,9 +322,10 @@ struct emulated_pads_config : cfg::node
 		}
 	}
 
-	// Loading and saving are done in turn (turn_calls.h), taking each
-	// player's turn inside: no lock
-	turn_calls_cpp m_turns;
+	// 1 while a thread loads or saves. Each device's configuration is loaded
+	// as its device is set up; a second thread that comes while one is at it
+	// does not wait for it: what it would read or write is the same file
+	retro_atomic_int_t m_writing{};
 	std::string cfg_id;
 	std::array<std::shared_ptr<T>, Count> players;
 
@@ -390,7 +333,12 @@ struct emulated_pads_config : cfg::node
 	{
 		bool missing = false;
 
-		const bool result = turn_call(&m_turns, [&]
+		if (!retro_atomic_cas_int(&m_writing, 0, 1))
+		{
+			return true;
+		}
+
+		const bool result = [&]
 		{
 			bool result = false;
 			const std::string cfg_name = fmt::format("%s%s.yml", fs::get_config_dir(true), cfg_id);
@@ -421,9 +369,11 @@ struct emulated_pads_config : cfg::node
 			}
 
 			return result;
-		});
+		}();
 
-		// Made with the defaults, out of the turn: save takes it
+		retro_atomic_store_release_int(&m_writing, 0);
+
+		// Made with the defaults: save writes them
 		if (missing)
 		{
 			save();
@@ -434,7 +384,11 @@ struct emulated_pads_config : cfg::node
 
 	void save()
 	{
-		return turn_call(&m_turns, [&]()
+		if (!retro_atomic_cas_int(&m_writing, 0, 1))
+		{
+			return;
+		}
+
 		{
 			const std::string cfg_name = fmt::format("%s%s.yml", fs::get_config_dir(true), cfg_id);
 			cfg_log.notice("Saving %s config to '%s'", cfg_id, cfg_name);
@@ -454,6 +408,8 @@ struct emulated_pads_config : cfg::node
 				player->clear_buttons();
 				player->init_buttons();
 			}
-		});
+		}
+
+		retro_atomic_store_release_int(&m_writing, 0);
 	}
 };
