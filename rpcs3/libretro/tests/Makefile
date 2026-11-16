@@ -814,7 +814,7 @@ HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellIme
 LOCK_GUARD_MAX := 303
 # turn_call (turn_calls.h) is a lock without a lock object - a queued caller
 # still waits - and is going too: the count may only fall
-TURN_CALL_MAX := 68
+TURN_CALL_MAX := 62
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -1025,6 +1025,8 @@ check: all
 	@if grep -nE "s_rpcn_mutex|s_sign_mutex" ../../Emu/Cell/lv2/sys_net/*.cpp ../../Emu/Cell/lv2/sys_net/*.h; then echo "p2p: a message queue lock is back - the messages go on mpsc_stacks"; exit 1; else echo "p2p: the message queues take no lock"; fi
 	@# lv2 timers: their state one 128-bit word changed with compare-and-swap (sys_timer_ctrl.c), the queue they send to put in place whole (atomic_ptr)
 	@if grep -nE "turn_call|turn_calls|lock_guard|shared_mutex|check_unlocked" ../../Emu/Cell/lv2/sys_timer.cpp ../../Emu/Cell/lv2/sys_timer.h; then echo "sys_timer: a turn or a lock is back - the timer's state is sys_timer_ctrl.c's word"; exit 1; else echo "sys_timer: no turn, no lock"; fi
+	@# A raw SPU's MFC proxy command: one 128-bit word, each register's write a compare-and-swap; no turn
+	@if grep -nE "mfc_prxy_turns|mfc_prxy_write_state" ../../Emu/Cell/SPUThread.h ../../Emu/Cell/SPUThread.cpp ../../Emu/Cell/RawSPUThread.cpp; then echo "RawSPU: the proxy command's turn is back - it is one word (mfc_prxy_word)"; exit 1; else echo "RawSPU: the proxy command one word, no turn"; fi
 	@# lv2 lwmutexes and lwconds: the signal and sleepers one word (lv2_lwq.c), an lwcond's waiters a waiter set; no turn, no spin
 	@if grep -nE "turn_call|turn_calls|busy_wait|ppu_thread\\* sq|unqueue|change_control" ../../Emu/Cell/lv2/sys_lwmutex.cpp ../../Emu/Cell/lv2/sys_lwmutex.h ../../Emu/Cell/lv2/sys_lwcond.cpp ../../Emu/Cell/lv2/sys_lwcond.h; then echo "sys_lwmutex/sys_lwcond: a turn, a spin or the linked queues are back - the sleepers are lv2_lwq.c's word, an lwcond's waiters a waiter set"; exit 1; else echo "sys_lwmutex/sys_lwcond: no turn, no spin"; fi
 	@# lv2 rwlocks: the owners and writers waiting one word, the readers waiting a waiter set (lv2_rwq.c); no turn, no spin

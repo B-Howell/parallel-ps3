@@ -983,7 +983,9 @@ void spu_thread::dump_regs(std::string& ret, std::any& /*custom_data*/) const
 			fmt::append(ret, "Int Ctrl[%u]: stat=0x%x, mask=0x%x\n", i, +int_ctrl[i].stat, +int_ctrl[i].mask);
 		}
 
-		fmt::append(ret, "MFC Prxy Cmd: [%s written: %x]\n", mfc_prxy_cmd, mfc_prxy_write_state.all);
+		u8 prxy_written = 0;
+		const spu_mfc_cmd prxy_cmd = mfc_prxy_unpack(retro_atomic_load_acquire_128(const_cast<retro_atomic_128_t*>(&mfc_prxy_word)), &prxy_written);
+		fmt::append(ret, "MFC Prxy Cmd: [%s written: %x]\n", prxy_cmd, prxy_written);
 		fmt::append(ret, "MFC Prxy Mask: 0x%x\n", +mfc_prxy_mask);
 	}
 
@@ -1368,7 +1370,7 @@ void spu_thread::cpu_init()
 		snr_config = 0;
 
 		mfc_prxy_mask.raw() = 0;
-		mfc_prxy_write_state = {};
+		retro_atomic_store_release_128(&mfc_prxy_word, retro_u128_t{});
 	}
 
 	status_npc.raw() = {get_type() == spu_type::isolated ? SPU_STATUS_IS_ISOLATED : 0, 0};
@@ -1877,10 +1879,19 @@ spu_thread::spu_thread(lv2_spu_group* group, u32 index, std::string_view name, u
 
 void spu_thread::serialize_common(utils::serial& ar)
 {
-	ar(gpr, pc, ch_mfc_cmd, mfc_size, mfc_barrier, mfc_fence, mfc_prxy_cmd, mfc_prxy_mask, mfc_prxy_write_state.all
+	// The proxy command and its written bits, as they were kept apart
+	u8 prxy_written = 0;
+	spu_mfc_cmd prxy_cmd = mfc_prxy_unpack(retro_atomic_load_acquire_128(&mfc_prxy_word), &prxy_written);
+
+	ar(gpr, pc, ch_mfc_cmd, mfc_size, mfc_barrier, mfc_fence, prxy_cmd, mfc_prxy_mask, prxy_written
 		, srr0, ch_tag_upd, ch_tag_mask, ch_tag_stat.data, ch_stall_mask, ch_stall_stat.data, ch_atomic_stat.data
 		, ch_out_mbox.data, ch_out_intr_mbox.data, snr_config, ch_snr1.data, ch_snr2.data, ch_events.raw().all, interrupts_enabled
 		, run_ctrl, exit_status.data, status_npc.raw().status, ch_dec_start_timestamp, ch_dec_value, is_dec_frozen);
+
+	if (!ar.is_writing())
+	{
+		retro_atomic_store_release_128(&mfc_prxy_word, mfc_prxy_pack(prxy_cmd, prxy_written));
+	}
 
 	ar(std::span(mfc_queue, mfc_size));
 

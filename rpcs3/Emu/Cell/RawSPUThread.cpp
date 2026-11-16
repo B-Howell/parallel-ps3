@@ -112,17 +112,7 @@ bool spu_thread::read_reg(const u32 addr, u32& value)
 		spu_mfc_cmd cmd;
 
 		// All arguments must be written for all command types, even for sync barriers
-		if (!turn_call(&mfc_prxy_turns, [&]
-		{
-			if (mfc_prxy_write_state.all != 0x1f)
-			{
-				return false;
-			}
-
-			cmd = mfc_prxy_cmd;
-			mfc_prxy_write_state.all = 0;
-			return true;
-		}))
+		if (!mfc_prxy_take(mfc_prxy_word, &cmd))
 		{
 			value = MFC_PPU_DMA_CMD_SEQUENCE_ERROR;
 			return true;
@@ -311,51 +301,51 @@ bool spu_thread::write_reg(const u32 addr, const u32 value)
 	{
 	case MFC_LSA_offs:
 	{
-		turn_call(&mfc_prxy_turns, [&]
+		mfc_prxy_write(mfc_prxy_word, [&](spu_mfc_cmd& cmd) -> u8
 		{
-			mfc_prxy_cmd.lsa = value & (SPU_LS_SIZE - 1);
-			mfc_prxy_write_state.lsa = true;
+			cmd.lsa = value & (SPU_LS_SIZE - 1);
+			return mfc_prxy_written_lsa;
 		});
 		return true;
 	}
 
 	case MFC_EAH_offs:
 	{
-		turn_call(&mfc_prxy_turns, [&]
+		mfc_prxy_write(mfc_prxy_word, [&](spu_mfc_cmd& cmd) -> u8
 		{
-			mfc_prxy_cmd.eah = value;
-			mfc_prxy_write_state.eah = true;
+			cmd.eah = value;
+			return mfc_prxy_written_eah;
 		});
 		return true;
 	}
 
 	case MFC_EAL_offs:
 	{
-		turn_call(&mfc_prxy_turns, [&]
+		mfc_prxy_write(mfc_prxy_word, [&](spu_mfc_cmd& cmd) -> u8
 		{
-			mfc_prxy_cmd.eal = value;
-			mfc_prxy_write_state.eal = true;
+			cmd.eal = value;
+			return mfc_prxy_written_eal;
 		});
 		return true;
 	}
 
 	case MFC_Size_Tag_offs:
 	{
-		turn_call(&mfc_prxy_turns, [&]
+		mfc_prxy_write(mfc_prxy_word, [&](spu_mfc_cmd& cmd) -> u8
 		{
-			mfc_prxy_cmd.tag = value & 0x1f;
-			mfc_prxy_cmd.size = (value >> 16) & 0x7fff;
-			mfc_prxy_write_state.tag_size = true;
+			cmd.tag = value & 0x1f;
+			cmd.size = (value >> 16) & 0x7fff;
+			return mfc_prxy_written_tag_size;
 		});
 		return true;
 	}
 
 	case MFC_Class_CMD_offs:
 	{
-		turn_call(&mfc_prxy_turns, [&]
+		mfc_prxy_write(mfc_prxy_word, [&](spu_mfc_cmd& cmd) -> u8
 		{
-			mfc_prxy_cmd.cmd = MFC(value & 0xff);
-			mfc_prxy_write_state.cmd = true;
+			cmd.cmd = MFC(value & 0xff);
+			return mfc_prxy_written_cmd;
 		});
 		return true;
 	}

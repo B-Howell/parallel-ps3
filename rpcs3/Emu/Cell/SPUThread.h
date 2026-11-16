@@ -702,22 +702,81 @@ public:
 	// Timestamp of the first postponed command (transfers shuffling related)
 	u64 mfc_last_timestamp = 0;
 
-	// MFC proxy command data
-	spu_mfc_cmd mfc_prxy_cmd{};
-	// The proxy command, written a register at a time, changes in turn (turn_calls.h): no lock
-	turn_calls_cpp mfc_prxy_turns;
+	// MFC proxy command data, written a register at a time by the PPU, and
+	// which of its registers were written since the last command: one
+	// 128-bit word, each register's write and the command's start a
+	// compare-and-swap of it. The command as LV2 lays it out (spu_mfc_cmd,
+	// 16 bytes); the local store address never needs its top 14 bits, so
+	// the five written bits live there
+	retro_atomic_128_t mfc_prxy_word{};
 	atomic_t<u32> mfc_prxy_mask = 0;
 
-	// Tracks writes to MFC proxy command data
-	union
+	static constexpr u32 mfc_prxy_written_shift = 27;
+	static constexpr u8 mfc_prxy_written_all = 0x1f;
+
+	enum : u8
 	{
-		u8 all;
-		bf_t<u8, 0, 1> lsa;
-		bf_t<u8, 1, 1> eal;
-		bf_t<u8, 2, 1> eah;
-		bf_t<u8, 3, 1> tag_size;
-		bf_t<u8, 4, 1> cmd;
-	} mfc_prxy_write_state{};
+		mfc_prxy_written_lsa = 1 << 0,
+		mfc_prxy_written_eal = 1 << 1,
+		mfc_prxy_written_eah = 1 << 2,
+		mfc_prxy_written_tag_size = 1 << 3,
+		mfc_prxy_written_cmd = 1 << 4,
+	};
+
+	static spu_mfc_cmd mfc_prxy_unpack(retro_u128_t word, u8* written)
+	{
+		spu_mfc_cmd cmd = std::bit_cast<spu_mfc_cmd>(word);
+		*written = static_cast<u8>(cmd.lsa >> mfc_prxy_written_shift);
+		cmd.lsa &= (1u << mfc_prxy_written_shift) - 1;
+		return cmd;
+	}
+
+	static retro_u128_t mfc_prxy_pack(spu_mfc_cmd cmd, u8 written)
+	{
+		cmd.lsa = (cmd.lsa & ((1u << mfc_prxy_written_shift) - 1)) | (u32{written} << mfc_prxy_written_shift);
+		return std::bit_cast<retro_u128_t>(cmd);
+	}
+
+	// One register written: f changes the command and gives the bit it wrote
+	template <typename F>
+	static void mfc_prxy_write(retro_atomic_128_t& word, F&& f)
+	{
+		for (;;)
+		{
+			const retro_u128_t seen = retro_atomic_load_acquire_128(&word);
+			u8 written = 0;
+			spu_mfc_cmd cmd = mfc_prxy_unpack(seen, &written);
+			written |= f(cmd);
+
+			if (retro_atomic_cas_128(&word, seen, mfc_prxy_pack(cmd, written)))
+			{
+				return;
+			}
+		}
+	}
+
+	// The command, when all its registers were written, taken and the
+	// written bits cleared in one change
+	static bool mfc_prxy_take(retro_atomic_128_t& word, spu_mfc_cmd* out)
+	{
+		for (;;)
+		{
+			const retro_u128_t seen = retro_atomic_load_acquire_128(&word);
+			u8 written = 0;
+			const spu_mfc_cmd cmd = mfc_prxy_unpack(seen, &written);
+
+			if (written != mfc_prxy_written_all)
+			{
+				return false;
+			}
+
+			if (retro_atomic_cas_128(&word, seen, mfc_prxy_pack(cmd, 0)))
+			{
+				*out = cmd;
+				return true;
+			}
+		}
+	}
 
 	// Reservation Data
 	u64 rtime = 0;

@@ -27,6 +27,7 @@
 #include "Emu/Cell/lv2/sys_event.h"
 #include "Emu/Cell/lv2/sys_cond.h"
 #include "Emu/Cell/lv2/sys_memory.h"
+#include "Emu/Cell/SPUThread.h"
 #include "Emu/IdManager.h"
 #include "Emu/VFS.h"
 #include "Emu/vfs_config.h"
@@ -1817,6 +1818,58 @@ int main()
 			CHECK(retro_atomic_load_acquire_int(&s_sent) > 100);
 			std::printf("  ids: %d event port reads entered, %d queue changes, %d removals\n", retro_atomic_load_acquire_int(&s_sent),
 				retro_atomic_load_acquire_int(&s_changed), retro_atomic_load_acquire_int(&s_removed6));
+		}
+
+		// A raw SPU's MFC proxy command: written a register at a time and
+		// started by a read of its status, all one word. Four registers are
+		// not a command; the fifth makes one, taken once, the written bits
+		// cleared - and they never show in the local store address. Then
+		// threads writing a register each at once: no write lost
+		{
+			retro_atomic_128_t word{};
+			spu_mfc_cmd cmd{};
+
+			spu_thread::mfc_prxy_write(word, [](spu_mfc_cmd& c) -> u8 { c.lsa = 0x3fff0; return spu_thread::mfc_prxy_written_lsa; });
+			spu_thread::mfc_prxy_write(word, [](spu_mfc_cmd& c) -> u8 { c.eal = 0x1234; return spu_thread::mfc_prxy_written_eal; });
+			spu_thread::mfc_prxy_write(word, [](spu_mfc_cmd& c) -> u8 { c.eah = 0x5; return spu_thread::mfc_prxy_written_eah; });
+			spu_thread::mfc_prxy_write(word, [](spu_mfc_cmd& c) -> u8 { c.tag = 3; c.size = 0x80; return spu_thread::mfc_prxy_written_tag_size; });
+			CHECK(!spu_thread::mfc_prxy_take(word, &cmd));
+			spu_thread::mfc_prxy_write(word, [](spu_mfc_cmd& c) -> u8 { c.cmd = MFC_GET_CMD; return spu_thread::mfc_prxy_written_cmd; });
+			CHECK(spu_thread::mfc_prxy_take(word, &cmd));
+			CHECK((cmd.lsa == 0x3fff0 && cmd.eal == 0x1234 && cmd.eah == 0x5 && cmd.tag == 3 && cmd.size == 0x80 && cmd.cmd == MFC_GET_CMD));
+			CHECK(!spu_thread::mfc_prxy_take(word, &cmd));
+
+			for (int round = 0; round < 2000; round++)
+			{
+				std::thread writers[5];
+				for (u32 r = 0; r < 5; r++)
+				{
+					writers[r] = std::thread([&word, r, round]
+					{
+						spu_thread::mfc_prxy_write(word, [&](spu_mfc_cmd& c) -> u8
+						{
+							switch (r)
+							{
+							case 0: c.lsa = static_cast<u32>(round) * 16; break;
+							case 1: c.eal = static_cast<u32>(round); break;
+							case 2: c.eah = static_cast<u32>(round) + 1; break;
+							case 3: c.tag = static_cast<u8>(round & 0x1f); break;
+							default: c.cmd = MFC_PUT_CMD; break;
+							}
+
+							return static_cast<u8>(1u << r);
+						});
+					});
+				}
+
+				for (auto& t : writers)
+					t.join();
+
+				CHECK(spu_thread::mfc_prxy_take(word, &cmd));
+				CHECK((cmd.lsa == static_cast<u32>(round) * 16 && cmd.eal == static_cast<u32>(round) && cmd.eah == static_cast<u32>(round) + 1 && cmd.cmd == MFC_PUT_CMD));
+			}
+
+			std::printf("  spu: the MFC proxy command written by 5 threads at once 2000 times, every register kept\n");
 		}
 
 		// What a lookup costs one thread: the reader lock, and the pin
