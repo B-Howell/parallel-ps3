@@ -15,15 +15,88 @@ lv2_lwmutex::lv2_lwmutex(utils::serial& ar)
 	, control(ar.pop<decltype(control)>())
 	, name(ar.pop<be_t<u64>>())
 {
-	control_data_t data{};
-	ar(data.signaled);
-	const retro_u128_t word = word_of(data);
-	retro_atomic_128_init(&lv2_control, word);
+	s32 signaled = 0;
+	ar(signaled);
+	lv2_lwq_init(&q, static_cast<u32>(signaled));
 }
 
 void lv2_lwmutex::save(utils::serial& ar)
 {
-	ar(protocol, control, name, load_signaled());
+	ar(protocol, control, name, static_cast<s32>(lv2_lwq_signal(&q)));
+}
+
+static_assert(ppu_thread::id_count <= LV2_LWQ_SLOTS, "a PPU thread's slot in an lwmutex's word is its ID's index");
+
+u32 lv2_lwmutex::slot_of(const ppu_thread& ppu)
+{
+	using traits = id_manager::id_traits<named_thread<ppu_thread>>;
+	return id_manager::get_index(ppu.id, traits::base, traits::step, traits::count, traits::invl_range);
+}
+
+int lv2_lwmutex::rank(void* ctx, unsigned slot)
+{
+	const auto ppu = static_cast<lv2_lwmutex*>(ctx)->thread_in(slot);
+	return ppu ? ppu->prio.load().prio : 0;
+}
+
+s32 lv2_lwmutex::try_own(ppu_thread* cpu)
+{
+	const u32 slot = slot_of(*cpu);
+	retro_atomic_store_release_ptr(&thread[slot], cpu);
+
+	u32 signal = 0;
+	const int got = lv2_lwq_lock(&q, slot, &signal);
+	ensure(got != LV2_LWQ_BAD);
+
+	if (got == LV2_LWQ_OWNED)
+	{
+		return static_cast<s32>(signal);
+	}
+
+	const bool notify = lwcond_waiters.fetch_op([](s32& val)
+	{
+		if (val + 0u <= 1u << 31)
+		{
+			// Value was either positive or INT32_MIN
+			return false;
+		}
+
+		// lwmutex was set to be destroyed, but there are lwcond waiters
+		// Turn off the "lwcond_waiters notification" bit as we are adding an lwmutex waiter
+		val &= 0x7fff'ffff;
+		return true;
+	}).second;
+
+	if (notify)
+	{
+		// Notify lwmutex destroyer (may cause EBUSY to be returned for it)
+		lwcond_waiters.notify_all();
+	}
+
+	return 0;
+}
+
+bool lv2_lwmutex::resaving()
+{
+	if (!lv2_lwq_any_waiter(&q))
+	{
+		return false;
+	}
+
+	for (u32 slot = 0; slot < LV2_LWQ_SLOTS; slot++)
+	{
+		if (lv2_lwq_waits(&q, slot))
+		{
+			const auto cpu = thread_in(slot);
+
+			if (cpu && cpu->state & cpu_flag::again)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
 }
 
 error_code _sys_lwmutex_create(ppu_thread& ppu, vm::ptr<u32> lwmutex_id, u32 protocol, vm::ptr<sys_lwmutex_t> control, s32 has_name, u64 name)
@@ -74,31 +147,23 @@ error_code _sys_lwmutex_destroy(ppu_thread& ppu, u32 lwmutex_id)
 				return CELL_ESRCH;
 			}
 
-			const CellError found = turn_call(&mutex.turns, [&]() -> CellError
+			// A thread that sleeps on it got in before this (idm::enter), and is
+			// in its word
+			if (lv2_lwq_any_waiter(&mutex.q))
 			{
-				if (mutex.load_sq())
-				{
-					return CELL_EBUSY;
-				}
-
-				old_val = mutex.lwcond_waiters.or_fetch(smin);
-
-				if (old_val != smin)
-				{
-					// Repeat loop: there are lwcond waiters
-					return CELL_EAGAIN;
-				}
-
-				return {};
-			});
-
-			if (found == CELL_EAGAIN)
-			{
-				// Deschedule if waiters were found: this thread's own, out of the turn
-				lv2_obj::sleep(ppu);
+				return CELL_EBUSY;
 			}
 
-			return found;
+			old_val = mutex.lwcond_waiters.or_fetch(smin);
+
+			if (old_val != smin)
+			{
+				// Repeat loop: there are lwcond waiters. Descheduled meanwhile
+				lv2_obj::sleep(ppu);
+				return CELL_EAGAIN;
+			}
+
+			return {};
 		});
 
 		if (!ptr)
@@ -151,16 +216,7 @@ error_code _sys_lwmutex_lock(ppu_thread& ppu, u32 lwmutex_id, u64 timeout)
 
 	const auto take_signal = [&](lv2_lwmutex& mutex) -> bool
 	{
-		if (s32 signal = mutex.change_control([](lv2_lwmutex::control_data_t& data)
-		{
-			if (data.signaled)
-			{
-				data.signaled = 0;
-				return true;
-			}
-
-			return false;
-		}).first.signaled)
+		if (const s32 signal = static_cast<s32>(lv2_lwq_take(&mutex.q)))
 		{
 			if (~signal & 1)
 			{
@@ -194,6 +250,7 @@ error_code _sys_lwmutex_lock(ppu_thread& ppu, u32 lwmutex_id, u64 timeout)
 	{
 		stx::shared_ptr<lv2_lwmutex> ptr;
 		bool ret = false;
+		bool slept = false;
 
 		explicit operator bool() const { return !!ptr; }
 		lv2_lwmutex* operator->() const { return ptr.get(); }
@@ -209,6 +266,7 @@ error_code _sys_lwmutex_lock(ppu_thread& ppu, u32 lwmutex_id, u64 timeout)
 		// that the ID is gone before it has done anything.
 		if (const auto entered = idm::enter<lv2_obj, lv2_lwmutex>(lwmutex_id, mutex.ptr.get()))
 		{
+			bool& slept = mutex.slept;
 			mutex.ret = [&, notify = lv2_obj::notify_all_t()](lv2_lwmutex& mutex)
 			{
 				if (take_signal(mutex))
@@ -233,6 +291,7 @@ error_code _sys_lwmutex_lock(ppu_thread& ppu, u32 lwmutex_id, u64 timeout)
 
 				const bool finished = !mutex.sleep(ppu, timeout);
 				notify.cleanup();
+				slept = true;
 				return finished;
 			}(*mutex.ptr);
 		}
@@ -252,9 +311,20 @@ error_code _sys_lwmutex_lock(ppu_thread& ppu, u32 lwmutex_id, u64 timeout)
 		return { CELL_ESRCH, "Invalid ID" };
 	}
 
+	// Given it by an unlock (it slept): by an unlock2, it says so
+	const auto given = [&]
+	{
+		if (ppu.gpr[3] == CELL_OK && lv2_lwq_given2(&mutex->q, lv2_lwmutex::slot_of(ppu)))
+		{
+			ppu.gpr[3] = CELL_EBUSY;
+		}
+
+		return not_an_error(ppu.gpr[3]);
+	};
+
 	if (mutex.ret)
 	{
-		return not_an_error(ppu.gpr[3]);
+		return mutex.slept ? given() : not_an_error(ppu.gpr[3]);
 	}
 
 	while (auto state = +ppu.state)
@@ -266,36 +336,13 @@ error_code _sys_lwmutex_lock(ppu_thread& ppu, u32 lwmutex_id, u64 timeout)
 
 		if (is_stopped(state))
 		{
-			const bool queued = turn_call(&mutex->turns, [&]
-			{
-				for (auto cpu = mutex->load_sq(); cpu; cpu = cpu->next_cpu)
-				{
-					if (cpu == &ppu)
-					{
-						return true;
-					}
-				}
-
-				return false;
-			});
-
-			if (queued)
+			if (lv2_lwq_waits(&mutex->q, lv2_lwmutex::slot_of(ppu)))
 			{
 				ppu.state += cpu_flag::again;
 				return {};
 			}
 
 			break;
-		}
-
-		for (usz i = 0; cpu_flag::signal - ppu.state && i < 50; i++)
-		{
-			busy_wait(500);
-		}
-
-		if (ppu.state & cpu_flag::signal)
- 		{
-			continue;
 		}
 
 		if (timeout)
@@ -310,40 +357,10 @@ error_code _sys_lwmutex_lock(ppu_thread& ppu, u32 lwmutex_id, u64 timeout)
 
 				ppu.state += cpu_flag::wait;
 
-				// Off the queue in the lwmutex's turn, or given it by an unlock,
-				// whose turn has woken it by the time this one runs
-				bool success = false;
-
-				turn_call(&mutex->turns, [&]
+				// Out of the sleepers in one change, or given the lwmutex by an
+				// unlock that chose it first: then it is woken, and has it
+				if (lv2_lwq_leave(&mutex->q, lv2_lwmutex::slot_of(ppu)))
 				{
-					mutex->change_control([&](lv2_lwmutex::control_data_t& data)
-					{
-						success = false;
-
-						ppu_thread* sq = static_cast<ppu_thread*>(data.sq);
-
-						const bool retval = &ppu == sq;
-
-						if (!mutex->unqueue<false>(sq, &ppu))
-						{
-							return false;
-						}
-
-						success = true;
-
-						if (!retval)
-						{
-							return false;
-						}
-
-						data.sq = sq;
-						return true;
-					});
-				});
-
-				if (success)
-				{
-					ppu.next_cpu = nullptr;
 					ppu.gpr[3] = CELL_ETIMEDOUT;
 				}
 
@@ -356,7 +373,7 @@ error_code _sys_lwmutex_lock(ppu_thread& ppu, u32 lwmutex_id, u64 timeout)
 		}
 	}
 
-	return not_an_error(ppu.gpr[3]);
+	return given();
 }
 
 error_code _sys_lwmutex_trylock(ppu_thread& ppu, u32 lwmutex_id)
@@ -378,16 +395,7 @@ error_code _sys_lwmutex_trylock(ppu_thread& ppu, u32 lwmutex_id)
 	if (const auto pinned = idm::pin<lv2_obj, lv2_lwmutex>(lwmutex_id))
 	{
 		mutex.found = true;
-		mutex.ret = pinned->change_control([](lv2_lwmutex::control_data_t& data)
-		{
-			if (data.signaled & 1)
-			{
-				data.signaled = 0;
-				return true;
-			}
-
-			return false;
-		}).second;
+		mutex.ret = lv2_lwq_trylock(&pinned->q) != 0;
 	}
 
 	if (!mutex)
@@ -440,24 +448,18 @@ error_code _sys_lwmutex_unlock(ppu_thread& ppu, u32 lwmutex_id)
 			return;
 		}
 
-		// Given to a waiter in the lwmutex's turn; true for an unlock to be done again
-		if (turn_call(&mutex.turns, [&]
-		{
-			if (const auto cpu = mutex.reown<ppu_thread>())
-			{
-				if (static_cast<ppu_thread*>(cpu)->state & cpu_flag::again)
-				{
-					return true;
-				}
-
-				mutex.awake(cpu);
-				notify.cleanup(); // lv2_lwmutex::mutex is not really active 99% of the time, can be ignored
-			}
-
-			return false;
-		}))
+		// A sleeper to be saved again: the unlock is done again after
+		if (mutex.resaving())
 		{
 			ppu.state += cpu_flag::again;
+			return;
+		}
+
+		// Given to the best sleeper in one change, no turn
+		if (const auto cpu = mutex.reown())
+		{
+			mutex.awake(cpu);
+			notify.cleanup(); // lv2_lwmutex::mutex is not really active 99% of the time, can be ignored
 		}
 	}(*mutex);
 	}
@@ -499,25 +501,18 @@ error_code _sys_lwmutex_unlock2(ppu_thread& ppu, u32 lwmutex_id)
 			return;
 		}
 
-		// Given to a waiter in the lwmutex's turn; true for an unlock to be done again
-		if (turn_call(&mutex.turns, [&]
-		{
-			if (const auto cpu = mutex.reown<ppu_thread>(true))
-			{
-				if (static_cast<ppu_thread*>(cpu)->state & cpu_flag::again)
-				{
-					return true;
-				}
-
-				static_cast<ppu_thread*>(cpu)->gpr[3] = CELL_EBUSY;
-				mutex.awake(cpu);
-				notify.cleanup(); // lv2_lwmutex::mutex is not really active 99% of the time, can be ignored
-			}
-
-			return false;
-		}))
+		// A sleeper to be saved again: the unlock is done again after
+		if (mutex.resaving())
 		{
 			ppu.state += cpu_flag::again;
+			return;
+		}
+
+		// Given to the best sleeper in one change, no turn
+		if (const auto cpu = mutex.reown(true))
+		{
+			mutex.awake(cpu);
+			notify.cleanup(); // lv2_lwmutex::mutex is not really active 99% of the time, can be ignored
 		}
 	}(*mutex);
 	}

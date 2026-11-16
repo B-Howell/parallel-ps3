@@ -1,7 +1,7 @@
 #pragma once
 
 #include "sys_sync.h"
-#include "Emu/CPU/turn_calls.h"
+#include "lv2_waitset.h"
 
 #include "Emu/Memory/vm_ptr.h"
 
@@ -31,10 +31,15 @@ struct lv2_lwcond final : lv2_obj
 	const lv2_protocol protocol;
 	vm::ptr<sys_lwcond_t> control;
 
-	// The queue changes in turn (turn_calls.h): no lock. Its lwmutex's turn
-	// is taken inside this one where both change
-	turn_calls_cpp turns;
-	ppu_thread* sq{};
+	// The threads waiting, a waiter set (lv2_waitset.c): no lock, no turn.
+	// Each waiter's thread in its slot; and what a signal that took it did
+	// with it (its verdict: 0 not yet, 1 woken, 2 put to sleep on the
+	// lwmutex), given before it is woken, for a waiter whose time ran out
+	// as it was taken - waited for then, with its time-out told first
+	lv2_waitset_t waiters;
+	retro_atomic_ptr_t thread[LV2_WAITSET_SLOTS]{};
+	retro_atomic_int_t verdict[LV2_WAITSET_SLOTS]{};
+	retro_atomic_int_t timed_out[LV2_WAITSET_SLOTS]{};
 
 	atomic_t<s32> lwmutex_waiters = 0;
 
@@ -44,6 +49,7 @@ struct lv2_lwcond final : lv2_obj
 		, protocol{static_cast<u8>(protocol)}
 		, control(control)
 	{
+		lv2_waitset_init(&waiters);
 	}
 
 	lv2_lwcond(utils::serial& ar);

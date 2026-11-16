@@ -1415,18 +1415,13 @@ int main()
 				CHECK(ran == 2);
 			}
 
-			const auto set_queue = [](lv2_lwmutex& mutex, ppu_thread* to)
-			{
-				mutex.change_control([&](lv2_lwmutex::control_data_t& data) { data.sq = to; });
-			};
-
 			std::thread waiters[4];
 			for (u32 t = 0; t < 4; t++)
 			{
-				waiters[t] = std::thread([t, set_queue]
+				waiters[t] = std::thread([t]
 				{
-					// Stands for the thread in the queue; never looked into
-					ppu_thread* const self = reinterpret_cast<ppu_thread*>(static_cast<uptr>(0x1000 + t * 0x1000));
+					// The thread's slot among the sleepers
+					const u32 me = t * 9 + 2;
 					u32 x = t * 2654435761u + 13;
 
 					while (!retro_atomic_load_acquire_int(&s_stop4))
@@ -1441,14 +1436,11 @@ int main()
 							if (x & 0x200)
 								std::this_thread::yield();
 
-							return mutex.change_control([&](lv2_lwmutex::control_data_t& data)
-							{
-								if (data.sq)
-									return false;
+							if (lv2_lwq_any_waiter(&mutex.q))
+								return false;
 
-								data.sq = self;
-								return true;
-							}).second;
+							u32 signal = 0;
+							return lv2_lwq_lock(&mutex.q, me, &signal) == LV2_LWQ_QUEUED;
 						});
 
 						if (!mutex)
@@ -1467,11 +1459,12 @@ int main()
 							(void)retro_atomic_load_relaxed_int(&s_stop4);
 						if (idm::check_unlocked<lv2_obj, lv2_lwmutex>(id) != mutex.ptr.get())
 							retro_atomic_fetch_add_int(&s_bad4, 1);
-						// Still at the queue's head: nobody else got in meanwhile
-						if (mutex.ptr->load_sq() != self)
+						// Still asleep on it: nobody gave it the lwmutex meanwhile
+						if (!lv2_lwq_waits(&mutex.ptr->q, me))
 							retro_atomic_fetch_add_int(&s_bad4, 1);
 						retro_atomic_fetch_sub_int(&s_in_queue4[(id >> 8) & 8191], 1);
-						set_queue(*mutex.ptr, nullptr);
+						if (!lv2_lwq_leave(&mutex.ptr->q, me))
+							retro_atomic_fetch_add_int(&s_bad4, 1);
 					}
 				});
 			}
@@ -1483,7 +1476,7 @@ int main()
 
 				const auto gone = idm::withdraw<lv2_obj, lv2_lwmutex>(id, [&](lv2_lwmutex& mutex) -> CellError
 				{
-					if (mutex.load_sq())
+					if (lv2_lwq_any_waiter(&mutex.q))
 						return CELL_EBUSY;
 
 					if (retro_atomic_load_acquire_int(&s_in_queue4[place(id)]))

@@ -9,6 +9,8 @@
 
 #include "util/asm.hpp"
 
+#include <rthreads/retro_waitaddr.h>
+
 LOG_CHANNEL(sys_lwcond);
 
 lv2_lwcond::lv2_lwcond(utils::serial& ar)
@@ -17,6 +19,153 @@ lv2_lwcond::lv2_lwcond(utils::serial& ar)
 	, protocol(ar)
 	, control(ar.pop<decltype(control)>())
 {
+	lv2_waitset_init(&waiters);
+}
+
+static_assert(ppu_thread::id_count <= LV2_WAITSET_SLOTS, "a PPU thread's slot among an lwcond's waiters is its ID's index");
+
+// What a signal that took a waiter did with it
+enum : int
+{
+	lwcond_pending  = 0,
+	lwcond_woken    = 1, // woken, gpr[3] what it returns
+	lwcond_on_mutex = 2, // asleep on the lwmutex, to be given it
+};
+
+// A waiter's rank: its thread's priority, unless the lwcond is FIFO
+static int lwcond_rank(void* ctx, unsigned slot)
+{
+	auto& cond = *static_cast<lv2_lwcond*>(ctx);
+	const auto* ppu = static_cast<ppu_thread*>(retro_atomic_load_acquire_ptr(&cond.thread[slot]));
+	return ppu ? ppu->prio.load().prio : 0;
+}
+
+static lv2_waitset_rank_t lwcond_ranking(const lv2_lwcond& cond)
+{
+	return cond.protocol == SYS_SYNC_FIFO ? nullptr : lwcond_rank;
+}
+
+// The verdict given to the waiter a signal took, before it is woken; a
+// waiter whose time ran out meanwhile, waiting for it, woken
+static void lwcond_give(lv2_lwcond& cond, u32 slot, int verdict)
+{
+	retro_atomic_store_release_int(&cond.verdict[slot], verdict);
+	lv2_waitset_fence();
+
+	if (retro_atomic_load_acquire_int(&cond.timed_out[slot]))
+	{
+		retro_waitaddr_notify_all(&cond.verdict[slot]);
+	}
+}
+
+// A waiter out of the waiters but with no verdict yet: a signal took it and
+// is giving it one. Its time-out told first, so the signal wakes it here
+static int lwcond_await(lv2_lwcond& cond, u32 slot)
+{
+	retro_atomic_store_release_int(&cond.timed_out[slot], 1);
+	lv2_waitset_fence();
+
+	for (;;)
+	{
+		const int verdict = retro_atomic_load_acquire_int(&cond.verdict[slot]);
+
+		if (verdict != lwcond_pending)
+		{
+			return verdict;
+		}
+
+		const retro_waitaddr_t w{&cond.verdict[slot], static_cast<u32>(lwcond_pending)};
+		retro_waitaddr_wait(&w, 1, -1);
+	}
+}
+
+// A waiter whose time ran out: out of the waiters (true), or taken by a
+// signal, whose verdict is waited for (false)
+static bool lwcond_await_or_leave(lv2_lwcond& cond, u32 slot)
+{
+	retro_atomic_store_release_int(&cond.timed_out[slot], 1);
+	lv2_waitset_fence();
+
+	if (lv2_waitset_leave(&cond.waiters, slot))
+	{
+		return true;
+	}
+
+	lwcond_await(cond, slot);
+	return false;
+}
+
+// A waiter that is to be saved again (a save state being made) is not
+// signalled now: the signal is done again after
+static bool lwcond_resaving(lv2_lwcond& cond)
+{
+	if (!lv2_waitset_any(&cond.waiters))
+	{
+		return false;
+	}
+
+	for (u32 slot = 0; slot < LV2_WAITSET_SLOTS; slot++)
+	{
+		if (lv2_waitset_has(&cond.waiters, slot))
+		{
+			const auto* cpu = static_cast<ppu_thread*>(retro_atomic_load_acquire_ptr(&cond.thread[slot]));
+
+			if (cpu && cpu->state & cpu_flag::again)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+// The waiter a signal took given what @mode does. Woken (or appended for
+// the caller to wake all, @append) unless it is put to sleep on the lwmutex
+static void lwcond_hand(lv2_lwcond& cond, lv2_lwmutex* mutex, ppu_thread* result, u32 mode, bool append)
+{
+	const u32 slot = lv2_lwmutex::slot_of(*result);
+
+	const auto wake = [&](ppu_thread* cpu)
+	{
+		if (append)
+		{
+			lv2_obj::append(cpu);
+		}
+		else
+		{
+			cond.awake(cpu);
+		}
+	};
+
+	if (mode == 2)
+	{
+		result->gpr[3] = CELL_EBUSY;
+	}
+	else if (mode == 1 || (mode == 3 && lv2_lwq_any_waiter(&mutex->q)))
+	{
+		// Respect ordering of the sleep queue: put to sleep on the lwmutex,
+		// unless it is free - then it has it
+		if (!mutex->try_own(result))
+		{
+			lwcond_give(cond, slot, lwcond_on_mutex);
+
+			// Mode 3: the calling thread owned it forcefully, and gives it up
+			// to the best sleeper - the thread just queued, if no other
+			if (mode == 3)
+			{
+				if (const auto next = mutex->reown())
+				{
+					wake(next);
+				}
+			}
+
+			return;
+		}
+	}
+
+	lwcond_give(cond, slot, lwcond_woken);
+	wake(result);
 }
 
 void lv2_lwcond::save(utils::serial& ar)
@@ -80,31 +229,22 @@ error_code _sys_lwcond_destroy(ppu_thread& ppu, u32 lwcond_id)
 				return CELL_ESRCH;
 			}
 
-			const CellError found = turn_call(&cond.turns, [&]() -> CellError
+			if (lv2_waitset_any(&cond.waiters))
 			{
-				if (atomic_storage<ppu_thread*>::load(cond.sq))
-				{
-					return CELL_EBUSY;
-				}
-
-				old_val = cond.lwmutex_waiters.or_fetch(smin);
-
-				if (old_val != smin)
-				{
-					// Repeat loop: there are lwmutex waiters inside _sys_lwcond_queue_wait
-					return CELL_EAGAIN;
-				}
-
-				return {};
-			});
-
-			if (found == CELL_EAGAIN)
-			{
-				// De-schedule if waiters were found: this thread's own, out of the turn
-				lv2_obj::sleep(ppu);
+				return CELL_EBUSY;
 			}
 
-			return found;
+			old_val = cond.lwmutex_waiters.or_fetch(smin);
+
+			if (old_val != smin)
+			{
+				// Repeat loop: there are lwmutex waiters inside _sys_lwcond_queue_wait.
+				// Descheduled meanwhile
+				lv2_obj::sleep(ppu);
+				return CELL_EAGAIN;
+			}
+
+			return {};
 		});
 
 		if (!ptr)
@@ -221,103 +361,51 @@ error_code _sys_lwcond_signal(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id, u6
 				return -1;
 			}
 
-			if (atomic_storage<ppu_thread*>::load(cond.sq))
+			if (ppu.state & cpu_flag::suspend)
 			{
-				// In the lwcond's turn
-				return turn_call(&cond.turns, [&]() -> int
+				// Test if another signal caused the current thread to be suspended, in which case it needs to wait until the thread wakes up (otherwise the signal may cause unexpected results)
+				finished = false;
+				return 0;
+			}
+
+			if (!lv2_waitset_any(&cond.waiters))
+			{
+				return 0;
+			}
+
+			if (lwcond_resaving(cond) || (cpu && cpu->state & cpu_flag::again) || (mode == 3 && mutex->resaving()))
+			{
+				ppu.state += cpu_flag::again;
+				return 0;
+			}
+
+			// Taken off the waiters in one change: the thread named, or the
+			// best. No turn
+			ppu_thread* result = nullptr;
+
+			if (cpu)
+			{
+				if (!lv2_waitset_leave(&cond.waiters, lv2_lwmutex::slot_of(*cpu)))
 				{
-					if (ppu.state & cpu_flag::suspend)
-					{
-						// Test if another signal caused the current thread to be suspended, in which case it needs to wait until the thread wakes up (otherwise the signal may cause unexpected results)
-						finished = false;
-						return 0;
-					}
-
-					if (cpu)
-					{
-						if (static_cast<ppu_thread*>(cpu)->state & cpu_flag::again)
-						{
-							ppu.state += cpu_flag::again;
-							return 0;
-						}
-					}
-
-					auto result = cpu ? cond.unqueue(cond.sq, cpu) :
-						cond.schedule<ppu_thread>(cond.sq, cond.protocol);
-
-					if (result)
-					{
-						if (static_cast<ppu_thread*>(result)->state & cpu_flag::again)
-						{
-							ppu.state += cpu_flag::again;
-							return 0;
-						}
-
-						if (mode == 2)
-						{
-							static_cast<ppu_thread*>(result)->gpr[3] = CELL_EBUSY;
-						}
-						else if (mode == 3 && mutex->load_sq()) [[unlikely]]
-						{
-							// In the lwmutex's turn, inside the lwcond's
-							const bool again = turn_call(&mutex->turns, [&]
-							{
-								// Respect ordering of the sleep queue
-								mutex->try_own(result, true);
-
-								// There is one: the thread just queued, if no other
-								auto result2 = ensure(mutex->reown<ppu_thread>());
-
-								if (result2->state & cpu_flag::again)
-								{
-									return true;
-								}
-
-								if (result2 != result)
-								{
-									cond.awake(result2);
-									result = nullptr;
-								}
-
-								return false;
-							});
-
-							if (again)
-							{
-								ppu.state += cpu_flag::again;
-								return 0;
-							}
-						}
-						else if (mode == 1)
-						{
-							mutex->try_own(result, true);
-							result = nullptr;
-						}
-
-						if (result)
-						{
-							cond.awake(result);
-						}
-
-						return 1;
-					}
-
 					return 0;
-				});
+				}
+
+				result = cpu;
 			}
 			else
 			{
-				// A signal in the lwcond's turn meanwhile: waited out
-				turn_call(&cond.turns, [] {});
+				const int slot = lv2_waitset_claim(&cond.waiters, lwcond_ranking(cond), &cond);
 
-				if (ppu.state & cpu_flag::suspend)
+				if (slot < 0)
 				{
-					finished = false;
 					return 0;
 				}
+
+				result = ensure(static_cast<ppu_thread*>(retro_atomic_load_acquire_ptr(&cond.thread[slot])));
 			}
 
-			return 0;
+			lwcond_hand(cond, mutex, result, mode, false);
+			return 1;
 		});
 
 		if (!finished)
@@ -403,72 +491,65 @@ error_code _sys_lwcond_signal_all(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 				return -1;
 			}
 
-			if (atomic_storage<ppu_thread*>::load(cond.sq))
+			if (ppu.state & cpu_flag::suspend)
 			{
-				// In the lwcond's turn
-				return turn_call(&cond.turns, [&]() -> int
-				{
-					if (ppu.state & cpu_flag::suspend)
-					{
-						// Test if another signal caused the current thread to be suspended, in which case it needs to wait until the thread wakes up (otherwise the signal may cause unexpected results)
-						finished = false;
-						return 0;
-					}
-
-					u32 result = 0;
-
-					for (auto cpu = +cond.sq; cpu; cpu = cpu->next_cpu)
-					{
-						if (cpu->state & cpu_flag::again)
-						{
-							ppu.state += cpu_flag::again;
-							return 0;
-						}
-					}
-
-					auto sq = cond.sq;
-					atomic_storage<ppu_thread*>::release(cond.sq, nullptr);
-
-					while (const auto cpu = cond.schedule<ppu_thread>(sq, cond.protocol))
-					{
-						if (mode == 2)
-						{
-							static_cast<ppu_thread*>(cpu)->gpr[3] = CELL_EBUSY;
-						}
-
-						if (mode == 1)
-						{
-							mutex->try_own(cpu, true);
-						}
-						else
-						{
-							lv2_obj::append(cpu);
-						}
-
-						result++;
-					}
-
-					if (result && mode == 2)
-					{
-						lv2_obj::awake_all();
-					}
-
-					return result;
-				});
+				// Test if another signal caused the current thread to be suspended, in which case it needs to wait until the thread wakes up (otherwise the signal may cause unexpected results)
+				finished = false;
+				return 0;
 			}
-			else
-			{
-				// A signal in the lwcond's turn meanwhile: waited out
-				turn_call(&cond.turns, [] {});
 
-				if (ppu.state & cpu_flag::suspend)
+			if (!lv2_waitset_any(&cond.waiters))
+			{
+				return 0;
+			}
+
+			if (lwcond_resaving(cond))
+			{
+				ppu.state += cpu_flag::again;
+				return 0;
+			}
+
+			// Every waiter taken off in one change, then handed over in the
+			// order they would be signalled one by one
+			const retro_u128_t taken = lv2_waitset_claim_all(&cond.waiters);
+			const auto ranking = lwcond_ranking(cond);
+
+			std::array<u32, LV2_WAITSET_SLOTS> order{};
+			u32 count = 0;
+
+			for (u32 slot = 0; slot < LV2_WAITSET_SLOTS; slot++)
+			{
+				if (slot < 64 ? ((taken.lo >> slot) & 1) : ((taken.hi >> (slot - 64)) & 1))
 				{
-					finished = false;
-					return 0;
+					order[count++] = slot;
 				}
 			}
 
-			return 0;
+			std::stable_sort(order.begin(), order.begin() + count, [&](u32 a, u32 b)
+			{
+				const int ra = ranking ? ranking(&cond, a) : 0;
+				const int rb = ranking ? ranking(&cond, b) : 0;
+
+				if (ra != rb)
+				{
+					return ra < rb;
+				}
+
+				// Tickets compared by their difference: they wrap
+				return static_cast<s32>(static_cast<u32>(retro_atomic_load_acquire_int(&cond.waiters.ticket[a])) - static_cast<u32>(retro_atomic_load_acquire_int(&cond.waiters.ticket[b]))) < 0;
+			});
+
+			for (u32 i = 0; i < count; i++)
+			{
+				lwcond_hand(cond, mutex, ensure(static_cast<ppu_thread*>(retro_atomic_load_acquire_ptr(&cond.thread[order[i]]))), mode, true);
+			}
+
+			if (count)
+			{
+				lv2_obj::awake_all();
+			}
+
+			return static_cast<int>(count);
 		});
 
 		if (!finished)
@@ -506,6 +587,9 @@ error_code _sys_lwcond_queue_wait(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 	// Woken before its sleep began: no wait follows
 	bool woken_early = false;
 
+	// Its slot among the lwcond's waiters and the lwmutex's sleepers
+	const u32 slot = lv2_lwmutex::slot_of(ppu);
+
 	// Found with no lock over the IDs. The thread makes itself a waiter of
 	// the lwcond, which _sys_lwcond_destroy asks about (idm::get_entered),
 	// and counts itself among the lwmutex's lwcond waiters, which
@@ -540,55 +624,47 @@ error_code _sys_lwcond_queue_wait(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 		// sleep: that sleep is then cancelled (lv2_obj::sleep gives false)
 		ppu.cancel_sleep = 1;
 
-		// The queues change in the lwcond's turn, the lwmutex's inside it. The
-		// lwmutex's next owner is woken on this thread with this thread's
-		// sleep, after the turn, as it was: the threads to wake are this
-		// thread's own list
-		ppu_thread* next_owner = nullptr;
+		cond.lwmutex_waiters++;
 
-		const bool again = turn_call(&cond.turns, [&]
+		// The lwmutex's next owner to wake: none to be saved again, or the
+		// wait is done again after
+		if (!ppu.loaded_from_savestate && mutex->resaving())
 		{
-			cond.lwmutex_waiters++;
-
-			if (mutex_sleep)
-			{
-				// Special: loading state from the point of waiting on lwmutex sleep queue
-				mutex->try_own(&ppu, true);
-			}
-			else
-			{
-				// Add a waiter
-				lv2_obj::emplace(cond.sq, &ppu);
-			}
-
-			if (!ppu.loaded_from_savestate && !mutex->try_unlock(false))
-			{
-				// Process lwmutex sleep queue
-				const auto cpu = turn_call(&mutex->turns, [&] { return mutex->reown<ppu_thread>(); });
-
-				if (cpu)
-				{
-					if (static_cast<ppu_thread*>(cpu)->state & cpu_flag::again)
-					{
-						ensure(cond.unqueue(cond.sq, &ppu));
-						cond.lwmutex_waiters--;
-						mutex->lwcond_waiters--;
-						return true;
-					}
-
-					next_owner = cpu;
-				}
-			}
-
-			return false;
-		});
-
-		if (again)
-		{
+			cond.lwmutex_waiters--;
+			mutex->lwcond_waiters--;
 			ppu.cancel_sleep = 0;
 			ppu.state += cpu_flag::again;
 			return;
 		}
+
+		retro_atomic_store_release_ptr(&cond.thread[slot], &ppu);
+		retro_atomic_store_release_int(&cond.verdict[slot], lwcond_pending);
+		retro_atomic_store_release_int(&cond.timed_out[slot], 0);
+
+		if (mutex_sleep)
+		{
+			// Special: loading state from the point of waiting on lwmutex sleep
+			// queue. Asleep on it - or free, and its owner
+			if (mutex->try_own(&ppu))
+			{
+				retro_atomic_store_release_int(&cond.verdict[slot], lwcond_woken);
+				ppu.cancel_sleep = 0;
+				woken_early = true;
+				return;
+			}
+
+			retro_atomic_store_release_int(&cond.verdict[slot], lwcond_on_mutex);
+		}
+		else
+		{
+			// A waiter, in one change; then the lwmutex given up, which a
+			// signal needs to wake it with
+			ensure(lv2_waitset_join(&cond.waiters, slot));
+		}
+
+		// The lwmutex given up: to its best sleeper, woken on this thread with
+		// this thread's sleep, or as the signal. No turn
+		ppu_thread* const next_owner = ppu.loaded_from_savestate ? nullptr : mutex->reown();
 
 		if (next_owner)
 		{
@@ -629,33 +705,10 @@ error_code _sys_lwcond_queue_wait(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 
 		if (is_stopped(state))
 		{
-			bool mutex_sleep = false;
-			bool cond_sleep = false;
-
-			// In the lwcond's turn and the lwmutex's inside it, both queues still
-			turn_call(&cond->turns, [&]
-			{
-				turn_call(&mutex->turns, [&]
-				{
-					for (auto cpu = mutex->load_sq(); cpu; cpu = cpu->next_cpu)
-					{
-						if (cpu == &ppu)
-						{
-							mutex_sleep = true;
-							break;
-						}
-					}
-
-					for (auto cpu = atomic_storage<ppu_thread*>::load(cond->sq); cpu; cpu = cpu->next_cpu)
-					{
-						if (cpu == &ppu)
-						{
-							cond_sleep = true;
-							break;
-						}
-					}
-				});
-			});
+			// Still a waiter, or asleep on the lwmutex - or taken by a signal,
+			// whose verdict is waited for
+			const bool cond_sleep = lv2_waitset_has(&cond->waiters, slot);
+			const bool mutex_sleep = !cond_sleep && lwcond_await(*cond, slot) == lwcond_on_mutex && lv2_lwq_waits(&mutex->q, slot);
 
 			if (!cond_sleep && !mutex_sleep)
 			{
@@ -665,16 +718,6 @@ error_code _sys_lwcond_queue_wait(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 			sstate(mutex_sleep);
 			ppu.state += cpu_flag::again;
 			break;
-		}
-
-		for (usz i = 0; cpu_flag::signal - ppu.state && i < 50; i++)
-		{
-			busy_wait(500);
-		}
-
-		if (ppu.state & cpu_flag::signal)
- 		{
-			continue;
 		}
 
 		if (timeout)
@@ -689,56 +732,15 @@ error_code _sys_lwcond_queue_wait(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 
 				ppu.state += cpu_flag::wait;
 
-				// Off the lwcond's queue in its turn, or off the lwmutex's in that
-				// one's, inside it - or given the lwmutex by an unlock already
-				bool success = false;
-
-				const bool off_cond = turn_call(&cond->turns, [&]
-				{
-					if (cond->unqueue(cond->sq, &ppu))
-					{
-						return true;
-					}
-
-					turn_call(&mutex->turns, [&]
-					{
-						mutex->change_control([&](lv2_lwmutex::control_data_t& data)
-						{
-							success = false;
-
-							ppu_thread* sq = static_cast<ppu_thread*>(data.sq);
-
-							const bool retval = &ppu == sq;
-
-							if (!mutex->unqueue<false>(sq, &ppu))
-							{
-								return false;
-							}
-
-							success = true;
-
-							if (!retval)
-							{
-								return false;
-							}
-
-							data.sq = sq;
-							return true;
-						});
-					});
-
-					return false;
-				});
-
-				if (off_cond)
+				// Out of the waiters in one change; or taken by a signal, whose
+				// verdict says where it is - asleep on the lwmutex, out of its
+				// sleepers in one change, or given it already - or woken
+				if (lwcond_await_or_leave(*cond, slot))
 				{
 					ppu.gpr[3] = CELL_ETIMEDOUT;
-					break;
 				}
-
-				if (success)
+				else if (retro_atomic_load_acquire_int(&cond->verdict[slot]) == lwcond_on_mutex && lv2_lwq_leave(&mutex->q, slot))
 				{
-					ppu.next_cpu = nullptr;
 					ppu.gpr[3] = CELL_ETIMEDOUT;
 				}
 
@@ -749,6 +751,12 @@ error_code _sys_lwcond_queue_wait(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 		{
 			ppu.state.wait(state);
 		}
+	}
+
+	// Given the lwmutex as a sleeper on it by an unlock2: it says so
+	if (ppu.gpr[3] == CELL_OK && retro_atomic_load_acquire_int(&cond->verdict[slot]) == lwcond_on_mutex && lv2_lwq_given2(&mutex->q, slot))
+	{
+		ppu.gpr[3] = CELL_EBUSY;
 	}
 
 	if (--mutex->lwcond_waiters == smin)

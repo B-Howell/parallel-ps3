@@ -232,6 +232,7 @@ target_sources(rpcs3_emu PRIVATE
     Cell/lv2/lv2_ownq.c
     Cell/lv2/lv2_flagq.c
     Cell/lv2/lv2_rwq.c
+    Cell/lv2/lv2_lwq.c
     Cell/lv2/sys_trace.cpp
     Cell/lv2/sys_tty.cpp
     Cell/lv2/sys_uart.cpp
