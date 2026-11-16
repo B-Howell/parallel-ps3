@@ -3,7 +3,7 @@
 #include "sys_sync.h"
 
 #include "Emu/Memory/vm_ptr.h"
-#include "Emu/CPU/turn_calls.h"
+#include "lv2_countq.h"
 
 struct sys_semaphore_attribute_t
 {
@@ -29,48 +29,26 @@ struct lv2_sema final : lv2_obj
 	const u64 name;
 	const s32 max;
 
-	// The waiters and the count's going below zero with them are changed
-	// in turn (turn_calls.h): no lock
-	turn_calls_cpp turns;
-	retro_atomic_int_t val;
-	ppu_thread* sq{};
+	// The count, or the threads waiting for one, in one 128-bit word
+	// (lv2_countq.h): taking a count, waiting, leaving on a timeout and
+	// posting are each one compare-and-swap. No lock, no turn
+	lv2_countq_t q;
+
+	// The thread in each slot while it waits, for a post to wake it (and to
+	// rank it by its priority)
+	retro_atomic_ptr_t waiter[LV2_COUNTQ_SLOTS]{};
 
 	lv2_sema(u32 protocol, u64 key, u64 name, s32 max, s32 value) noexcept
 		: protocol{static_cast<u8>(protocol)}
 		, key(key)
 		, name(name)
 		, max(max)
-		, val(value)
 	{
+		lv2_countq_init(&q, static_cast<u64>(value));
 	}
 
-	// For a thread that found the semaphore under @id with no lock over the
-	// IDs, in the semaphore's turn: takes a count (1), or makes
-	// the thread a waiter (0) - or neither, when the ID no longer names
-	// the semaphore (-1).
-	//
-	// The lock over all IDs kept a destroy from coming between the
-	// semaphore being found and the thread waiting on it. This keeps it:
-	// sys_semaphore_destroy marks the ID before it looks for waiters, and
-	// the thread asks whether the ID still names the semaphore (waiting
-	// for a destroy that is deciding) after it has made itself one. Either
-	// the destroy saw the waiter and failed, or the thread is no waiter
-	// after all.
-	s32 enter(u32 id)
-	{
-		if (retro_atomic_fetch_add_int(&val, -1) <= 0)
-		{
-			if (!idm::still_named<lv2_obj, lv2_sema>(id, this)) [[unlikely]]
-			{
-				retro_atomic_fetch_add_int(&val, 1);
-				return -1;
-			}
-
-			return 0;
-		}
-
-		return 1;
-	}
+	// The slot of a PPU thread: its ID's index
+	static u32 slot_of(const ppu_thread& ppu);
 
 	lv2_sema(utils::serial& ar);
 	static std::function<void(void*)> load(utils::serial& ar);

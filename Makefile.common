@@ -429,6 +429,7 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/rpcs3/Emu/Cell/lv2/sys_timer_ctrl.c \
 	$(CORE_DIR)/rpcs3/Emu/Cell/lv2/lv2_waitset.c \
 	$(CORE_DIR)/rpcs3/Emu/Cell/lv2/lv2_event_ring.c \
+	$(CORE_DIR)/rpcs3/Emu/Cell/lv2/lv2_countq.c \
 	$(CORE_DIR)/rpcs3/Emu/Cell/lv2/sys_trace.cpp \
 	$(CORE_DIR)/rpcs3/Emu/Cell/lv2/sys_tty.cpp \
 	$(CORE_DIR)/rpcs3/Emu/Cell/lv2/sys_uart.cpp \

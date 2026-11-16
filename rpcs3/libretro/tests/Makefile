@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_DYLIB -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_turn_calls test_turn_calls_tsan test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_vk_loader
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_turn_calls test_turn_calls_tsan test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_vk_loader
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -635,6 +635,13 @@ test_vk_interp_uploads: $(VK_INTERP_UPLOADS_DEPS)
 	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -c -o obj/vk_interpreter_uploads.o ../../Emu/RSX/VK/vk_interpreter_uploads.c
 	$(CC) $(CFLAGS) $(SANITIZE) -o $@ obj/test_vk_interp_uploads.o obj/vk_interpreter_uploads.o $(LDFLAGS) $(LDLIBS)
 
+# An lv2 semaphore's count or waiters in one 128-bit word, under ThreadSanitizer
+test_lv2_countq: test_lv2_countq.c test_common.h ../../Emu/Cell/lv2/lv2_countq.c ../../Emu/Cell/lv2/lv2_countq.h
+	@mkdir -p obj
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/test_lv2_countq.o test_lv2_countq.c
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/lv2_countq.o ../../Emu/Cell/lv2/lv2_countq.c
+	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ obj/test_lv2_countq.o obj/lv2_countq.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
+
 # The lv2 sync objects' lock-free pieces: the set of waiting threads and an event queue's ring, under ThreadSanitizer
 LV2_WAITSET_DEPS := test_lv2_waitset.c test_common.h ../../Emu/Cell/lv2/lv2_waitset.c ../../Emu/Cell/lv2/lv2_waitset.h ../../Emu/Cell/lv2/lv2_event_ring.c ../../Emu/Cell/lv2/lv2_event_ring.h
 
@@ -775,7 +782,7 @@ HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellIme
 LOCK_GUARD_MAX := 303
 # turn_call (turn_calls.h) is a lock without a lock object - a queued caller
 # still waits - and is going too: the count may only fall
-TURN_CALL_MAX := 117
+TURN_CALL_MAX := 113
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -860,6 +867,7 @@ check: all
 	./test_lf_post
 	./test_timer_ctrl
 	./test_lv2_waitset
+	./test_lv2_countq
 	./test_vk_loader
 	./test_turn_calls
 	./test_turn_calls_tsan
@@ -927,8 +935,8 @@ check: all
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|mp->mutex" ../../Emu/Cell/lv2/sys_fs.cpp ../../Emu/Cell/lv2/sys_fs.h || grep -rnE "mp->mutex|g_mp_sys_[a-z0-9_]+\.mutex" ../../Emu; then echo "sys_fs: a lock is back - what took a mount point's lock runs on sys_fs's thread (fs_call)"; exit 1; else echo "sys_fs: no lock"; fi
 	@# The frontend's files take no lock: with no reads and writes at an offset, what uses the handle's position runs on one thread
 	@if grep -nE "std::mutex|lock_guard|unique_lock|shared_mutex" ../libretro_vfs.cpp ../libretro_vfs.h; then echo "libretro_vfs: a lock is back - an older frontend's file is used on the serial thread (serial_call)"; exit 1; else echo "libretro_vfs: no lock"; fi
-	@# Semaphores take no lock: their queue and count change in the semaphore's turn (turn_calls.h)
-	@if grep -nE "shared_mutex|lock_guard|unique_lock|->mutex|\.mutex" ../../Emu/Cell/lv2/sys_semaphore.cpp ../../Emu/Cell/lv2/sys_semaphore.h; then echo "sys_semaphore: a lock is back - the queue changes in the semaphore's turn (turn_call)"; exit 1; else echo "sys_semaphore: no lock"; fi
+	@# lv2 semaphores: the count or the waiters in one 128-bit word, each operation one compare-and-swap (lv2_countq.c)
+	@if grep -nE "shared_mutex|lock_guard|unique_lock|->mutex|\.mutex|turn_call|turn_calls|busy_wait" ../../Emu/Cell/lv2/sys_semaphore.cpp ../../Emu/Cell/lv2/sys_semaphore.h; then echo "sys_semaphore: a lock, a turn or a spin is back - the count or the waiters are one word (lv2_countq.c)"; exit 1; else echo "sys_semaphore: one word, no lock, no turn, no spin"; fi
 	@# Event flags take no lock: their queue changes in the flag's turn (turn_calls.h), the pattern by compare-and-swap
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|->mutex|\.mutex|lock_unlock" ../../Emu/Cell/lv2/sys_event_flag.cpp ../../Emu/Cell/lv2/sys_event_flag.h; then echo "sys_event_flag: a lock is back - the queue changes in the flag's turn (turn_call)"; exit 1; else echo "sys_event_flag: no lock, the queue in the flag's turn"; fi
 	@# Mutexes and conditions take no lock: what is not one compare-and-swap of the mutex's word, and the conditions' queues, change in the mutex's turn (turn_calls.h)
