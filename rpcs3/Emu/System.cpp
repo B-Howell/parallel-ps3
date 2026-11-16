@@ -1021,9 +1021,6 @@ bool Emulator::BootBigPictureMode()
 
 	Init();
 
-	// Make sure the games folder is parsed before we enter big picture mode.
-	AddGamesFromDir(rpcs3::utils::get_games_dir());
-
 	g_cfg.video.disable_on_disk_shader_cache.set(true);
 
 	vm::init();
@@ -1405,7 +1402,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 
 			if (!launching_from_disc_archive && !disc_info.empty() && disc_info[0] != '/')
 			{
-				// Restore disc path for disc games (must exist in games.yml i.e. your game library)
+				// Restore disc path for disc games (registered by the disc's boot this session)
 				m_title_id = disc_info;
 
 				// Load /dev_bdvd/ from game list if available
@@ -1585,7 +1582,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 			bool ok = false;
 			std::string title_path;
 
-			// Check if there's a known games.yml path for the Title ID
+			// Check if the disc of the Title ID was booted this session
 			if (std::string game_path = m_games_config.get_path(m_title_id); !game_path.empty())
 			{
 				title_path = std::move(game_path);
@@ -1617,7 +1614,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 					}
 				}
 
-				// Check games.yml paths
+				// Check the paths registered this session
 				if (!title_path.empty())
 				{
 					test_dirs.push_back(title_path + "/PS3_GAME/USRDIR/");
@@ -2313,7 +2310,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 			{
 				std::string game_dir = m_sfo_dir;
 
-				// Add HG games not in HDD0 to games.yml
+				// Register HG games not in HDD0
 				[[maybe_unused]] const games_config::result res = m_games_config.add_external_hdd_game(m_title_id, game_dir);
 
 				const std::string dir = std::string(fmt::trim_sv(std::string_view(game_dir).substr(fs::get_parent_dir_view(game_dir).size() + 1), fs::delim));
@@ -4445,366 +4442,6 @@ std::set<std::string> Emulator::GetGameDirs() const
 	}
 
 	return dirs;
-}
-
-u32 Emulator::AddGamesFromDir(std::string path)
-{
-	u32 games_added = 0;
-
-	fmt::trim_back(path, fs::delim);
-
-	// Don't write "games.yml" on each added game: it is saved once, at the end of the scan.
-	// NOTE: this function is recursive, so the previous value is restored instead of being forced back to enabled,
-	//       otherwise a nested scan would re-enable the write for the remaining part of the outer one
-	const bool save_on_dirty = m_games_config.is_save_on_dirty();
-	m_games_config.set_save_on_dirty(false);
-
-	// A game was found on a path if it has just been added or if it was already registered
-	const auto game_found = [](game_boot_result error)
-	{
-		return error == game_boot_result::no_errors || error == game_boot_result::already_added;
-	};
-
-	// search for a game on the provided path first (game on ISO file or on folder type)
-	const game_boot_result path_error = AddGame(path);
-
-	if (path_error == game_boot_result::no_errors)
-	{
-		games_added++;
-	}
-
-	// search for games on subfolders only if not nested inside a discovered game folder, otherwise the same title
-	// would be registered again through a different path (e.g. the root of a BD drive "E:/" is registered as a raw
-	// device, its subfolder "E:/PS3_GAME" would register it again as a disc folder)
-	if (!game_found(path_error))
-	{
-		std::vector<fs::dir_entry> entries;
-
-		for (auto&& dir_entry : fs::dir(path))
-		{
-			// Prefetch entries, it is unsafe to keep fs::dir for a long time or for many operations
-			entries.emplace_back(std::move(dir_entry));
-		}
-
-		auto path_it = entries.begin();
-
-		qt_events_aware_op(0, [&]()
-		{
-			// search direct subdirectories, that way we can drop one folder containing all games
-			for (; path_it != entries.end(); ++path_it)
-			{
-				const auto dir_entry = std::move(*path_it);
-
-				if (dir_entry.name == "." || dir_entry.name == "..")
-				{
-					continue;
-				}
-
-				const std::string dir_path = path + "/" + dir_entry.name;
-
-				// The outcome is handed over to "AddGame()" so that the ISO is not recognized twice: each check
-				// reads the volume descriptor, which is a physical read when the path points to an optical drive
-				const bool is_iso = !dir_entry.is_directory && is_iso_file(dir_path);
-
-				if (!dir_entry.is_directory && !is_iso)
-				{
-					continue;
-				}
-
-				if (const game_boot_result error = AddGame(dir_path, is_iso); error == game_boot_result::no_errors)
-				{
-					games_added++;
-				}
-				else if (!game_found(error) && g_cfg.misc.use_recursive_scan)
-				{
-					games_added += AddGamesFromDir(dir_path);
-				}
-
-				// Process events
-				++path_it;
-				return false;
-			}
-
-			// Exit loop
-			return true;
-		});
-	}
-
-	m_games_config.set_save_on_dirty(save_on_dirty);
-
-	// Flush the changes only when the outermost scan is done
-	if (save_on_dirty && m_games_config.is_dirty() && !m_games_config.save())
-	{
-		sys_log.error("Failed to save games.yml after adding games");
-	}
-
-	return games_added;
-}
-
-game_boot_result Emulator::AddGame(std::string path, bool is_iso)
-{
-	fmt::trim_back(path, fs::delim);
-
-	// Handle files directly
-	if (!fs::is_dir(path) || fs::get_optical_raw_device(path))
-	{
-		return AddGameToYml(path, is_iso);
-	}
-
-	game_boot_result result = game_boot_result::nothing_to_boot;
-	bool result_set = false;
-
-	std::string elf;
-	if (const game_boot_result res = GetElfPathFromDir(elf, path); res == game_boot_result::no_errors)
-	{
-		ensure(!elf.empty());
-		result = AddGameToYml(elf);
-		result_set = true;
-	}
-
-	for (auto&& entry : fs::dir{ path })
-	{
-		if (entry.name == "." || entry.name == "..")
-		{
-			continue;
-		}
-
-		if (entry.is_directory && rpcs3::utils::is_ps3_gm_dir_name(entry.name))
-		{
-			const std::string elf = path + "/" + entry.name + "/USRDIR/EBOOT.BIN";
-
-			if (fs::is_file(elf))
-			{
-				if (const auto err = AddGameToYml(elf); err != game_boot_result::no_errors)
-				{
-					if (err != game_boot_result::already_added || !result_set)
-					{
-						result = err;
-						result_set = true;
-					}
-				}
-			}
-		}
-	}
-
-	return result;
-}
-
-game_boot_result Emulator::AddGameToYml(std::string path, bool is_iso)
-{
-	fmt::trim_back(path, fs::delim);
-
-	// Detect boot location
-	const auto is_invalid_path = [this](std::string_view path, std::string_view dir) -> game_boot_result
-	{
-		if (IsPathInsideDir(path, dir))
-		{
-			sys_log.error("Adding games from dev_flash is not allowed.");
-			return game_boot_result::invalid_file_or_folder;
-		}
-
-		return VerifyPathCasing(path, dir, false);
-	};
-
-	if (game_boot_result error = is_invalid_path(path, rpcs3::utils::get_hdd0_dir()); error != game_boot_result::no_errors)
-	{
-		sys_log.error("Adding games from dev_hdd0 is not allowed.");
-		return error;
-	}
-
-	if (game_boot_result error = is_invalid_path(path, g_cfg_vfs.get_dev_flash()); error != game_boot_result::no_errors)
-	{
-		sys_log.error("Adding games from dev_flash is not allowed.");
-		return error;
-	}
-
-	std::unique_ptr<iso_archive> archive;
-
-	// Skip the check if the caller already recognized the path as an ISO: it would read the volume descriptor again
-	if (is_iso || is_iso_file(path))
-	{
-		archive = std::make_unique<iso_archive>(path);
-
-		if (!archive->is_valid())
-		{
-			sys_log.error("Failed to load ISO.");
-			return game_boot_result::invalid_file_or_folder;
-		}
-	}
-
-	// Load PARAM.SFO
-	const std::string elf_dir = fs::get_parent_dir(path);
-	std::string sfo_dir = archive ? "PS3_GAME" : rpcs3::utils::get_sfo_dir_from_game_path(fs::get_parent_dir(elf_dir));
-	const std::string sfo_path = sfo_dir + "/PARAM.SFO";
-	const psf::registry _psf = archive ? archive->open_psf(sfo_path) : psf::load_object(sfo_path);
-
-	const std::string title_id = std::string(psf::get_string(_psf, "TITLE_ID"));
-	const std::string cat = std::string(psf::get_string(_psf, "CATEGORY"));
-
-	if (!_psf.empty() && cat.empty())
-	{
-		sys_log.fatal("Corrupted PARAM.SFO found! Try reinstalling the game.");
-		return game_boot_result::invalid_file_or_folder;
-	}
-
-	if (title_id.empty())
-	{
-		sys_log.notice("Can not add binary without TITLE_ID to games.yml. (path=%s, category=%s)", path, cat);
-		return game_boot_result::invalid_file_or_folder;
-	}
-
-	if (cat == "GD")
-	{
-		sys_log.notice("Can not add game data to games.yml. (path=%s, title_id=%s, category=%s)", path, title_id, cat);
-		return game_boot_result::invalid_file_or_folder;
-	}
-
-	// Add ISO game
-	if (archive)
-	{
-		if (cat == "DG")
-		{
-			std::string iso_path = path;
-			switch (m_games_config.add_external_hdd_game(title_id, iso_path))
-			{
-				case games_config::result::failure: return game_boot_result::generic_error;
-				case games_config::result::success: return game_boot_result::no_errors;
-				case games_config::result::exists: return game_boot_result::already_added;
-			}
-
-			return game_boot_result::generic_error;
-		}
-	}
-
-	// Set bdvd_dir
-	std::string bdvd_dir;
-	std::string game_dir;
-	std::string sfb_dir;
-	GetBdvdDir(bdvd_dir, sfb_dir, game_dir, elf_dir);
-
-	// Check /dev_bdvd/
-	if (bdvd_dir.empty())
-	{
-		// Add HG games not in HDD0 to games.yml
-		if (cat == "HG")
-		{
-			switch (m_games_config.add_external_hdd_game(title_id, sfo_dir))
-			{
-			case games_config::result::failure: return game_boot_result::generic_error;
-			case games_config::result::success: return game_boot_result::no_errors;
-			case games_config::result::exists: return game_boot_result::already_added;
-			}
-
-			return game_boot_result::generic_error;
-		}
-	}
-	else if (fs::is_dir(bdvd_dir))
-	{
-		if (const std::string sfb_path = bdvd_dir + "/PS3_DISC.SFB"; !IsValidSfb(sfb_path))
-		{
-			sys_log.error("Invalid disc directory for the disc game %s. (%s)", title_id, sfb_path);
-			return game_boot_result::invalid_file_or_folder;
-		}
-
-		// Store /dev_bdvd/ location
-		switch (m_games_config.add_game(title_id, bdvd_dir))
-		{
-		case games_config::result::failure:
-		{
-			sys_log.error("Failed to save BDVD location of title '%s' (error=%s)", title_id, fs::g_tls_error);
-			return game_boot_result::generic_error;
-		}
-		case games_config::result::success:
-		{
-			sys_log.notice("Registered BDVD game directory for title '%s': %s", title_id, bdvd_dir);
-			return game_boot_result::no_errors;
-		}
-		case games_config::result::exists:
-		{
-			return game_boot_result::already_added;
-		}
-		}
-
-		return game_boot_result::generic_error;
-	}
-
-	sys_log.notice("Nothing to add in path %s (title_id=%s, category=%s)", path, title_id, cat);
-	return game_boot_result::invalid_file_or_folder;
-}
-
-u32 Emulator::RemoveGamesFromDir(const std::string& games_dir, const std::vector<std::string>& serials_to_remove_from_yml, bool save_on_disk)
-{
-	// List of serials (title id) to remove in "games.yml" file (if any)
-	std::vector<std::string> serials_to_remove = serials_to_remove_from_yml; // Initialize the list with the specified serials (if any)
-
-	if (!games_dir.empty()) // Skip an empty folder, otherwise we'll remove all games (which is not the intention)
-	{
-		// Scan game list to detect the titles belonging to auto-detection "games_dir" folder
-		for (const auto& [serial, path] : Emu.GetGamesConfig().get_games()) // Loop on game list file
-		{
-			// NOTE: Used starts_with(games_dir) instead of Emu.IsPathInsideDir(path, games_dir) due the latter would check
-			//       also the existence of the paths
-			//
-			if (path.starts_with(games_dir)) // If game path belongs to auto-detection "games_dir" folder, add the serial to the removal list
-			{
-				serials_to_remove.push_back(serial);
-			}
-		}
-	}
-
-	// Remove the specified and detected serials (title id) belonging to "games_dir" from the game list in memory
-	// or also in "games.yml" file according to the value of "save_on_disk"
-	return RemoveGames(serials_to_remove, save_on_disk);
-}
-
-u32 Emulator::RemoveGames(const std::vector<std::string>& title_id_list, bool save_on_disk)
-{
-	if (title_id_list.empty())
-	{
-		return 0;
-	}
-
-	u32 games_removed = 0;
-
-	m_games_config.set_save_on_dirty(false);
-
-	for (const std::string& title_id : title_id_list)
-	{
-		if (RemoveGameFromYml(title_id) == game_boot_result::no_errors)
-		{
-			games_removed++;
-		}
-	}
-
-	m_games_config.set_save_on_dirty(true);
-
-	if (save_on_disk && m_games_config.is_dirty() && !m_games_config.save())
-	{
-		sys_log.error("Failed to save games.yml after removing games");
-	}
-
-	return games_removed;
-}
-
-game_boot_result Emulator::RemoveGameFromYml(const std::string& title_id)
-{
-	// Remove title from games.yml
-	switch (m_games_config.remove_game(title_id))
-	{
-	case games_config::result::failure:
-	{
-		sys_log.error("Failed to remove title '%s' (error=%s)", title_id, fs::g_tls_error);
-		return game_boot_result::generic_error;
-	}
-	case games_config::result::success:
-	case games_config::result::exists: // not applicable for m_games_config.remove_game(). Added just to avoid compilation warnings!
-	{
-		sys_log.notice("Removed title '%s'", title_id);
-		return game_boot_result::no_errors;
-	}
-	}
-
-	return game_boot_result::generic_error;
 }
 
 bool Emulator::IsPathInsideDir(std::string_view path, std::string_view dir, bool check_if_exists) const

@@ -1,25 +1,11 @@
 #include "stdafx.h"
 #include "games_config.h"
 #include "util/logs.hpp"
-#include "util/yaml.hpp"
 #include "Utilities/File.h"
 
 #include "Loader/ISO.h"
 
 LOG_CHANNEL(cfg_log, "CFG");
-
-games_config::games_config()
-{
-	load();
-}
-
-games_config::~games_config()
-{
-	if (m_dirty)
-	{
-		save();
-	}
-}
 
 const std::map<std::string, std::string> games_config::get_games() const
 {
@@ -84,13 +70,6 @@ games_config::result games_config::add_game(const std::string& key, const std::s
 			m_games.emplace(key, path);
 		}
 
-		m_dirty = true;
-
-		if (m_save_on_dirty && !save_nl())
-		{
-			return result::failure;
-		}
-
 		return result::success;
 	});
 }
@@ -131,97 +110,6 @@ games_config::result games_config::remove_game(const std::string& key)
 			return result::success;
 		}
 
-		m_dirty = true;
-
-		if (m_save_on_dirty && !save_nl())
-		{
-			return result::failure;
-		}
-
 		return result::success;
-	});
-}
-
-bool games_config::save_nl()
-{
-	yaml_writer out;
-	out.begin_map();
-	for (const auto& [serial, path] : m_games)
-	{
-		out.key(serial).value(path);
-	}
-	out.end_map();
-
-	fs::pending_file temp(fs::get_config_dir(true) + "games.yml");
-	const std::string_view text = out.output();
-
-	if (temp.file && temp.file.write(text.data(), text.size()) >= text.size() && temp.commit())
-	{
-		m_dirty = false;
-		return true;
-	}
-
-	cfg_log.error("Failed to save games.yml: %s", fs::g_tls_error);
-	return false;
-}
-
-bool games_config::save()
-{
-	return turn_call(&m_turns, [&]() -> bool
-	{
-		return save_nl();
-	});
-}
-
-void games_config::load()
-{
-	return turn_call(&m_turns, [&]()
-	{
-		m_games.clear();
-
-		const std::string path = fs::get_config_dir(true) + "games.yml";
-
-		// Move file from deprecated location to new location
-	#ifdef _WIN32
-		const std::string old_path = fs::get_config_dir(false) + "games.yml";
-
-		if (fs::is_file(old_path))
-		{
-			cfg_log.notice("Found deprecated games.yml file: '%s'", old_path);
-
-			if (!fs::rename(old_path, path, false))
-			{
-				(fs::g_tls_error == fs::error::exist ? cfg_log.warning : cfg_log.error)("Failed to move '%s' to '%s' (error='%s')", old_path, path, fs::g_tls_error);
-			}
-		}
-	#endif
-
-		if (fs::file f{path, fs::read + fs::create})
-		{
-			const yaml_doc doc(f.to_string());
-			const yaml_node result = doc.root();
-
-			if (!doc.error().empty())
-			{
-				cfg_log.error("Failed to load games.yml: %s", doc.error());
-			}
-
-			if (!result.is_map())
-			{
-				if (!result.is_null())
-				{
-					cfg_log.error("Failed to load games.yml: %s, not a map", result.type_name());
-				}
-				return;
-			}
-
-			for (const yaml_node entry : result)
-			{
-				if (!entry.key().empty() && entry.is_scalar() && !entry.scalar().empty())
-				{
-					m_games.emplace(entry.key(), entry.scalar());
-				}
-			}
-		}
 	});
 }
