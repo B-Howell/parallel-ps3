@@ -3,6 +3,7 @@
 #include "util/atomic.hpp"
 
 #include <retro_atomic.h>
+#include "Emu/CPU/turn_calls.h"
 #include "util/shared_ptr.hpp"
 #include "Emu/Cell/timers.hpp"
 
@@ -132,7 +133,9 @@ class lv2_config
 	retro_atomic_int_t m_state{};
 
 	// LV2 Config mutex
-	shared_mutex m_mutex;
+	// The events change in turn (turn_calls.h): no lock. An event is never
+	// let go of in the turn - its destructor takes it out of the map in turn
+	turn_calls_cpp m_turns;
 
 	// Map of LV2 Service Events
 	std::unordered_map<u32, shared_ptr<lv2_config_service_event>> events;
@@ -146,19 +149,20 @@ public:
 
 	shared_ptr<lv2_config_service_event> find_event(u32 id)
 	{
-		reader_lock lock(m_mutex);
-
-		const auto it = events.find(id);
-
-		if (it == events.cend())
-			return null_ptr;
-
-		if (it->second)
+		return turn_call(&m_turns, [&]() -> shared_ptr<lv2_config_service_event>
 		{
-			return it->second;
-		}
+			const auto it = events.find(id);
 
-		return null_ptr;
+			if (it == events.cend())
+				return null_ptr;
+
+			if (it->second)
+			{
+				return it->second;
+			}
+
+			return null_ptr;
+		});
 	}
 
 	~lv2_config() noexcept;
@@ -298,7 +302,8 @@ private:
 
 	// The service listener owns the service events - service events will not be freed as long as their corresponding listener exists
 	// This has been confirmed to be the case in realhw
-	shared_mutex mutex_service_events;
+	// The listener's events change in turn (turn_calls.h): no lock
+	turn_calls_cpp m_service_turns;
 	std::vector<shared_ptr<lv2_config_service_event>> service_events;
 	shared_ptr<lv2_config_handle> handle;
 

@@ -101,21 +101,23 @@ void lv2_config::initialize()
 
 void lv2_config::add_service_event(shared_ptr<lv2_config_service_event> event)
 {
-	std::lock_guard lock(m_mutex);
-	events.emplace(event->id, std::move(event));
+	turn_call(&m_turns, [&] { events.emplace(event->id, std::move(event)); });
 }
 
 void lv2_config::remove_service_event(u32 id)
 {
 	shared_ptr<lv2_config_service_event> ptr;
 
-	std::lock_guard lock(m_mutex);
-
-	if (auto it = events.find(id); it != events.end())
+	// Moved out in the turn, let go of after it: the event's destructor
+	// comes back here
+	turn_call(&m_turns, [&]
 	{
-		ptr = std::move(it->second);
-		events.erase(it);
-	}
+		if (auto it = events.find(id); it != events.end())
+		{
+			ptr = std::move(it->second);
+			events.erase(it);
+		}
+	});
 }
 
 lv2_config_service_event& lv2_config_service_event::operator=(thread_state s) noexcept
@@ -176,9 +178,12 @@ bool lv2_config_service_listener::check_service(const lv2_config_service& servic
 
 bool lv2_config_service_listener::notify(const shared_ptr<lv2_config_service>& service)
 {
-	{
-		std::lock_guard lock(mutex_service_events);
+	// The event made, registered and sent in the listener's turn, which takes
+	// the config's inside it; a failed one let go of after the turn
+	shared_ptr<lv2_config_service_event> failed;
 
+	const bool sent = turn_call(&m_service_turns, [&]
+	{
 		if (!check_service(*service))
 			return false;
 
@@ -190,12 +195,15 @@ bool lv2_config_service_listener::notify(const shared_ptr<lv2_config_service>& s
 		{
 			// If we fail to deliver the event to the queue just clean the event up or it'll hold the listener alive forever
 			g_fxo->get<lv2_config>().remove_service_event(event->id);
+			failed = std::move(service_events.back());
 			service_events.pop_back();
 			return false;
 		}
-	}
-	
-	return true;
+
+		return true;
+	});
+
+	return sent;
 }
 
 void lv2_config_service_listener::notify_all()
