@@ -17,7 +17,6 @@
 #include "vkutils/scratch.h"
 
 #include "Emu/RSX/rsx_methods.h"
-#include "Emu/RSX/Host/MM.h"
 #include "Emu/RSX/Common/guest_faults.h"
 #include "Emu/RSX/Host/RSXDMAWriter.h"
 #include "Emu/RSX/NV47/HW/context_accessors.define.h"
@@ -931,8 +930,6 @@ VKGSRender::~VKGSRender()
 
 bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 {
-	rsx::mm_flush(address);
-
 	// A guest thread writing over a plain texture: the page is handed back
 	// and the renderer told, without the texture cache's lock and without
 	// waiting for the renderer
@@ -2464,9 +2461,6 @@ void VKGSRender::init_buffers(rsx::framebuffer_creation_context context, bool)
 void VKGSRender::close_and_submit_command_buffer(vk::fence* pFence, VkSemaphore wait_semaphore, VkSemaphore signal_semaphore, VkPipelineStageFlags pipeline_stage_flags)
 {
 	ensure(!m_queue_status.test_and_set(flush_queue_state::flushing));
-
-	// Host MM sync before executing anything on the GPU
-	rsx::mm_flush();
 
 	// Workaround for deadlock occuring during RSX offloader fault
 	// TODO: Restructure command submission infrastructure to avoid this condition

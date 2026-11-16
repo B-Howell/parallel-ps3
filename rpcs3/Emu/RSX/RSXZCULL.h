@@ -47,7 +47,6 @@ namespace rsx
 		{
 			u32 type = CELL_GCM_ZPASS_PIXEL_CNT;
 			u32 counter_tag;
-			u64 sync_tag;
 			occlusion_query_info* query;
 			queued_report_write* forwarder;
 

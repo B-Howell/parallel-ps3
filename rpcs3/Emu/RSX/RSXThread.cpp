@@ -6,7 +6,6 @@
 #include "Common/surface_store.h"
 #include "Core/RSXReservationLock.hpp"
 #include "Core/RSXEngLock.hpp"
-#include "Host/MM.h"
 #include "Host/RSXDMAWriter.h"
 #include "NV47/HW/context.h"
 #include "NV47/HW/context_accessors.define.h"
@@ -2820,8 +2819,6 @@ namespace rsx
 	{
 		m_eng_interrupt_mask.clear(rsx::pipe_flush_interrupt);
 
-		mm_flush();
-
 		if (zcull_ctrl->has_pending())
 		{
 			zcull_ctrl->sync(this);
@@ -3204,9 +3201,6 @@ namespace rsx
 
 	void thread::on_notify_pre_memory_unmapped(u32 address, u32 size, std::vector<std::pair<u64, u64>>& event_data)
 	{
-		// Always flush MM if memory mapping is going to change.
-		rsx::mm_flush();
-
 		if (rsx_thread_running && address < rsx::constants::local_mem_base)
 		{
 			// Each bit represents io entry to be unmapped
@@ -3340,9 +3334,6 @@ namespace rsx
 				on_invalidate_memory_range(range, rsx::invalidation_cause::read);
 			}
 
-			// Host sync
-			rsx::mm_flush();
-
 			on_invalidate_memory_range(range, rsx::invalidation_cause::unmap);
 
 			if (retro_atomic_cas_64(&m_invalidated_memory_range, static_cast<s64>(waiting), static_cast<s64>(no_invalidated_range)))
@@ -3352,16 +3343,11 @@ namespace rsx
 		}
 	}
 
+	// The backend's requests are its own (VKGSRender::renderctl): none is
+	// the common renderer's
 	void thread::renderctl(u32 request_code, void* /*args*/)
 	{
-		switch (request_code)
-		{
-		case rsx::mm_backend_ctrl::cmd_mm_flush:
-			rsx::mm_flush();
-			break;
-		default:
-			fmt::throw_exception("Unknown backend request: 0x%x", request_code);
-		}
+		fmt::throw_exception("Unknown backend request: 0x%x", request_code);
 	}
 
 	//Pause/cont wrappers for FIFO ctrl. Never call this from rsx thread itself!
@@ -3435,9 +3421,6 @@ namespace rsx
 	void thread::on_frame_end(u32 buffer, bool forced)
 	{
 		bool pause_emulator = false;
-
-		// MM sync. This is a pre-emptive operation, so we can use a deferred request.
-		rsx::mm_flush_lazy();
 
 		// Marks the end of a frame scope GPU-side
 		if (g_user_asked_for_frame_capture.exchange(false) && !capture_current_frame)

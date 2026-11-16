@@ -3,7 +3,6 @@
 
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/RSX/Core/RSXReservationLock.hpp"
-#include "Emu/RSX/Host/MM.h"
 
 #include "Utilities/deferred_op.hpp"
 
@@ -125,13 +124,6 @@ namespace rsx
 
 			u8* dst = vm::_ptr<u8>(write_address);
 			const u8* src = vm::_ptr<u8>(read_address);
-
-			const rsx::simple_array<utils::address_range64> flush_mm_ranges =
-			{
-				utils::address_range64::start_length(reinterpret_cast<u64>(dst), write_length),
-				utils::address_range64::start_length(reinterpret_cast<u64>(src), read_length)
-			};
-			rsx::mm_flush(flush_mm_ranges);
 
 			const bool is_overlapping = dst_dma == src_dma && [&]() -> bool
 			{

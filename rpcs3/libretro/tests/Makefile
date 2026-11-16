@@ -728,6 +728,9 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
 LOCK_GUARD_MAX := 303
+# turn_call (turn_calls.h) is a lock without a lock object - a queued caller
+# still waits - and is going too: the count may only fall
+TURN_CALL_MAX := 190
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -827,6 +830,12 @@ check: all
 	if [ $$n -gt $(LOCK_GUARD_MAX) ]; then echo "std::lock_guard: $$n in the core, more than the $(LOCK_GUARD_MAX) left - the locks are going, not coming (AGENTS.md)"; exit 1; \
 	elif [ $$n -lt $(LOCK_GUARD_MAX) ]; then echo "std::lock_guard: $$n in the core, fewer than LOCK_GUARD_MAX ($(LOCK_GUARD_MAX)): lower it to $$n"; exit 1; \
 	else echo "std::lock_guard: $$n left in the core"; fi
+	@# turn_call is going too: a caller queued on a turn waits. Each patch
+	@# that takes some out lowers TURN_CALL_MAX with it
+	@n=$$(grep -rho "turn_call(" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities | wc -l); \
+	if [ $$n -gt $(TURN_CALL_MAX) ]; then echo "turn_call: $$n in the core, more than the $(TURN_CALL_MAX) left - nothing new waits in a turn (AGENTS.md)"; exit 1; \
+	elif [ $$n -lt $(TURN_CALL_MAX) ]; then echo "turn_call: $$n in the core, fewer than TURN_CALL_MAX ($(TURN_CALL_MAX)): lower it to $$n"; exit 1; \
+	else echo "turn_call: $$n left in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
 	@if grep -nE "mutex|lock_guard|unique_lock|reader_lock" ../../Emu/Io/Skylander.cpp ../../Emu/Io/Skylander.h ../../Emu/Io/Infinity.cpp ../../Emu/Io/Infinity.h ../../Emu/Io/Dimensions.cpp ../../Emu/Io/Dimensions.h ../../Emu/Io/KamenRider.cpp ../../Emu/Io/KamenRider.h; then echo "portals: a lock is back - the portals are the USB thread's, sys_usbd runs their transfers there"; exit 1; else echo "portals: no lock, the USB thread's"; fi
 	@# cellAudio's periods go by the guest's clock: no sleep and no clock of the host's
@@ -889,8 +898,8 @@ check: all
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|Utilities/mutex.h" ../../Emu/RSX/VK/VKAsyncScheduler.cpp ../../Emu/RSX/VK/VKAsyncScheduler.h || grep -nE "m_sampler_mutex" ../../Emu/RSX/VK/*.cpp ../../Emu/RSX/VK/*.h; then echo "vk: a lock is back on the async scheduler or the samplers"; exit 1; else echo "vk: no lock on the async scheduler or the samplers"; fi
 	@# RSX: the invalidated memory range is one word, merged into by unmaps and taken off by the renderer with compare-and-swap
 	@if grep -nE "m_mtx_task|m_memory_invalidated" ../../Emu/RSX/RSXThread.cpp ../../Emu/RSX/RSXThread.h; then echo "rsx: the task lock is back - the invalidated range is one word (compare-and-swap)"; exit 1; else echo "rsx: no task lock, the invalidated range one word"; fi
-	@# RSX host memory manager: the deferred protection queue changes in turn (turn_calls.h)
-	@if grep -nE "shared_mutex|lock_guard|unique_lock|Utilities/mutex.h" ../../Emu/RSX/Host/MM.cpp ../../Emu/RSX/Host/MM.h; then echo "rsx mm: a lock is back - the protection queue changes in its turn (turn_call)"; exit 1; else echo "rsx mm: no lock, the protection queue in its turn"; fi
+	@# RSX host memory manager: a protection is applied at once by the thread that asks; no queue shared, nothing to flush
+	@if grep -nE "shared_mutex|lock_guard|unique_lock|Utilities/mutex.h|turn_call" ../../Emu/RSX/Host/MM.cpp ../../Emu/RSX/Host/MM.h || grep -rnE "deferred_mprotect|mm_flush|async_host_memory_manager" ../../Emu/RSX ../../Emu/system_config.h; then echo "rsx mm: a lock, a turn or the deferred protection queue is back - a protection is applied at once by the thread that asks"; exit 1; else echo "rsx mm: protections applied at once, no queue, no turn"; fi
 	@# Vulkan memory accounting: counters, no table of allocations and no lock
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|unordered_map|vmm_allocation_t" ../../Emu/RSX/VK/VKResourceManager.cpp ../../Emu/RSX/VK/VKResourceManager.h; then echo "vk vmm: the allocation table or its lock is back - each memory_block keeps its type, size and pool and the totals are counters"; exit 1; else echo "vk vmm: counters only, no table and no lock"; fi
 	@# Vulkan descriptor sets: the deferred flush list and each set's storage change in turn

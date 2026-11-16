@@ -2,7 +2,6 @@
 
 #include "util/types.hpp"
 #include "Emu/RSX/RSXThread.h"
-#include "Emu/RSX/Host/MM.h"
 
 #include "context_accessors.define.h"
 
@@ -33,10 +32,6 @@ namespace rsx
 				{
 					if constexpr (FlushDMA)
 					{
-						// Release op must be acoompanied by MM flush.
-						// FlushPipe implicitly does a MM flush but FlushDMA does not. Trigger the flush here
-						rsx::mm_flush();
-
 						// If the backend handled the request, this call will basically be a NOP
 						g_fxo->get<rsx::dma_manager>().sync();
 					}

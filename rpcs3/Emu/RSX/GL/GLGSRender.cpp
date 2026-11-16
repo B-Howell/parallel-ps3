@@ -31,7 +31,6 @@ static inline unsigned long long lrgl_glgs_tid_hash()
 	#define LRGL_GLGS_ERR(...)    do { } while (0)
 #endif
 #include "Emu/RSX/rsx_methods.h"
-#include "Emu/RSX/Host/MM.h"
 #include "Emu/RSX/Host/RSXDMAWriter.h"
 #include "Emu/RSX/NV47/HW/context_accessors.define.h"
 
@@ -1336,8 +1335,6 @@ void GLGSRender::patch_transform_constants(rsx::context* ctx, u32 index, u32 cou
 
 bool GLGSRender::on_access_violation(u32 address, bool is_writing)
 {
-	rsx::mm_flush(address);
-
 	if (!is_current_thread())
 	{
 		// Only the renderer enters the texture cache. Whether the fault is

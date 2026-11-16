@@ -403,7 +403,7 @@ namespace rsx
 		virtual void notify_tile_unbound(u32 /*tile*/) {}
 
 		// control
-		virtual void renderctl(u32 request_code, void* args);
+		[[noreturn]] virtual void renderctl(u32 request_code, void* args);
 
 		// zcull
 		void notify_zcull_info_changed();
