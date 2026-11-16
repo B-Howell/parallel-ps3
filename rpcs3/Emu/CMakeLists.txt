@@ -143,7 +143,6 @@ target_sources(rpcs3_emu PRIVATE
     ../Loader/IRD.cpp
     ../Loader/IRD_validation.cpp
     ../Loader/ISO.cpp
-    ../Loader/iso_cache.cpp
     ../Loader/content_validation.cpp
     ../Loader/TROPUSR.cpp
     ../Loader/TRP.cpp
@@ -516,11 +515,6 @@ target_sources(rpcs3_emu PRIVATE
     RSX/Overlays/HomeMenu/overlay_home_menu_settings.cpp
     RSX/Overlays/HomeMenu/overlay_home_menu_savestate.cpp
     RSX/Overlays/HomeMenu/overlay_home_menu_sidebar_page.cpp
-    RSX/Overlays/BigPicture/overlay_big_picture.cpp
-    RSX/Overlays/BigPicture/overlay_big_picture_game_details.cpp
-    RSX/Overlays/BigPicture/overlay_big_picture_game_grid.cpp
-    RSX/Overlays/BigPicture/overlay_big_picture_game_info.cpp
-    RSX/Overlays/BigPicture/overlay_big_picture_main_menu.cpp
     RSX/Overlays/Network/overlay_recvmessage_dialog.cpp
     RSX/Overlays/Network/overlay_sendmessage_dialog.cpp
     RSX/Overlays/Trophies/overlay_trophy_list_dialog.cpp

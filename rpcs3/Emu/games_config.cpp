@@ -7,14 +7,6 @@
 
 LOG_CHANNEL(cfg_log, "CFG");
 
-const std::map<std::string, std::string> games_config::get_games() const
-{
-	return turn_call(&m_turns, [&]() -> std::map<std::string, std::string>
-	{
-		return m_games;
-	});
-}
-
 std::string games_config::get_path(const std::string& title_id) const
 {
 	if (title_id.empty())

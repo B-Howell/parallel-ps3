@@ -15,8 +15,6 @@ class games_config
 public:
 	games_config() = default;
 
-	const std::map<std::string, std::string> get_games() const;
-
 	std::string get_path(const std::string& title_id) const;
 
 	enum class result

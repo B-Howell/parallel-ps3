@@ -280,7 +280,6 @@ inline const char* libretro_localized_template(localized_string_id id)
 	case localized_string_id::HOME_MENU_SETTINGS_MOUSE_DEBUG_INPUT_OVERLAY: return "Mouse Debug Overlay";
 	case localized_string_id::HOME_MENU_SETTINGS_DEBUG_DISABLE_VIDEO_OUTPUT: return "Disable Video Output";
 	case localized_string_id::HOME_MENU_SETTINGS_DEBUG_TEXTURE_LOD_BIAS: return "Texture LOD Bias Addend";
-	case localized_string_id::HOME_MENU_SETTINGS_SYSTEM_START_BIG_PICTURE_MODE: return "Open Big Picture Mode On Boot";
 	case localized_string_id::HOME_MENU_SCREENSHOT: return "Take Screenshot";
 	case localized_string_id::HOME_MENU_SAVESTATE: return "SaveState";
 	case localized_string_id::HOME_MENU_SAVESTATE_SAVE: return "Save Emulation State";
@@ -339,14 +338,6 @@ inline const char* libretro_localized_template(localized_string_id id)
 	case localized_string_id::SAVESTATE_FAILED_DUE_TO_VDEC: return "SaveState failed: VDEC-based video/cutscenes are in order, wait for them to end or enable libvdec.sprx.";
 	case localized_string_id::SAVESTATE_FAILED_DUE_TO_MISSING_SPU_SETTING: return "SaveState failed: Failed to lock SPU state, enabling SPU-Compatible mode may fix it.";
 	case localized_string_id::SAVESTATE_FAILED_DUE_TO_SPU: return "SaveState failed: Failed to lock SPU state, using SPU ASMJIT will fix it.";
-	case localized_string_id::BIG_PICTURE_MODE_TITLE: return "Big Picture Mode";
-	case localized_string_id::BIG_PICTURE_MENU_GAMES: return "Games";
-	case localized_string_id::BIG_PICTURE_MENU_EXIT: return "Exit Big Picture Mode";
-	case localized_string_id::BIG_PICTURE_NO_GAMES_FOUND: return "No games found.\nAdd games in the main RPCS3 window.";
-	case localized_string_id::BIG_PICTURE_LOADING: return "Loading games...";
-	case localized_string_id::BIG_PICTURE_GAME_DETAILS_START: return "Start";
-	case localized_string_id::BIG_PICTURE_HINT_BACK: return "Back";
-	case localized_string_id::BIG_PICTURE_HINT_SELECT: return "Select";
 	case localized_string_id::INVALID: return "Invalid";
 	default: return nullptr;
 	}
