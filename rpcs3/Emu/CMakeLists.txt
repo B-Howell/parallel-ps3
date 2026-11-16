@@ -229,6 +229,7 @@ target_sources(rpcs3_emu PRIVATE
     Cell/lv2/lv2_waitset.c
     Cell/lv2/lv2_event_ring.c
     Cell/lv2/lv2_countq.c
+    Cell/lv2/lv2_ownq.c
     Cell/lv2/sys_trace.cpp
     Cell/lv2/sys_tty.cpp
     Cell/lv2/sys_uart.cpp

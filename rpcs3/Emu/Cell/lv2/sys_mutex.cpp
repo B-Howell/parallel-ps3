@@ -20,13 +20,26 @@ lv2_mutex::lv2_mutex(utils::serial& ar)
 	, name(ar)
 {
 	retro_atomic_store_release_int(&lock_count, static_cast<int>(ar.pop<u32>()));
-	control_data_t data{};
-	ar(data.owner);
+	u32 owner = ar.pop<u32>();
 
 	// For backwards compatibility
-	data.owner >>= 1;
-	const retro_u128_t word = word_of(data);
-	retro_atomic_128_init(&control, word);
+	owner >>= 1;
+	lv2_ownq_init(&q, owner ? static_cast<int>(slot_of_id(owner)) : -1);
+	retro_atomic_store_release_int(&owner_id, static_cast<int>(owner));
+}
+
+static_assert(ppu_thread::id_count <= LV2_OWNQ_SLOTS, "a PPU thread's slot in a mutex's word is its ID's index");
+
+u32 lv2_mutex::slot_of_id(u32 id)
+{
+	using traits = id_manager::id_traits<named_thread<ppu_thread>>;
+	return id_manager::get_index(id, traits::base, traits::step, traits::count, traits::invl_range);
+}
+
+int lv2_mutex::rank(void* ctx, unsigned slot)
+{
+	const auto ppu = static_cast<lv2_mutex*>(ctx)->thread_in(slot);
+	return ppu ? ppu->prio.load().prio : 0;
 }
 
 std::function<void(void*)> lv2_mutex::load(utils::serial& ar)
@@ -36,7 +49,8 @@ std::function<void(void*)> lv2_mutex::load(utils::serial& ar)
 
 void lv2_mutex::save(utils::serial& ar)
 {
-	ar(protocol, recursive, adaptive, key, name, static_cast<u32>(retro_atomic_load_acquire_int(&lock_count)), control_owner() << 1);
+	ar(protocol, recursive, adaptive, key, name, static_cast<u32>(retro_atomic_load_acquire_int(&lock_count)),
+		(lv2_ownq_owner(&q) >= 0 ? static_cast<u32>(retro_atomic_load_acquire_int(&owner_id)) : 0u) << 1);
 }
 
 error_code sys_mutex_create(ppu_thread& ppu, vm::ptr<u32> mutex_id, vm::ptr<sys_mutex_attribute_t> attr)
@@ -115,21 +129,18 @@ error_code sys_mutex_destroy(ppu_thread& ppu, u32 mutex_id)
 
 	const auto mutex = idm::withdraw<lv2_obj, lv2_mutex>(mutex_id, [](lv2_mutex& mutex) -> CellError
 	{
-		return turn_call(&mutex.turns, [&]() -> CellError
+		if (lv2_ownq_owner(&mutex.q) >= 0)
 		{
-			if (mutex.control_owner())
-			{
-				return CELL_EBUSY;
-			}
+			return CELL_EBUSY;
+		}
 
-			if (mutex.cond_count)
-			{
-				return CELL_EPERM;
-			}
+		if (retro_atomic_load_acquire_int(&mutex.cond_count))
+		{
+			return CELL_EPERM;
+		}
 
-			lv2_obj::on_id_destroy(mutex, mutex.key);
-			return {};
-		});
+		lv2_obj::on_id_destroy(mutex, mutex.key);
+		return {};
 	});
 
 	if (!mutex)
@@ -155,36 +166,51 @@ error_code sys_mutex_destroy(ppu_thread& ppu, u32 mutex_id)
 // through an ID withdrawn meanwhile is undone with
 static CellError mutex_unlock(ppu_thread& ppu, lv2_mutex& mutex)
 {
-	auto result = mutex.try_unlock(ppu);
-
-	if (result == CELL_EBUSY)
+	if (!mutex.owned_by(ppu))
 	{
-		// Given to a waiter in the mutex's turn; waking it is for any thread
-		const bool again = turn_call(&mutex.turns, [&]
-		{
-			if (auto cpu = mutex.reown<ppu_thread>())
-			{
-				if (cpu->state & cpu_flag::again)
-				{
-					return true;
-				}
-
-				mutex.awake(cpu);
-			}
-
-			return false;
-		});
-
-		if (again)
-		{
-			ppu.state += cpu_flag::again;
-			return {};
-		}
-
-		result = {};
+		return CELL_EPERM;
 	}
 
-	return result;
+	// A recursive lock taken again: one fewer
+	if (retro_atomic_load_acquire_int(&mutex.lock_count))
+	{
+		retro_atomic_fetch_add_int(&mutex.lock_count, -1);
+		return {};
+	}
+
+	// A waiter that is to be saved again (a save state being made) is not
+	// handed the mutex now: the unlock is done again after
+	for (u32 slot = 0; slot < LV2_OWNQ_SLOTS; slot++)
+	{
+		if (lv2_ownq_waits(&mutex.q, slot))
+		{
+			if (const auto cpu = mutex.thread_in(slot); cpu && cpu->state & cpu_flag::again)
+			{
+				ppu.state += cpu_flag::again;
+				return {};
+			}
+		}
+	}
+
+	// Handed to the best waiter, or freed: one change. Waking it is for any thread
+	const int next = lv2_ownq_unlock(&mutex.q, lv2_mutex::slot_of(ppu), mutex.ranking(), &mutex);
+
+	if (next == LV2_OWNQ_NOT_OWNER)
+	{
+		return CELL_EPERM;
+	}
+
+	if (next >= 0)
+	{
+		mutex.now_owned_by(next);
+		mutex.awake(ensure(mutex.thread_in(next)));
+	}
+	else
+	{
+		retro_atomic_store_release_int(&mutex.owner_id, 0);
+	}
+
+	return {};
 }
 
 // The mutex ID is looked up with no lock (idm::pin, or a counted reference
@@ -252,21 +278,6 @@ error_code sys_mutex_lock(ppu_thread& ppu, u32 mutex_id, u64 timeout)
 	{
 		CellError result = mutex.try_lock(ppu);
 
-		if (result == CELL_EBUSY && !mutex.control_sq())
-		{
-			// Try busy waiting a bit if advantageous
-			for (u32 i = 0, end = lv2_obj::has_ppus_in_running_state() ? 3 : 10; i < end; i++)
-			{
-				busy_wait(300);
-				result = mutex.try_lock(ppu);
-
-				if (!result || mutex.control_sq())
-				{
-					break;
-				}
-			}
-		}
-
 		if (result == CELL_EBUSY)
 		{
 			lv2_obj::prepare_for_sleep(ppu);
@@ -329,36 +340,13 @@ error_code sys_mutex_lock(ppu_thread& ppu, u32 mutex_id, u64 timeout)
 
 		if (is_stopped(state))
 		{
-			const bool queued = turn_call(&mutex->turns, [&]
-			{
-				for (auto cpu = mutex->control_sq(); cpu; cpu = cpu->next_cpu)
-				{
-					if (cpu == &ppu)
-					{
-						return true;
-					}
-				}
-
-				return false;
-			});
-
-			if (queued)
+			if (lv2_ownq_waits(&mutex->q, lv2_mutex::slot_of(ppu)))
 			{
 				ppu.state += cpu_flag::again;
 				return {};
 			}
 
 			break;
-		}
-
-		for (usz i = 0; cpu_flag::signal - ppu.state && i < 40; i++)
-		{
-			busy_wait(500);
-		}
-
-		if (ppu.state & cpu_flag::signal)
- 		{
-			continue;
 		}
 
 		if (timeout)
@@ -373,51 +361,12 @@ error_code sys_mutex_lock(ppu_thread& ppu, u32 mutex_id, u64 timeout)
 
 				ppu.state += cpu_flag::wait;
 
-				// Off the queue in the mutex's turn, or given the mutex by an
-				// unlock, whose turn has made it the owner by the time this one runs
-				bool success = false;
-
-				turn_call(&mutex->turns, [&]
-				{
-					const auto change = [&](lv2_mutex::control_data_t& data)
-					{
-						success = false;
-
-						ppu_thread* sq = static_cast<ppu_thread*>(data.sq);
-
-						const bool retval = &ppu == sq;
-
-						if (!mutex->unqueue<false>(sq, &ppu))
-						{
-							return false;
-						}
-
-						success = true;
-
-						if (!retval)
-						{
-							return false;
-						}
-
-						data.sq = sq;
-						return true;
-					};
-
-					for (;;)
-					{
-						const retro_u128_t seen = retro_atomic_load_acquire_128(&mutex->control);
-						lv2_mutex::control_data_t data = lv2_mutex::control_of(seen);
-
-						if (!change(data) || retro_atomic_cas_128(&mutex->control, seen, lv2_mutex::word_of(data)))
-						{
-							break;
-						}
-					}
-				});
+				// Out of the queue in one change, or handed the mutex by an
+				// unlock that chose it first: then it is the owner, and woken
+				const bool success = !!lv2_ownq_leave(&mutex->q, lv2_mutex::slot_of(ppu));
 
 				if (success)
 				{
-					ppu.next_cpu = nullptr;
 					ppu.gpr[3] = CELL_ETIMEDOUT;
 				}
 

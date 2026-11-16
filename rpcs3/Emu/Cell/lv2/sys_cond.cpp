@@ -21,6 +21,7 @@ lv2_cond::lv2_cond(utils::serial& ar) noexcept
 	, mutex(idm::check_unlocked<lv2_obj, lv2_mutex>(mtx_id))
 	, _mutex(idm::get_unlocked<lv2_obj, lv2_mutex>(mtx_id)) // May be nullptr
 {
+	lv2_waitset_init(&waiters);
 }
 
 lv2_cond::lv2_cond(u64 key, u64 name, u32 mtx_id, shared_ptr<lv2_obj> mutex0) noexcept
@@ -30,6 +31,48 @@ lv2_cond::lv2_cond(u64 key, u64 name, u32 mtx_id, shared_ptr<lv2_obj> mutex0) no
 	, mutex(static_cast<lv2_mutex*>(mutex0.get()))
 	, _mutex(mutex0)
 {
+	lv2_waitset_init(&waiters);
+}
+
+bool lv2_cond::any_waiter_again()
+{
+	for (u32 slot = 0; slot < LV2_OWNQ_SLOTS; slot++)
+	{
+		if (lv2_waitset_has(&waiters, slot))
+		{
+			if (const auto cpu = thread_in(slot); cpu && cpu->state & cpu_flag::again)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+// The rank a condition wakes its waiters by: the mutex's protocol, as
+// schedule() had it - the thread's priority, or none (the order they came)
+static int cond_rank(void* ctx, unsigned slot)
+{
+	const auto cpu = static_cast<lv2_cond*>(ctx)->thread_in(slot);
+	return cpu ? cpu->prio.load().prio : 0;
+}
+
+static lv2_waitset_rank_t cond_ranking(lv2_cond& cond)
+{
+	return cond.mutex->protocol == SYS_SYNC_FIFO ? nullptr : cond_rank;
+}
+
+// A waiter the condition has woken: the mutex's owner now, and woken, or
+// queued for it, to be woken by the unlock that hands it over
+static void cond_hand_to_mutex(lv2_cond& cond, u32 slot)
+{
+	ppu_thread* const cpu = ensure(cond.thread_in(slot));
+
+	if (cond.mutex->try_own(*cpu))
+	{
+		cond.awake(cpu);
+	}
 }
 
 CellError lv2_cond::on_id_create()
@@ -40,7 +83,7 @@ CellError lv2_cond::on_id_create()
 	{
 		if (lv2_obj::check(_this->mutex))
 		{
-			_this->mutex->cond_count++;
+			retro_atomic_fetch_add_int(&_this->mutex->cond_count, 1);
 			return {};
 		}
 
@@ -128,17 +171,14 @@ error_code sys_cond_destroy(ppu_thread& ppu, u32 cond_id)
 
 	const auto cond = idm::withdraw<lv2_obj, lv2_cond>(cond_id, [&](lv2_cond& cond) -> CellError
 	{
-		return turn_call(&cond.mutex->turns, [&]() -> CellError
+		if (lv2_waitset_any(&cond.waiters))
 		{
-			if (atomic_storage<ppu_thread*>::load(cond.sq))
-			{
-				return CELL_EBUSY;
-			}
+			return CELL_EBUSY;
+		}
 
-			cond.mutex->cond_count--;
-			lv2_obj::on_id_destroy(cond, cond.key);
-			return {};
-		});
+		retro_atomic_fetch_sub_int(&cond.mutex->cond_count, 1);
+		lv2_obj::on_id_destroy(cond, cond.key);
+		return {};
 	});
 
 	if (!cond)
@@ -180,44 +220,24 @@ error_code sys_cond_signal(ppu_thread& ppu, u32 cond_id)
 		// Found with no lock over the IDs: waking threads makes none wait on the condition, which is all sys_cond_destroy asks about
 		const auto cond = idm::get_held<lv2_obj, lv2_cond>(cond_id, [&, notify = lv2_obj::notify_all_t()](lv2_cond& cond)
 		{
-			if (atomic_storage<ppu_thread*>::load(cond.sq))
+			if (ppu.state & cpu_flag::suspend)
 			{
-				// In the mutex's turn: the condition's queue and the mutex's change together
-				turn_call(&cond.mutex->turns, [&]
-				{
-					if (ppu.state & cpu_flag::suspend)
-					{
-						// Test if another signal caused the current thread to be suspended, in which case it needs to wait until the thread wakes up (otherwise the signal may cause unexpected results)
-						finished = false;
-						return;
-					}
-
-					if (const auto cpu = cond.schedule<ppu_thread>(cond.sq, cond.mutex->protocol))
-					{
-						if (static_cast<ppu_thread*>(cpu)->state & cpu_flag::again)
-						{
-							ppu.state += cpu_flag::again;
-							return;
-						}
-
-						// TODO: Is EBUSY returned after reqeueing, on sys_cond_destroy?
-
-						if (cond.mutex->try_own(*cpu))
-						{
-							cond.awake(cpu);
-						}
-					}
-				});
+				// Test if another signal caused the current thread to be suspended, in which case it needs to wait until the thread wakes up (otherwise the signal may cause unexpected results)
+				finished = false;
+				return;
 			}
-			else
-			{
-				// A signal in the mutex's turn meanwhile: waited out
-				turn_call(&cond.mutex->turns, [] {});
 
-				if (ppu.state & cpu_flag::suspend)
-				{
-					finished = false;
-				}
+			if (cond.any_waiter_again())
+			{
+				ppu.state += cpu_flag::again;
+				return;
+			}
+
+			// The best waiter taken off in one change, then handed to the mutex
+			// TODO: Is EBUSY returned after reqeueing, on sys_cond_destroy?
+			if (const int slot = lv2_waitset_claim(&cond.waiters, cond_ranking(cond), &cond); slot >= 0)
+			{
+				cond_hand_to_mutex(cond, static_cast<u32>(slot));
 			}
 		});
 
@@ -256,54 +276,61 @@ error_code sys_cond_signal_all(ppu_thread& ppu, u32 cond_id)
 		// Found with no lock over the IDs: waking threads makes none wait on the condition, which is all sys_cond_destroy asks about
 		const auto cond = idm::get_held<lv2_obj, lv2_cond>(cond_id, [&, notify = lv2_obj::notify_all_t()](lv2_cond& cond)
 		{
-			if (atomic_storage<ppu_thread*>::load(cond.sq))
+			if (ppu.state & cpu_flag::suspend)
 			{
-				// In the mutex's turn: the condition's queue and the mutex's change together
-				turn_call(&cond.mutex->turns, [&]
-				{
-					if (ppu.state & cpu_flag::suspend)
-					{
-						// Test if another signal caused the current thread to be suspended, in which case it needs to wait until the thread wakes up (otherwise the signal may cause unexpected results)
-						finished = false;
-						return;
-					}
-
-					for (auto cpu = +cond.sq; cpu; cpu = cpu->next_cpu)
-					{
-						if (cpu->state & cpu_flag::again)
-						{
-							ppu.state += cpu_flag::again;
-							return;
-						}
-					}
-
-					cpu_thread* result = nullptr;
-					auto sq = cond.sq;
-					atomic_storage<ppu_thread*>::release(cond.sq, nullptr);
-
-					while (const auto cpu = cond.schedule<ppu_thread>(sq, SYS_SYNC_PRIORITY))
-					{
-						if (cond.mutex->try_own(*cpu))
-						{
-							ensure(!std::exchange(result, cpu));
-						}
-					}
-
-					if (result)
-					{
-						cond.awake(result);
-					}
-				});
+				// Test if another signal caused the current thread to be suspended, in which case it needs to wait until the thread wakes up (otherwise the signal may cause unexpected results)
+				finished = false;
+				return;
 			}
-			else
-			{
-				// A signal in the mutex's turn meanwhile: waited out
-				turn_call(&cond.mutex->turns, [] {});
 
-				if (ppu.state & cpu_flag::suspend)
+			if (cond.any_waiter_again())
+			{
+				ppu.state += cpu_flag::again;
+				return;
+			}
+
+			// All the waiters taken off in one change, then handed to the mutex
+			// by priority, as schedule() had it: the first to find it free owns it
+			retro_u128_t left = lv2_waitset_claim_all(&cond.waiters);
+			cpu_thread* result = nullptr;
+
+			while (left.lo || left.hi)
+			{
+				int best = -1;
+				s32 best_prio = 0;
+				int best_tick = 0;
+
+				for (u32 slot = 0; slot < LV2_OWNQ_SLOTS; slot++)
 				{
-					finished = false;
+					if (!(slot < 64 ? (left.lo >> slot) & 1 : (left.hi >> (slot - 64)) & 1))
+					{
+						continue;
+					}
+
+					const s32 prio = ensure(cond.thread_in(slot))->prio.load().prio;
+					const int tick = retro_atomic_load_acquire_int(&cond.waiters.ticket[slot]);
+
+					if (best < 0 || prio < best_prio || (prio == best_prio && static_cast<int>(static_cast<u32>(tick) - static_cast<u32>(best_tick)) < 0))
+					{
+						best = static_cast<int>(slot);
+						best_prio = prio;
+						best_tick = tick;
+					}
 				}
+
+				(best < 64 ? left.lo : left.hi) &= ~(u64{1} << (best % 64));
+
+				ppu_thread* const cpu = ensure(cond.thread_in(best));
+
+				if (cond.mutex->try_own(*cpu))
+				{
+					ensure(!std::exchange(result, cpu));
+				}
+			}
+
+			if (result)
+			{
+				cond.awake(result);
 			}
 		});
 
@@ -327,7 +354,7 @@ error_code sys_cond_signal_to(ppu_thread& ppu, u32 cond_id, u32 thread_id)
 
 	sys_cond.trace("sys_cond_signal_to(cond_id=0x%x, thread_id=0x%x)", cond_id, thread_id);
 
-	const u64 start_time = get_system_time();
+	u32 retries = 0;
 	bool has_lower_prio_or_is_the_mutex_owner = false;
 
 	while (true)
@@ -352,9 +379,9 @@ error_code sys_cond_signal_to(ppu_thread& ppu, u32 cond_id, u32 thread_id)
 				return -1;
 			}
 
-			if (!has_lower_prio_or_is_the_mutex_owner && cond.mutex->control_owner() != ppu.id)
+			if (!has_lower_prio_or_is_the_mutex_owner && !cond.mutex->owned_by(ppu))
 			{
-				if (cond.mutex->control_owner() == thread_id)
+				if (lv2_ownq_owner(&cond.mutex->q) == static_cast<int>(lv2_mutex::slot_of_id(thread_id)))
 				{
 					has_lower_prio_or_is_the_mutex_owner = true;
 				}
@@ -364,51 +391,29 @@ error_code sys_cond_signal_to(ppu_thread& ppu, u32 cond_id, u32 thread_id)
 				}
 			}
 
-			if (atomic_storage<ppu_thread*>::load(cond.sq))
+			if (ppu.state & cpu_flag::suspend)
 			{
-				// In the mutex's turn: the condition's queue and the mutex's change together
-				return turn_call(&cond.mutex->turns, [&]() -> int
-				{
-					if (ppu.state & cpu_flag::suspend)
-					{
-						// Test if another signal caused the current thread to be suspended, in which case it needs to wait until the thread wakes up (otherwise the signal may cause unexpected results)
-						finished = false;
-						return 0;
-					}
-
-					for (auto cpu = +cond.sq; cpu; cpu = cpu->next_cpu)
-					{
-						if (cpu->id == thread_id)
-						{
-							if (static_cast<ppu_thread*>(cpu)->state & cpu_flag::again)
-							{
-								ppu.state += cpu_flag::again;
-								return 0;
-							}
-
-							ensure(cond.unqueue(cond.sq, cpu));
-
-							if (cond.mutex->try_own(*cpu))
-							{
-								cond.awake(cpu);
-							}
-
-							return 1;
-						}
-					}
-
-					return 0;
-				});
+				// Test if another signal caused the current thread to be suspended, in which case it needs to wait until the thread wakes up (otherwise the signal may cause unexpected results)
+				finished = false;
+				return 0;
 			}
-			else
-			{
-				// A signal in the mutex's turn meanwhile: waited out
-				turn_call(&cond.mutex->turns, [] {});
 
-				if (ppu.state & cpu_flag::suspend)
+			const u32 slot = lv2_mutex::slot_of_id(thread_id);
+			ppu_thread* const cpu = slot < LV2_OWNQ_SLOTS ? cond.thread_in(slot) : nullptr;
+
+			if (cpu && cpu->id == thread_id && lv2_waitset_has(&cond.waiters, slot))
+			{
+				if (cpu->state & cpu_flag::again)
 				{
-					finished = false;
+					ppu.state += cpu_flag::again;
 					return 0;
+				}
+
+				// That waiter taken off, if it still waits, then handed to the mutex
+				if (lv2_waitset_leave(&cond.waiters, slot))
+				{
+					cond_hand_to_mutex(cond, slot);
+					return 1;
 				}
 			}
 
@@ -427,12 +432,13 @@ error_code sys_cond_signal_to(ppu_thread& ppu, u32 cond_id, u32 thread_id)
 
 		if (!cond.ret)
 		{
-			if (has_lower_prio_or_is_the_mutex_owner && get_system_time() - start_time < 50)
+			if (has_lower_prio_or_is_the_mutex_owner && retries++ < 8)
 			{
 				// RPCS3 is not cycle accurate
 				// Threads with higher (lower) priority get timing benefits that we cannot provide accurately
-				// Give the thread another chance
-				busy_wait(5000);
+				// Give the thread another chance: this one yields to it, in
+				// the guest's scheduler, rather than spinning on the host's clock
+				lv2_obj::yield(ppu);
 				continue;
 			}
 
@@ -462,7 +468,7 @@ error_code sys_cond_wait(ppu_thread& ppu, u32 cond_id, u64 timeout)
 	// (idm::get_entered).
 	const auto cond = idm::get_entered<lv2_obj, lv2_cond>(cond_id, [&, notify = lv2_obj::notify_all_t()](lv2_cond& cond) -> s64
 	{
-		if (!ppu.loaded_from_savestate && cond.mutex->control_owner() != ppu.id)
+		if (!ppu.loaded_from_savestate && !cond.mutex->owned_by(ppu))
 		{
 			return -1;
 		}
@@ -477,59 +483,64 @@ error_code sys_cond_wait(ppu_thread& ppu, u32 cond_id, u64 timeout)
 		// (lv2_obj::sleep gives false), as sys_mutex_lock has it
 		ppu.cancel_sleep = 1;
 
-		// The queues change in the mutex's turn. The mutex's next owner is
-		// woken on this thread with this thread's sleep, after the turn, as
-		// it was: the threads to wake are this thread's own list
+		// The thread joins the condition's waiters before it gives up the
+		// mutex: a signal between the two hands it to the mutex it still
+		// owns, and it is handed the mutex back in turn. The mutex's next
+		// owner is woken on this thread with this thread's sleep, as it was
+		const u32 slot = lv2_mutex::slot_of(ppu);
 		ppu_thread* next_owner = nullptr;
 		s64 count = 0;
 
+		retro_atomic_store_release_ptr(&cond.thread[slot], &ppu);
+
 		if (ppu.loaded_from_savestate)
 		{
-			turn_call(&cond.mutex->turns, [&]
+			if (syscall_state & 1)
 			{
-				if (syscall_state & 1)
-				{
-					// Mutex sleep
-					ensure(!cond.mutex->try_own(ppu));
-				}
-				else
-				{
-					lv2_obj::emplace(cond.sq, &ppu);
-				}
-			});
+				// Mutex sleep
+				ensure(!cond.mutex->try_own(ppu));
+			}
+			else
+			{
+				ensure(lv2_waitset_join(&cond.waiters, slot));
+			}
 
 			count = static_cast<u32>(syscall_state >> 32);
 		}
 		else
 		{
-			// Unlocking the mutex: its recursive count, saved
-			count = turn_call(&cond.mutex->turns, [&]() -> s64
+			// Register waiter
+			ensure(lv2_waitset_join(&cond.waiters, slot));
+
+			// A mutex waiter to be saved again: the wait is done again after
+			for (u32 s = 0; s < LV2_OWNQ_SLOTS; s++)
 			{
-				// Register waiter
-				lv2_obj::emplace(cond.sq, &ppu);
-
-				// Unlock the mutex
-				const u32 locks = static_cast<u32>(retro_atomic_exchange_int(&cond.mutex->lock_count, 0));
-
-				if (const auto cpu = cond.mutex->reown<ppu_thread>())
+				if (lv2_ownq_waits(&cond.mutex->q, s))
 				{
-					if (cpu->state & cpu_flag::again)
+					if (const auto cpu = cond.mutex->thread_in(s); cpu && cpu->state & cpu_flag::again)
 					{
-						ensure(cond.unqueue(cond.sq, &ppu));
+						ensure(lv2_waitset_leave(&cond.waiters, slot));
 						ppu.state += cpu_flag::again;
+						ppu.cancel_sleep = 0;
 						return 0;
 					}
-
-					next_owner = cpu;
 				}
+			}
 
-				return locks;
-			});
+			// Unlock the mutex: its recursive count, saved
+			count = static_cast<u32>(retro_atomic_exchange_int(&cond.mutex->lock_count, 0));
 
-			if (ppu.state & cpu_flag::again)
+			const int next = lv2_ownq_unlock(&cond.mutex->q, slot, cond.mutex->ranking(), cond.mutex);
+			ensure(next != LV2_OWNQ_NOT_OWNER);
+
+			if (next >= 0)
 			{
-				ppu.cancel_sleep = 0;
-				return 0;
+				cond.mutex->now_owned_by(next);
+				next_owner = ensure(cond.mutex->thread_in(next));
+			}
+			else
+			{
+				retro_atomic_store_release_int(&cond.mutex->owner_id, 0);
 			}
 		}
 
@@ -583,26 +594,8 @@ error_code sys_cond_wait(ppu_thread& ppu, u32 cond_id, u64 timeout)
 			bool mutex_sleep = false;
 			bool cond_sleep = false;
 
-			turn_call(&cond->mutex->turns, [&]
-			{
-				for (auto cpu = atomic_storage<ppu_thread*>::load(cond->sq); cpu; cpu = cpu->next_cpu)
-				{
-					if (cpu == &ppu)
-					{
-						cond_sleep = true;
-						break;
-					}
-				}
-
-				for (auto cpu = cond->mutex->control_sq(); cpu; cpu = cpu->next_cpu)
-				{
-					if (cpu == &ppu)
-					{
-						mutex_sleep = true;
-						break;
-					}
-				}
-			});
+			cond_sleep = lv2_waitset_has(&cond->waiters, lv2_mutex::slot_of(ppu));
+			mutex_sleep = lv2_ownq_waits(&cond->mutex->q, lv2_mutex::slot_of(ppu));
 
 			if (!cond_sleep && !mutex_sleep)
 			{
@@ -614,16 +607,6 @@ error_code sys_cond_wait(ppu_thread& ppu, u32 cond_id, u64 timeout)
 
 			ppu.state += cpu_flag::again;
 			return {};
-		}
-
-		for (usz i = 0; cpu_flag::signal - ppu.state && i < 50; i++)
-		{
-			busy_wait(500);
-		}
-
-		if (ppu.state & cpu_flag::signal)
- 		{
-			continue;
 		}
 
 		if (timeout)
@@ -643,12 +626,12 @@ error_code sys_cond_wait(ppu_thread& ppu, u32 cond_id, u64 timeout)
 				// May be given the mutex before the sleep below: cancelled then
 				ppu.cancel_sleep = 1;
 
-				// In the mutex's turn: off the condition's queue and onto the
-				// mutex's (or its owner), or found the owner already
-				const bool owner = turn_call(&cond->mutex->turns, [&]
+				// Off the condition's waiters in one change and onto the mutex's
+				// (or its owner), or signalled first: handed to the mutex then,
+				// the owner already or queued for it
+				const bool owner = [&]
 				{
-					// Try to cancel the waiting
-					if (cond->unqueue(cond->sq, &ppu))
+					if (lv2_waitset_leave(&cond->waiters, lv2_mutex::slot_of(ppu)))
 					{
 						// TODO: Is EBUSY returned after reqeueing, on sys_cond_destroy?
 						ppu.gpr[3] = CELL_ETIMEDOUT;
@@ -657,8 +640,8 @@ error_code sys_cond_wait(ppu_thread& ppu, u32 cond_id, u64 timeout)
 						return cond->mutex->try_own(ppu);
 					}
 
-					return cond->mutex->control_owner() == ppu.id;
-				});
+					return cond->mutex->owned_by(ppu);
+				}();
 
 				if (owner)
 				{
@@ -687,7 +670,7 @@ error_code sys_cond_wait(ppu_thread& ppu, u32 cond_id, u64 timeout)
 	}
 
 	// Verify ownership
-	ensure(cond->mutex->control_owner() == ppu.id);
+	ensure(cond->mutex->owned_by(ppu));
 
 	// Restore the recursive value
 	retro_atomic_store_release_int(&cond->mutex->lock_count, static_cast<int>(cond.ret));

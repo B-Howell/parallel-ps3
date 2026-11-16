@@ -2,6 +2,7 @@
 
 #include "sys_sync.h"
 #include "sys_mutex.h"
+#include "lv2_waitset.h"
 
 struct lv2_mutex;
 
@@ -28,7 +29,22 @@ struct lv2_cond final : lv2_obj
 
 	lv2_mutex* mutex; // Associated Mutex
 	shared_ptr<lv2_obj> _mutex;
-	ppu_thread* sq{};
+
+	// The threads waiting on it, a bit each with the order they came in
+	// (lv2_waitset.h): joined, left on a timeout and woken with one
+	// compare-and-swap each. Woken, a thread is handed to the mutex in one
+	// more (lv2_ownq_give). No lock, no turn
+	lv2_waitset_t waiters;
+	retro_atomic_ptr_t thread[LV2_OWNQ_SLOTS]{};
+
+	ppu_thread* thread_in(u32 slot)
+	{
+		return static_cast<ppu_thread*>(retro_atomic_load_acquire_ptr(&thread[slot]));
+	}
+
+	// Whether a thread waiting on it is to be saved again (a save state is
+	// being made): nothing is done to the waiters then
+	bool any_waiter_again();
 
 	lv2_cond(u64 key, u64 name, u32 mtx_id, shared_ptr<lv2_obj> mutex0) noexcept;
 

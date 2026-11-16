@@ -1,7 +1,7 @@
 #pragma once
 
 #include "sys_sync.h"
-#include "Emu/CPU/turn_calls.h"
+#include "lv2_ownq.h"
 
 #include "Emu/Memory/vm_ptr.h"
 
@@ -36,50 +36,21 @@ struct lv2_mutex final : lv2_obj
 	const u64 key;
 	const u64 name;
 
-	u32 cond_count = 0; // Condition Variables
+	retro_atomic_int_t cond_count{}; // Condition Variables
+	retro_atomic_int_t lock_count{}; // Recursive Locks (a u32): the owner's alone
 
-	// What is not one compare-and-swap of the control word - giving the
-	// mutex to a waiter, taking a waiter out of the queue's middle, its
-	// conditions' queues, a destroy - is done in turn (turn_calls.h): no
-	// lock. Taking it free and queueing at the head are a compare-and-swap
-	turn_calls_cpp turns;
-	retro_atomic_int_t lock_count{}; // Recursive Locks (a u32)
+	// The owner and the threads waiting for it, in one 128-bit word
+	// (lv2_ownq.h): taking it, queueing, leaving the queue on a timeout,
+	// handing it to the best waiter at unlock and to a thread a condition
+	// wakes are each one compare-and-swap. No lock, no turn
+	lv2_ownq_t q;
 
-	struct alignas(16) control_data_t
-	{
-		u32 owner{};
-		u32 reserved{};
-		ppu_thread* sq{};
-	};
+	// The thread in each slot while it waits or owns, for an unlock to wake
+	// it and a priority mutex to rank it
+	retro_atomic_ptr_t thread[LV2_OWNQ_SLOTS]{};
 
-	// The owner and the queue, changed together: a 128-bit word. Its low
-	// half's low 32 bits are the owner, its high half the queue's head.
-	retro_atomic_128_t control{};
-
-	static_assert(sizeof(control_data_t) == sizeof(retro_u128_t));
-	static_assert(offsetof(control_data_t, owner) == 0 && offsetof(control_data_t, sq) == 8);
-	static_assert(std::endian::native == std::endian::little, "control_owner() reads the low half's low 32 bits");
-
-	static control_data_t control_of(retro_u128_t word)
-	{
-		return std::bit_cast<control_data_t>(word);
-	}
-
-	static retro_u128_t word_of(const control_data_t& data)
-	{
-		return std::bit_cast<retro_u128_t>(data);
-	}
-
-	// One field alone: a 64-bit load of its half
-	u32 control_owner()
-	{
-		return static_cast<u32>(retro_atomic_load_acquire_128_lo(&control));
-	}
-
-	ppu_thread* control_sq()
-	{
-		return reinterpret_cast<ppu_thread*>(static_cast<uptr>(retro_atomic_load_acquire_128_hi(&control)));
-	}
+	// The owner's ID, for a save state
+	retro_atomic_int_t owner_id{};
 
 	lv2_mutex(u32 protocol, u32 recursive,u32 adaptive, u64 key, u64 name) noexcept
 		: protocol{static_cast<u8>(protocol)}
@@ -88,32 +59,65 @@ struct lv2_mutex final : lv2_obj
 		, key(key)
 		, name(name)
 	{
+		lv2_ownq_init(&q, -1);
 	}
 
 	lv2_mutex(utils::serial& ar);
 	static std::function<void(void*)> load(utils::serial& ar);
 	void save(utils::serial& ar);
 
-	template <typename T>
-	CellError try_lock(T& cpu)
+	// A PPU thread's slot: its ID's index
+	static u32 slot_of_id(u32 id);
+
+	static u32 slot_of(const ppu_thread& ppu)
 	{
-		const retro_u128_t seen = retro_atomic_load_acquire_128(&control);
-		const control_data_t it = control_of(seen);
+		return slot_of_id(ppu.id);
+	}
 
-		if (!it.owner)
+	bool owned_by(const ppu_thread& ppu)
+	{
+		return lv2_ownq_owner(&q) == static_cast<int>(slot_of(ppu));
+	}
+
+	ppu_thread* thread_in(u32 slot)
+	{
+		return static_cast<ppu_thread*>(retro_atomic_load_acquire_ptr(&thread[slot]));
+	}
+
+	// The rank lv2_ownq_unlock goes by: the waiter's priority for a priority
+	// mutex, none (the order they came) for a FIFO one
+	static int rank(void* ctx, unsigned slot);
+
+	lv2_ownq_rank_t ranking()
+	{
+		return protocol == SYS_SYNC_FIFO ? nullptr : rank;
+	}
+
+	// The thread in @slot made the owner: noted, for a save state
+	void now_owned_by(u32 slot)
+	{
+		if (const auto ppu = thread_in(slot))
 		{
-			auto store = it;
-			store.owner = cpu.id;
-			if (!retro_atomic_cas_128(&control, seen, word_of(store)))
-			{
-				return CELL_EBUSY;
-			}
+			retro_atomic_store_release_int(&owner_id, static_cast<int>(ppu->id));
+		}
+	}
 
-			return {};
+	template <typename T>
+	CellError try_lock(T& ppu)
+	{
+		const u32 slot = slot_of_id(ppu.id);
+
+		if constexpr (std::is_same_v<T, ppu_thread>)
+		{
+			retro_atomic_store_release_ptr(&thread[slot], &ppu);
 		}
 
-		if (it.owner == cpu.id)
+		switch (lv2_ownq_trylock(&q, slot))
 		{
+		case LV2_OWNQ_OWNED:
+			retro_atomic_store_release_int(&owner_id, static_cast<int>(ppu.id));
+			return {};
+		case LV2_OWNQ_MINE:
 			// Recursive locking
 			if (recursive == SYS_SYNC_RECURSIVE)
 			{
@@ -127,144 +131,24 @@ struct lv2_mutex final : lv2_obj
 			}
 
 			return CELL_EDEADLK;
-		}
-
-		return CELL_EBUSY;
-	}
-
-	template <typename T>
-	bool try_own(T& cpu)
-	{
-		const auto own = [&](control_data_t& data)
-		{
-			if (data.owner)
-			{
-				cpu.prio.atomic_op([tag = retro_atomic_fetch_add_64(&g_priority_order_tag, 1) + 1](std::common_type_t<decltype(T::prio)>& prio)
-				{
-					prio.order = tag;
-				});
-
-				cpu.next_cpu = data.sq;
-				data.sq = &cpu;
-				return false;
-			}
-			else
-			{
-				data.owner = cpu.id;
-				return true;
-			}
-		};
-
-		for (;;)
-		{
-			const retro_u128_t seen = retro_atomic_load_acquire_128(&control);
-			control_data_t data = control_of(seen);
-			const bool owned = own(data);
-
-			if (retro_atomic_cas_128(&control, seen, word_of(data)))
-			{
-				if (owned)
-				{
-					cpu.next_cpu = nullptr;
-				}
-
-				return owned;
-			}
+		default:
+			return CELL_EBUSY;
 		}
 	}
 
-	template <typename T>
-	CellError try_unlock(T& cpu)
+	// The owner now (true), or queued in the same change (false)
+	bool try_own(ppu_thread& ppu)
 	{
-		const retro_u128_t seen = retro_atomic_load_acquire_128(&control);
-		const control_data_t it = control_of(seen);
+		const u32 slot = slot_of(ppu);
+		retro_atomic_store_release_ptr(&thread[slot], &ppu);
 
-		if (it.owner != cpu.id)
+		if (lv2_ownq_give(&q, slot) == LV2_OWNQ_OWNED)
 		{
-			return CELL_EPERM;
+			retro_atomic_store_release_int(&owner_id, static_cast<int>(ppu.id));
+			return true;
 		}
 
-		if (retro_atomic_load_acquire_int(&lock_count))
-		{
-			retro_atomic_fetch_add_int(&lock_count, -1);
-			return {};
-		}
-
-		if (!it.sq)
-		{
-			auto store = it;
-			store.owner = 0;
-
-			if (retro_atomic_cas_128(&control, seen, word_of(store)))
-			{
-				return {};
-			}
-		}
-
-		return CELL_EBUSY;
-	}
-
-	template <typename T>
-	T* reown()
-	{
-		T* res{};
-
-		const auto change = [&](control_data_t& data)
-		{
-			res = nullptr;
-
-			if (auto sq = static_cast<T*>(data.sq))
-			{
-				res = schedule<T>(data.sq, protocol, false);
-
-				if (sq == data.sq)
-				{
-					if (cpu_flag::again - res->state)
-					{
-						// The owner alone, whatever the queue is now
-						for (retro_u128_t seen = retro_atomic_load_acquire_128(&control);;)
-						{
-							control_data_t owned = control_of(seen);
-							owned.owner = res->id;
-
-							if (retro_atomic_cas_seen_128(&control, &seen, word_of(owned)))
-							{
-								break;
-							}
-						}
-					}
-
-					return false;
-				}
-
-				data.owner = res->id;
-				return true;
-			}
-			else
-			{
-				data.owner = 0;
-				return true;
-			}
-		};
-
-		for (;;)
-		{
-			const retro_u128_t seen = retro_atomic_load_acquire_128(&control);
-			control_data_t data = control_of(seen);
-
-			if (!change(data) || retro_atomic_cas_128(&control, seen, word_of(data)))
-			{
-				break;
-			}
-		}
-
-		if (res && cpu_flag::again - res->state)
-		{
-			// Detach manually (fetch_op can fail, so avoid side-effects  on the first node in this case)
-			res->next_cpu = nullptr;
-		}
-
-		return res;
+		return false;
 	}
 };
 

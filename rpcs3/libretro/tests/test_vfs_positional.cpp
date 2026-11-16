@@ -1037,7 +1037,8 @@ int main()
 		g_fxo->init<id_manager::id_map<lv2_obj>>();
 
 		struct fake_cpu { u32 id; };
-		constexpr u32 scribble = 0xDEAD0000;
+		// A destroyed mutex's owner, which no locker has
+		constexpr int scribble = 99;
 
 		const auto make_mutex = []
 		{
@@ -1084,7 +1085,7 @@ int main()
 		{
 			lockers[t] = std::thread([t]
 			{
-				fake_cpu cpu{t + 1};
+				fake_cpu cpu{ppu_thread::id_base + t};
 				u32 x = t * 2654435761u + 1;
 
 				while (!retro_atomic_load_acquire_int(&s_stop))
@@ -1097,7 +1098,7 @@ int main()
 					if (!mutex)
 						continue;
 
-					if (mutex->control_owner() >= scribble)
+					if (lv2_ownq_owner(&mutex->q) == scribble)
 						retro_atomic_fetch_add_int(&s_bad, 1);
 
 					if (mutex->try_lock(cpu))
@@ -1117,7 +1118,7 @@ int main()
 						retro_atomic_fetch_add_int(&s_undone, 1);
 					}
 
-					if (mutex->try_unlock(cpu))
+					if (lv2_ownq_unlock(&mutex->q, lv2_mutex::slot_of_id(cpu.id), nullptr, nullptr) != LV2_OWNQ_FREED)
 						retro_atomic_fetch_add_int(&s_bad, 1);
 				}
 			});
@@ -1128,20 +1129,17 @@ int main()
 			const u32 slot = n % slots;
 			const u32 id = static_cast<u32>(retro_atomic_load_acquire_int(&s_ids[slot]));
 
-			// As sys_mutex_destroy: not while it has an owner, in the mutex's turn
+			// As sys_mutex_destroy: not while it has an owner
 			const auto gone = idm::withdraw<lv2_obj, lv2_mutex>(id, [&](lv2_mutex& mutex) -> CellError
 			{
-				return turn_call(&mutex.turns, [&]() -> CellError
-				{
-					if (mutex.control_owner())
-						return CELL_EBUSY;
+				if (lv2_ownq_owner(&mutex.q) >= 0)
+					return CELL_EBUSY;
 
-					// Nobody may hold it and have been told so
-					if (retro_atomic_load_acquire_int(&s_held[place(id)]))
-						retro_atomic_fetch_add_int(&s_bad, 1);
+				// Nobody may hold it and have been told so
+				if (retro_atomic_load_acquire_int(&s_held[place(id)]))
+					retro_atomic_fetch_add_int(&s_bad, 1);
 
-					return {};
-				});
+				return {};
 			});
 
 			if (gone && !gone.ret)
@@ -1149,9 +1147,7 @@ int main()
 				retro_atomic_fetch_add_int(&s_destroyed, 1);
 
 				// Nobody is looking at it any more: anyone who is sees this
-				lv2_mutex::control_data_t scribbled{};
-				scribbled.owner = scribble + slot;
-				retro_atomic_store_release_128(&gone->control, lv2_mutex::word_of(scribbled));
+				lv2_ownq_init(&gone->q, scribble);
 				retro_atomic_store_release_int(&s_ids[slot], static_cast<int>(make_mutex()));
 			}
 		}
