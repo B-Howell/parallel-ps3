@@ -1,4 +1,5 @@
 ﻿#include "stdafx.h"
+#include "Emu/CPU/turn_calls.h"
 #include "perf_meter.hpp"
 
 #include "util/sysinfo.hpp"
@@ -93,7 +94,8 @@ SAFE_BUFFERS(void) perf_stat_base::push(u64 data[66], u64 start_time, const char
 	data[65] += ns;
 }
 
-static shared_mutex s_perf_mutex;
+// The sources and their totals change in turn (turn_calls.h): no lock
+static turn_calls_cpp s_perf_turns;
 
 static std::map<std::string, perf_stat_base> s_perf_acc;
 
@@ -107,10 +109,11 @@ void perf_stat_base::add(u64 ns[66], const char* name) noexcept
 		return;
 	}
 
-	std::lock_guard lock(s_perf_mutex);
-
-	s_perf_sources.emplace(name, ns);
-	s_perf_acc[name];
+	turn_call(&s_perf_turns, [&]
+	{
+		s_perf_sources.emplace(name, ns);
+		s_perf_acc[name];
+	});
 }
 
 void perf_stat_base::remove(u64 ns[66], const char* name) noexcept
@@ -120,38 +123,40 @@ void perf_stat_base::remove(u64 ns[66], const char* name) noexcept
 		return;
 	}
 
-	std::lock_guard lock(s_perf_mutex);
-
-	const auto found = s_perf_sources.equal_range(name);
-
-	for (auto it = found.first; it != found.second; it++)
+	turn_call(&s_perf_turns, [&]
 	{
-		if (it->second == ns)
+		const auto found = s_perf_sources.equal_range(name);
+
+		for (auto it = found.first; it != found.second; it++)
 		{
-			s_perf_acc[name].push(ns);
-			s_perf_sources.erase(it);
-			break;
+			if (it->second == ns)
+			{
+				s_perf_acc[name].push(ns);
+				s_perf_sources.erase(it);
+				break;
+			}
 		}
-	}
+	});
 }
 
 void perf_stat_base::report() noexcept
 {
-	std::lock_guard lock(s_perf_mutex);
-
-	perf_log.notice("Performance report begin (%u src, %u acc):", s_perf_sources.size(), s_perf_acc.size());
-
-	for (auto& [name, ns] : s_perf_sources)
+	turn_call(&s_perf_turns, [&]
 	{
-		s_perf_acc[name].push(ns);
-	}
+		perf_log.notice("Performance report begin (%u src, %u acc):", s_perf_sources.size(), s_perf_acc.size());
 
-	for (auto& [name, data] : s_perf_acc)
-	{
-		data.print(name.c_str());
-	}
+		for (auto& [name, ns] : s_perf_sources)
+		{
+			s_perf_acc[name].push(ns);
+		}
 
-	s_perf_acc.clear();
+		for (auto& [name, data] : s_perf_acc)
+		{
+			data.print(name.c_str());
+		}
 
-	perf_log.notice("Performance report end.");
+		s_perf_acc.clear();
+
+		perf_log.notice("Performance report end.");
+	});
 }
