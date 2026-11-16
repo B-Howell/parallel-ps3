@@ -543,6 +543,12 @@ $(TARGET): $(OBJ_LIBRETRO) $(ARCHIVES)
 
 %.cpp: ;
 
+# Nor is a header that is gone: a tree built before still names it in its
+# .d files, and make would otherwise try its built-in rule and compile
+# X.hpp.cpp. The objects that named it are rebuilt, and find it gone.
+%.h: ;
+%.hpp: ;
+
 # A dependency file is written by the compile, never made: without this,
 # make's built-in "program from a .cpp" rule and the rule above together try
 # to compile X.d.cpp for every .d file a fresh tree does not have yet.

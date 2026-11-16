@@ -1,5 +1,6 @@
 #include <queues/retro_deque.h>
 #include "stdafx.h"
+#include "Emu/system_config.h"
 #include "Utilities/JIT.h"
 #include "Utilities/StrUtil.h"
 #include "util/serialization.hpp"
@@ -8,7 +9,6 @@
 #include "Loader/ELF.h"
 #include "Loader/mself.hpp"
 #include "Emu/localized_string.h"
-#include "Emu/perf_meter.hpp"
 #include "Emu/Memory/vm_reservation.h"
 #include "Emu/Memory/vm_locking.h"
 #include "Emu/RSX/Core/RSXReservationLock.hpp"
@@ -514,7 +514,6 @@ static void ppu_fallback(ppu_thread& ppu, ppu_opcode_t op, be_t<u32>* this_op, p
 // TODO: Make this a dispatch call
 void ppu_recompiler_fallback(ppu_thread& ppu)
 {
-	perf_meter<"PPUFALL1"_u64> perf0;
 
 	if (g_cfg.core.ppu_debug)
 	{
@@ -544,7 +543,6 @@ void ppu_recompiler_fallback(ppu_thread& ppu)
 
 void ppu_reservation_fallback(ppu_thread& ppu)
 {
-	perf_meter<"PPUFALL2"_u64> perf0;
 
 	const auto& table = g_fxo->get<ppu_interpreter_rt>();
 
@@ -2752,18 +2750,6 @@ void ppu_thread::cpu_on_stop()
 		ppu_log.notice("thread context: %s", ret);
 	}
 
-	if (is_stopped())
-	{
-		if (last_succ == 0 && last_fail == 0 && exec_bytes == 0)
-		{
-			perf_log.notice("PPU thread perf stats are not available.");
-		}
-		else
-		{
-			perf_log.notice("Perf stats for STCX reload: success %u, failure %u", last_succ, last_fail);
-			perf_log.notice("Perf stats for instructions: total %u", exec_bytes / 4);
-		}
-	}
 }
 
 void ppu_thread::cpu_wait(bs_t<cpu_flag> old)
@@ -3452,7 +3438,8 @@ static void ppu_trace(u64 addr)
 template <typename T>
 static T ppu_load_acquire_reservation(ppu_thread& ppu, u32 addr)
 {
-	perf_meter<"LARX"_u32> perf0;
+	// Now, by the host's clock: the reload heuristic below goes by it
+	const u64 now = utils::get_tsc();
 
 	// Do not allow stores accessed from the same cache line to past reservation load
 	atomic_fence_seq_cst();
@@ -3530,10 +3517,10 @@ static T ppu_load_acquire_reservation(ppu_thread& ppu, u32 addr)
 
 	if (ppu_log.trace && (addr & addr_mask) == (ppu.last_faddr & addr_mask))
 	{
-		ppu_log.trace(u8"LARX after fail: addr=0x%x, faddr=0x%x, time=%u c", addr, ppu.last_faddr, (perf0.get() - ppu.last_ftsc));
+		ppu_log.trace(u8"LARX after fail: addr=0x%x, faddr=0x%x, time=%u c", addr, ppu.last_faddr, (now - ppu.last_ftsc));
 	}
 
-	if ((addr & addr_mask) == (ppu.last_faddr & addr_mask) && (perf0.get() - ppu.last_ftsc) < 600 && (vm::reservation_acquire(addr) & -128) == ppu.last_ftime)
+	if ((addr & addr_mask) == (ppu.last_faddr & addr_mask) && (now - ppu.last_ftsc) < 600 && (vm::reservation_acquire(addr) & -128) == ppu.last_ftime)
 	{
 		be_t<u64> rdata;
 		std::memcpy(&rdata, &ppu.rdata[addr & 0x78], 8);
@@ -3601,7 +3588,6 @@ extern u64 ppu_ldarx(ppu_thread& ppu, u32 addr)
 template <typename T>
 static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 {
-	perf_meter<"STCX"_u32> perf0;
 
 	if (addr % sizeof(T))
 	{

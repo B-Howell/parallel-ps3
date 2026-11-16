@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Emu/system_config.h"
 #include "vm_locking.h"
 #include "vm_ptr.h"
 #include "vm_reservation.h"
@@ -8,7 +9,6 @@
 #include "Emu/CPU/CPUThread.h"
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/Cell/SPURecompiler.h"
-#include "Emu/perf_meter.hpp"
 #include <deque>
 #include <span>
 
@@ -168,7 +168,6 @@ namespace vm
 
 	void range_lock_internal(atomic_t<u64, 128>* range_lock, u32 begin, u32 size)
 	{
-		perf_meter<"RHW_LOCK"_u64> perf0(0);
 
 		cpu_thread* _cpu = nullptr;
 
@@ -233,11 +232,6 @@ namespace vm
 				{
 					range_lock->release(0);
 
-					if (!perf0)
-					{
-						perf0.restart();
-					}
-
 					// Try triggering a page fault (write)
 					// TODO: Read memory if needed
 					utils::trigger_write_page_fault(vm::base(test / 4096 == begin / 4096 ? begin : test));
@@ -247,11 +241,6 @@ namespace vm
 
 			// Wait a bit before accessing global lock
 			range_lock->release(0);
-
-			if (!perf0)
-			{
-				perf0.restart();
-			}
 
 			busy_wait(200);
 
@@ -511,7 +500,6 @@ namespace vm
 
 		if (range_lock)
 		{
-			perf_meter<"SUSPEND"_u64> perf0;
 
 			for (auto lock = g_locks.cbegin(), end = lock + g_cfg.core.ppu_threads; lock != end; lock++)
 			{
@@ -728,7 +716,6 @@ namespace vm
 
 	static void _page_map(u32 addr, u8 flags, u32 size, utils::shm* shm, u64 bflags, std::pair<const u32, std::pair<u32, std::shared_ptr<utils::shm>>>* (*search_shm)(vm::block_t* block, utils::shm* shm))
 	{
-		perf_meter<"PAGE_MAP"_u64> perf0;
 
 		if (!size || (size | addr) % 4096 || flags & page_allocated)
 		{
@@ -839,7 +826,6 @@ namespace vm
 		{
 			utils::memory_protect(g_base_addr + addr, size, prot);
 
-			perf_meter<"PAGE_LCK"_u64> perf;
 			utils::memory_lock(g_base_addr + addr, size);
 			utils::memory_lock(g_sudo_addr + addr, size);
 		}
@@ -872,7 +858,6 @@ namespace vm
 
 	bool page_protect(u32 addr, u32 size, u8 flags_test, u8 flags_set, u8 flags_clear)
 	{
-		perf_meter<"PAGE_PRO"_u64> perf0;
 
 		vm::writer_lock lock;
 
@@ -970,7 +955,6 @@ namespace vm
 
 	static u32 _page_unmap(u32 addr, u32 max_size, u64 bflags, utils::shm* shm, std::vector<std::pair<u64, u64>>& unmap_events, bool is_block_termination = false)
 	{
-		perf_meter<"PAGE_UNm"_u64> perf0;
 
 		if (!max_size || (max_size | addr) % 4096)
 		{
@@ -1169,7 +1153,6 @@ namespace vm
 
 	void lock_sudo(u32 addr, u32 size)
 	{
-		perf_meter<"PAGE_LCK"_u64> perf;
 
 		ensure(addr % 4096 == 0);
 		ensure(size % 4096 == 0);

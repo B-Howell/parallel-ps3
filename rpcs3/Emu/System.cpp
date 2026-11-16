@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Emu/system_config.h"
 #include "VFS.h"
 #include "Utilities/bin_patch.h"
 #include "Emu/Memory/vm.h"
@@ -6,7 +7,6 @@
 #include "Emu/System.h"
 #include "Emu/system_progress.hpp"
 #include "Emu/system_utils.hpp"
-#include "Emu/perf_meter.hpp"
 #include "Emu/perf_monitor.hpp"
 #include "Emu/vfs_config.h"
 #include "Emu/IPC_config.h"
@@ -3205,8 +3205,6 @@ void Emulator::Resume()
 		sys_log.error("Emulator::Resume() error: concurrent access");
 	}
 
-	perf_stat_base::report();
-
 	auto on_select = [](u32, cpu_thread& cpu)
 	{
 		cpu.state -= cpu_flag::dbg_global_pause;
@@ -4145,8 +4143,6 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 			static_cast<void>(init_mtx->reset());
 
 			jit_runtime::finalize();
-
-			perf_stat_base::report();
 
 			m_stop_ctr++;
 			m_stop_ctr.notify_all();

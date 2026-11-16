@@ -1,5 +1,4 @@
 #include "stdafx.h"
-#include "Emu/perf_meter.hpp"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/lv2/sys_sync.h"
 #include "Emu/Cell/lv2/sys_ppu_thread.h"
@@ -230,7 +229,6 @@ vm::gvar<CellAdecCoreOps> g_cell_adec_core_ops_lpcm;
 
 void LpcmDecContext::exec(ppu_thread& ppu)
 {
-	perf_meter<"LPCMDEC"_u64> perf0;
 
 	switch (savestate)
 	{

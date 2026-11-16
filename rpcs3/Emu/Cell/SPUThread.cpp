@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Emu/system_config.h"
 #include "Utilities/JIT.h"
 #include "Utilities/date_time.h"
 #include "Emu/Memory/vm.h"
@@ -9,7 +10,6 @@
 #include "Emu/VFS.h"
 #include "Emu/IdManager.h"
 #include "Emu/System.h"
-#include "Emu/perf_meter.hpp"
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Cell/lv2/sys_spu.h"
@@ -1328,18 +1328,6 @@ void spu_thread::cpu_on_stop()
 		spu_log.notice("thread context: %s", ret);
 	}
 
-	if (is_stopped(state - cpu_flag::stop))
-	{
-		if (stx == 0 && ftx == 0 && last_succ == 0 && last_fail == 0)
-		{
-			perf_log.notice("SPU thread perf stats are not available.");
-		}
-		else
-		{
-			perf_log.notice("Perf stats for transactions: success %u, failure %u", stx, ftx);
-			perf_log.notice("Perf stats for PUTLLC reload: success %u, failure %u", last_succ, last_fail);
-		}
-	}
 }
 
 void spu_thread::cpu_init()
@@ -2075,7 +2063,6 @@ void spu_thread::push_snr(u32 number, u32 value)
 
 void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8* ls)
 {
-	perf_meter<"DMA"_u32> perf_;
 
 	const bool is_get = (args.cmd & ~(MFC_BARRIER_MASK | MFC_FENCE_MASK | MFC_START_MASK)) == MFC_GET_CMD;
 
@@ -2186,8 +2173,6 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 
 	if (!is_get || g_cfg.core.spu_accurate_dma)  [[unlikely]]
 	{
-		perf_meter<"ADMA_GET"_u64> perf_get = perf_;
-		perf_meter<"ADMA_PUT"_u64> perf_put = perf_;
 
 		cpu_thread* _cpu = _this ? _this : get_current_cpu_thread();
 
@@ -2534,11 +2519,8 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 		}
 		else
 		{
-			perf_put.reset();
-			perf_get.reset();
 		}
 
-		perf_meter<"DMA_PUT"_u64> perf2 = perf_;
 
 		switch (u32 size = args.size)
 		{
@@ -2865,7 +2847,6 @@ bool spu_thread::do_dma_check(const spu_mfc_cmd& args)
 
 bool spu_thread::do_list_transfer(spu_mfc_cmd& args)
 {
-	perf_meter<"MFC_LIST"_u64> perf0;
 
 	// Amount of elements to fetch in one go
 	constexpr u32 fetch_size = 6;
@@ -3421,15 +3402,12 @@ bool spu_thread::do_list_transfer(spu_mfc_cmd& args)
 
 bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 {
-	perf_meter<"PUTLLC-"_u64> perf0;
-	perf_meter<"PUTLLC+"_u64> perf1 = perf0;
 
 	// Store conditionally
 	const u32 addr = args.eal & -128;
 
 	if ([&]()
 	{
-		perf_meter<"PUTLLC."_u64> perf2 = perf0;
 
 		if (raddr != addr)
 		{
@@ -3569,7 +3547,6 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 			raddr = 0;
 		}
 
-		perf0.reset();
 		return true;
 	}
 	else
@@ -3596,14 +3573,12 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 		}
 
 		raddr = 0;
-		perf1.reset();
 		return false;
 	}
 }
 
 void do_cell_atomic_128_store(u32 addr, const void* to_write)
 {
-	perf_meter<"STORE128"_u64> perf0;
 
 	const auto cpu = get_current_cpu_thread();
 	rsx::reservation_lock rsx_lock(addr, 128);
@@ -3734,12 +3709,6 @@ void do_cell_atomic_128_store(u32 addr, const void* to_write)
 			});
 
 			vm::reservation_acquire(addr) += 32;
-			result = utils::get_tsc() - perf0.get();
-		}
-
-		if (result > 20000 && g_cfg.core.perf_report) [[unlikely]]
-		{
-			perf_log.warning("STORE128: took too long: %.3fus (%u c) (addr=0x%x)", result / (utils::get_tsc_freq() / 1000'000.), result, addr);
 		}
 
 		static_cast<void>(cpu->test_stopped());
@@ -3748,7 +3717,6 @@ void do_cell_atomic_128_store(u32 addr, const void* to_write)
 
 void spu_thread::do_putlluc(const spu_mfc_cmd& args)
 {
-	perf_meter<"PUTLLUC"_u64> perf0;
 
 	const u32 addr = args.eal & -128;
 
@@ -4299,7 +4267,8 @@ bool spu_thread::process_mfc_cmd()
 		return true;
 	case MFC_GETLLAR_CMD:
 	{
-		perf_meter<"GETLLAR"_u64> perf0;
+		// Now, by the host's clock: the reservation heuristics below go by it
+		u64 now = utils::get_tsc();
 
 		const u32 addr = ch_mfc_cmd.eal & -128;
 		const auto& data = vm::_ref<spu_rdata_t>(addr);
@@ -4307,10 +4276,10 @@ bool spu_thread::process_mfc_cmd()
 		if (addr == last_faddr)
 		{
 			// TODO: make this configurable and possible to disable
-			spu_log.trace(u8"GETLLAR after fail: addr=0x%x, time=%u c", last_faddr, (perf0.get() - last_ftsc));
+			spu_log.trace(u8"GETLLAR after fail: addr=0x%x, time=%u c", last_faddr, (now - last_ftsc));
 		}
 
-		if (addr == last_faddr && perf0.get() - last_ftsc < 1000 && (vm::reservation_acquire(addr) & -128) == last_ftime)
+		if (addr == last_faddr && now - last_ftsc < 1000 && (vm::reservation_acquire(addr) & -128) == last_ftime)
 		{
 			rtime = last_ftime;
 			raddr = last_faddr;
@@ -4362,7 +4331,7 @@ bool spu_thread::process_mfc_cmd()
 						if ([&]() -> bool
 						{
 							// Validation that it is indeed GETLLAR spinning (large time window is intentional)
-							if (last_getllar_addr != addr || last_getllar_gpr1 != gpr[1]._u32[3] || perf0.get() - last_gtsc >= 5'000 || (interrupts_enabled && ch_events.load().mask))
+							if (last_getllar_addr != addr || last_getllar_gpr1 != gpr[1]._u32[3] || now - last_gtsc >= 5'000 || (interrupts_enabled && ch_events.load().mask))
 							{
 								// Seemingly not
 								getllar_busy_waiting_switch = umax;
@@ -4397,7 +4366,7 @@ bool spu_thread::process_mfc_cmd()
 								// Hidden value to force busy waiting (100 to 1 are dynamically adjusted, 0 is not)
 								if (!g_cfg.core.spu_getllar_spin_optimization_disabled)
 								{
-									getllar_evaluate_time = perf0.get();
+									getllar_evaluate_time = now;
 									auto& history = getllar_wait_time[(addr % SPU_LS_SIZE) / 128];
 
 									getllar_busy_waiting_switch =
@@ -4409,7 +4378,7 @@ bool spu_thread::process_mfc_cmd()
 								}
 							}
 							// Don't be stubborn, force operating sleep if too much time has passed
-							else if (getllar_busy_waiting_switch == 1 && perf0.get() > getllar_evaluate_time && perf0.get() - getllar_evaluate_time >= 400'000)
+							else if (getllar_busy_waiting_switch == 1 && now > getllar_evaluate_time && now - getllar_evaluate_time >= 400'000)
 							{
 								// Hidden value to force busy waiting
 								if (!g_cfg.core.spu_getllar_spin_optimization_disabled)
@@ -4474,11 +4443,10 @@ bool spu_thread::process_mfc_cmd()
 									lv2_obj::notify_all();
 								}
 
-								// Reset perf
-								perf0.restart();
+								now = utils::get_tsc();
 							}
 
-							last_gtsc = perf0.get();
+							last_gtsc = now;
 							return true;
 						}
 
@@ -4522,9 +4490,8 @@ bool spu_thread::process_mfc_cmd()
 							u8& val = getllar_wait_time[(addr % SPU_LS_SIZE) / 128].front();
 							val = static_cast<u8>(std::min<u32>(val + 1, u8{umax}));
 
-							// Reset perf
-							perf0.restart();
-							last_gtsc = perf0.get();
+							now = utils::get_tsc();
+							last_gtsc = now;
 							return true;
 						}
 
@@ -4567,12 +4534,11 @@ bool spu_thread::process_mfc_cmd()
 				set_events(SPU_EVENT_LR);
 				static_cast<void>(test_stopped());
 
-				// Reset perf
-				perf0.restart();
+				now = utils::get_tsc();
 			}
 
 			last_getllar = pc;
-			last_gtsc = perf0.get();
+			last_gtsc = now;
 		}
 
 		last_getllar_addr = addr;
@@ -4638,11 +4604,6 @@ bool spu_thread::process_mfc_cmd()
 			{
 				i += 2;
 				continue;
-			}
-
-			if (i >= 15 && g_cfg.core.perf_report) [[unlikely]]
-			{
-				perf_log.warning("GETLLAR: took too long: %u", i);
 			}
 
 			break;

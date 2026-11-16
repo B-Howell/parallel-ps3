@@ -12,7 +12,6 @@
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/SPUThread.h"
 #include "Emu/RSX/RSXThread.h"
-#include "Emu/perf_meter.hpp"
 
 #include "util/asm.hpp"
 
@@ -1417,7 +1416,6 @@ bool cpu_thread::suspend_work::push(cpu_thread* _this) noexcept
 	if (!next)
 	{
 		// Monitor the performance only of the actual suspend processing owner
-		perf_meter<"SUSPEND"_u64> perf0;
 
 		// First thread to push the work to the workload list pauses all threads and processes it
 		std::lock_guard lock(s_cpu_lock);

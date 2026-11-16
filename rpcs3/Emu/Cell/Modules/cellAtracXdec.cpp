@@ -1,5 +1,4 @@
 #include "stdafx.h"
-#include "Emu/perf_meter.hpp"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/lv2/sys_sync.h"
 #include "Emu/Cell/lv2/sys_ppu_thread.h"
@@ -221,7 +220,6 @@ error_code AtracXdecDecoder::parse_ats_header(vm::cptr<u8> au_start_addr)
 
 void AtracXdecContext::exec(ppu_thread& ppu)
 {
-	perf_meter<"ATXDEC"_u64> perf0;
 
 	// Savestates
 	if (decoder.config_is_set)

@@ -1,6 +1,5 @@
 #include "stdafx.h"
 #include "Emu/IdManager.h"
-#include "Emu/perf_meter.hpp"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/lv2/sys_sync.h"
 #include "Emu/Cell/lv2/sys_ppu_thread.h"
@@ -423,7 +422,6 @@ struct vdec_context final
 
 	void exec(ppu_thread& ppu, u32 vid)
 	{
-		perf_meter<"VDEC"_u32> perf0;
 
 		ppu_tid.release(ppu.id);
 
