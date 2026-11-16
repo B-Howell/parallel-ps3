@@ -752,7 +752,7 @@ HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellIme
 LOCK_GUARD_MAX := 303
 # turn_call (turn_calls.h) is a lock without a lock object - a queued caller
 # still waits - and is going too: the count may only fall
-TURN_CALL_MAX := 151
+TURN_CALL_MAX := 145
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -961,8 +961,8 @@ check: all
 	@if grep -nE "m_mutex|lock_guard|turn_call|turn_calls" ../../Emu/games_config.cpp ../../Emu/games_config.h; then echo "games_config: a lock or a turn is back - the list is the boot's alone"; exit 1; else echo "games_config: the boot's, no lock, no turn"; fi
 	@# Emulated pad configurations: one thread loads or saves at a time, the polls read the button table under its sequence count
 	@if grep -nE "m_mutex|lock_guard|turn_call|turn_calls" ../../Emu/Io/emulated_pad_config.h; then echo "emulated pads: a lock or a turn is back - one thread loads or saves at a time (m_writing), the polls read the table"; exit 1; else echo "emulated pads: no lock, no turn"; fi
-	@# NP DNS hook: the spied sockets and replies change in turn
-	@if grep -nE "lock_guard|shared_mutex" ../../Emu/NP/np_dnshook.cpp ../../Emu/NP/np_dnshook.h; then echo "dnshook: a lock is back"; exit 1; else echo "dnshook: no lock"; fi
+	@# NP DNS hook: a fixed table of watched sockets, each with its replies on a lock-free stack; no lock, no turn
+	@if grep -nE "lock_guard|shared_mutex|turn_call|turn_calls" ../../Emu/NP/np_dnshook.cpp ../../Emu/NP/np_dnshook.h; then echo "dnshook: a lock or a turn is back - a fixed table of sockets, replies on a lock-free stack each"; exit 1; else echo "dnshook: no lock, no turn"; fi
 	@# NP GUI room cache changes in turn
 	@if grep -nE "lock_guard|shared_mutex" ../../Emu/NP/np_gui_cache.cpp ../../Emu/NP/np_gui_cache.h; then echo "np gui cache: a lock is back"; exit 1; else echo "np gui cache: no lock"; fi
 	@# The NP libraries' memory pool: lock-free bitmaps of granules (np_pool.c), no turn

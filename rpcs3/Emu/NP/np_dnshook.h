@@ -1,26 +1,29 @@
 #pragma once
 
-#include <queues/retro_deque.h>
-#include <vector>
+#include <queues/mpsc_stack.h>
+#include <retro_atomic.h>
 #include <optional>
+#include <regex>
+#include <string>
+#include <vector>
 
 #include "util/types.hpp"
-#include "Emu/CPU/turn_calls.h"
 
 namespace np
 {
-	// A made-up DNS reply waiting to be read on @sock. Plain data: its
-	// bytes are a block of its own, freed by whoever takes the entry out.
-	struct dns_reply
+	// A made-up DNS reply waiting to be read on its socket: one block, the
+	// node and the bytes after it, freed by whoever takes it
+	struct dns_reply : mpsc_stack_node_t
 	{
-		s32 sock;
 		u32 size;
-		u8* bytes;
+		u8* bytes() { return reinterpret_cast<u8*>(this + 1); }
 	};
 
-	RETRO_DEQUE_DEFINE(dns_replies, dns_reply);
-	RETRO_DEQUE_DEFINE(dns_socks, s32);
-
+	// The sockets watched for DNS, with no lock and no thread waiting for
+	// another. A fixed table: a slot is claimed for a socket with one
+	// compare-and-swap. Replies are pushed by the thread that sends the query
+	// and taken by the socket's receiver, oldest first: one receiver at a
+	// time on a socket, as lv2 has it
 	class dnshook
 	{
 	public:
@@ -40,17 +43,27 @@ namespace np
 		s32 analyze_dns_packet(s32 s, const u8* buf, u32 len);
 
 	private:
-		std::optional<u32> get_redir(const std::string& hostname);
+		std::optional<u32> get_redir(const std::string& hostname) const;
 
-	private:
-		// The spied sockets and their replies change in turn (turn_calls.h): no lock
-		turn_calls_cpp m_turns;
-		// The sockets watched, and the replies waiting on them in the order made
-		dns_socks_t m_dns_spylist{};
-		dns_replies_t m_dns_replies{};
+		static constexpr u32 slot_count = 128;
 
-		usz find_spy(s32 sock) const;      // its place in m_dns_spylist, or the count
-		usz find_reply(s32 sock) const;    // the first reply waiting on it, or the count
-		std::vector<std::pair<std::string, u32>> m_redirs;
+		struct spy_slot
+		{
+			// The socket plus one; 0 when the slot is free
+			retro_atomic_int_t sock;
+			// Pushed by the senders, newest first
+			mpsc_stack_t incoming;
+			// The receiver's: what it drained, oldest first
+			dns_reply* pending;
+		};
+
+		spy_slot m_slots[slot_count]{};
+
+		spy_slot* find_slot(s32 sock);
+		spy_slot* claim_slot(s32 sock);
+		static void drop_replies(spy_slot& slot);
+
+		// Made once, at start: read by any thread
+		std::vector<std::pair<std::regex, u32>> m_redirs;
 	};
 } // namespace np
