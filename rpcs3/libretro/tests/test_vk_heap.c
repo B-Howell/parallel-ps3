@@ -4,7 +4,12 @@
  * images never share a VkDeviceMemory, big allocations get one of their
  * own, a double free is refused, the limit holds and empty blocks go back
  * when it is reached, a block's spans never outgrow their array, and once
- * warm a steady run asks the driver for nothing. C89. */
+ * warm a steady run asks the driver for nothing. Shared: a thread that
+ * finds the blocks another's takes memory of its own and frees it straight
+ * back, a free left meanwhile is freed when the blocks are next taken, and
+ * threads allocating and freeing at once (VK_HEAP_TEST_THREADS, the
+ * ThreadSanitizer build) never hand out the same memory twice and give it
+ * all back. C89. */
 
 #include <stdlib.h>
 #include <string.h>
@@ -12,23 +17,34 @@
 #include "../../Emu/RSX/VK/vkutils/vk_heap.h"
 #include "test_common.h"
 
+#ifdef VK_HEAP_TEST_THREADS
+#include <rthreads/rthreads.h>
+#endif
+
 #define MB ((VkDeviceSize)1024u * 1024u)
 
-static unsigned driver_allocs;
-static unsigned driver_frees;
-static unsigned driver_live;
-static unsigned driver_maps;
-static unsigned driver_unmaps;
-static size_t   next_handle = 1;
+/* Counted with atomics: the threaded run calls the driver from several
+ * threads, as the renderer may */
+static retro_atomic_int_t driver_allocs_a;
+static retro_atomic_int_t driver_frees_a;
+static retro_atomic_int_t driver_live_a;
+static retro_atomic_int_t driver_maps_a;
+static retro_atomic_int_t driver_unmaps_a;
+static retro_atomic_int_t next_handle_a;
+#define driver_allocs ((unsigned)retro_atomic_load_acquire_int(&driver_allocs_a))
+#define driver_frees  ((unsigned)retro_atomic_load_acquire_int(&driver_frees_a))
+#define driver_live   ((unsigned)retro_atomic_load_acquire_int(&driver_live_a))
+#define driver_maps   ((unsigned)retro_atomic_load_acquire_int(&driver_maps_a))
+#define driver_unmaps ((unsigned)retro_atomic_load_acquire_int(&driver_unmaps_a))
 
 static VKAPI_ATTR VkResult VKAPI_CALL fake_allocate(VkDevice d,
       const VkMemoryAllocateInfo *info, const VkAllocationCallbacks *a,
       VkDeviceMemory *out)
 {
    (void)d; (void)a; (void)info;
-   driver_allocs++;
-   driver_live++;
-   *out = (VkDeviceMemory)(next_handle++);
+   retro_atomic_inc_int(&driver_allocs_a);
+   retro_atomic_inc_int(&driver_live_a);
+   *out = (VkDeviceMemory)(size_t)(retro_atomic_fetch_add_int(&next_handle_a, 1) + 1);
    return VK_SUCCESS;
 }
 
@@ -36,8 +52,8 @@ static VKAPI_ATTR void VKAPI_CALL fake_free(VkDevice d, VkDeviceMemory m,
       const VkAllocationCallbacks *a)
 {
    (void)d; (void)a; (void)m;
-   driver_frees++;
-   driver_live--;
+   retro_atomic_inc_int(&driver_frees_a);
+   retro_atomic_dec_int(&driver_live_a);
 }
 
 /* An address no two blocks share, never written through */
@@ -45,7 +61,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL fake_map(VkDevice d, VkDeviceMemory m,
       VkDeviceSize offset, VkDeviceSize size, VkMemoryMapFlags flags, void **out)
 {
    (void)d; (void)offset; (void)size; (void)flags;
-   driver_maps++;
+   retro_atomic_inc_int(&driver_maps_a);
    *out = (void*)((size_t)m << 24);
    return VK_SUCCESS;
 }
@@ -53,7 +69,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL fake_map(VkDevice d, VkDeviceMemory m,
 static VKAPI_ATTR void VKAPI_CALL fake_unmap(VkDevice d, VkDeviceMemory m)
 {
    (void)d; (void)m;
-   driver_unmaps++;
+   retro_atomic_inc_int(&driver_unmaps_a);
 }
 
 /* Device-local 4 GB, system 2 GB, a 256 MB BAR window */
@@ -336,10 +352,10 @@ static void dedicated_only(void)
    TEST_CHECK(vk_heap_alloc(heap, 1, 100, 16, 1, &a) == VK_SUCCESS);
    TEST_CHECK(vk_heap_alloc(heap, 1, 100, 16, 1, &b) == VK_SUCCESS);
    TEST_CHECK(a.memory != b.memory && !a.offset && !b.offset);
-   TEST_CHECK(heap->heap_reserved[1] == 200);
+   TEST_CHECK(vk_heap_reserved(heap, 1) == 200);
    TEST_CHECK(vk_heap_free(heap, &a));
    TEST_CHECK(vk_heap_free(heap, &b));
-   TEST_CHECK(driver_live == 0 && heap->heap_reserved[1] == 0);
+   TEST_CHECK(driver_live == 0 && vk_heap_reserved(heap, 1) == 0);
    vk_heap_shutdown(heap);
    free(heap);
 }
@@ -362,23 +378,23 @@ static void limit(void)
    for (i = 0; i < 4; i++)
       TEST_CHECK(vk_heap_alloc(heap, 0, 30 * MB, 256, 0, &a[i]) == VK_SUCCESS);
    /* 2 x 30 MB fill a block: two blocks of optimal images */
-   TEST_CHECK(heap->heap_reserved[0] == 128 * MB);
+   TEST_CHECK(vk_heap_reserved(heap, 0) == 128 * MB);
    for (i = 4; i < 8; i++)
       TEST_CHECK(vk_heap_alloc(heap, 0, 30 * MB, 256, 1, &a[i]) == VK_SUCCESS);
-   TEST_CHECK(heap->heap_reserved[0] == 256 * MB);
+   TEST_CHECK(vk_heap_reserved(heap, 0) == 256 * MB);
    TEST_CHECK(vk_heap_alloc(heap, 0, 30 * MB, 256, 1, &none) == VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
    /* The images go; the second of their empty blocks goes back at once,
     * the first is kept - until the buffers need it */
    for (i = 0; i < 4; i++)
       TEST_CHECK(vk_heap_free(heap, &a[i]));
-   TEST_CHECK(heap->heap_reserved[0] == 192 * MB);
+   TEST_CHECK(vk_heap_reserved(heap, 0) == 192 * MB);
    TEST_CHECK(vk_heap_alloc(heap, 0, 30 * MB, 256, 1, &a[0]) == VK_SUCCESS);
    TEST_CHECK(vk_heap_alloc(heap, 0, 30 * MB, 256, 1, &a[1]) == VK_SUCCESS);
-   TEST_CHECK(heap->heap_reserved[0] == 256 * MB);
+   TEST_CHECK(vk_heap_reserved(heap, 0) == 256 * MB);
    TEST_CHECK(vk_heap_alloc(heap, 0, 30 * MB, 256, 1, &a[2]) == VK_SUCCESS);
    TEST_CHECK(vk_heap_alloc(heap, 0, 30 * MB, 256, 1, &a[3]) == VK_SUCCESS);
-   TEST_CHECK(heap->heap_reserved[0] == 256 * MB);
+   TEST_CHECK(vk_heap_reserved(heap, 0) == 256 * MB);
    TEST_CHECK(vk_heap_alloc(heap, 0, 30 * MB, 256, 1, &none) == VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
    for (i = 0; i < 4; i++)
@@ -417,6 +433,164 @@ static void spans(void)
    free(heap);
 }
 
+/* The blocks another thread's: memory of its own, straight back; a free
+ * of a shared allocation waits for the blocks to be taken again */
+static void shared_one_thread(void)
+{
+   static const unsigned types[2] = { 0, 1 };
+   VkPhysicalDeviceMemoryProperties props;
+   vk_heap_t *heap = (vk_heap_t*)malloc(sizeof(*heap));
+   vk_heap_alloc_t a, b, c, loose;
+   unsigned type = 99;
+   unsigned live_before;
+
+   props_of(&props);
+   vk_heap_init(heap, (VkDevice)0, &props, &fns, 0, NULL, 0);
+
+   TEST_CHECK(vk_heap_alloc_shared(heap, types, 2, 1000, 256, 1, &a, &type) == VK_SUCCESS);
+   TEST_CHECK(type == 0 && a.block != VK_HEAP_LOOSE);
+   TEST_CHECK(vk_heap_alloc_shared(heap, types, 2, 1000, 256, 1, &b, &type) == VK_SUCCESS);
+   TEST_CHECK(heap->bytes_used == 2000);
+
+   /* Another thread has the blocks */
+   retro_atomic_store_release_int(&heap->busy, 1);
+   live_before = driver_live;
+   TEST_CHECK(vk_heap_alloc_shared(heap, types + 1, 1, 1000, 256, 1, &loose, &type) == VK_SUCCESS);
+   TEST_CHECK(loose.block == VK_HEAP_LOOSE && type == 1 && loose.offset == 0);
+   TEST_CHECK(loose.mapped == (void*)((size_t)loose.memory << 24));
+   TEST_CHECK(driver_live == live_before + 1);
+   TEST_CHECK(vk_heap_reserved(heap, 1) == 1000);
+   vk_heap_free_shared(heap, &loose);
+   TEST_CHECK(driver_live == live_before && vk_heap_reserved(heap, 1) == 0);
+
+   /* a's free waits: what it took is not handed out meanwhile */
+   vk_heap_free_shared(heap, &a);
+   TEST_CHECK(heap->bytes_used == 2000);
+   retro_atomic_store_release_int(&heap->busy, 0);
+
+   /* The blocks taken again: a is freed first, and its place handed out */
+   TEST_CHECK(vk_heap_alloc_shared(heap, types, 2, 1000, 256, 1, &c, &type) == VK_SUCCESS);
+   TEST_CHECK(c.memory == a.memory && c.offset == a.offset && c.number == a.number);
+   TEST_CHECK(heap->bytes_used == 2000);
+
+   vk_heap_free_shared(heap, &b);
+   vk_heap_free_shared(heap, &c);
+   TEST_CHECK(heap->bytes_used == 0);
+   check_blocks(heap);
+   vk_heap_shutdown(heap);
+   TEST_CHECK(driver_live == 0);
+   free(heap);
+}
+
+#ifdef VK_HEAP_TEST_THREADS
+#define THREADS 4
+#define PER_THREAD 200
+#ifndef ROUNDS
+#define ROUNDS 20000
+#endif
+
+typedef struct worker
+{
+   vk_heap_t *heap;
+   vk_heap_alloc_t held[PER_THREAD];
+   int in_use[PER_THREAD];
+   unsigned long seed;
+   unsigned loose;
+} worker_t;
+
+static unsigned wrnd(worker_t *w, unsigned n)
+{
+   w->seed = w->seed * 1103515245ul + 12345ul;
+   return (unsigned)((w->seed >> 8) % n);
+}
+
+static void worker_run(void *data)
+{
+   static const unsigned types[3] = { 0, 1, 2 };
+   worker_t *w = (worker_t*)data;
+   unsigned r;
+
+   for (r = 0; r < ROUNDS; r++)
+   {
+      const unsigned i = wrnd(w, PER_THREAD);
+      unsigned type;
+
+      if (w->in_use[i])
+      {
+         vk_heap_free_shared(w->heap, &w->held[i]);
+         w->in_use[i] = 0;
+         continue;
+      }
+      if (vk_heap_alloc_shared(w->heap, types + wrnd(w, 3), 1,
+               1 + wrnd(w, 128 * 1024), 256, (int)wrnd(w, 2), &w->held[i], &type) != VK_SUCCESS)
+         continue;
+      if (w->held[i].block == VK_HEAP_LOOSE)
+         w->loose++;
+      w->in_use[i] = 1;
+   }
+}
+
+/* Threads allocating and freeing at once: what is live at the end never
+ * overlaps, and all of it goes back */
+static void shared_threads(void)
+{
+   VkPhysicalDeviceMemoryProperties props;
+   vk_heap_t *heap = (vk_heap_t*)malloc(sizeof(*heap));
+   worker_t *w = (worker_t*)calloc(THREADS, sizeof(*w));
+   sthread_t *t[THREADS];
+   unsigned i, j, k, l;
+   unsigned loose = 0;
+   int bad = 0;
+
+   props_of(&props);
+   vk_heap_init(heap, (VkDevice)0, &props, &fns, 0, NULL, 0);
+   for (i = 0; i < THREADS; i++)
+   {
+      w[i].heap = heap;
+      w[i].seed = 1000u + i;
+      t[i] = sthread_create(worker_run, &w[i]);
+   }
+   for (i = 0; i < THREADS; i++)
+   {
+      sthread_join(t[i]);
+      loose += w[i].loose;
+   }
+
+   for (i = 0; i < THREADS; i++)
+      for (j = 0; j < PER_THREAD; j++)
+      {
+         if (!w[i].in_use[j])
+            continue;
+         for (k = i; k < THREADS; k++)
+            for (l = (k == i) ? j + 1 : 0; l < PER_THREAD; l++)
+               if (w[k].in_use[l] && overlaps(&w[i].held[j], &w[k].held[l]))
+                  bad++;
+      }
+   TEST_CHECK(!bad);
+
+   for (i = 0; i < THREADS; i++)
+      for (j = 0; j < PER_THREAD; j++)
+         if (w[i].in_use[j])
+            vk_heap_free_shared(heap, &w[i].held[j]);
+   /* What was left while the blocks were busy goes with the next taking */
+   {
+      static const unsigned type0 = 0;
+      vk_heap_alloc_t last;
+      unsigned type;
+      TEST_CHECK(vk_heap_alloc_shared(heap, &type0, 1, 1, 1, 1, &last, &type) == VK_SUCCESS);
+      vk_heap_free_shared(heap, &last);
+   }
+   TEST_CHECK(heap->bytes_used == 0);
+   check_blocks(heap);
+   vk_heap_shutdown(heap);
+   TEST_CHECK(driver_live == 0);
+   TEST_CHECK(vk_heap_reserved(heap, 0) == 0 && vk_heap_reserved(heap, 1) == 0 && vk_heap_reserved(heap, 2) == 0);
+   printf("test_vk_heap: %u threads, %u allocations of their own while the blocks were another's\n", THREADS, loose);
+   free(w);
+   free(heap);
+}
+#endif
+
 int main(void)
 {
    random_and_whole();
@@ -424,12 +598,16 @@ int main(void)
    dedicated_only();
    limit();
    spans();
+   shared_one_thread();
+#ifdef VK_HEAP_TEST_THREADS
+   shared_threads();
+#endif
 
    if (test_failures)
    {
       fprintf(stderr, "test_vk_heap: %d failed\n", test_failures);
       return 1;
    }
-   printf("test_vk_heap: allocations apart, aligned, mapped and accounted, kinds apart, big ones dedicated, double frees refused, the limit kept, spans within their array, a warm heap asks the driver for nothing\n");
+   printf("test_vk_heap: allocations apart, aligned, mapped and accounted, kinds apart, big ones dedicated, double frees refused, the limit kept, spans within their array, a warm heap asks the driver for nothing, shared without waiting\n");
    return 0;
 }

@@ -4,7 +4,6 @@
 #include "Emu/RSX/Utils/algorithm.hpp"
 #include "Emu/system_config.h"
 
-#include <cstring>
 
 namespace vk
 {
@@ -200,32 +199,19 @@ namespace vk
 		}
 	}
 
+	// The device is going: nothing allocates or frees any more
 	mem_allocator::~mem_allocator()
 	{
-		turn_call(&m_turns, [&]
-		{
-			vk_heap_shutdown(m_heap.get());
-		});
+		vk_heap_shutdown(m_heap.get());
 	}
 
 	VkResult mem_allocator::try_alloc(const memory_allocation_request& request, u32& memory_type, vk_heap_alloc_t& out)
 	{
 		const u64 size = rsx::align2(request.size, request.alignment);
 
-		return turn_call(&m_turns, [&]
-		{
-			VkResult error_code = VK_ERROR_UNKNOWN;
-			for (const auto& memory_type_index : *request.memory_type)
-			{
-				error_code = vk_heap_alloc(m_heap.get(), memory_type_index, size, request.alignment, request.linear ? 1 : 0, &out);
-				if (error_code == VK_SUCCESS)
-				{
-					memory_type = memory_type_index;
-					break;
-				}
-			}
-			return error_code;
-		});
+		// Any thread, none waiting for another (vk_heap.h)
+		return vk_heap_alloc_shared(m_heap.get(), request.memory_type->begin(), static_cast<unsigned>(request.memory_type->count()),
+			size, request.alignment, request.linear ? 1 : 0, &out, &memory_type);
 	}
 
 	void mem_allocator::alloc(const memory_allocation_request& request, u32& memory_type, vk_heap_alloc_t& out)
@@ -268,22 +254,13 @@ namespace vk
 
 	void mem_allocator::free(const vk_heap_alloc_t& alloc)
 	{
-		turn_call(&m_turns, [&]
-		{
-			vk_heap_free(m_heap.get(), &alloc);
-		});
+		vk_heap_free_shared(m_heap.get(), &alloc);
 	}
 
 	f32 mem_allocator::get_memory_usage()
 	{
 		// What is taken from each driver heap against four fifths of it (or
 		// of its limit), as the Vulkan Memory Allocator reckoned it
-		VkDeviceSize reserved[VK_MAX_MEMORY_HEAPS];
-		turn_call(&m_turns, [&]
-		{
-			std::memcpy(reserved, m_heap->heap_reserved, sizeof(reserved));
-		});
-
 		float max_usage = 0.f;
 		for (u32 i = 0; i < m_heap->props.memoryHeapCount; ++i)
 		{
@@ -305,7 +282,7 @@ namespace vk
 				continue;
 			}
 
-			const float this_usage = (reserved[i] * 100.f) / budget;
+			const float this_usage = (vk_heap_reserved(m_heap.get(), i) * 100.f) / budget;
 			max_usage = std::max(max_usage, this_usage);
 		}
 

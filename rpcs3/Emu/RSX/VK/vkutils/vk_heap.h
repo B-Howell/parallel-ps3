@@ -27,8 +27,16 @@
  *   nothing left, empty blocks are given back and it is asked once more.
  * - A heap may be given a ceiling per driver heap (the VRAM limit).
  *
- * Not thread safe: the caller serializes it (vkutils/memory.cpp, in the
- * heap's turn). Calls into the driver are made on whatever thread does. */
+ * Any thread may allocate and free with vk_heap_alloc_shared and
+ * vk_heap_free_shared, and none waits for another. The blocks are one
+ * thread's at a time, taken with one compare-and-swap: a thread that finds
+ * them taken allocates a VkDeviceMemory of its own from the driver instead
+ * ("loose", freed straight back to it), and a thread that frees while they
+ * are taken leaves a bit for the allocation, which whoever takes the blocks
+ * next frees. A free that is waiting holds nothing up but the reuse of
+ * what it frees. vk_heap_alloc, vk_heap_free and vk_heap_trim are the
+ * blocks' own and are for the thread that has them (or for a heap only one
+ * thread uses). */
 
 #ifndef VK_HEAP_H
 #define VK_HEAP_H
@@ -40,6 +48,8 @@
 #endif
 #include <vulkan/vulkan_core.h>
 
+#include <retro_atomic.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -49,6 +59,9 @@ extern "C" {
 /* Free spans of a shared block, and so at most this less one allocations
  * in it */
 #define VK_HEAP_BLOCK_SPANS  4096u
+/* An allocation's block when it is a VkDeviceMemory of its own, taken while
+ * the blocks were another thread's */
+#define VK_HEAP_LOOSE        0xFFFFFFFFu
 
 /* The entry points, passed in: the loader that has them is the caller's */
 typedef struct vk_heap_fns
@@ -65,6 +78,11 @@ typedef struct vk_heap_span
    VkDeviceSize size;
 } vk_heap_span_t;
 
+/* Where each live allocation of a shared block is, by its number, with
+ * the numbers free and the bits of those freed while the blocks were
+ * another thread's (vk_heap.c) */
+typedef struct vk_heap_block_side vk_heap_block_side_t;
+
 typedef struct vk_heap_block
 {
    VkDeviceMemory  memory;      /* VK_NULL_HANDLE: the slot is free */
@@ -75,6 +93,10 @@ typedef struct vk_heap_block
     * upper bound otherwise */
    VkDeviceSize    max_free;
    vk_heap_span_t *spans;       /* NULL for a dedicated block */
+   vk_heap_block_side_t *side;  /* NULL for a dedicated block */
+   /* A dedicated block's one allocation, freed while the blocks were
+    * another thread's */
+   retro_atomic_int_t freed;
    unsigned        span_count;
    unsigned        allocs;
    unsigned        type;
@@ -92,6 +114,7 @@ typedef struct vk_heap_alloc
    void          *mapped;
    unsigned       block;
    unsigned       type;
+   unsigned       number;      /* in its shared block */
 } vk_heap_alloc_t;
 
 typedef struct vk_heap
@@ -101,9 +124,14 @@ typedef struct vk_heap
    VkPhysicalDeviceMemoryProperties props;
    VkDeviceSize                     block_size;
    int                              dedicated_only;
-   /* Taken from the driver, per driver heap, and the most that may be */
-   VkDeviceSize                     heap_reserved[VK_MAX_MEMORY_HEAPS];
+   /* Taken from the driver, per driver heap (vk_heap_reserved), loose
+    * allocations with it, and the most that may be */
+   retro_atomic_64_t                heap_reserved[VK_MAX_MEMORY_HEAPS];
    VkDeviceSize                     heap_limit[VK_MAX_MEMORY_HEAPS];
+   /* 1 while a thread has the blocks */
+   retro_atomic_int_t               busy;
+   /* A bit for each block with frees waiting in it */
+   retro_atomic_64_t                waiting[VK_HEAP_MAX_BLOCKS / 64u];
    VkDeviceSize                     bytes_used;
    unsigned                         block_count; /* slots ever used */
    vk_heap_block_t                  blocks[VK_HEAP_MAX_BLOCKS];
@@ -132,6 +160,19 @@ int vk_heap_free(vk_heap_t *heap, const vk_heap_alloc_t *alloc);
 
 /* Gives empty blocks back to the driver. Returns how many */
 unsigned vk_heap_trim(vk_heap_t *heap);
+
+/* From any thread. Room for size bytes at alignment in the first of the
+ * types (in order) that has it; *type is the one it came from. When the
+ * blocks are another thread's, a VkDeviceMemory of its own. */
+VkResult vk_heap_alloc_shared(vk_heap_t *heap, const unsigned *types,
+      unsigned type_count, VkDeviceSize size, VkDeviceSize alignment,
+      int linear, vk_heap_alloc_t *out, unsigned *type);
+
+/* From any thread: freed now, or when the blocks are next taken */
+void vk_heap_free_shared(vk_heap_t *heap, const vk_heap_alloc_t *alloc);
+
+/* What is taken from driver heap index, in bytes: one load */
+VkDeviceSize vk_heap_reserved(vk_heap_t *heap, unsigned index);
 
 #ifdef __cplusplus
 }

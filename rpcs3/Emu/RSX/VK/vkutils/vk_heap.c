@@ -5,6 +5,18 @@
 
 #include "vk_heap.h"
 
+/* What a shared block keeps beside its spans: where each live allocation
+ * is, by number, the numbers not in use, and a bit for each allocation
+ * freed while the blocks were another thread's. Made with the block */
+struct vk_heap_block_side
+{
+   vk_heap_span_t     spans[VK_HEAP_BLOCK_SPANS];
+   vk_heap_span_t     where[VK_HEAP_BLOCK_SPANS];
+   unsigned short     numbers[VK_HEAP_BLOCK_SPANS];
+   unsigned           number_count;
+   retro_atomic_64_t  freed[VK_HEAP_BLOCK_SPANS / 64u];
+};
+
 static VkDeviceSize vk_heap_align(VkDeviceSize v, VkDeviceSize a)
 {
    if (a <= 1)
@@ -55,9 +67,38 @@ void vk_heap_init(vk_heap_t *heap, VkDevice device,
    heap->fns            = *fns;
    heap->block_size     = block_size ? block_size : (VkDeviceSize)VK_HEAP_BLOCK_SIZE;
    heap->dedicated_only = dedicated_only;
+   retro_atomic_int_init(&heap->busy, 0);
+   for (i = 0; i < VK_HEAP_MAX_BLOCKS / 64u; i++)
+      retro_atomic_64_init(&heap->waiting[i], 0);
+   for (i = 0; i < VK_MAX_MEMORY_HEAPS; i++)
+      retro_atomic_64_init(&heap->heap_reserved[i], 0);
    if (heap_limits)
       for (i = 0; i < props->memoryHeapCount && i < VK_MAX_MEMORY_HEAPS; i++)
          heap->heap_limit[i] = heap_limits[i];
+}
+
+/* Counted against the driver heap before it is asked for, so that two
+ * threads taking memory at once do not both go over the limit. 0 when it
+ * would: nothing is counted then */
+static int vk_heap_count(vk_heap_t *heap, unsigned index, VkDeviceSize size)
+{
+   VkDeviceSize before;
+
+   if (index >= VK_MAX_MEMORY_HEAPS)
+      return 0;
+   before = (VkDeviceSize)retro_atomic_fetch_add_64(&heap->heap_reserved[index], (int64_t)size);
+   if (heap->heap_limit[index] && before + size > heap->heap_limit[index])
+   {
+      (void)retro_atomic_fetch_sub_64(&heap->heap_reserved[index], (int64_t)size);
+      return 0;
+   }
+   return 1;
+}
+
+static void vk_heap_uncount(vk_heap_t *heap, unsigned index, VkDeviceSize size)
+{
+   if (index < VK_MAX_MEMORY_HEAPS)
+      (void)retro_atomic_fetch_sub_64(&heap->heap_reserved[index], (int64_t)size);
 }
 
 static void vk_heap_release_block(vk_heap_t *heap, vk_heap_block_t *b)
@@ -65,8 +106,8 @@ static void vk_heap_release_block(vk_heap_t *heap, vk_heap_block_t *b)
    if (b->mapped)
       heap->fns.unmap_memory(heap->device, b->memory);
    heap->fns.free_memory(heap->device, b->memory, NULL);
-   free(b->spans);
-   heap->heap_reserved[vk_heap_heap_of(heap, b->type)] -= b->size;
+   free(b->side);
+   vk_heap_uncount(heap, vk_heap_heap_of(heap, b->type), b->size);
 
    /* A hole, never closed up: every allocation carries its block's slot */
    memset(b, 0, sizeof(*b));
@@ -91,18 +132,17 @@ static int vk_heap_add_block(vk_heap_t *heap, unsigned type, unsigned linear,
    const unsigned index  = vk_heap_heap_of(heap, type);
    VkMemoryAllocateInfo info;
    VkDeviceMemory memory = VK_NULL_HANDLE;
-   vk_heap_span_t *spans = NULL;
+   vk_heap_block_side_t *side = NULL;
    void *mapped          = NULL;
    vk_heap_block_t *b;
    unsigned slot;
+   unsigned i;
 
    for (slot = 0; slot < heap->block_count; slot++)
       if (heap->blocks[slot].memory == VK_NULL_HANDLE)
          break;
 
-   if (slot >= VK_HEAP_MAX_BLOCKS
-         || (index < VK_MAX_MEMORY_HEAPS && heap->heap_limit[index]
-            && heap->heap_reserved[index] + size > heap->heap_limit[index]))
+   if (slot >= VK_HEAP_MAX_BLOCKS || !vk_heap_count(heap, index, size))
    {
       *result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
       return -1;
@@ -110,12 +150,19 @@ static int vk_heap_add_block(vk_heap_t *heap, unsigned type, unsigned linear,
 
    if (!dedicated)
    {
-      spans = (vk_heap_span_t*)malloc(VK_HEAP_BLOCK_SPANS * sizeof(*spans));
-      if (!spans)
+      side = (vk_heap_block_side_t*)malloc(sizeof(*side));
+      if (!side)
       {
+         vk_heap_uncount(heap, index, size);
          *result = VK_ERROR_OUT_OF_HOST_MEMORY;
          return -1;
       }
+      /* Numbers handed out from the lowest */
+      for (i = 0; i < VK_HEAP_BLOCK_SPANS; i++)
+         side->numbers[i] = (unsigned short)(VK_HEAP_BLOCK_SPANS - 1u - i);
+      side->number_count = VK_HEAP_BLOCK_SPANS;
+      for (i = 0; i < VK_HEAP_BLOCK_SPANS / 64u; i++)
+         retro_atomic_64_init(&side->freed[i], 0);
    }
 
    memset(&info, 0, sizeof(info));
@@ -126,7 +173,8 @@ static int vk_heap_add_block(vk_heap_t *heap, unsigned type, unsigned linear,
    *result = heap->fns.allocate_memory(heap->device, &info, NULL, &memory);
    if (*result != VK_SUCCESS)
    {
-      free(spans);
+      vk_heap_uncount(heap, index, size);
+      free(side);
       return -1;
    }
 
@@ -136,7 +184,8 @@ static int vk_heap_add_block(vk_heap_t *heap, unsigned type, unsigned linear,
       if (*result != VK_SUCCESS)
       {
          heap->fns.free_memory(heap->device, memory, NULL);
-         free(spans);
+         vk_heap_uncount(heap, index, size);
+         free(side);
          return -1;
       }
    }
@@ -149,18 +198,19 @@ static int vk_heap_add_block(vk_heap_t *heap, unsigned type, unsigned linear,
    b->type      = type;
    b->linear    = linear;
    b->dedicated = dedicated;
-   b->spans     = spans;
-   if (spans)
+   b->side      = side;
+   b->spans     = side ? side->spans : NULL;
+   retro_atomic_int_init(&b->freed, 0);
+   if (side)
    {
-      spans[0].offset = 0;
-      spans[0].size   = size;
+      side->spans[0].offset = 0;
+      side->spans[0].size   = size;
       b->span_count   = 1;
       b->max_free     = size;
    }
 
    if (slot == heap->block_count)
       heap->block_count++;
-   heap->heap_reserved[index] += size;
    return (int)slot;
 }
 
@@ -179,6 +229,17 @@ static void vk_heap_out(vk_heap_t *heap, unsigned slot, VkDeviceSize offset,
    out->mapped = b->mapped ? (void*)((unsigned char*)b->mapped + offset) : NULL;
    out->block  = slot;
    out->type   = b->type;
+   out->number = 0;
+
+   /* There is a number for it: a split is let happen only with room for
+    * two more spans than allocations, and there are as many numbers */
+   if (b->side)
+   {
+      const unsigned number = b->side->numbers[--b->side->number_count];
+      b->side->where[number].offset = offset;
+      b->side->where[number].size   = size;
+      out->number = number;
+   }
 }
 
 /* The lowest span of a shared block that fits. What is left either side
@@ -348,6 +409,8 @@ int vk_heap_free(vk_heap_t *heap, const vk_heap_alloc_t *alloc)
 
    if (!alloc || alloc->memory == VK_NULL_HANDLE || alloc->block >= heap->block_count)
       return 0;
+   if (alloc->number >= VK_HEAP_BLOCK_SPANS)
+      return 0;
 
    /* The block it came from and no other: the slot may hold another
     * block now */
@@ -418,9 +481,211 @@ int vk_heap_free(vk_heap_t *heap, const vk_heap_alloc_t *alloc)
    if (size > b->max_free)
       b->max_free = size;
 
+   b->side->numbers[b->side->number_count++] = (unsigned short)alloc->number;
    b->used          -= alloc->size;
    heap->bytes_used -= alloc->size;
    if (!--b->allocs)
       vk_heap_emptied(heap, alloc->block);
    return 1;
+}
+
+VkDeviceSize vk_heap_reserved(vk_heap_t *heap, unsigned index)
+{
+   if (index >= VK_MAX_MEMORY_HEAPS)
+      return 0;
+   return (VkDeviceSize)retro_atomic_load_acquire_64(&heap->heap_reserved[index]);
+}
+
+/* The frees left while the blocks were another thread's, by the thread
+ * that has them now. A free leaves its allocation's bit, then its block's:
+ * a block's bit taken here is followed by every bit that was left in it
+ * before */
+static void vk_heap_take_frees(vk_heap_t *heap)
+{
+   unsigned w;
+
+   for (w = 0; w < VK_HEAP_MAX_BLOCKS / 64u; w++)
+   {
+      uint64_t blocks;
+
+      if (!retro_atomic_load_acquire_64(&heap->waiting[w]))
+         continue;
+      blocks = (uint64_t)retro_atomic_exchange_64(&heap->waiting[w], 0);
+
+      while (blocks)
+      {
+         unsigned bit = 0;
+         unsigned slot;
+         vk_heap_block_t *b;
+         vk_heap_alloc_t a;
+
+         while (!((blocks >> bit) & 1u))
+            bit++;
+         blocks &= ~((uint64_t)1 << bit);
+         slot = w * 64u + bit;
+         b    = &heap->blocks[slot];
+
+         memset(&a, 0, sizeof(a));
+         a.memory = b->memory;
+         a.block  = slot;
+         a.type   = b->type;
+
+         if (!b->side)
+         {
+            if (retro_atomic_exchange_int(&b->freed, 0))
+            {
+               a.size = b->size;
+               vk_heap_free(heap, &a);
+            }
+            continue;
+         }
+
+         {
+            unsigned i;
+            for (i = 0; i < VK_HEAP_BLOCK_SPANS / 64u; i++)
+            {
+               uint64_t numbers;
+               vk_heap_block_side_t *side = b->side;
+
+               if (!side || !retro_atomic_load_acquire_64(&side->freed[i]))
+                  continue;
+               numbers = (uint64_t)retro_atomic_exchange_64(&side->freed[i], 0);
+               while (numbers)
+               {
+                  unsigned n = 0;
+                  while (!((numbers >> n) & 1u))
+                     n++;
+                  numbers &= ~((uint64_t)1 << n);
+                  a.number = i * 64u + n;
+                  a.offset = side->where[a.number].offset;
+                  a.size   = side->where[a.number].size;
+                  /* The last free of a block may give it back: its side
+                   * goes with it, after this word, which held the last */
+                  vk_heap_free(heap, &a);
+                  side = b->side;
+               }
+            }
+         }
+      }
+   }
+}
+
+/* A VkDeviceMemory of its own from the driver, within the limit */
+static VkResult vk_heap_alloc_loose(vk_heap_t *heap, unsigned type,
+      VkDeviceSize size, vk_heap_alloc_t *out)
+{
+   const unsigned index = vk_heap_heap_of(heap, type);
+   VkMemoryAllocateInfo info;
+   VkDeviceMemory memory = VK_NULL_HANDLE;
+   void *mapped          = NULL;
+   VkResult result;
+
+   if (!vk_heap_count(heap, index, size))
+      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+
+   memset(&info, 0, sizeof(info));
+   info.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+   info.allocationSize  = size;
+   info.memoryTypeIndex = type;
+
+   result = heap->fns.allocate_memory(heap->device, &info, NULL, &memory);
+   if (result == VK_SUCCESS && vk_heap_host_visible(heap, type))
+   {
+      result = heap->fns.map_memory(heap->device, memory, 0, VK_WHOLE_SIZE, 0, &mapped);
+      if (result != VK_SUCCESS)
+         heap->fns.free_memory(heap->device, memory, NULL);
+   }
+   if (result != VK_SUCCESS)
+   {
+      vk_heap_uncount(heap, index, size);
+      return result;
+   }
+
+   memset(out, 0, sizeof(*out));
+   out->memory = memory;
+   out->size   = size;
+   out->mapped = mapped;
+   out->block  = VK_HEAP_LOOSE;
+   out->type   = type;
+   return VK_SUCCESS;
+}
+
+VkResult vk_heap_alloc_shared(vk_heap_t *heap, const unsigned *types,
+      unsigned type_count, VkDeviceSize size, VkDeviceSize alignment,
+      int linear, vk_heap_alloc_t *out, unsigned *type)
+{
+   VkResult result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+   unsigned i;
+
+   memset(out, 0, sizeof(*out));
+   if (!size)
+      return VK_ERROR_FEATURE_NOT_PRESENT;
+
+   if (retro_atomic_cas_int(&heap->busy, 0, 1))
+   {
+      vk_heap_take_frees(heap);
+      for (i = 0; i < type_count; i++)
+      {
+         result = vk_heap_alloc(heap, types[i], size, alignment, linear, out);
+         if (result == VK_SUCCESS)
+         {
+            *type = types[i];
+            break;
+         }
+      }
+      retro_atomic_store_release_int(&heap->busy, 0);
+      return result;
+   }
+
+   for (i = 0; i < type_count; i++)
+   {
+      if (types[i] >= heap->props.memoryTypeCount)
+         continue;
+      result = vk_heap_alloc_loose(heap, types[i], size, out);
+      if (result == VK_SUCCESS)
+      {
+         *type = types[i];
+         break;
+      }
+   }
+   return result;
+}
+
+void vk_heap_free_shared(vk_heap_t *heap, const vk_heap_alloc_t *alloc)
+{
+   vk_heap_block_t *b;
+
+   if (!alloc || alloc->memory == VK_NULL_HANDLE)
+      return;
+
+   if (alloc->block == VK_HEAP_LOOSE)
+   {
+      const unsigned index = vk_heap_heap_of(heap, alloc->type);
+      if (alloc->mapped)
+         heap->fns.unmap_memory(heap->device, alloc->memory);
+      heap->fns.free_memory(heap->device, alloc->memory, NULL);
+      vk_heap_uncount(heap, index, alloc->size);
+      return;
+   }
+
+   if (retro_atomic_cas_int(&heap->busy, 0, 1))
+   {
+      vk_heap_take_frees(heap);
+      vk_heap_free(heap, alloc);
+      retro_atomic_store_release_int(&heap->busy, 0);
+      return;
+   }
+
+   /* The blocks are another thread's: a bit for whoever has them next. The
+    * block stays while the allocation is live, so its side is there */
+   if (alloc->block >= VK_HEAP_MAX_BLOCKS || alloc->number >= VK_HEAP_BLOCK_SPANS)
+      return;
+   b = &heap->blocks[alloc->block];
+   if (b->side)
+      (void)retro_atomic_fetch_or_64(&b->side->freed[alloc->number / 64u],
+            (int64_t)((uint64_t)1 << (alloc->number % 64u)));
+   else
+      retro_atomic_store_release_int(&b->freed, 1);
+   (void)retro_atomic_fetch_or_64(&heap->waiting[alloc->block / 64u],
+         (int64_t)((uint64_t)1 << (alloc->block % 64u)));
 }

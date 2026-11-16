@@ -5,7 +5,6 @@
 #include "Emu/RSX/Utils/rsx_utils.h"
 
 #include "vk_heap.h"
-#include "Emu/CPU/turn_calls.h"
 
 #include <memory>
 
@@ -75,9 +74,10 @@ namespace vk
 	};
 
 	// Device memory: the renderer's own blocks, handed out as offsets in them
-	// (vk_heap.h, in place of the Vulkan Memory Allocator), in the heap's
-	// turn (turn_calls.h): no lock. With "Disable Vulkan Memory Allocator"
-	// every allocation is a VkDeviceMemory of its own, as it was
+	// (vk_heap.h, in place of the Vulkan Memory Allocator), from any thread
+	// with no lock and no thread waiting for another: a thread that finds the
+	// blocks another's takes a VkDeviceMemory of its own. With "Disable Vulkan
+	// Memory Allocator" every allocation is a VkDeviceMemory of its own, as it was
 	class mem_allocator
 	{
 	public:
@@ -99,7 +99,6 @@ namespace vk
 		VkResult try_alloc(const memory_allocation_request& request, u32& memory_type, vk_heap_alloc_t& out);
 
 		std::unique_ptr<vk_heap_t> m_heap;
-		turn_calls_cpp m_turns;
 		u32 m_rebar_heap_idx = UINT32_MAX;
 	};
 

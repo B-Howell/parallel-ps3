@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_DYLIB -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_turn_calls test_turn_calls_tsan test_crypto_hashes test_vk_heap test_vk_loader
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_turn_calls test_turn_calls_tsan test_crypto_hashes test_vk_heap test_vk_heap_tsan test_vk_loader
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -643,6 +643,13 @@ test_vk_heap: $(VK_HEAP_DEPS)
 	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -isystem ../../../3rdparty/Vulkan-Headers/include -c -o obj/vk_heap.o ../../Emu/RSX/VK/vkutils/vk_heap.c
 	$(CC) $(CFLAGS) $(SANITIZE) -o $@ obj/test_vk_heap.o obj/vk_heap.o $(LDFLAGS) $(LDLIBS)
 
+# The same heap shared by threads, none waiting for another, under ThreadSanitizer
+test_vk_heap_tsan: $(VK_HEAP_DEPS)
+	@mkdir -p obj
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -DVK_HEAP_TEST_THREADS -isystem ../../../3rdparty/Vulkan-Headers/include -c -o obj/test_vk_heap_tsan.o test_vk_heap.c
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -isystem ../../../3rdparty/Vulkan-Headers/include -c -o obj/vk_heap_tsan.o ../../Emu/RSX/VK/vkutils/vk_heap.c
+	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ obj/test_vk_heap_tsan.o obj/vk_heap_tsan.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
+
 # The core's Vulkan loader, through libretro-common's dylib
 VK_LOADER_DEPS := test_vk_loader.c test_common.h ../../Emu/RSX/VK/vk_loader.c ../../Emu/RSX/VK/vk_loader.h
 
@@ -730,7 +737,7 @@ HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellIme
 LOCK_GUARD_MAX := 303
 # turn_call (turn_calls.h) is a lock without a lock object - a queued caller
 # still waits - and is going too: the count may only fall
-TURN_CALL_MAX := 190
+TURN_CALL_MAX := 186
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -809,6 +816,7 @@ check: all
 	./test_vk_interp_dynamic
 	./test_crypto_hashes
 	./test_vk_heap
+	./test_vk_heap_tsan
 	./test_vk_loader
 	./test_turn_calls
 	./test_turn_calls_tsan
@@ -901,6 +909,8 @@ check: all
 	@# RSX host memory manager: a protection is applied at once by the thread that asks; no queue shared, nothing to flush
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|Utilities/mutex.h|turn_call" ../../Emu/RSX/Host/MM.cpp ../../Emu/RSX/Host/MM.h || grep -rnE "deferred_mprotect|mm_flush|async_host_memory_manager" ../../Emu/RSX ../../Emu/system_config.h; then echo "rsx mm: a lock, a turn or the deferred protection queue is back - a protection is applied at once by the thread that asks"; exit 1; else echo "rsx mm: protections applied at once, no queue, no turn"; fi
 	@# Vulkan memory accounting: counters, no table of allocations and no lock
+	@# Vulkan device memory: any thread allocates and frees, none waits for another (vk_heap_alloc_shared)
+	@if grep -nE "turn_call|turn_calls|lock_guard|mutex" ../../Emu/RSX/VK/vkutils/memory.cpp ../../Emu/RSX/VK/vkutils/memory.h ../../Emu/RSX/VK/vkutils/vk_heap.c ../../Emu/RSX/VK/vkutils/vk_heap.h; then echo "vk heap: a turn or a lock is back - the blocks are taken with one compare-and-swap, a thread that finds them taken takes memory of its own"; exit 1; else echo "vk heap: shared with no turn and no lock"; fi
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|unordered_map|vmm_allocation_t" ../../Emu/RSX/VK/VKResourceManager.cpp ../../Emu/RSX/VK/VKResourceManager.h; then echo "vk vmm: the allocation table or its lock is back - each memory_block keeps its type, size and pool and the totals are counters"; exit 1; else echo "vk vmm: counters only, no table and no lock"; fi
 	@# Vulkan descriptor sets: the deferred flush list and each set's storage change in turn
 	@if grep -nE "shared_mutex|std::mutex|lock_guard|unique_lock|Utilities/mutex.h" ../../Emu/RSX/VK/vkutils/descriptors.cpp ../../Emu/RSX/VK/vkutils/descriptors.h || grep -n "lock_guard lock(m_descriptor_set)" ../../Emu/RSX/VK/VKProgramPipeline.cpp; then echo "vk descriptors: a lock is back - the flush list and the set storage change in turn (turn_call)"; exit 1; else echo "vk descriptors: no lock, the flush list and set storage in turn"; fi
