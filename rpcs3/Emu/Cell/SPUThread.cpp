@@ -6659,65 +6659,57 @@ bool spu_thread::stop_and_signal(u32 code)
 				lv2_obj::sleep(*this);
 			}
 
-			// In the queue's turn, the group's taken inside it (never the other
-			// way): 0 stopped, 1 to look again, 2 answered, 3 waiting
-			const int found = turn_call(&queue->turns, [&]() -> int
+			// In the group's turn: 0 stopped, 1 to look again, 2 answered, 3 the
+			// group waits with this thread. The queue takes no turn: the thread
+			// joins its waiters after, and looks at it again
+			const int found = turn_call(&group->turns, [&]() -> int
 			{
-				return turn_call(&group->turns, [&]() -> int
+				if (is_stopped())
 				{
-					if (is_stopped())
-					{
-						return 0;
-					}
+					return 0;
+				}
 
-					if (const auto _state = static_cast<spu_group_status>(retro_atomic_load_acquire_int(&group->run_state)); _state >= SPU_THREAD_GROUP_STATUS_WAITING && _state <= SPU_THREAD_GROUP_STATUS_WAITING_AND_SUSPENDED)
-					{
-						// Try again
-						ensure(state & cpu_flag::suspend);
-						return 1;
-					}
+				if (const auto _state = static_cast<spu_group_status>(retro_atomic_load_acquire_int(&group->run_state)); _state >= SPU_THREAD_GROUP_STATUS_WAITING && _state <= SPU_THREAD_GROUP_STATUS_WAITING_AND_SUSPENDED)
+				{
+					// Try again
+					ensure(state & cpu_flag::suspend);
+					return 1;
+				}
 
-					if (queue != get_queue(spuq))
-					{
-						// Try again
-						return 1;
-					}
+				if (queue != get_queue(spuq))
+				{
+					// Try again
+					return 1;
+				}
 
-					if (!retro_atomic_load_acquire_int(&queue->exists))
-					{
-						ch_in_mbox.set_values(1, CELL_EINVAL);
-						return 2;
-					}
+				if (!retro_atomic_load_acquire_int(&queue->exists))
+				{
+					ch_in_mbox.set_values(1, CELL_EINVAL);
+					return 2;
+				}
 
-					if (lv2_events_empty(&queue->events))
-					{
-						lv2_obj::emplace(queue->sq, this);
-						retro_atomic_store_release_int(&group->run_state, SPU_THREAD_GROUP_STATUS_WAITING);
-						group->waiter_spu_index = index;
+				// Return the event immediately
+				if (u64 ev[4]; lv2_evq_try(&queue->q, ev))
+				{
+					ch_in_mbox.set_values(4, CELL_OK, static_cast<u32>(ev[1]), static_cast<u32>(ev[2]), static_cast<u32>(ev[3]));
+					return 2;
+				}
 
-						for (auto& thread : group->threads)
-						{
-							if (thread)
-							{
-								thread->state += cpu_flag::suspend;
-							}
-						}
+				// The group waits with this thread before it is a waiter: a send
+				// that takes it resumes the group
+				retro_atomic_store_release_int(&group->run_state, SPU_THREAD_GROUP_STATUS_WAITING);
+				group->waiter_spu_index = index;
 
-						// Wait
-						return 3;
-					}
-					else
+				for (auto& thread : group->threads)
+				{
+					if (thread)
 					{
-						// Return the event immediately
-						const auto event = *lv2_events_front(&queue->events);
-						const auto data1 = static_cast<u32>(std::get<1>(event));
-						const auto data2 = static_cast<u32>(std::get<2>(event));
-						const auto data3 = static_cast<u32>(std::get<3>(event));
-						ch_in_mbox.set_values(4, CELL_OK, data1, data2, data3);
-						lv2_events_pop_front(&queue->events);
-						return 2;
+						thread->state += cpu_flag::suspend;
 					}
-				});
+				}
+
+				// Wait
+				return 3;
 			});
 
 			if (found == 0)
@@ -6739,6 +6731,32 @@ bool spu_thread::stop_and_signal(u32 code)
 			break;
 		}
 
+		const u32 slot = lv2_event_queue::slot_of(*this);
+		retro_atomic_store_release_ptr(&queue->thread[slot], this);
+
+		// A waiter in one change, or an event sent meanwhile taken: then the
+		// group is resumed as a send would, and this thread's own signal of it
+		// taken back
+		if (u64 ev[4]; lv2_evq_wait(&queue->q, slot, ev) == LV2_EVQ_GOT)
+		{
+			std::array<shared_ptr<named_thread<spu_thread>>, 8> notify_spus{};
+
+			ch_in_mbox.set_values(4, CELL_OK, static_cast<u32>(ev[1]), static_cast<u32>(ev[2]), static_cast<u32>(ev[3]));
+			resume_spu_thread_group_from_waiting(*this, notify_spus);
+			state.test_and_reset(cpu_flag::signal);
+
+			for (auto& spu : notify_spus)
+			{
+				if (spu && spu.get() != this && spu->state & cpu_flag::wait)
+				{
+					spu->state.notify_one();
+				}
+			}
+
+			wakeup_delay();
+			return true;
+		}
+
 		lv2_obj::notify_all();
 
 		while (auto old = +state)
@@ -6750,12 +6768,16 @@ bool spu_thread::stop_and_signal(u32 code)
 
 			if (is_stopped(old))
 			{
-				// In the queue's turn: a send's turn has given the event, or not
-				old = turn_call(&queue->turns, [&] { return state.fetch_sub(cpu_flag::signal); });
-
-				if (old & cpu_flag::signal)
+				// Still a waiter: it waits again when loaded. Else a send (or a
+				// destroy) took it, and has resumed it by its verdict
+				if (!lv2_evq_waits(&queue->q, slot))
 				{
-					break;
+					lv2_evq_await(&queue->q, slot);
+
+					if (state.test_and_reset(cpu_flag::signal))
+					{
+						break;
+					}
 				}
 
 				state += cpu_flag::again;
@@ -6792,54 +6814,18 @@ bool spu_thread::stop_and_signal(u32 code)
 
 		queue = turn_call(&group->turns, [&]() -> shared_ptr<lv2_event_queue> { return get_queue(spuq); });
 
-		while (true)
+		if (!queue || !retro_atomic_load_acquire_int(&queue->exists))
 		{
-			if (!queue)
-			{
-				return ch_in_mbox.set_values(1, CELL_EINVAL), true;
-			}
-
-			// In the queue's turn, the group's taken inside it (never the other
-			// way). The queue the turn is had on is held meanwhile
-			const auto held = queue;
-
-			const bool answered = turn_call(&held->turns, [&]
-			{
-				return turn_call(&group->turns, [&]
-				{
-					if (const auto& queue0 = get_queue(spuq); queue != queue0)
-					{
-						queue = queue0;
-						return false;
-					}
-
-					if (!retro_atomic_load_acquire_int(&queue->exists))
-					{
-						ch_in_mbox.set_values(1, CELL_EINVAL);
-						return true;
-					}
-
-					if (lv2_events_empty(&queue->events))
-					{
-						ch_in_mbox.set_values(1, CELL_EBUSY);
-						return true;
-					}
-
-					const auto event = *lv2_events_front(&queue->events);
-					const auto data1 = static_cast<u32>(std::get<1>(event));
-					const auto data2 = static_cast<u32>(std::get<2>(event));
-					const auto data3 = static_cast<u32>(std::get<3>(event));
-					ch_in_mbox.set_values(4, CELL_OK, data1, data2, data3);
-					lv2_events_pop_front(&queue->events);
-					return true;
-				});
-			});
-
-			if (answered)
-			{
-				return true;
-			}
+			return ch_in_mbox.set_values(1, CELL_EINVAL), true;
 		}
+
+		// The queue takes no turn: the event taken, if there is one
+		if (u64 ev[4]; lv2_evq_try(&queue->q, ev))
+		{
+			return ch_in_mbox.set_values(4, CELL_OK, static_cast<u32>(ev[1]), static_cast<u32>(ev[2]), static_cast<u32>(ev[3])), true;
+		}
+
+		return ch_in_mbox.set_values(1, CELL_EBUSY), true;
 	}
 
 	case SYS_SPU_THREAD_STOP_SWITCH_SYSTEM_MODULE:

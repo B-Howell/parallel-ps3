@@ -1,5 +1,5 @@
-// An lv2 event queue's events (Emu/Cell/lv2/sys_event.h): a retro_deque
-// made with the queue, where there was a std::deque that took a block from
+// An lv2 event queue's events (Emu/Cell/lv2/sys_event.h): a ring made with
+// the queue (lv2_evq.c), where there was a std::deque that took a block from
 // the heap for every sixteen events sent and gave one back for every
 // sixteen taken.
 //
@@ -50,17 +50,25 @@ static lv2_event event_of(u64 n)
 	return std::make_tuple(n, n * 3 + 1, ~n, n << 20);
 }
 
-// As sys_event_queue_receive takes one: in the queue's turn
+// As sys_event_queue_receive takes one: no turn
 static bool take(lv2_event_queue& queue, lv2_event& out)
 {
-	return turn_call(&queue.turns, [&]
+	u64 ev[4];
+	if (!lv2_evq_try(&queue.q, ev))
+		return false;
+	out = std::make_tuple(ev[0], ev[1], ev[2], ev[3]);
+	return true;
+}
+
+// The events as they stand, in order
+static std::vector<lv2_event> events_of(lv2_event_queue& queue)
+{
+	std::vector<lv2_event> out;
+	lv2_evq_each(&queue.q, [](void* ctx, const uint64_t ev[4])
 	{
-		if (lv2_events_empty(&queue.events))
-			return false;
-		out = *lv2_events_front(&queue.events);
-		lv2_events_pop_front(&queue.events);
-		return true;
-	});
+		static_cast<std::vector<lv2_event>*>(ctx)->emplace_back(ev[0], ev[1], ev[2], ev[3]);
+	}, &out);
+	return out;
 }
 
 int main()
@@ -76,9 +84,9 @@ int main()
 	// As many as its size, and no more
 	for (u64 n = 0; n < 127; n++)
 		CHECK(queue->send(event_of(n)) == CellError{});
-	CHECK(lv2_events_count(&queue->events) == 127);
+	CHECK(lv2_evq_count(&queue->q) == 127);
 	CHECK(queue->send(event_of(999)) == CELL_EBUSY);
-	CHECK(lv2_events_count(&queue->events) == 127);
+	CHECK(lv2_evq_count(&queue->q) == 127);
 
 	// In the order they went in
 	lv2_event got;
@@ -97,7 +105,7 @@ int main()
 		while (taken < 100000)
 		{
 			const u64 burst = 1 + sent % 37;
-			for (u64 i = 0; i < burst && lv2_events_count(&queue->events) < 127; i++)
+			for (u64 i = 0; i < burst && lv2_evq_count(&queue->q) < 127; i++)
 				if (queue->send(event_of(sent)) == CellError{})
 					sent++;
 			const u64 back = 1 + taken % 29;
@@ -159,7 +167,7 @@ int main()
 					if (!take(*queue, e))
 					{
 						// All sent and none left: one lost is missed, not waited for
-						if (retro_atomic_load_acquire_int(&s_sent_all) && lv2_events_empty(&queue->events))
+						if (retro_atomic_load_acquire_int(&s_sent_all) && !lv2_evq_count(&queue->q))
 							break;
 						std::this_thread::yield();
 						continue;
@@ -199,8 +207,8 @@ int main()
 	// Drained (sys_event_queue_drain), then used again
 	for (u64 n = 0; n < 50; n++)
 		CHECK(queue->send(event_of(n)) == CellError{});
-	turn_call(&queue->turns, [&] { lv2_events_clear(&queue->events); });
-	CHECK(lv2_events_empty(&queue->events) && !take(*queue, got));
+	lv2_evq_drain(&queue->q);
+	CHECK(!lv2_evq_count(&queue->q) && !take(*queue, got));
 	for (u64 n = 500; n < 540; n++)
 		CHECK(queue->send(event_of(n)) == CellError{});
 
@@ -224,10 +232,11 @@ int main()
 		lv2_event_queue back{stx::exact_t<utils::serial&>(in)};
 		CHECK(back.protocol == queue->protocol && back.type == queue->type && back.size == queue->size);
 		CHECK(back.name == queue->name && back.key == queue->key);
-		CHECK(lv2_events_count(&back.events) == 40);
+		const auto back_events = events_of(back);
+		CHECK(back_events.size() == 40);
 		u64 wrong = 0;
-		for (u64 n = 0; n < lv2_events_count(&back.events); n++)
-			wrong += *lv2_events_at(&back.events, n) != event_of(500 + n);
+		for (u64 n = 0; n < back_events.size(); n++)
+			wrong += back_events[n] != event_of(500 + n);
 		CHECK(wrong == 0);
 	}
 

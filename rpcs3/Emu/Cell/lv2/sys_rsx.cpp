@@ -223,6 +223,11 @@ bool rsx::thread::send_event(u64 data1, u64 event_flags, u64 data3)
 		return true;
 	}
 
+	// The game's handler queue full: watched, so that an event the handler
+	// takes wakes this one to send again - no sleep
+	const auto queue = idm::get_unlocked<lv2_obj, lv2_event_queue>(vm::_ref<RsxDriverInfo>(driver_info).handler_queue);
+	unsigned seen = queue ? lv2_evq_watch(&queue->q) : 0;
+
 	auto error = sys_event_port_send(rsx_event_port, data1, event_flags, data3);
 
 	while (error + 0u == CELL_EBUSY)
@@ -235,8 +240,25 @@ bool rsx::thread::send_event(u64 data1, u64 event_flags, u64 data3)
 			lv2_obj::sleep(*cpu, 100);
 		}
 
-		// Wait a bit before resending event
-		thread_ctrl::wait_for(100);
+		if (queue)
+		{
+			if (cpu)
+			{
+				const auto old_state = +cpu->state;
+
+				thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+				{
+					list.template set<0>(cpu->state, old_state);
+					list.template set<1>(queue->q.changes, seen);
+				});
+			}
+			else
+			{
+				lv2_evq_watch_wait(&queue->q, seen, -1);
+			}
+
+			seen = static_cast<unsigned>(retro_atomic_load_acquire_int(&queue->q.changes));
+		}
 
 		if (cpu && cpu->get_class() == thread_class::rsx)
 			cpu->cpu_wait({});
@@ -248,6 +270,11 @@ bool rsx::thread::send_event(u64 data1, u64 event_flags, u64 data3)
 		}
 
 		error = sys_event_port_send(rsx_event_port, data1, event_flags, data3);
+	}
+
+	if (queue)
+	{
+		lv2_evq_unwatch(&queue->q);
 	}
 
 	if (error + 0u == CELL_EAGAIN)
@@ -287,10 +314,17 @@ void _sys_rsx_drain_event_queue(rsx::thread* rsxthr, u64 event_flags = umax, u64
 	}
 
 	u64 start_ts = get_system_time();
+
+	// Watched: a thread joining its waiters, an event taken, wakes this one
+	lv2_evq_watch(&queue->q);
+
 	while (true)
 	{
-		// First check if the queue is empty. This is the most likely scenario.
-		if (turn_call(&queue->turns, [&] { return !retro_atomic_load_acquire_int(&queue->exists) || (lv2_events_empty(&queue->events) && queue->pq); }))
+		const unsigned seen = static_cast<unsigned>(retro_atomic_load_acquire_int(&queue->q.changes));
+
+		// First check if the queue is empty and its handler waits. This is the
+		// most likely scenario.
+		if (!retro_atomic_load_acquire_int(&queue->exists) || (!lv2_evq_count(&queue->q) && lv2_evq_any_waiter(&queue->q)))
 		{
 			break;
 		}
@@ -301,33 +335,25 @@ void _sys_rsx_drain_event_queue(rsx::thread* rsxthr, u64 event_flags = umax, u64
 			break;
 		}
 
-		// A short spin, cut short by the queue's turn being taken (a receive or
-		// a send): where it waited for the queue's lock word to change
-		for (u32 i = 0; i < 40 && !turn_calls_busy(&queue->turns); i++)
-		{
-			busy_wait(500);
-		}
-
-		// Check for timeout
-		if (wait_timeout_ms == umax)
-		{
-			continue;
-		}
-
 		// If paused, reset the timeout
 		if (Emu.IsPaused())
 		{
 			start_ts = get_system_time();
-			continue;
 		}
 
-		const auto elapsed_ms = (get_system_time() - start_ts) / 1000ull;
-		if (elapsed_ms > wait_timeout_ms)
+		const u64 elapsed_ms = (get_system_time() - start_ts) / 1000ull;
+
+		if (wait_timeout_ms != umax && elapsed_ms > wait_timeout_ms)
 		{
 			sys_rsx.error("RSX queue appears to be stuck. We have been waiting for %llums already. Aborting wait...", elapsed_ms);
 			break;
 		}
+
+		// Until the queue changes, or the time to give up comes: no spin
+		lv2_evq_watch_wait(&queue->q, seen, wait_timeout_ms == umax ? s64{-1} : static_cast<s64>((wait_timeout_ms - std::min(elapsed_ms, wait_timeout_ms)) * 1000 + 1000));
 	}
+
+	lv2_evq_unwatch(&queue->q);
 }
 
 // ---- LV2 ----

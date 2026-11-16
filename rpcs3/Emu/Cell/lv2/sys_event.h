@@ -1,7 +1,7 @@
 #pragma once
 
 #include "sys_sync.h"
-#include "Emu/CPU/turn_calls.h"
+#include "lv2_evq.h"
 
 #include "Emu/Memory/vm_ptr.h"
 
@@ -81,14 +81,8 @@ struct sys_event_t
 // Source, data1, data2, data3
 using lv2_event = std::tuple<u64, u64, u64, u64>;
 
-// A queue's events, oldest first: a retro_deque that holds as many as the
-// queue does (its size, 127 at most), made when the queue is. Sending an
-// event and taking one allocate nothing. It was a std::deque, which takes a
-// block from the heap for every sixteen events sent and gives one back for
-// every sixteen taken, while the game runs - cellAudio alone sends each of
-// its queues one every 5.3 ms.
-// C, with C's casts
-RETRO_DEQUE_DEFINE(lv2_events, lv2_event);
+class ppu_thread;
+class spu_thread;
 
 struct lv2_event_port;
 
@@ -103,12 +97,19 @@ struct lv2_event_queue final : public lv2_obj
 	const u64 name;
 	const u64 key;
 
-	// The events and the waiters change in turn (turn_calls.h): no lock. An
-	// SPU group's lock may be taken inside the turn, never the other way
-	turn_calls_cpp turns;
-	lv2_events_t events;
-	spu_thread* sq{};
-	ppu_thread* pq{};
+	// The events and the threads waiting for one, with no lock and no turn
+	// (lv2_evq.c); each waiter's thread in its slot (a PPU thread's ID index,
+	// an SPU thread's group's), for a send to give it its event
+	lv2_evq_t q;
+	retro_atomic_ptr_t thread[LV2_EVQ_SLOTS]{};
+
+	// A waiter's slot
+	static u32 slot_of(const ppu_thread& ppu);
+	static u32 slot_of(const spu_thread& spu);
+	cpu_thread* thread_in(u32 slot) { return static_cast<cpu_thread*>(retro_atomic_load_acquire_ptr(&thread[slot])); }
+
+	// A waiter to be saved again (a save state being made)
+	bool resaving();
 
 	lv2_event_queue(u32 protocol, s32 type, s32 size, u64 name, u64 ipc_key) noexcept;
 

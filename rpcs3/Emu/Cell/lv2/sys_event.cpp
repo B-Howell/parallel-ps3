@@ -9,6 +9,7 @@
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/SPUThread.h"
 #include "sys_process.h"
+#include "sys_spu.h"
 
 #include "util/asm.hpp"
 
@@ -22,7 +23,7 @@ lv2_event_queue::lv2_event_queue(u32 protocol, s32 type, s32 size, u64 name, u64
 	, name(name)
 	, key(ipc_key)
 {
-	ensure(lv2_events_init(&events, this->size));
+	ensure(lv2_evq_init(&q, this->size));
 }
 
 lv2_event_queue::lv2_event_queue(utils::serial& ar) noexcept
@@ -33,7 +34,7 @@ lv2_event_queue::lv2_event_queue(utils::serial& ar) noexcept
 	, name(ar)
 	, key(ar)
 {
-	ensure(lv2_events_init(&events, this->size));
+	ensure(lv2_evq_init(&q, this->size));
 
 	// The events, as a savestate has always had them: how many (a std::deque
 	// wrote its size so), then each
@@ -56,18 +57,71 @@ lv2_event_queue::lv2_event_queue(utils::serial& ar) noexcept
 
 		if (!ar.is_valid())
 		{
-			lv2_events_clear(&events);
+			lv2_evq_drain(&q);
 			return;
 		}
 
 		// No more than the queue holds: send never left more in it
-		lv2_events_push_back(&events, &event);
+		u64 ev[4]{std::get<0>(event), std::get<1>(event), std::get<2>(event), std::get<3>(event)};
+		unsigned slot = 0;
+		lv2_evq_send(&q, ev, nullptr, nullptr, &slot);
 	}
 }
 
 lv2_event_queue::~lv2_event_queue()
 {
-	lv2_events_free(&events);
+	lv2_evq_deinit(&q);
+}
+
+static_assert(ppu_thread::id_count <= LV2_EVQ_SLOTS, "a PPU thread's slot among a queue's waiters is its ID's index");
+static_assert(lv2_spu_group::id_count <= LV2_EVQ_SLOTS, "an SPU thread's slot among a queue's waiters is its group's ID's index");
+
+u32 lv2_event_queue::slot_of(const ppu_thread& ppu)
+{
+	using traits = id_manager::id_traits<named_thread<ppu_thread>>;
+	return id_manager::get_index(ppu.id, traits::base, traits::step, traits::count, traits::invl_range);
+}
+
+u32 lv2_event_queue::slot_of(const spu_thread& spu)
+{
+	// One thread of a group waits at a time: its group waits with it
+	using traits = id_manager::id_traits<lv2_spu_group>;
+	return id_manager::get_index(spu.group->id, traits::base, traits::step, traits::count, traits::invl_range);
+}
+
+// A waiter's rank on a priority queue: its thread's priority
+static int event_queue_rank(void* ctx, unsigned slot)
+{
+	auto& queue = *static_cast<lv2_event_queue*>(ctx);
+	const auto cpu = queue.thread_in(slot);
+
+	if (!cpu)
+	{
+		return 0;
+	}
+
+	return queue.type == SYS_PPU_QUEUE ? static_cast<ppu_thread*>(cpu)->prio.load().prio : static_cast<spu_thread*>(cpu)->prio.load().prio;
+}
+
+bool lv2_event_queue::resaving()
+{
+	if (!lv2_evq_any_waiter(&q))
+	{
+		return false;
+	}
+
+	for (u32 slot = 0; slot < LV2_EVQ_SLOTS; slot++)
+	{
+		if (lv2_evq_waits(&q, slot))
+		{
+			if (const auto cpu = thread_in(slot); cpu && cpu->state & cpu_flag::again)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
 }
 
 std::function<void(void*)> lv2_event_queue::load(utils::serial& ar)
@@ -81,12 +135,17 @@ void lv2_event_queue::save(utils::serial& ar)
 	ar(protocol, type, size, name, key);
 
 	// The events, byte for byte as the std::deque they were: how many, then each
-	const usz count = lv2_events_count(&events);
-	ar.serialize_vle(count);
-
-	for (usz i = 0; i < count; i++)
+	std::vector<lv2_event> events;
+	lv2_evq_each(&q, [](void* ctx, const uint64_t ev[4])
 	{
-		ar(*lv2_events_at(&events, i));
+		static_cast<std::vector<lv2_event>*>(ctx)->emplace_back(ev[0], ev[1], ev[2], ev[3]);
+	}, &events);
+
+	ar.serialize_vle(events.size());
+
+	for (const auto& event : events)
+	{
+		ar(event);
 	}
 }
 
@@ -186,89 +245,75 @@ CellError lv2_event_queue::send(lv2_event event, bool* notified_thread, lv2_even
 		}
 	} notify_spus{};
 
-	// What depends on the thread sending is taken here: the turn may run on
-	// another thread
 	cpu_thread* const current = get_current_cpu_thread();
 	ppu_thread* const current_ppu = cpu_thread::get_current<ppu_thread>();
 
-	// The events and the waiters change in the queue's turn; waking a thread
-	// is for any thread to do
-	return turn_call(&turns, [&]() -> CellError
+	if (!retro_atomic_load_acquire_int(&exists))
 	{
-		if (!retro_atomic_load_acquire_int(&exists))
+		return CELL_ENOTCONN;
+	}
+
+	// A waiter to be saved again (a save state being made) is not given an
+	// event now: the send is done again after
+	if (resaving())
+	{
+		if (auto cpu = current)
 		{
-			return CELL_ENOTCONN;
+			cpu->state += cpu_flag::again + cpu_flag::exit;
 		}
 
-		if (!pq && !sq)
-		{
-			// Save event, unless the queue holds its size of them already
-			if (lv2_events_push_back(&events, &event))
-			{
-				return {};
-			}
+		sys_event.warning("Ignored event!");
 
-			return CELL_EBUSY;
-		}
+		// Fake error for abort
+		return CELL_EAGAIN;
+	}
 
-		if (type == SYS_PPU_QUEUE)
-		{
-			// Store event in registers
-			auto& ppu = static_cast<ppu_thread&>(*schedule<ppu_thread>(pq, protocol));
+	// In the ring, then to the best waiter with the oldest event: no lock,
+	// no turn. Waking a thread is for any thread to do
+	u64 ev[4]{std::get<0>(event), std::get<1>(event), std::get<2>(event), std::get<3>(event)};
+	unsigned slot = 0;
 
-			if (ppu.state & cpu_flag::again)
-			{
-				if (auto cpu = current)
-				{
-					cpu->state += cpu_flag::again + cpu_flag::exit;
-				}
-
-				sys_event.warning("Ignored event!");
-
-				// Fake error for abort
-				return CELL_EAGAIN;
-			}
-
-			std::tie(ppu.gpr[4], ppu.gpr[5], ppu.gpr[6], ppu.gpr[7]) = event;
-
-			awake(&ppu);
-
-			if (port && ppu.prio.load().prio < ensure(current_ppu)->prio.load().prio)
-			{
-				// Block event port disconnection for the time being of sending events
-				// PPU -> lower prio PPU is the only case that can cause thread blocking 
-				retro_atomic_fetch_add_int(&port->is_busy, 1);
-				ensure(notified_thread);
-				*notified_thread = true;
-			}
-		}
-		else
-		{
-			// Store event in In_MBox
-			auto& spu = static_cast<spu_thread&>(*schedule<spu_thread>(sq, protocol));
-
-			if (spu.state & cpu_flag::again)
-			{
-				if (auto cpu = current)
-				{
-					cpu->state += cpu_flag::exit + cpu_flag::again;
-				}
-
-				sys_event.warning("Ignored event!");
-
-				// Fake error for abort
-				return CELL_EAGAIN;
-			}
-
-			const u32 data1 = static_cast<u32>(std::get<1>(event));
-			const u32 data2 = static_cast<u32>(std::get<2>(event));
-			const u32 data3 = static_cast<u32>(std::get<3>(event));
-			spu.ch_in_mbox.set_values(4, CELL_OK, data1, data2, data3);
-			resume_spu_thread_group_from_waiting(spu, notify_spus.spus);
-		}
-
+	switch (lv2_evq_send(&q, ev, protocol == SYS_SYNC_PRIORITY ? event_queue_rank : nullptr, this, &slot))
+	{
+	case LV2_EVQ_FULL:
+		return CELL_EBUSY;
+	case LV2_EVQ_SENT:
 		return {};
-	});
+	default:
+		break;
+	}
+
+	if (type == SYS_PPU_QUEUE)
+	{
+		// Store event in registers
+		auto& ppu = *ensure(static_cast<ppu_thread*>(thread_in(slot)));
+		std::tie(ppu.gpr[4], ppu.gpr[5], ppu.gpr[6], ppu.gpr[7]) = std::tie(ev[0], ev[1], ev[2], ev[3]);
+		ppu.gpr[3] = CELL_OK;
+		lv2_evq_give(&q, slot, LV2_EVQ_TAKEN);
+
+		awake(&ppu);
+
+		if (port && ppu.prio.load().prio < ensure(current_ppu)->prio.load().prio)
+		{
+			// Block event port disconnection for the time being of sending events
+			// PPU -> lower prio PPU is the only case that can cause thread blocking
+			retro_atomic_fetch_add_int(&port->is_busy, 1);
+			ensure(notified_thread);
+			*notified_thread = true;
+		}
+	}
+	else
+	{
+		// Store event in In_MBox
+		auto& spu = *ensure(static_cast<spu_thread*>(thread_in(slot)));
+		spu.ch_in_mbox.set_values(4, CELL_OK, static_cast<u32>(ev[1]), static_cast<u32>(ev[2]), static_cast<u32>(ev[3]));
+		// Its group resumed before its verdict: an SPU that finds the verdict
+		// given finds itself resumed (signalled)
+		resume_spu_thread_group_from_waiting(spu, notify_spus.spus);
+		lv2_evq_give(&q, slot, LV2_EVQ_TAKEN);
+	}
+
+	return {};
 }
 
 error_code sys_event_queue_create(cpu_thread& cpu, vm::ptr<u32> equeue_id, vm::ptr<sys_event_queue_attribute_t> attr, u64 ipc_key, s32 size)
@@ -344,40 +389,35 @@ error_code sys_event_queue_destroy(ppu_thread& ppu, u32 equeue_id, s32 mode)
 
 	std::vector<lv2_event> events;
 
-	cpu_thread* head{};
+	bool had_waiters = false;
 
-	// Withdrawn in the queue's turn. Once its ID is withdrawn and it no longer
-	// exists, nothing can join its waiters, so those it had are woken in a
-	// second turn (below), out of the withdrawal
+	// Withdrawn once nothing waits on it, unless forced. Once its ID is
+	// withdrawn and it no longer exists, nothing joins its waiters (a
+	// receive that found it waits for the withdrawal, idm::get_entered),
+	// so those it had are claimed and woken after, out of the withdrawal
 	const auto queue = idm::withdraw<lv2_obj, lv2_event_queue>(equeue_id, [&](lv2_event_queue& queue) -> CellError
 	{
-		return turn_call(&queue.turns, [&]() -> CellError
+		had_waiters = lv2_evq_busy(&queue.q);
+
+		if (!mode && had_waiters)
 		{
-			head = queue.type == SYS_PPU_QUEUE ? static_cast<cpu_thread*>(+queue.pq) : +queue.sq;
+			return CELL_EBUSY;
+		}
 
-			if (!mode && head)
-			{
-				return CELL_EBUSY;
-			}
+		if (queue.resaving())
+		{
+			ppu.state += cpu_flag::again;
+			return CELL_EAGAIN;
+		}
 
-			for (auto cpu = head; cpu; cpu = cpu->get_next_cpu())
-			{
-				if (cpu->state & cpu_flag::again)
-				{
-					ppu.state += cpu_flag::again;
-					return CELL_EAGAIN;
-				}
-			}
+		// Copy events for logging, does not empty
+		lv2_evq_each(&queue.q, [](void* ctx, const uint64_t ev[4])
+		{
+			static_cast<std::vector<lv2_event>*>(ctx)->emplace_back(ev[0], ev[1], ev[2], ev[3]);
+		}, &events);
 
-			// Copy events for logging, does not empty
-			for (usz i = 0; i < lv2_events_count(&queue.events); i++)
-			{
-				events.emplace_back(*lv2_events_at(&queue.events, i));
-			}
-
-			lv2_obj::on_id_destroy(queue, queue.key);
-			return {};
-		});
+		lv2_obj::on_id_destroy(queue, queue.key);
+		return {};
 	});
 
 	if (!queue)
@@ -397,51 +437,59 @@ error_code sys_event_queue_destroy(ppu_thread& ppu, u32 equeue_id, s32 mode)
 
 	std::string lost_data;
 
-	if (head)
+	if (had_waiters)
 	{
-		// The waiters as they are now: some may have timed out since the withdrawal
-		turn_call(&queue->turns, [&]
+		// The waiters as they are now: some may have timed out since the
+		// withdrawal. A send that had one claimed gives it its event
+		retro_u128_t woken[2]{};
+		const u32 size = lv2_evq_claim_all(&queue->q, woken);
+
+		if (sys_event.warning && size)
 		{
+			fmt::append(lost_data, "Forcefully awaken waiters (%u):\n", size);
+		}
+
+		bool any_ppu = false;
+
+		for (u32 slot = 0; slot < LV2_EVQ_SLOTS; slot++)
+		{
+			const auto& w = woken[slot / 128];
+			const u32 s = slot % 128;
+
+			if (!(s < 64 ? ((w.lo >> s) & 1) : ((w.hi >> (s - 64)) & 1)))
+			{
+				continue;
+			}
+
+			const auto cpu = ensure(queue->thread_in(slot));
+
 			if (sys_event.warning)
 			{
-				u32 size = 0;
-
-				for (auto cpu = queue->type == SYS_PPU_QUEUE ? static_cast<cpu_thread*>(+queue->pq) : +queue->sq; cpu; cpu = cpu->get_next_cpu())
-				{
-					size++;
-				}
-
-				fmt::append(lost_data, "Forcefully awaken waiters (%u):\n", size);
-
-				for (auto cpu = queue->type == SYS_PPU_QUEUE ? static_cast<cpu_thread*>(+queue->pq) : +queue->sq; cpu; cpu = cpu->get_next_cpu())
-				{
-					lost_data += cpu->get_name();
-					lost_data += '\n';
-				}
+				lost_data += cpu->get_name();
+				lost_data += '\n';
 			}
 
 			if (queue->type == SYS_PPU_QUEUE)
 			{
-				for (auto cpu = +queue->pq; cpu; cpu = cpu->next_cpu)
-				{
-					cpu->gpr[3] = CELL_ECANCELED;
-					queue->append(cpu);
-				}
-
-				atomic_storage<ppu_thread*>::release(queue->pq, nullptr);
-				lv2_obj::awake_all();
+				auto& waiter = *static_cast<ppu_thread*>(cpu);
+				waiter.gpr[3] = CELL_ECANCELED;
+				lv2_evq_give(&queue->q, slot, LV2_EVQ_CANCELED);
+				queue->append(&waiter);
+				any_ppu = true;
 			}
 			else
 			{
-				for (auto cpu = +queue->sq; cpu; cpu = cpu->next_cpu)
-				{
-					cpu->ch_in_mbox.set_values(1, CELL_ECANCELED);
-					resume_spu_thread_group_from_waiting(*cpu, notify_spus.spus);
-				}
-
-				atomic_storage<spu_thread*>::release(queue->sq, nullptr);
+				auto& waiter = *static_cast<spu_thread*>(cpu);
+				waiter.ch_in_mbox.set_values(1, CELL_ECANCELED);
+				resume_spu_thread_group_from_waiting(waiter, notify_spus.spus);
+				lv2_evq_give(&queue->q, slot, LV2_EVQ_CANCELED);
 			}
-		});
+		}
+
+		if (any_ppu)
+		{
+			lv2_obj::awake_all();
+		}
 	}
 
 	if (sys_event.warning)
@@ -487,8 +535,8 @@ error_code sys_event_queue_tryreceive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sy
 
 	std::array<sys_event_t, 127> events;
 
-	// Taken in the queue's turn: how many, or -1 for a queue destroyed
-	const s32 count = turn_call(&queue->turns, [&]() -> s32
+	// Taken one at a time, no turn: how many, or -1 for a queue destroyed
+	const s32 count = [&]() -> s32
 	{
 		if (!retro_atomic_load_acquire_int(&queue->exists))
 		{
@@ -496,16 +544,19 @@ error_code sys_event_queue_tryreceive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sy
 		}
 
 		s32 count = 0;
+		u64 ev[4];
 
-		while (count < size && !lv2_events_empty(&queue->events))
+		while (count < size && lv2_evq_try(&queue->q, ev))
 		{
 			auto& dest = events[count++];
-			std::tie(dest.source, dest.data1, dest.data2, dest.data3) = *lv2_events_front(&queue->events);
-			lv2_events_pop_front(&queue->events);
+			dest.source = ev[0];
+			dest.data1 = ev[1];
+			dest.data2 = ev[2];
+			dest.data3 = ev[3];
 		}
 
 		return count;
-	});
+	}();
 
 	if (count < 0)
 	{
@@ -527,6 +578,8 @@ error_code sys_event_queue_receive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sys_e
 	sys_event.trace("sys_event_queue_receive(equeue_id=0x%x, *0x%x, timeout=0x%llx)", equeue_id, dummy_event, timeout);
 
 	ppu.gpr[3] = CELL_OK;
+
+	const u32 slot = lv2_event_queue::slot_of(ppu);
 
 	// Found with no lock over the IDs. The thread may make itself a waiter,
 	// which sys_event_queue_destroy asks about: a destroy waits for this
@@ -553,20 +606,19 @@ error_code sys_event_queue_receive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sys_e
 		// false), as sys_mutex_lock has it
 		ppu.cancel_sleep = 1;
 
-		// An event taken, or the thread queued, in the queue's turn; going to
-		// sleep is this thread's own, after it
-		const bool queued = turn_call(&queue.turns, [&]
-		{
-			if (lv2_events_empty(&queue.events))
-			{
-				lv2_obj::emplace(queue.pq, &ppu);
-				return true;
-			}
+		// An event taken, or the thread a waiter: one change, no turn
+		retro_atomic_store_release_ptr(&queue.thread[slot], &ppu);
 
-			std::tie(ppu.gpr[4], ppu.gpr[5], ppu.gpr[6], ppu.gpr[7]) = *lv2_events_front(&queue.events);
-			lv2_events_pop_front(&queue.events);
-			return false;
-		});
+		u64 ev[4];
+		const int got = lv2_evq_wait(&queue.q, slot, ev);
+		ensure(got != LV2_EVQ_BAD);
+
+		const bool queued = got == LV2_EVQ_WAITING;
+
+		if (!queued)
+		{
+			std::tie(ppu.gpr[4], ppu.gpr[5], ppu.gpr[6], ppu.gpr[7]) = std::tie(ev[0], ev[1], ev[2], ev[3]);
+		}
 
 		if (!queued || !queue.sleep(ppu, timeout))
 		{
@@ -612,36 +664,15 @@ error_code sys_event_queue_receive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sys_e
 
 		if (is_stopped(state))
 		{
-			const bool queued = turn_call(&queue->turns, [&]
-			{
-				for (auto cpu = +queue->pq; cpu; cpu = cpu->next_cpu)
-				{
-					if (cpu == &ppu)
-					{
-						return true;
-					}
-				}
-
-				return false;
-			});
-
-			if (queued)
+			if (lv2_evq_waits(&queue->q, slot))
 			{
 				ppu.state += cpu_flag::again;
 				return {};
 			}
 
+			// Claimed: its event, or the cancel, is being given
+			lv2_evq_await(&queue->q, slot);
 			break;
-		}
-
-		for (usz i = 0; cpu_flag::signal - ppu.state && i < 50; i++)
-		{
-			busy_wait(500);
-		}
-
-		if (ppu.state & cpu_flag::signal)
- 		{
-			continue;
 		}
 
 		if (timeout)
@@ -656,9 +687,10 @@ error_code sys_event_queue_receive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sys_e
 
 				ppu.state += cpu_flag::wait;
 
-				// Off the queue in its turn, or sent an event by a send whose turn
-				// has given it the event by the time this one runs
-				if (turn_call(&queue->turns, [&] { return queue->unqueue(queue->pq, &ppu); }))
+				// Out of the waiters in one change, or claimed by a send (or a
+				// destroy) first: then its event (or the cancel) is given it,
+				// waited for here
+				if (lv2_evq_timeout(&queue->q, slot) == LV2_EVQ_TIMEDOUT)
 				{
 					ppu.gpr[3] = CELL_ETIMEDOUT;
 				}
@@ -683,7 +715,7 @@ error_code sys_event_queue_drain(ppu_thread& ppu, u32 equeue_id)
 
 	const auto queue = idm::check_entered<lv2_obj, lv2_event_queue>(equeue_id, [&](lv2_event_queue& queue)
 	{
-		turn_call(&queue.turns, [&] { lv2_events_clear(&queue.events); });
+		lv2_evq_drain(&queue.q);
 	});
 
 	if (!queue)

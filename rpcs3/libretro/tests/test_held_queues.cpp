@@ -304,13 +304,19 @@ int main()
 			for (auto& t : lookers)
 				t.join();
 
-			const usz count = lv2_events_count(&queue->events);
+			std::vector<u64> expiries;
+			lv2_evq_each(&queue->q, [](void* ctx, const uint64_t ev[4])
+			{
+				static_cast<std::vector<u64>*>(ctx)->push_back(ev[3]);
+			}, &expiries);
+
+			const usz count = expiries.size();
 			bool ok = count == 100;
 
 			for (usz i = 0; ok && i < count; i++)
 			{
 				// The fourth word is the expiry the event was sent for
-				ok = std::get<3>(*lv2_events_at(&queue->events, i)) == 1000 + i * 100;
+				ok = expiries[i] == 1000 + i * 100;
 			}
 
 			sent += count;

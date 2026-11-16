@@ -47,7 +47,7 @@ int main()
 	// Not started: nothing sent
 	cfg.queue_id = queue_id;
 	send_sys_io_connect_event(1, 1);
-	CHECK(lv2_events_empty(&queue->events));
+	CHECK(lv2_evq_count(&queue->q) == 0);
 
 	// Started, as sys_config_start leaves it
 	cfg.init_ctr = 1;
@@ -82,18 +82,26 @@ int main()
 		run.join();
 		game.join();
 
-		CHECK(lv2_events_count(&queue->events) == 1);
-		if (!lv2_events_empty(&queue->events))
+		CHECK(lv2_evq_count(&queue->q) == 1);
+		u64 first[4]{};
+		bool found = false;
+		lv2_evq_each(&queue->q, [](void* ctx, const uint64_t ev[4])
 		{
-			const auto [source, d1, d2, d3] = *lv2_events_front(&queue->events);
-			CHECK(source == 0 && d1 == 1 && d2 == 2 && d3 == 1);
-		}
+			auto& out = *static_cast<std::pair<u64*, bool*>*>(ctx);
+			if (!*out.second)
+			{
+				std::copy_n(ev, 4, out.first);
+				*out.second = true;
+			}
+		}, std::make_unique<std::pair<u64*, bool*>>(first, &found).get());
+		CHECK(found);
+		CHECK(first[0] == 0 && first[1] == 1 && first[2] == 2 && first[3] == 1);
 	}
 
 	// Stopped: nothing is sent
 	sys_io_gate_close(&cfg.gate);
 	send_sys_io_connect_event(3, 1);
-	CHECK(lv2_events_count(&queue->events) == 1);
+	CHECK(lv2_evq_count(&queue->q) == 1);
 
 	// A send under way (it has read the gate and holds the queue) does not
 	// hold a stop back, and sends nothing after it
