@@ -821,7 +821,7 @@ HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellIme
 LOCK_GUARD_MAX := 303
 # turn_call (turn_calls.h) is a lock without a lock object - a queued caller
 # still waits - and is going too: the count may only fall
-TURN_CALL_MAX := 55
+TURN_CALL_MAX := 47
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -1019,8 +1019,8 @@ check: all
 	@if grep -nE "m_pages_mutex|eng_lock|scoped_lock|lock_guard" ../../Emu/RSX/RSXZCULL.cpp ../../Emu/RSX/RSXZCULL.h; then echo "zcull: a lock on the report pages is back - another thread's fault on one is handed to the renderer (may_own)"; exit 1; else echo "zcull: the report pages take no lock"; fi
 	@# OpenGL's samplers: another thread asks for a reload with a flag the renderer takes, no lock
 	@if grep -n "m_sampler_mutex" ../../Emu/RSX/GL/*.cpp ../../Emu/RSX/GL/*.h; then echo "gl: the sampler lock is back - another thread asks with request_samplers_reload"; exit 1; else echo "gl: the samplers take no lock"; fi
-	@# sys_rsx: the RSX state the syscalls change changes in turn
-	@if grep -n "sys_rsx_mtx" ../../Emu/Cell/lv2/sys_rsx.cpp ../../Emu/RSX/Core/RSXContext.h; then echo "sys_rsx: the lock is back - the syscalls change the IO map, tiles, zcull and display buffers in turn (sys_rsx_turns)"; exit 1; else echo "sys_rsx: no lock"; fi
+	@# sys_rsx: the RSX state the syscalls change takes no lock
+	@if grep -n "sys_rsx_mtx" ../../Emu/Cell/lv2/sys_rsx.cpp ../../Emu/RSX/Core/RSXContext.h; then echo "sys_rsx: the lock is back - the syscalls change the IO map, tiles, zcull and display buffers with no lock"; exit 1; else echo "sys_rsx: no lock"; fi
 	@# OpenGL's shader interpreter: its caches are lock-free maps that only gain entries; the loading dialog waits on the compile count, not a timer
 	@if grep -nE "m_(vs|fs|program)_cache_lock|sleep_for|turn_call|turn_calls|unordered_map|shared_ptr" ../../Emu/RSX/GL/GLShaderInterpreter.cpp ../../Emu/RSX/GL/GLShaderInterpreter.h; then echo "gl interpreter: a cache lock, a turn or a sleep is back - the caches are lock-free maps that only gain entries, the dialog waits on the count"; exit 1; else echo "gl interpreter: lock-free caches, no turn, no sleep"; fi
 	@# Raw SPU MFC proxy command registers change in turn
@@ -1033,6 +1033,8 @@ check: all
 	@if grep -nE "s_rpcn_mutex|s_sign_mutex" ../../Emu/Cell/lv2/sys_net/*.cpp ../../Emu/Cell/lv2/sys_net/*.h; then echo "p2p: a message queue lock is back - the messages go on mpsc_stacks"; exit 1; else echo "p2p: the message queues take no lock"; fi
 	@# lv2 timers: their state one 128-bit word changed with compare-and-swap (sys_timer_ctrl.c), the queue they send to put in place whole (atomic_ptr)
 	@if grep -nE "turn_call|turn_calls|lock_guard|shared_mutex|check_unlocked" ../../Emu/Cell/lv2/sys_timer.cpp ../../Emu/Cell/lv2/sys_timer.h; then echo "sys_timer: a turn or a lock is back - the timer's state is sys_timer_ctrl.c's word"; exit 1; else echo "sys_timer: no turn, no lock"; fi
+	@# sys_rsx: the RSX context's state changed with no turn, the context and the device's address claimed with compare-and-swap, no sleep for the RSX thread
+	@if grep -nE "sys_rsx_turns|wait_for\\(1000\\)|utils::pause" ../../Emu/Cell/lv2/sys_rsx.cpp ../../Emu/RSX/Core/RSXContext.h; then echo "sys_rsx: the context's turn, a sleep or a spin is back - claimed with compare-and-swap, the RSX thread waited for on its words"; exit 1; else echo "sys_rsx: no turn, no sleep, no spin"; fi
 	@# cellGcmSys's IO map: no turn
 	@if grep -nE "io_turns|turn_call" ../../Emu/Cell/Modules/cellGcmSys.cpp ../../Emu/Cell/Modules/cellGcmSys.h; then echo "cellGcmSys: the IO map's turn is back - the pages are marked (gcm_io_pages.c)"; exit 1; else echo "cellGcmSys: the IO map takes no turn"; fi
 	@# A raw SPU's MFC proxy command: one 128-bit word, each register's write a compare-and-swap; no turn

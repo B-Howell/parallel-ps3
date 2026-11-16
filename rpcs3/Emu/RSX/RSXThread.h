@@ -201,6 +201,9 @@ namespace rsx
 
 	public:
 		atomic_t<u64> new_get_put = u64{umax};
+		// Counts the GET/PUT pairs the RSX thread took out of new_get_put, for
+		// a thread waiting to store the next to wait on
+		retro_atomic_int_t get_put_taken{};
 		u32 restore_point = 0;
 		u32 dbg_step_pc = 0;
 		u32 last_known_code_start = 0;

@@ -1,4 +1,6 @@
 #include "stdafx.h"
+
+#include <rthreads/retro_waitaddr.h>
 #include "RSXThread.h"
 #include "Common/guest_faults.h"
 
@@ -1023,7 +1025,9 @@ namespace rsx
 		{
 			on_task();
 
+			// sys_rsx_context_free waits for this
 			state -= cpu_flag::ret;
+			state.notify_all();
 		}
 		while (!is_stopped());
 
@@ -1367,6 +1371,10 @@ namespace rsx
 					fifo_ret_addr = RSX_CALL_STACK_EMPTY;
 					last_known_code_start = static_cast<u32>(get_put);
 					sync_point_request.release(true);
+
+					// A thread waiting to store the next is woken
+					retro_atomic_fetch_add_int(&get_put_taken, 1);
+					retro_waitaddr_notify_all(&get_put_taken);
 				}
 
 				m_eng_interrupt_mask.clear(rsx::dma_control_interrupt);
