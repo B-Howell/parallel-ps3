@@ -2,7 +2,6 @@
 
 #include "vkutils/commands.h"
 #include "vkutils/sync.h"
-#include "Emu/CPU/turn_calls.h"
 #include "Emu/system_config_types.h"
 
 #define VK_MAX_ASYNC_COMPUTE_QUEUES 256
@@ -21,9 +20,11 @@ namespace vk
 		usz m_next_cb_index = 0;
 		atomic_t<u64> m_submit_count = 0;
 
-		// Scheduler
-		turn_calls_cpp m_config_turns;
+		// Scheduler. All of it is the renderer's: only its thread records,
+		// syncs and submits here, so nothing is shared and nothing is taken in
+		// turn
 		bool m_options_initialized = false;
+		bool m_resources_made = false;
 		bool m_use_host_scheduler = false;
 
 		// Sync
@@ -37,10 +38,6 @@ namespace vk
 
 		std::vector<std::unique_ptr<vk::semaphore>> m_semaphore_pool;
 		atomic_t<u64> m_next_semaphore_id = 0;
-
-		// Choosing, syncing and submitting the command buffer are done in turn
-		// (turn_calls.h): no lock
-		turn_calls_cpp m_submit_turns;
 
 		void init_config_options(vk_gpu_scheduler_mode mode, const VkDependencyInfoKHR& queue_dependency);
 		void delayed_init();

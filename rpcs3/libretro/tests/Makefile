@@ -737,7 +737,7 @@ HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellIme
 LOCK_GUARD_MAX := 303
 # turn_call (turn_calls.h) is a lock without a lock object - a queued caller
 # still waits - and is going too: the count may only fall
-TURN_CALL_MAX := 186
+TURN_CALL_MAX := 182
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -909,6 +909,8 @@ check: all
 	@# RSX host memory manager: a protection is applied at once by the thread that asks; no queue shared, nothing to flush
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|Utilities/mutex.h|turn_call" ../../Emu/RSX/Host/MM.cpp ../../Emu/RSX/Host/MM.h || grep -rnE "deferred_mprotect|mm_flush|async_host_memory_manager" ../../Emu/RSX ../../Emu/system_config.h; then echo "rsx mm: a lock, a turn or the deferred protection queue is back - a protection is applied at once by the thread that asks"; exit 1; else echo "rsx mm: protections applied at once, no queue, no turn"; fi
 	@# Vulkan memory accounting: counters, no table of allocations and no lock
+	@# The async transfer scheduler is the renderer's alone, and its command buffers are all made at its first use
+	@if grep -nE "turn_call|turn_calls|lock_guard|mutex|m_async_command_queue.emplace_back" ../../Emu/RSX/VK/VKAsyncScheduler.cpp ../../Emu/RSX/VK/VKAsyncScheduler.h; then echo "vk async scheduler: a turn, a lock or a command buffer made mid-game is back - the scheduler is the renderer's, its command buffers made at its first use"; exit 1; else echo "vk async scheduler: the renderer's, no turn, nothing made mid-game"; fi
 	@# Vulkan device memory: any thread allocates and frees, none waits for another (vk_heap_alloc_shared)
 	@if grep -nE "turn_call|turn_calls|lock_guard|mutex" ../../Emu/RSX/VK/vkutils/memory.cpp ../../Emu/RSX/VK/vkutils/memory.h ../../Emu/RSX/VK/vkutils/vk_heap.c ../../Emu/RSX/VK/vkutils/vk_heap.h; then echo "vk heap: a turn or a lock is back - the blocks are taken with one compare-and-swap, a thread that finds them taken takes memory of its own"; exit 1; else echo "vk heap: shared with no turn and no lock"; fi
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|unordered_map|vmm_allocation_t" ../../Emu/RSX/VK/VKResourceManager.cpp ../../Emu/RSX/VK/VKResourceManager.h; then echo "vk vmm: the allocation table or its lock is back - each memory_block keeps its type, size and pool and the totals are counters"; exit 1; else echo "vk vmm: counters only, no table and no lock"; fi
