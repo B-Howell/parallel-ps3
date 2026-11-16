@@ -758,7 +758,7 @@ HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellIme
 LOCK_GUARD_MAX := 303
 # turn_call (turn_calls.h) is a lock without a lock object - a queued caller
 # still waits - and is going too: the count may only fall
-TURN_CALL_MAX := 140
+TURN_CALL_MAX := 128
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -962,8 +962,8 @@ check: all
 	@if grep -n "gcmio_mutex" ../../Emu/Cell/Modules/cellGcmSys.cpp ../../Emu/Cell/Modules/cellGcmSys.h; then echo "cellGcmSys: the IO lock is back - the tables change in turn (io_turns), the pages a map works on are marked"; exit 1; else echo "cellGcmSys: the IO map takes no lock"; fi
 	@# P2P port: the RPCN and signaling messages go on stacks, no lock
 	@if grep -nE "s_rpcn_mutex|s_sign_mutex" ../../Emu/Cell/lv2/sys_net/*.cpp ../../Emu/Cell/lv2/sys_net/*.h; then echo "p2p: a message queue lock is back - the messages go on mpsc_stacks"; exit 1; else echo "p2p: the message queues take no lock"; fi
-	@# NP room cache: the rooms change in turn
-	@if grep -nE "lock_guard|shared_mutex" ../../Emu/NP/np_cache.cpp ../../Emu/NP/np_cache.h; then echo "np cache: a lock is back - the rooms change in turn"; exit 1; else echo "np cache: the rooms take no lock"; fi
+	@# The Matching2 room cache: changes posted and applied by one thread at a time (lf_post.h), readers read the copy it publishes
+	@if grep -nE "lock_guard|shared_mutex|turn_call|turn_calls" ../../Emu/NP/np_cache.cpp ../../Emu/NP/np_cache.h; then echo "np cache: a lock or a turn is back - changes are posted (lf_post), readers read the published copy"; exit 1; else echo "np cache: changes posted, copies read, no lock, no turn"; fi
 	@# The disc locations are the boot's alone: no lock, no turn
 	@if grep -nE "m_mutex|lock_guard|turn_call|turn_calls" ../../Emu/games_config.cpp ../../Emu/games_config.h; then echo "games_config: a lock or a turn is back - the list is the boot's alone"; exit 1; else echo "games_config: the boot's, no lock, no turn"; fi
 	@# Emulated pad configurations: one thread loads or saves at a time, the polls read the button table under its sequence count

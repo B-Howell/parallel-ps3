@@ -3,7 +3,11 @@
 #include <map>
 #include <optional>
 
-#include "Emu/CPU/turn_calls.h"
+#include <functional>
+
+#include "Utilities/lf_post.h"
+#include <queues/retro_retire.h>
+#include <retro_atomic.h>
 
 #include "Emu/Cell/Modules/sceNp.h"
 #include "Emu/Cell/Modules/sceNp2.h"
@@ -63,10 +67,18 @@ namespace np
 		bool owner = false;
 	};
 
+	// The Matching2 rooms, changed from the NP threads and read by the game's,
+	// with no lock and no thread waiting for another: a change is posted
+	// (lf_post.h) and applied by one thread at a time to the rooms, which are
+	// the applier's; after each batch it publishes a copy of them, and the
+	// readers read that (retro_retire.h)
 	class cache_manager
 	{
 	public:
-		cache_manager() = default;
+		cache_manager();
+		~cache_manager();
+		cache_manager(const cache_manager&) = delete;
+		cache_manager& operator=(const cache_manager&) = delete;
 
 		void insert_room(const SceNpMatching2RoomDataInternal* sce_roomdata);
 		bool add_member(SceNpMatching2RoomId room_id, const SceNpMatching2RoomMemberDataInternal* sce_roommemberdata);
@@ -83,9 +95,39 @@ namespace np
 		std::optional<u16> get_memberid(u64 room_id, const SceNpId& npid) const;
 
 	private:
-		// The rooms change in turn (turn_calls.h), from the NP threads and the
-		// game's: no lock
-		mutable turn_calls_cpp m_turns;
-		std::map<SceNpMatching2RoomId, room_cache> rooms;
+		using rooms_t = std::map<SceNpMatching2RoomId, room_cache>;
+
+		struct change : mpsc_stack_node_t
+		{
+			std::function<void(rooms_t&)> fn;
+		};
+
+		struct snapshot : mpsc_stack_node_t
+		{
+			rooms_t rooms;
+		};
+
+		void post(std::function<void(rooms_t&)> fn);
+		static void apply(void* ctx, mpsc_stack_node_t* oldest);
+		static void free_snapshot(mpsc_stack_node_t* node);
+
+		// f on the rooms as last published, held while it runs
+		template <typename F>
+		auto read(F&& f) const
+		{
+			retro_retire_enter(&m_readers);
+			const auto* snap = static_cast<const snapshot*>(retro_atomic_load_acquire_ptr(const_cast<retro_atomic_ptr_t*>(&m_published)));
+			static const rooms_t none;
+			auto result = f(snap ? snap->rooms : none);
+			retro_retire_leave(&m_readers, free_snapshot);
+			return result;
+		}
+
+		// The applier's alone
+		rooms_t m_rooms;
+
+		lf_post_t m_changes{};
+		retro_atomic_ptr_t m_published{};
+		mutable retro_retire_t m_readers{};
 	};
 } // namespace np

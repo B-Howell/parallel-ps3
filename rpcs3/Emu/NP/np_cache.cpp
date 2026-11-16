@@ -78,48 +78,121 @@ namespace np
 		}
 	}
 
+	cache_manager::cache_manager()
+	{
+		lf_post_init(&m_changes);
+		retro_atomic_ptr_init(&m_published, nullptr);
+		retro_retire_init(&m_readers);
+	}
+
+	// Nothing else uses the cache by now
+	cache_manager::~cache_manager()
+	{
+		delete static_cast<snapshot*>(retro_atomic_load_acquire_ptr(&m_published));
+		retro_retire_drain(&m_readers, free_snapshot);
+
+		for (mpsc_stack_node_t* n = mpsc_stack_drain(&m_changes.posted); n;)
+		{
+			mpsc_stack_node_t* next = n->next;
+			delete static_cast<change*>(n);
+			n = next;
+		}
+	}
+
+	void cache_manager::free_snapshot(mpsc_stack_node_t* node)
+	{
+		delete static_cast<snapshot*>(node);
+	}
+
+	// What it changes is taken from the guest when posted: the applier may be
+	// another thread, later
+	void cache_manager::post(std::function<void(rooms_t&)> fn)
+	{
+		auto* c = new change{};
+		c->fn = std::move(fn);
+		lf_post(&m_changes, c, apply, this);
+	}
+
+	void cache_manager::apply(void* ctx, mpsc_stack_node_t* oldest)
+	{
+		auto& self = *static_cast<cache_manager*>(ctx);
+
+		while (oldest)
+		{
+			mpsc_stack_node_t* next = oldest->next;
+			change* c = static_cast<change*>(oldest);
+			c->fn(self.m_rooms);
+			delete c;
+			oldest = next;
+		}
+
+		// What the readers see from now on
+		auto* made = new snapshot();
+		made->rooms = self.m_rooms;
+		auto* old = static_cast<snapshot*>(retro_atomic_exchange_ptr(&self.m_published, made));
+		retro_retire(&self.m_readers, old, free_snapshot);
+	}
+
 	void cache_manager::insert_room(const SceNpMatching2RoomDataInternal* sce_roomdata)
 	{
-		return turn_call(&m_turns, [&]()
+		room_cache made;
+		made.update(sce_roomdata);
+
+		post([id = sce_roomdata->roomId, made = std::move(made)](rooms_t& rooms) mutable
 		{
-			rooms[sce_roomdata->roomId].update(sce_roomdata);
+			// As update() does: the password and options stay, ownership is only gained
+			room_cache& room = rooms[id];
+			room.num_slots = made.num_slots;
+			room.mask_password = made.mask_password;
+			room.groups = std::move(made.groups);
+			room.members = std::move(made.members);
+			if (made.owner)
+			{
+				room.owner = true;
+			}
 		});
 	}
 
 	bool cache_manager::add_member(SceNpMatching2RoomId room_id, const SceNpMatching2RoomMemberDataInternal* sce_roommemberdata)
 	{
-		return turn_call(&m_turns, [&]() -> bool
+		if (!read([&](const rooms_t& rooms) { return rooms.contains(room_id); }))
 		{
-			if (!rooms.contains(room_id))
-			{
-				np_cache.error("np_cache::add_member cache miss: room_id(%d)", room_id);
-				return false;
-			}
+			np_cache.error("np_cache::add_member cache miss: room_id(%d)", room_id);
+			return false;
+		}
 
-			rooms[room_id].members.insert_or_assign(sce_roommemberdata->memberId, member_cache(sce_roommemberdata));
-			return true;
+		post([room_id, member = member_cache(sce_roommemberdata)](rooms_t& rooms) mutable
+		{
+			if (const auto room = rooms.find(room_id); room != rooms.end())
+			{
+				room->second.members.insert_or_assign(member.memberId, std::move(member));
+			}
 		});
+		return true;
 	}
 
 	bool cache_manager::del_member(SceNpMatching2RoomId room_id, SceNpMatching2RoomMemberId member_id)
 	{
-		return turn_call(&m_turns, [&]() -> bool
+		if (!read([&](const rooms_t& rooms) { return rooms.contains(room_id); }))
 		{
-			if (!rooms.contains(room_id))
-			{
-				np_cache.error("np_cache::del_member cache miss: room_id(%d)/member_id(%d)", room_id, member_id);
-				return false;
-			}
+			np_cache.error("np_cache::del_member cache miss: room_id(%d)/member_id(%d)", room_id, member_id);
+			return false;
+		}
 
-			// The member, out of its room: it erased the room whose ID was the member's
-			rooms[room_id].members.erase(member_id);
-			return true;
+		post([room_id, member_id](rooms_t& rooms)
+		{
+			// The member, out of its room
+			if (const auto room = rooms.find(room_id); room != rooms.end())
+			{
+				room->second.members.erase(member_id);
+			}
 		});
+		return true;
 	}
 
 	void cache_manager::update_password(SceNpMatching2RoomId room_id, const std::optional<SceNpMatching2SessionPassword>& password)
 	{
-		return turn_call(&m_turns, [&]()
+		post([room_id, password](rooms_t& rooms)
 		{
 			rooms[room_id].password = password;
 		});
@@ -127,16 +200,15 @@ namespace np
 
 	void cache_manager::update_opt_param(SceNpMatching2RoomId room_id, const SceNpMatching2SignalingOptParam* sce_opt_param)
 	{
-		// It took no lock, the others did: now it changes the rooms in turn too
-		turn_call(&m_turns, [&]
+		post([room_id, opt_param = *sce_opt_param](rooms_t& rooms)
 		{
-			rooms[room_id].opt_param = *sce_opt_param;
+			rooms[room_id].opt_param = opt_param;
 		});
 	}
 
 	std::pair<error_code, std::optional<SceNpMatching2RoomSlotInfo>> cache_manager::get_slots(SceNpMatching2RoomId room_id) const
 	{
-		return turn_call(&m_turns, [&]() -> std::pair<error_code, std::optional<SceNpMatching2RoomSlotInfo>>
+		return read([&](const rooms_t& rooms) -> std::pair<error_code, std::optional<SceNpMatching2RoomSlotInfo>>
 		{
 			if (!rooms.contains(room_id))
 			{
@@ -178,7 +250,7 @@ namespace np
 
 	std::pair<error_code, std::vector<SceNpMatching2RoomMemberId>> cache_manager::get_memberids(u64 room_id, s32 sort_method) const
 	{
-		return turn_call(&m_turns, [&]() -> std::pair<error_code, std::vector<SceNpMatching2RoomMemberId>>
+		return read([&](const rooms_t& rooms) -> std::pair<error_code, std::vector<SceNpMatching2RoomMemberId>>
 		{
 			if (!rooms.contains(room_id))
 			{
@@ -224,7 +296,7 @@ namespace np
 
 	std::pair<error_code, std::optional<SceNpMatching2SessionPassword>> cache_manager::get_password(SceNpMatching2RoomId room_id) const
 	{
-		return turn_call(&m_turns, [&]() -> std::pair<error_code, std::optional<SceNpMatching2SessionPassword>>
+		return read([&](const rooms_t& rooms) -> std::pair<error_code, std::optional<SceNpMatching2SessionPassword>>
 		{
 			if (!rooms.contains(room_id))
 			{
@@ -244,7 +316,7 @@ namespace np
 
 	std::pair<error_code, std::optional<SceNpMatching2SignalingOptParam>> cache_manager::get_opt_param(SceNpMatching2RoomId room_id) const
 	{
-		return turn_call(&m_turns, [&]() -> std::pair<error_code, std::optional<SceNpMatching2SignalingOptParam>>
+		return read([&](const rooms_t& rooms) -> std::pair<error_code, std::optional<SceNpMatching2SignalingOptParam>>
 		{
 			if (!rooms.contains(room_id))
 			{
@@ -257,7 +329,7 @@ namespace np
 
 	error_code cache_manager::get_member_and_attrs(SceNpMatching2RoomId room_id, SceNpMatching2RoomMemberId member_id, const std::vector<SceNpMatching2AttributeId>& binattrs_list, SceNpMatching2RoomMemberDataInternal* ptr_member, u32 addr_data, u32 size_data, bool include_onlinename, bool include_avatarurl) const
 	{
-		return turn_call(&m_turns, [&]() -> error_code
+		return read([&](const rooms_t& rooms) -> error_code
 		{
 			if (!rooms.contains(room_id))
 			{
@@ -370,7 +442,7 @@ namespace np
 
 	std::pair<error_code, std::optional<SceNpId>> cache_manager::get_npid(u64 room_id, u16 member_id) const
 	{
-		return turn_call(&m_turns, [&]() -> std::pair<error_code, std::optional<SceNpId>>
+		return read([&](const rooms_t& rooms) -> std::pair<error_code, std::optional<SceNpId>>
 		{
 			if (!rooms.contains(room_id))
 			{
@@ -390,7 +462,7 @@ namespace np
 
 	std::optional<u16> cache_manager::get_memberid(u64 room_id, const SceNpId& npid) const
 	{
-		return turn_call(&m_turns, [&]() -> std::optional<u16>
+		return read([&](const rooms_t& rooms) -> std::optional<u16>
 		{
 			if (!rooms.contains(room_id))
 			{
