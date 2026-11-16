@@ -62,7 +62,6 @@ void LibretroGSFrame::reset() {}
 bool LibretroGSFrame::shown() { return m_shown; }
 void LibretroGSFrame::hide() { m_shown = false; }
 void LibretroGSFrame::show() { m_shown = true; }
-void LibretroGSFrame::toggle_fullscreen() {}
 
 // Vulkan makes and owns its own device; there is no drawing context here for
 // anyone to hand around.

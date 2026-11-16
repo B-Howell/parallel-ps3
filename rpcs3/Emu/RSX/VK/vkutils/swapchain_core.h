@@ -14,11 +14,6 @@
 
 namespace vk
 {
-	struct swapchain_image_WSI
-	{
-		VkImage value = VK_NULL_HANDLE;
-	};
-
 	class swapchain_image_RPCS3 : public image
 	{
 		std::unique_ptr<buffer> m_dma_buffer;
@@ -113,8 +108,6 @@ namespace vk
 
 		using swapchain_base::init;
 	};
-
-	using WSI_swapchain_base = abstract_swapchain_impl<swapchain_image_WSI>;
 
 	class native_swapchain_base : public abstract_swapchain_impl<std::pair<bool, std::unique_ptr<swapchain_image_RPCS3>>>
 	{
@@ -441,68 +434,5 @@ namespace vk
 			if (m_current)
 				lr_image_slots_release_all(&m_current->slots);
 		}
-	};
-
-	class swapchain_WSI : public WSI_swapchain_base
-	{
-		VkSurfaceKHR m_surface = VK_NULL_HANDLE;
-		VkColorSpaceKHR m_color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-		VkSwapchainKHR m_vk_swapchain = nullptr;
-
-		PFN_vkCreateSwapchainKHR _vkCreateSwapchainKHR = nullptr;
-		PFN_vkDestroySwapchainKHR _vkDestroySwapchainKHR = nullptr;
-		PFN_vkGetSwapchainImagesKHR _vkGetSwapchainImagesKHR = nullptr;
-		PFN_vkAcquireNextImageKHR _vkAcquireNextImageKHR = nullptr;
-		PFN_vkQueuePresentKHR _vkQueuePresentKHR = nullptr;
-
-		bool m_wm_reports_flag = false;
-
-	protected:
-		void init_swapchain_images(render_device& dev, u32 preferred_count = 0) override;
-
-	public:
-		swapchain_WSI(vk::physical_device& gpu, u32 present_queue, u32 graphics_queue, u32 transfer_queue, VkFormat format, VkSurfaceKHR surface, VkColorSpaceKHR color_space, bool force_wm_reporting_off);
-
-		~swapchain_WSI() override = default;
-
-		void create(display_handle_t&) override
-		{}
-
-		void destroy(bool = true) override;
-
-		std::pair<VkSurfaceCapabilitiesKHR, bool> init_surface_capabilities();
-
-		using WSI_swapchain_base::init;
-		bool init() override;
-
-		bool supports_automatic_wm_reports() const override
-		{
-			return m_wm_reports_flag;
-		}
-
-		VkResult acquire_next_swapchain_image(VkSemaphore semaphore, u64 timeout, u32* result) override
-		{
-			return vkAcquireNextImageKHR(dev, m_vk_swapchain, timeout, semaphore, VK_NULL_HANDLE, result);
-		}
-
-		void end_frame(command_buffer& /*cmd*/, u32 /*index*/) override
-		{}
-
-		VkResult present(VkSemaphore semaphore, u32 image) override;
-
-		VkImage get_image(u32 index) override
-		{
-			return swapchain_images[index].value;
-		}
-
-		VkImageLayout get_optimal_present_layout() const override
-		{
-			return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-		}
-	};
-
-	struct WSI_config
-	{
-		bool supports_automatic_wm_reports = true;
 	};
 }

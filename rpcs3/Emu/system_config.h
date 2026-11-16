@@ -190,7 +190,6 @@ struct cfg_root : cfg::node
 			node_vk(cfg::node* _this) : cfg::node(_this, "Vulkan") {}
 
 			cfg::string adapter{ this, "Adapter" };
-			cfg::_enum<vk_exclusive_fs_mode> exclusive_fullscreen_mode{ this, "Exclusive Fullscreen Mode", vk_exclusive_fs_mode::unspecified};
 			cfg::_bool asynchronous_texture_streaming{ this, "Asynchronous Texture Streaming", false };
 			cfg::_enum<vk_gpu_scheduler_mode> asynchronous_scheduler{ this, "Asynchronous Queue Scheduler", vk_gpu_scheduler_mode::safe };
 			cfg::uint<256, 65536> vram_allocation_limit{ this, "VRAM allocation limit (MB)", 65536, false };
@@ -369,7 +368,6 @@ struct cfg_root : cfg::node
 		cfg::_bool autostart{ this, "Automatically start games after boot", true, true };
 		cfg::_bool autoexit{ this, "Exit RPCS3 when process finishes", false, true };
 		cfg::_bool autopause{ this, "Pause emulation on RPCS3 focus loss", false, true };
-		cfg::_bool start_fullscreen{ this, "Start games in fullscreen mode", true, true };
 		cfg::_bool prevent_display_sleep{ this, "Prevent display sleep while running games", true, true };
 		cfg::_bool show_trophy_popups{ this, "Show trophy popups", true, true };
 		cfg::_bool show_rpcn_popups{ this, "Show RPCN popups", true, true };

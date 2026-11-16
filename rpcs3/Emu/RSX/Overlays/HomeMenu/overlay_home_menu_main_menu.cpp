@@ -11,8 +11,6 @@
 
 extern atomic_t<bool> g_user_asked_for_recording;
 
-atomic_t<bool> g_user_asked_for_fullscreen = false;
-
 namespace rsx
 {
 	namespace overlays
@@ -104,15 +102,6 @@ namespace rsx
 				return page_navigation::exit;
 			});
 
-			add_item(home_menu::fa_icon::maximize, get_localized_string(localized_string_id::HOME_MENU_TOGGLE_FULLSCREEN), [](pad_button btn) -> page_navigation
-			{
-				if (btn != pad_button::cross)
-					return page_navigation::stay;
-
-				rsx_log.notice("User selected toggle fullscreen in home menu");
-				g_user_asked_for_fullscreen = true;
-				return page_navigation::stay; // No need to exit
-			});
 
 			add_page(home_menu::fa_icon::floppy, std::make_shared<home_menu_savestate>(x, y, width, height, use_separators, this));
 

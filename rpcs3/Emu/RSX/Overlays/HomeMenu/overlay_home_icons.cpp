@@ -25,8 +25,6 @@ namespace rsx::overlays::home_menu
 			return "circle-left-solid.png";
 		case fa_icon::floppy:
 			return "floppy-disk-solid.png";
-		case fa_icon::maximize:
-			return "maximize-solid.png";
 		case fa_icon::play:
 			return "play-button-arrowhead.png";
 		case fa_icon::poweroff:

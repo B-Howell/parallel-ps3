@@ -297,13 +297,6 @@ enum class shader_mode
 	interpreter_only
 };
 
-enum class vk_exclusive_fs_mode
-{
-	unspecified,
-	disable,
-	enable
-};
-
 enum class vk_gpu_scheduler_mode
 {
 	safe,

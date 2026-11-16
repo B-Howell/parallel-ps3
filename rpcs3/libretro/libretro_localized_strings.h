@@ -288,7 +288,6 @@ inline const char* libretro_localized_template(localized_string_id id)
 	case localized_string_id::HOME_MENU_RELOAD_SECOND_SAVESTATE: return "Reload Second-To-Last Emulation State";
 	case localized_string_id::HOME_MENU_RELOAD_THIRD_SAVESTATE: return "Reload Third-To-Last Emulation State";
 	case localized_string_id::HOME_MENU_RELOAD_FOURTH_SAVESTATE: return "Reload Fourth-To-Last Emulation State";
-	case localized_string_id::HOME_MENU_TOGGLE_FULLSCREEN: return "Toggle Fullscreen";
 	case localized_string_id::HOME_MENU_RECORDING: return "Start/Stop Recording";
 	case localized_string_id::HOME_MENU_TROPHIES: return "Trophies";
 	case localized_string_id::HOME_MENU_TROPHY_LIST_TITLE: return "Trophy Progress: %0";

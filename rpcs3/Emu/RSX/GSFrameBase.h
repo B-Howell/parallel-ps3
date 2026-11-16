@@ -31,7 +31,6 @@ public:
 	virtual bool shown() = 0;
 	virtual void hide() = 0;
 	virtual void show() = 0;
-	virtual void toggle_fullscreen() = 0;
 
 	virtual void delete_context(draw_context_t ctx) = 0;
 	virtual draw_context_t make_context() = 0;

@@ -657,22 +657,6 @@ void fmt_class_string<gpu_preset_level>::format(std::string& out, u64 arg)
 }
 
 template <>
-void fmt_class_string<vk_exclusive_fs_mode>::format(std::string& out, u64 arg)
-{
-	format_enum(out, arg, [](vk_exclusive_fs_mode value)
-		{
-			switch (value)
-			{
-			case vk_exclusive_fs_mode::unspecified: return "Automatic";
-			case vk_exclusive_fs_mode::disable: return "Disable";
-			case vk_exclusive_fs_mode::enable: return "Enable";
-			}
-
-			return unknown;
-		});
-}
-
-template <>
 void fmt_class_string<stereo_render_mode_options>::format(std::string& out, u64 arg)
 {
 	format_enum(out, arg, [](stereo_render_mode_options value)

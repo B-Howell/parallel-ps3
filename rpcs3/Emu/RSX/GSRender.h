@@ -4,19 +4,6 @@
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/system_config_types.h"
 
-enum wm_event
-{
-	none,                        // nothing
-	toggle_fullscreen,           // user is requesting a fullscreen switch
-	geometry_change_notice,      // about to start resizing and/or moving the window
-	geometry_change_in_progress, // window being resized and/or moved
-	window_resized,              // window was resized
-	window_minimized,            // window was minimized
-	window_restored,             // window was restored from a minimized state
-	window_moved,                // window moved without resize
-	window_visibility_changed
-};
-
 class GSRender : public rsx::thread
 {
 protected:

@@ -274,11 +274,6 @@ void LibretroGSFrame::show()
     m_shown = true;
 }
 
-void LibretroGSFrame::toggle_fullscreen()
-{
-    // Fullscreen is handled by the frontend
-}
-
 // The thread that used it: let go of it there, and give it back
 void LibretroGSFrame::delete_context(draw_context_t ctx)
 {

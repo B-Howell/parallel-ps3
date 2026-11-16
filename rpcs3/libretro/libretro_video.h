@@ -71,7 +71,6 @@ public:
     bool shown() override;
     void hide() override;
     void show() override;
-    void toggle_fullscreen() override;
 
     void delete_context(draw_context_t ctx) override;
     draw_context_t make_context() override;

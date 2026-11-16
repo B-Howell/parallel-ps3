@@ -12,7 +12,6 @@ namespace rsx::overlays::home_menu
 		settings,
 		back,
 		floppy,
-		maximize,
 		play,
 		poweroff,
 		restart,
