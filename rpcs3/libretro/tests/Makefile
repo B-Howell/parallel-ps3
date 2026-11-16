@@ -737,7 +737,7 @@ HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellIme
 LOCK_GUARD_MAX := 303
 # turn_call (turn_calls.h) is a lock without a lock object - a queued caller
 # still waits - and is going too: the count may only fall
-TURN_CALL_MAX := 176
+TURN_CALL_MAX := 169
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -928,8 +928,8 @@ check: all
 	@if grep -n "m_sampler_mutex" ../../Emu/RSX/GL/*.cpp ../../Emu/RSX/GL/*.h; then echo "gl: the sampler lock is back - another thread asks with request_samplers_reload"; exit 1; else echo "gl: the samplers take no lock"; fi
 	@# sys_rsx: the RSX state the syscalls change changes in turn
 	@if grep -n "sys_rsx_mtx" ../../Emu/Cell/lv2/sys_rsx.cpp ../../Emu/RSX/Core/RSXContext.h; then echo "sys_rsx: the lock is back - the syscalls change the IO map, tiles, zcull and display buffers in turn (sys_rsx_turns)"; exit 1; else echo "sys_rsx: no lock"; fi
-	@# OpenGL's shader interpreter caches change in turn
-	@if grep -nE "m_(vs|fs|program)_cache_lock|sleep_for" ../../Emu/RSX/GL/GLShaderInterpreter.cpp ../../Emu/RSX/GL/GLShaderInterpreter.h | grep -v "sleep_for(16ms);$$"; then echo "gl interpreter: a cache lock or sleep is back"; exit 1; else echo "gl interpreter: the caches take no lock"; fi
+	@# OpenGL's shader interpreter: its caches are lock-free maps that only gain entries; the loading dialog waits on the compile count, not a timer
+	@if grep -nE "m_(vs|fs|program)_cache_lock|sleep_for|turn_call|turn_calls|unordered_map|shared_ptr" ../../Emu/RSX/GL/GLShaderInterpreter.cpp ../../Emu/RSX/GL/GLShaderInterpreter.h; then echo "gl interpreter: a cache lock, a turn or a sleep is back - the caches are lock-free maps that only gain entries, the dialog waits on the count"; exit 1; else echo "gl interpreter: lock-free caches, no turn, no sleep"; fi
 	@# Raw SPU MFC proxy command registers change in turn
 	@if grep -n "mfc_prxy_mtx" ../../Emu/Cell/RawSPUThread.cpp ../../Emu/Cell/SPUThread.h; then echo "raw spu: the MFC proxy lock is back"; exit 1; else echo "raw spu: the MFC proxy takes no lock"; fi
 	@# Raw SPU run control: a stop request waits on the stop count, run requests take no lock

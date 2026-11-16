@@ -4,9 +4,10 @@
 #include "../Program/ShaderInterpreter.h"
 #include "../Common/TextureUtils.h"
 
-#include <unordered_map>
+#include "Utilities/lf_u64_map.h"
 
-#include "Emu/CPU/turn_calls.h"
+#include <queues/mpsc_stack.h>
+#include <retro_atomic.h>
 
 namespace rsx
 {
@@ -82,34 +83,47 @@ namespace gl
 			}
 		};
 
-		struct cached_program
+		// Made once and kept until the interpreter is destroyed: what is looked
+		// up is never freed under the renderer. Published to the other threads
+		// by a release (the cache's compare-and-swap, or upgraded)
+		// A node of the list of every one made, for destroy()
+		struct cached_program : mpsc_stack_node_t
 		{
+			// The renderer's after publication
 			u32 flags = program_common::interpreter::CACHED_PIPE_UNINITIALIZED;
 
 			// Compiler options mask - May not always match the storage compiler options in case of compatible pipelines
 			// However the storage mask must be a subset of this options mask
 			u64 build_compiler_options = 0;
 
-			std::shared_ptr<glsl::shader> vertex_shader;
-			std::shared_ptr<glsl::shader> fragment_shader;
-			std::shared_ptr<glsl::program> prog;
+			// The shaders are the caches'; the program is this one's when
+			// owns_prog, else borrowed from the base variant's
+			glsl::shader* vertex_shader = nullptr;
+			glsl::shader* fragment_shader = nullptr;
+			glsl::program* prog = nullptr;
+			bool owns_prog = false;
+
+			// The optimized build that replaced this one, set once
+			retro_atomic_ptr_t upgraded{};
 		};
 	}
 
 	class shader_interpreter
 	{
-		using shader_cache_t = std::unordered_map<u64, std::shared_ptr<glsl::shader>>;
-		using pipeline_cache_t = std::unordered_map<u64, std::shared_ptr<interpreter::cached_program>>;
-		using async_build_callback_t = std::function<void(const std::shared_ptr<interpreter::cached_program>&)>;
+		using async_build_callback_t = std::function<void(interpreter::cached_program*)>;
 
-		// The three caches change in turn (turn_calls.h), from the renderer
-		// and the pipeline compiler's threads: no lock. GL calls are made
-		// out of the turn, on the thread whose context they are
-		turn_calls_cpp m_turns;
+		// The three caches are added to from the renderer and the pipeline
+		// compiler's threads and only ever gain entries, with no lock and no
+		// thread waiting for another (lf_u64_map.h): compiler options (plus
+		// one, as a key is never 0) to a glsl::shader* or a cached_program*.
+		// A shader two threads made at once is kept once; the other's goes.
+		// A program's optimized build hangs off the one it replaces
+		lf_u64_map m_vs_cache{};
+		lf_u64_map m_fs_cache{};
+		lf_u64_map m_program_cache{};
 
-		shader_cache_t m_vs_cache;
-		shader_cache_t m_fs_cache;
-		pipeline_cache_t m_program_cache;
+		// Every cached_program made, freed at destroy()
+		mpsc_stack_t m_programs{};
 
 		// Texture binding information.
 		interpreter::bindless_textures_t m_texture_bindings{};
@@ -117,17 +131,20 @@ namespace gl
 		void build_vs(u64 compiler_options, interpreter::cached_program& prog_data);
 		void build_fs(u64 compiler_options, interpreter::cached_program& prog_data);
 
-		std::shared_ptr<interpreter::cached_program> build_program(u64 compiler_options);
+		interpreter::cached_program* new_program();
+		interpreter::cached_program* find_program(u64 compiler_options) const;
+		interpreter::cached_program* build_program(u64 compiler_options);
 		void build_program_async(u64 compiler_options, async_build_callback_t callback);
-		void init_program(const std::shared_ptr<interpreter::cached_program>& data, u64 compiler_options);
-		void store_program(const std::shared_ptr<interpreter::cached_program>& data, u64 compiler_options);
+		void init_program(interpreter::cached_program* data, u64 compiler_options);
+		void store_program(interpreter::cached_program* data, u64 compiler_options);
 
-		std::shared_ptr<interpreter::cached_program> m_current_interpreter;
+		interpreter::cached_program* m_current_interpreter = nullptr;
 
 	public:
 		shader_interpreter()
 		{
 			std::memset(&m_texture_bindings, 0, sizeof(m_texture_bindings));
+			mpsc_stack_init(&m_programs);
 		}
 
 		void create(rsx::shader_loading_dialog* dlg);
