@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Emu/CPU/turn_calls.h"
 #include <map>
 #include <string>
 
@@ -28,7 +27,7 @@ public:
 	result remove_game(const std::string& key);
 
 private:
+	// The boot's alone: only the emulator's boot (Emulator::Load, on the
+	// thread that runs retro_run) registers and looks up games here
 	std::map<std::string, std::string> m_games;
-	// The games change in turn (turn_calls.h): no lock
-	mutable turn_calls_cpp m_turns;
 };

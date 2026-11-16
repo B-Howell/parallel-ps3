@@ -14,15 +14,12 @@ std::string games_config::get_path(const std::string& title_id) const
 		return {};
 	}
 
-	return turn_call(&m_turns, [&]() -> std::string
+	if (const auto it = m_games.find(title_id); it != m_games.cend())
 	{
-		if (const auto it = m_games.find(title_id); it != m_games.cend())
-		{
-			return it->second;
-		}
+		return it->second;
+	}
 
-		return {};
-	});
+	return {};
 }
 
 games_config::result games_config::add_game(const std::string& key, const std::string& path)
@@ -44,26 +41,23 @@ games_config::result games_config::add_game(const std::string& key, const std::s
 		return add_game(key, path + '/');
 	}
 
-	return turn_call(&m_turns, [&]() -> result
+	// Access or create node if does not exist
+	if (auto it = m_games.find(key); it != m_games.end())
 	{
-		// Access or create node if does not exist
-		if (auto it = m_games.find(key); it != m_games.end())
+		if (it->second == path)
 		{
-			if (it->second == path)
-			{
-				// Nothing to do
-				return result::exists;
-			}
-
-			it->second = path;
-		}
-		else
-		{
-			m_games.emplace(key, path);
+			// Nothing to do
+			return result::exists;
 		}
 
-		return result::success;
-	});
+		it->second = path;
+	}
+	else
+	{
+		m_games.emplace(key, path);
+	}
+
+	return result::success;
 }
 
 games_config::result games_config::add_external_hdd_game(const std::string& key, std::string& path)
@@ -93,15 +87,12 @@ games_config::result games_config::add_external_hdd_game(const std::string& key,
 
 games_config::result games_config::remove_game(const std::string& key)
 {
-	return turn_call(&m_turns, [&]() -> result
+	// Remove node
+	if (m_games.erase(key) == 0) // If node not found
 	{
-		// Remove node
-		if (m_games.erase(key) == 0) // If node not found
-		{
-			// Nothing to do
-			return result::success;
-		}
-
+		// Nothing to do
 		return result::success;
-	});
+	}
+
+	return result::success;
 }
