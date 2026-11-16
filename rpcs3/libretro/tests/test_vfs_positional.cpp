@@ -1269,11 +1269,12 @@ int main()
 				retro_atomic_load_acquire_int(&s_refused), retro_atomic_load_acquire_int(&s_destroyed2));
 		}
 
-		// Event flags: threads queue themselves by ID the way
-		// sys_event_flag_wait now does - a counted reference, the flag's
-		// turn, into the queue, then the second look, out again if it says
-		// no - while another thread destroys and recreates the flags the way
-		// sys_event_flag_destroy does, refusing while the queue has a thread.
+		// Event flags: threads join the waiters by ID the way
+		// sys_event_flag_wait now does - a counted reference, into the
+		// flag's waiter set in one change (lv2_flagq.c), then the second
+		// look, out again if it says no - while another thread destroys and
+		// recreates the flags the way sys_event_flag_destroy does, refusing
+		// while the flag has a waiter.
 		{
 			const auto make_flag = []
 			{
@@ -1292,8 +1293,8 @@ int main()
 			{
 				waiters[t] = std::thread([t]
 				{
-					// Stands for the thread in the queue; never looked into
-					ppu_thread* const self = reinterpret_cast<ppu_thread*>(static_cast<uptr>(0x1000 + t * 0x1000));
+					// The thread's slot among the waiters
+					const u32 me = t * 9 + 2;
 					u32 x = t * 2654435761u + 11;
 
 					while (!retro_atomic_load_acquire_int(&s_stop3))
@@ -1309,28 +1310,32 @@ int main()
 						if (x & 0x100)
 							std::this_thread::yield();
 
-						// In the flag's turn, as sys_event_flag_wait has it
-						turn_call(&flag->turns, [&]
+						// Joined in one change, as sys_event_flag_wait has it
+						u64 seen = 0;
+						if (lv2_flagq_wait(&flag->q, me, u64{1} << 63, SYS_EVENT_FLAG_WAIT_AND, 0, &seen) != LV2_FLAGQ_WAITING)
 						{
-							atomic_storage<ppu_thread*>::store(flag->sq, self);
+							retro_atomic_fetch_add_int(&s_bad3, 1);
+							continue;
+						}
 
-							if (!idm::still_named<lv2_obj, lv2_event_flag>(id, flag.get()))
-							{
-								atomic_storage<ppu_thread*>::store(flag->sq, nullptr);
-								retro_atomic_fetch_add_int(&s_left, 1);
-								return;
-							}
-
-							// In the queue: a destroy must fail until the thread leaves
-							retro_atomic_fetch_add_int(&s_in_queue[(id >> 8) & 8191], 1);
-							retro_atomic_fetch_add_int(&s_queued, 1);
-							for (int spin = 0; spin < 20; spin++)
-								(void)retro_atomic_load_relaxed_int(&s_stop3);
-							if (idm::check_unlocked<lv2_obj, lv2_event_flag>(id) != flag.get())
+						if (!idm::still_named<lv2_obj, lv2_event_flag>(id, flag.get()))
+						{
+							if (!lv2_flagq_leave(&flag->q, me))
 								retro_atomic_fetch_add_int(&s_bad3, 1);
-							retro_atomic_fetch_sub_int(&s_in_queue[(id >> 8) & 8191], 1);
-							atomic_storage<ppu_thread*>::store(flag->sq, nullptr);
-						});
+							retro_atomic_fetch_add_int(&s_left, 1);
+							continue;
+						}
+
+						// A waiter: a destroy must fail until the thread leaves
+						retro_atomic_fetch_add_int(&s_in_queue[(id >> 8) & 8191], 1);
+						retro_atomic_fetch_add_int(&s_queued, 1);
+						for (int spin = 0; spin < 20; spin++)
+							(void)retro_atomic_load_relaxed_int(&s_stop3);
+						if (idm::check_unlocked<lv2_obj, lv2_event_flag>(id) != flag.get())
+							retro_atomic_fetch_add_int(&s_bad3, 1);
+						retro_atomic_fetch_sub_int(&s_in_queue[(id >> 8) & 8191], 1);
+						if (!lv2_flagq_leave(&flag->q, me))
+							retro_atomic_fetch_add_int(&s_bad3, 1);
 					}
 				});
 			}
@@ -1342,7 +1347,7 @@ int main()
 
 				const auto gone = idm::withdraw<lv2_obj, lv2_event_flag>(id, [&](lv2_event_flag& flag) -> CellError
 				{
-					if (atomic_storage<ppu_thread*>::load(flag.sq))
+					if (lv2_flagq_busy(&flag.q))
 						return CELL_EBUSY;
 
 					if (retro_atomic_load_acquire_int(&s_in_queue[place(id)]))

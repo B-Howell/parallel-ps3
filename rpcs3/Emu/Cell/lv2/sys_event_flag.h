@@ -1,7 +1,7 @@
 #pragma once
 
 #include "sys_sync.h"
-#include "Emu/CPU/turn_calls.h"
+#include "lv2_flagq.h"
 
 #include "Emu/Memory/vm_ptr.h"
 
@@ -32,6 +32,8 @@ struct sys_event_flag_attribute_t
 	};
 };
 
+class ppu_thread;
+
 struct lv2_event_flag final : lv2_obj
 {
 	static const u32 id_base = 0x98000000;
@@ -41,98 +43,33 @@ struct lv2_event_flag final : lv2_obj
 	const s32 type;
 	const u64 name;
 
-	// The waiters are changed in turn (turn_calls.h): no lock. The pattern
-	// is a word of its own, taken with compare-and-swap
-	turn_calls_cpp turns;
-	retro_atomic_64_t pattern;
-	ppu_thread* sq{};
+	// The bits and the waiters, with no lock (lv2_flagq.c); each waiter's
+	// thread in its slot, for a set to wake
+	lv2_flagq_t q;
+	retro_atomic_ptr_t thread[LV2_FLAGQ_SLOTS]{};
 
 	lv2_event_flag(u32 protocol, u64 key, s32 type, u64 name, u64 pattern) noexcept
 		: protocol{static_cast<u8>(protocol)}
 		, key(key)
 		, type(type)
 		, name(name)
-		, pattern(static_cast<s64>(pattern))
 	{
+		lv2_flagq_init(&q, pattern);
 	}
 
 	lv2_event_flag(utils::serial& ar);
 	static std::function<void(void*)> load(utils::serial& ar);
 	void save(utils::serial& ar);
 
+	// A PPU thread's slot: its ID's index
+	static u32 slot_of(const ppu_thread& ppu);
+
 	// Check mode arg
 	static bool check_mode(u32 mode)
 	{
-		switch (mode & 0xf)
-		{
-		case SYS_EVENT_FLAG_WAIT_AND: break;
-		case SYS_EVENT_FLAG_WAIT_OR: break;
-		default: return false;
-		}
-
-		switch (mode & ~0xf)
-		{
-		case 0: break;
-		case SYS_EVENT_FLAG_WAIT_CLEAR: break;
-		case SYS_EVENT_FLAG_WAIT_CLEAR_ALL: break;
-		default: return false;
-		}
-
-		return true;
-	}
-
-	// check_pattern on the flag's word, with one compare-and-swap
-	static bool check_pattern(retro_atomic_64_t& word, u64 bitptn, u64 mode, u64* result)
-	{
-		for (;;)
-		{
-			const s64 seen = retro_atomic_load_acquire_64(&word);
-			u64 pattern = static_cast<u64>(seen);
-
-			if (!check_pattern(pattern, bitptn, mode, result))
-			{
-				return false;
-			}
-
-			if (pattern == static_cast<u64>(seen) || retro_atomic_cas_64(&word, seen, static_cast<s64>(pattern)))
-			{
-				return true;
-			}
-		}
-	}
-
-	// Check and clear pattern (must be atomic op)
-	static bool check_pattern(u64& pattern, u64 bitptn, u64 mode, u64* result)
-	{
-		// Write pattern
-		if (result)
-		{
-			*result = pattern;
-		}
-
-		// Check pattern
-		if (((mode & 0xf) == SYS_EVENT_FLAG_WAIT_AND && (pattern & bitptn) != bitptn) ||
-			((mode & 0xf) == SYS_EVENT_FLAG_WAIT_OR && (pattern & bitptn) == 0))
-		{
-			return false;
-		}
-
-		// Clear pattern if necessary
-		if ((mode & ~0xf) == SYS_EVENT_FLAG_WAIT_CLEAR)
-		{
-			pattern &= ~bitptn;
-		}
-		else if ((mode & ~0xf) == SYS_EVENT_FLAG_WAIT_CLEAR_ALL)
-		{
-			pattern = 0;
-		}
-
-		return true;
+		return lv2_flagq_mode_ok(mode) != 0;
 	}
 };
-
-// Aux
-class ppu_thread;
 
 // Syscalls
 

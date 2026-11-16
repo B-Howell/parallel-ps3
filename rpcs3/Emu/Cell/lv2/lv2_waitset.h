@@ -57,6 +57,12 @@ int lv2_waitset_join(lv2_waitset_t *ws, unsigned slot);
  * already - it was woken, and is to be given what it was woken for */
 int lv2_waitset_leave(lv2_waitset_t *ws, unsigned slot);
 
+/* A waker that claimed @slot and found it had nothing for it after all
+ * puts it back, with the ticket it joined with: its place in the order
+ * kept. A sequentially consistent fence follows, as for a join. 0 when
+ * the slot is out of range or its bit is set already */
+int lv2_waitset_rejoin(lv2_waitset_t *ws, unsigned slot);
+
 /* The best waiter claimed for waking: its slot, or -1 when none waits.
  * @rank NULL: in the order they joined */
 int lv2_waitset_claim(lv2_waitset_t *ws, lv2_waitset_rank_t rank, void *ctx);

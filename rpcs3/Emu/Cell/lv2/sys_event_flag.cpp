@@ -16,8 +16,67 @@ lv2_event_flag::lv2_event_flag(utils::serial& ar)
 	, type(ar)
 	, name(ar)
 {
-	retro_atomic_store_release_64(&pattern, ar.pop<s64>());
+	lv2_flagq_init(&q, ar.pop<u64>());
 }
+
+static_assert(ppu_thread::id_count <= LV2_FLAGQ_SLOTS, "a PPU thread's slot among an event flag's waiters is its ID's index");
+
+u32 lv2_event_flag::slot_of(const ppu_thread& ppu)
+{
+	using traits = id_manager::id_traits<named_thread<ppu_thread>>;
+	return id_manager::get_index(ppu.id, traits::base, traits::step, traits::count, traits::invl_range);
+}
+
+// A waiter's rank for a priority flag: its thread's priority
+static int event_flag_rank(void* ctx, unsigned slot)
+{
+	auto& flag = *static_cast<lv2_event_flag*>(ctx);
+	const auto* ppu = static_cast<ppu_thread*>(retro_atomic_load_acquire_ptr(&flag.thread[slot]));
+	return ppu ? ppu->prio.load().prio : 0;
+}
+
+// A waiter that is to be saved again (a save state being made) is not
+// woken now: the set or cancel is done again after
+static bool event_flag_resaving(lv2_event_flag& flag)
+{
+	for (u32 slot = 0; slot < LV2_FLAGQ_SLOTS; slot++)
+	{
+		if (lv2_waitset_has(&flag.q.ws, slot))
+		{
+			const auto* cpu = static_cast<ppu_thread*>(retro_atomic_load_acquire_ptr(&flag.thread[slot]));
+
+			if (cpu && cpu->state & cpu_flag::again)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+// Those given their result are woken; waking a thread is for any thread to do
+static void event_flag_wake(lv2_event_flag& flag, const retro_u128_t& woken)
+{
+	bool any = false;
+
+	for (u32 slot = 0; slot < LV2_FLAGQ_SLOTS; slot++)
+	{
+		const bool chosen = slot < 64 ? ((woken.lo >> slot) & 1) : ((woken.hi >> (slot - 64)) & 1);
+
+		if (chosen)
+		{
+			flag.append(ensure(static_cast<ppu_thread*>(retro_atomic_load_acquire_ptr(&flag.thread[slot]))));
+			any = true;
+		}
+	}
+
+	if (any)
+	{
+		lv2_obj::awake_all();
+	}
+}
+
 
 // Always set result
 struct sys_event_store_result
@@ -42,7 +101,7 @@ std::function<void(void*)> lv2_event_flag::load(utils::serial& ar)
 
 void lv2_event_flag::save(utils::serial& ar)
 {
-	ar(protocol, key, type, name, static_cast<u64>(retro_atomic_load_acquire_64(&pattern)));
+	ar(protocol, key, type, name, lv2_flagq_pattern(&q));
 }
 
 error_code sys_event_flag_create(ppu_thread& ppu, vm::ptr<u32> id, vm::ptr<sys_event_flag_attribute_t> attr, u64 init)
@@ -103,8 +162,9 @@ error_code sys_event_flag_destroy(ppu_thread& ppu, u32 id)
 	const auto flag = idm::withdraw<lv2_obj, lv2_event_flag>(id, [&](lv2_event_flag& flag) -> CellError
 	{
 		// Read while threads that found the flag with no lock over the IDs
-		// may be queueing themselves (see sys_event_flag_wait)
-		if (atomic_storage<ppu_thread*>::load(flag.sq))
+		// may be joining its waiters (see sys_event_flag_wait), and sets
+		// may have one claimed
+		if (lv2_flagq_busy(&flag.q))
 		{
 			return CELL_EBUSY;
 		}
@@ -152,7 +212,7 @@ error_code sys_event_flag_wait(ppu_thread& ppu, u32 id, u64 bitptn, u32 mode, vm
 	// as if it came before a destroy that ran meanwhile.
 	if (const auto pinned = idm::pin<lv2_obj, lv2_event_flag>(id))
 	{
-		if (lv2_event_flag::check_pattern(pinned->pattern, bitptn, mode, &ppu.gpr[6]))
+		if (lv2_flagq_try(&pinned->q, bitptn, mode, &ppu.gpr[6]))
 		{
 			// TODO: is it possible to return EPERM in this case?
 			store.val = ppu.gpr[6];
@@ -165,115 +225,94 @@ error_code sys_event_flag_wait(ppu_thread& ppu, u32 id, u64 bitptn, u32 mode, vm
 	}
 
 	// The thread may sleep on it, so it keeps a reference
-	struct
-	{
-		stx::shared_ptr<lv2_event_flag> ptr;
-		CellError ret{};
-
-		explicit operator bool() const { return !!ptr; }
-		lv2_event_flag* operator->() const { return ptr.get(); }
-	}
-	flag{idm::hold<lv2_obj, lv2_event_flag>(id)};
-
-	if (flag)
-	{
-		flag.ret = [&, notify = lv2_obj::notify_all_t()](lv2_event_flag& flag) -> CellError
-		{
-			if (lv2_event_flag::check_pattern(flag.pattern, bitptn, mode, &ppu.gpr[6]))
-			{
-				return {};
-			}
-
-			lv2_obj::prepare_for_sleep(ppu);
-
-			// The thread is a waiter once it is on the queue, and may be
-			// woken before it has gone to sleep: that sleep is then cancelled
-			// (lv2_obj::sleep gives false), as sys_semaphore has it
-			ppu.cancel_sleep = 1;
-
-			// The queue changes in the flag's turn; going to sleep is this
-			// thread's own, after it
-			const CellError entered = turn_call(&flag.turns, [&]() -> CellError
-			{
-				if (lv2_event_flag::check_pattern(flag.pattern, bitptn, mode, &ppu.gpr[6]))
-				{
-					return {};
-				}
-
-				if (flag.type == SYS_SYNC_WAITER_SINGLE && flag.sq)
-				{
-					return CELL_EPERM;
-				}
-
-				// The lock over all IDs kept a destroy from coming between the
-				// flag being found and the thread waiting on it. This keeps
-				// it: sys_event_flag_destroy marks the ID before it looks for
-				// waiters, and the thread asks whether the ID still names the
-				// flag (waiting for a destroy that is deciding) after it has
-				// queued itself. Either the destroy saw the waiter and failed,
-				// or the thread leaves the queue again. Nobody else touches
-				// the queue meanwhile: that is done in the flag's turn, this one.
-				lv2_obj::emplace(flag.sq, &ppu);
-
-				if (!idm::still_named<lv2_obj, lv2_event_flag>(id, &flag)) [[unlikely]]
-				{
-					flag.unqueue(flag.sq, &ppu);
-					return CELL_ESRCH;
-				}
-
-				return CELL_EBUSY;
-			});
-
-			if (entered != CELL_EBUSY)
-			{
-				ppu.cancel_sleep = 0;
-				return entered;
-			}
-
-			if (!flag.sleep(ppu, timeout))
-			{
-				// Woken (set or cancelled) before it went to sleep: gpr[3] and
-				// gpr[6] are what the waker gave it
-				ppu.cancel_sleep = 0;
-				return CELL_EAGAIN;
-			}
-
-			if (ppu.cancel_sleep != 1)
-			{
-				notify.cleanup();
-			}
-
-			ppu.cancel_sleep = 0;
-			return CELL_EBUSY;
-		}(*flag.ptr);
-	}
+	const auto flag = idm::hold<lv2_obj, lv2_event_flag>(id);
 
 	if (!flag)
 	{
 		return CELL_ESRCH;
 	}
 
-	if (flag.ret == CELL_EAGAIN)
+	const u32 slot = lv2_event_flag::slot_of(ppu);
+	CellError error{};
+
+	// 1: has the bits, 0: sleeps, 2: claimed by a set or a cancel before it
+	// slept (its result given, or being given), -1: error
+	const s32 ret = [&, notify = lv2_obj::notify_all_t()]() -> s32
 	{
-		store.val = ppu.gpr[6];
-		return not_an_error(ppu.gpr[3]);
+		lv2_obj::prepare_for_sleep(ppu);
+
+		// A waiter once it joins, and may be woken before it has gone to
+		// sleep: that sleep is then cancelled (lv2_obj::sleep gives false),
+		// as sys_semaphore has it
+		ppu.cancel_sleep = 1;
+		retro_atomic_store_release_ptr(&flag->thread[slot], &ppu);
+
+		u64 pattern = 0;
+		const int got = lv2_flagq_wait(&flag->q, slot, bitptn, mode, flag->type == SYS_SYNC_WAITER_SINGLE, &pattern);
+
+		if (got != LV2_FLAGQ_WAITING)
+		{
+			ppu.cancel_sleep = 0;
+			ppu.gpr[6] = pattern;
+			error = got == LV2_FLAGQ_PERM ? CELL_EPERM : CELL_EINVAL;
+			return got == LV2_FLAGQ_GOT ? 1 : -1;
+		}
+
+		// The lock over all IDs kept a destroy from coming between the flag
+		// being found and the thread waiting on it. This keeps it:
+		// sys_event_flag_destroy marks the ID before it looks for waiters,
+		// and the thread asks whether the ID still names the flag after it
+		// has joined them. Either the destroy saw the waiter and failed, or
+		// the thread leaves again - unless a set or a cancel took it first.
+		if (!idm::still_named<lv2_obj, lv2_event_flag>(id, flag.get())) [[unlikely]]
+		{
+			ppu.cancel_sleep = 0;
+
+			if (lv2_flagq_leave(&flag->q, slot))
+			{
+				error = CELL_ESRCH;
+				return -1;
+			}
+
+			return 2;
+		}
+
+		if (!flag->sleep(ppu, timeout))
+		{
+			// Woken before it went to sleep: given its result
+			ppu.cancel_sleep = 0;
+			return 2;
+		}
+
+		if (ppu.cancel_sleep != 1)
+		{
+			notify.cleanup();
+		}
+
+		ppu.cancel_sleep = 0;
+		return 0;
+	}();
+
+	if (ret < 0)
+	{
+		return error;
 	}
 
-	if (flag.ret)
-	{
-		if (flag.ret != CELL_EBUSY)
-		{
-			return flag.ret;
-		}
-	}
-	else
+	if (ret == 1)
 	{
 		store.val = ppu.gpr[6];
 		return CELL_OK;
 	}
 
-	while (auto state = +ppu.state)
+	while (ret == 0)
 	{
+		const auto state = +ppu.state;
+
+		if (!state)
+		{
+			break;
+		}
+
 		if (state & cpu_flag::signal && ppu.state.test_and_reset(cpu_flag::signal))
 		{
 			break;
@@ -281,36 +320,15 @@ error_code sys_event_flag_wait(ppu_thread& ppu, u32 id, u64 bitptn, u32 mode, vm
 
 		if (is_stopped(state))
 		{
-			const bool queued = turn_call(&flag->turns, [&]
-			{
-				for (auto cpu = +flag->sq; cpu; cpu = cpu->next_cpu)
-				{
-					if (cpu == &ppu)
-					{
-						return true;
-					}
-				}
-
-				return false;
-			});
-
-			if (queued)
+			// Still a waiter: waits again when it is loaded. Else it was
+			// claimed, and has its result
+			if (lv2_waitset_has(&flag->q.ws, slot))
 			{
 				ppu.state += cpu_flag::again;
 				return {};
 			}
 
 			break;
-		}
-
-		for (usz i = 0; cpu_flag::signal - ppu.state && i < 50; i++)
-		{
-			busy_wait(500);
-		}
-
-		if (ppu.state & cpu_flag::signal)
- 		{
-			continue;
 		}
 
 		if (timeout)
@@ -325,18 +343,9 @@ error_code sys_event_flag_wait(ppu_thread& ppu, u32 id, u64 bitptn, u32 mode, vm
 
 				ppu.state += cpu_flag::wait;
 
-				// Off the queue in the flag's turn, or taken off it by a set or a
-				// cancel, whose turn has given the thread its gpr[3] and gpr[6]
-				// by the time this one runs
-				turn_call(&flag->turns, [&]
-				{
-					if (flag->unqueue(flag->sq, &ppu))
-					{
-						ppu.gpr[3] = CELL_ETIMEDOUT;
-						ppu.gpr[6] = static_cast<u64>(retro_atomic_load_acquire_64(&flag->pattern));
-					}
-				});
-
+				// Out of the waiters with its time-out, or given what a set
+				// or a cancel that claimed it first gives it
+				lv2_flagq_timeout(&flag->q, slot);
 				break;
 			}
 		}
@@ -345,6 +354,20 @@ error_code sys_event_flag_wait(ppu_thread& ppu, u32 id, u64 bitptn, u32 mode, vm
 			ppu.state.wait(state);
 		}
 	}
+
+	// Woken with no result (it should not be): out of the waiters, as if
+	// its time ran out
+	if (lv2_flagq_verdict(&flag->q, slot) == LV2_FLAGQ_PENDING)
+	{
+		lv2_flagq_timeout(&flag->q, slot);
+	}
+
+	// The result, given by whoever claimed it; waited for only when a set
+	// or a cancel is giving it as the thread looks (it has its bit cleared
+	// and is writing it)
+	const int verdict = lv2_flagq_await(&flag->q, slot);
+	ppu.gpr[6] = lv2_flagq_result(&flag->q, slot);
+	ppu.gpr[3] = verdict == LV2_FLAGQ_TAKEN ? CELL_OK : verdict == LV2_FLAGQ_CANCELED ? +CELL_ECANCELED : +CELL_ETIMEDOUT;
 
 	store.val = ppu.gpr[6];
 	return not_an_error(ppu.gpr[3]);
@@ -374,7 +397,7 @@ error_code sys_event_flag_trywait(ppu_thread& ppu, u32 id, u64 bitptn, u32 mode,
 		return CELL_ESRCH;
 	}
 
-	if (!lv2_event_flag::check_pattern(flag->pattern, bitptn, mode, &pattern))
+	if (!lv2_flagq_try(&flag->q, bitptn, mode, &pattern))
 	{
 		return not_an_error(CELL_EBUSY);
 	}
@@ -394,7 +417,7 @@ error_code sys_event_flag_set(cpu_thread& cpu, u32 id, u64 bitptn)
 	// no reference counted
 	if (const auto pinned = idm::pin<lv2_obj, lv2_event_flag>(id))
 	{
-		if ((static_cast<u64>(retro_atomic_load_acquire_64(&pinned->pattern)) & bitptn) == bitptn)
+		if ((lv2_flagq_pattern(&pinned->q) & bitptn) == bitptn)
 		{
 			return CELL_OK;
 		}
@@ -413,159 +436,26 @@ error_code sys_event_flag_set(cpu_thread& cpu, u32 id, u64 bitptn)
 		return CELL_ESRCH;
 	}
 
-	if ((static_cast<u64>(retro_atomic_load_acquire_64(&flag->pattern)) & bitptn) == bitptn)
+	if ((lv2_flagq_pattern(&flag->q) & bitptn) == bitptn)
 	{
 		return CELL_OK;
 	}
 
-	lv2_obj::notify_all_t notify;
-
-	// The waiters are looked at, woken and taken off in the flag's turn.
-	// Waking a thread is for any thread to do; only going to sleep is the
-	// thread's own. Gives false for a set to be done again
-	const bool done = turn_call(&flag->turns, [&]
-	{
-		for (auto ppu = +flag->sq; ppu; ppu = ppu->next_cpu)
-		{
-			if (ppu->state & cpu_flag::again)
-			{
-				return false;
-			}
-		}
-
-		u32 count = 0;
-
-		// Process all waiters in single atomic op
-		for (u64 pattern = static_cast<u64>(retro_atomic_load_acquire_64(&flag->pattern)), to_write = pattern, dependant_mask = 0;; to_write = pattern, dependant_mask = 0)
-		{
-			count = 0;
-			to_write |= bitptn;
-			dependant_mask = 0;
-
-			for (auto ppu = +flag->sq; ppu; ppu = ppu->next_cpu)
-			{
-				ppu->gpr[7] = 0;
-			}
-
-			auto first = +flag->sq;
-
-			auto get_next = [&]() -> ppu_thread*
-			{
-				s32 prio = smax;
-				ppu_thread* it{};
-
-				for (auto ppu = first; ppu; ppu = ppu->next_cpu)
-				{
-					if (!ppu->gpr[7] && (flag->protocol != SYS_SYNC_PRIORITY || ppu->prio.load().prio <= prio))
-					{
-						it = ppu;
-						prio = ppu->prio.load().prio;
-					}
-				}
-
-				if (it)
-				{
-					// Mark it so it won't reappear
-					it->gpr[7] = 1;
-				}
-
-				return it;
-			};
-
-			while (auto it = get_next())
-			{
-				auto& ppu = *it;
-
-				const u64 pattern = ppu.gpr[4];
-				const u64 mode = ppu.gpr[5];
-
-				// If it's OR mode, set bits must have waken up the thread therefore no
-				// dependency on old value
-				const u64 dependant_mask_or = ((mode & 0xf) == SYS_EVENT_FLAG_WAIT_OR || (bitptn & pattern & to_write) == pattern ? 0 : pattern);
-
-				if (lv2_event_flag::check_pattern(to_write, pattern, mode, &ppu.gpr[6]))
-				{
-					dependant_mask |= dependant_mask_or;
-					ppu.gpr[3] = CELL_OK;
-					count++;
-
-					if (!to_write)
-					{
-						break;
-					}
-				}
-				else
-				{
-					ppu.gpr[3] = -1;
-				}
-			}
-
-			dependant_mask &= ~bitptn;
-
-			u64 new_val;
-			bool ok;
-
-			for (;;)
-			{
-				new_val = static_cast<u64>(retro_atomic_load_acquire_64(&flag->pattern));
-				ok = !((new_val ^ pattern) & dependant_mask);
-
-				if (!ok)
-				{
-					break;
-				}
-
-				u64 x = new_val | bitptn;
-
-				// Clear the bit-wise difference
-				x &= ~((pattern | bitptn) & ~to_write);
-
-				if (retro_atomic_cas_64(&flag->pattern, static_cast<s64>(new_val), static_cast<s64>(x)))
-				{
-					break;
-				}
-			}
-
-			if (ok)
-			{
-				break;
-			}
-
-			pattern = new_val;
-		}
-
-		if (!count)
-		{
-			return true;
-		}
-
-		// Remove waiters
-		for (auto next_cpu = &flag->sq; *next_cpu;)
-		{
-			auto& ppu = **next_cpu;
-
-			if (ppu.gpr[3] == CELL_OK)
-			{
-				atomic_storage<ppu_thread*>::release(*next_cpu, ppu.next_cpu);
-				ppu.next_cpu = nullptr;
-				flag->append(&ppu);
-				continue;
-			}
-
-			next_cpu = &ppu.next_cpu;
-		};
-
-		lv2_obj::awake_all();
-		return true;
-	});
-
-	if (!done)
+	if (event_flag_resaving(*flag))
 	{
 		cpu.state += cpu_flag::again;
 
 		// Fake error for abort
 		return not_an_error(CELL_EAGAIN);
 	}
+
+	lv2_obj::notify_all_t notify;
+
+	// The bits ORed in, then each waiter they satisfy given what it takes,
+	// best first: no lock, no turn
+	retro_u128_t woken{};
+	lv2_flagq_set(&flag->q, bitptn, flag->protocol == SYS_SYNC_PRIORITY ? event_flag_rank : nullptr, flag.get(), &woken);
+	event_flag_wake(*flag, woken);
 
 	return CELL_OK;
 }
@@ -578,7 +468,7 @@ error_code sys_event_flag_clear(ppu_thread& ppu, u32 id, u64 bitptn)
 
 	if (const auto flag = idm::pin<lv2_obj, lv2_event_flag>(id))
 	{
-		retro_atomic_fetch_and_64(&flag->pattern, static_cast<s64>(bitptn));
+		lv2_flagq_clear(&flag->q, bitptn);
 	}
 	else
 	{
@@ -603,47 +493,21 @@ error_code sys_event_flag_cancel(ppu_thread& ppu, u32 id, vm::ptr<u32> num)
 		return CELL_ESRCH;
 	}
 
+	if (event_flag_resaving(*flag))
+	{
+		ppu.state += cpu_flag::again;
+		return {};
+	}
+
 	u32 value = 0;
 	{
 		lv2_obj::notify_all_t notify;
 
-		// In the flag's turn, as a set; false for a cancel to be done again
-		const bool done = turn_call(&flag->turns, [&]
-		{
-			for (auto cpu = +flag->sq; cpu; cpu = cpu->next_cpu)
-			{
-				if (cpu->state & cpu_flag::again)
-				{
-					return false;
-				}
-			}
-
-			// Get current pattern
-			const u64 pattern = static_cast<u64>(retro_atomic_load_acquire_64(&flag->pattern));
-
-			// Signal all threads to return CELL_ECANCELED (protocol does not matter)
-			while (auto ppu = flag->schedule<ppu_thread>(flag->sq, SYS_SYNC_FIFO))
-			{
-				ppu->gpr[3] = CELL_ECANCELED;
-				ppu->gpr[6] = pattern;
-
-				value++;
-				flag->append(ppu);
-			}
-
-			if (value)
-			{
-				lv2_obj::awake_all();
-			}
-
-			return true;
-		});
-
-		if (!done)
-		{
-			ppu.state += cpu_flag::again;
-			return {};
-		}
+		// Every waiter cancelled with the pattern as it is (the protocol
+		// does not matter), in one change
+		retro_u128_t woken{};
+		value = lv2_flagq_cancel(&flag->q, &woken);
+		event_flag_wake(*flag, woken);
 	}
 
 	static_cast<void>(ppu.test_stopped());
@@ -662,7 +526,7 @@ error_code sys_event_flag_get(ppu_thread& ppu, u32 id, vm::ptr<u64> flags)
 
 	if (const auto flag = idm::pin<lv2_obj, lv2_event_flag>(id))
 	{
-		pattern = static_cast<u64>(retro_atomic_load_acquire_64(&flag->pattern));
+		pattern = lv2_flagq_pattern(&flag->q);
 	}
 	else
 	{

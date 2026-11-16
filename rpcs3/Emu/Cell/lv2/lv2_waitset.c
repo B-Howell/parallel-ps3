@@ -63,6 +63,24 @@ int lv2_waitset_join(lv2_waitset_t *ws, unsigned slot)
    return 1;
 }
 
+int lv2_waitset_rejoin(lv2_waitset_t *ws, unsigned slot)
+{
+   if (slot >= LV2_WAITSET_SLOTS)
+      return 0;
+
+   for (;;)
+   {
+      const retro_u128_t v = retro_atomic_load_acquire_128(&ws->waiting);
+      if (ws_bit(v, slot))
+         return 0;
+      if (retro_atomic_cas_128(&ws->waiting, v, ws_with(v, slot, 1)))
+         break;
+   }
+
+   retro_atomic_thread_fence_seq_cst();
+   return 1;
+}
+
 int lv2_waitset_leave(lv2_waitset_t *ws, unsigned slot)
 {
    if (slot >= LV2_WAITSET_SLOTS)
