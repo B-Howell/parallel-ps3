@@ -3,7 +3,8 @@
 #include "util/atomic.hpp"
 
 #include <retro_atomic.h>
-#include "Emu/CPU/turn_calls.h"
+#include "Utilities/lf_post.h"
+#include <queues/retro_retire.h>
 #include "util/shared_ptr.hpp"
 #include "Emu/Cell/timers.hpp"
 
@@ -132,13 +133,26 @@ class lv2_config
 {
 	retro_atomic_int_t m_state{};
 
-	// LV2 Config mutex
-	// The events change in turn (turn_calls.h): no lock. An event is never
-	// let go of in the turn - its destructor takes it out of the map in turn
-	turn_calls_cpp m_turns;
+	using events_t = std::unordered_map<u32, shared_ptr<lv2_config_service_event>>;
 
-	// Map of LV2 Service Events
-	std::unordered_map<u32, shared_ptr<lv2_config_service_event>> events;
+	// The service events, by ID: added and taken out by posted changes
+	// (lf_post.h) that one thread at a time applies to this map, its alone;
+	// after each batch it publishes a copy, which find_event reads
+	// (retro_retire.h). No lock, and no thread waits for another. An event
+	// let go of while applying - its destructor takes it out of the map -
+	// posts that, and the applier applies it before it lets go
+	events_t events;
+
+	struct event_change;
+	struct events_copy;
+
+	lf_post_t m_changes{};
+	retro_atomic_ptr_t m_published{};
+	retro_retire_t m_readers{};
+
+	void post(event_change* c);
+	static void apply(void* ctx, mpsc_stack_node_t* oldest);
+	static void free_copy(mpsc_stack_node_t* node);
 
 public:
 	void initialize();
@@ -147,23 +161,11 @@ public:
 	void add_service_event(shared_ptr<lv2_config_service_event> event);
 	void remove_service_event(u32 id);
 
-	shared_ptr<lv2_config_service_event> find_event(u32 id)
-	{
-		return turn_call(&m_turns, [&]() -> shared_ptr<lv2_config_service_event>
-		{
-			const auto it = events.find(id);
+	shared_ptr<lv2_config_service_event> find_event(u32 id);
 
-			if (it == events.cend())
-				return null_ptr;
-
-			if (it->second)
-			{
-				return it->second;
-			}
-
-			return null_ptr;
-		});
-	}
+	lv2_config() noexcept = default;
+	lv2_config(const lv2_config&) = delete;
+	lv2_config& operator=(const lv2_config&) = delete;
 
 	~lv2_config() noexcept;
 };
@@ -302,9 +304,15 @@ private:
 
 	// The service listener owns the service events - service events will not be freed as long as their corresponding listener exists
 	// This has been confirmed to be the case in realhw
-	// The listener's events change in turn (turn_calls.h): no lock
-	turn_calls_cpp m_service_turns;
+	// The listener's events are made, sent and kept by posted changes
+	// (lf_post.h), one thread at a time: they are the applier's. Whether it
+	// has any, for the others: one word
 	std::vector<shared_ptr<lv2_config_service_event>> service_events;
+	retro_atomic_int_t m_has_events{};
+
+	struct notify_change;
+	lf_post_t m_notifies{};
+	static void apply_notifies(void* ctx, mpsc_stack_node_t* oldest);
 	shared_ptr<lv2_config_handle> handle;
 
 public:
@@ -322,6 +330,8 @@ public:
 		, type(_type)
 		, data(&_data[0], &_data[size])
 	{}
+
+	~lv2_config_service_listener() noexcept;
 
 	// Factory
 	template <typename... Args>

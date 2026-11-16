@@ -758,7 +758,7 @@ HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellIme
 LOCK_GUARD_MAX := 303
 # turn_call (turn_calls.h) is a lock without a lock object - a queued caller
 # still waits - and is going too: the count may only fall
-TURN_CALL_MAX := 128
+TURN_CALL_MAX := 124
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -980,8 +980,8 @@ check: all
 	@if ls ../../Emu/RSX/Overlays/BigPicture ../../Emu/game_enumeration.h ../../Loader/iso_cache.cpp 2>/dev/null || grep -rniE "big_picture|BigPicture" --include=*.cpp --include=*.h ../../Emu ../*.cpp ../*.h; then echo "big picture mode is back - the core has no front end of its own"; exit 1; else echo "no big picture mode"; fi
 	@# Always fullscreen: no fullscreen toggle, window events or window-system swapchain in the core
 	@if grep -rnE "toggle_fullscreen|swapchain_WSI|wm_event|exclusive_fullscreen|start_fullscreen" --include=*.cpp --include=*.h --include=*.hpp ../../Emu ../*.cpp ../*.h; then echo "a fullscreen/windowed distinction is back - the frontend presents, the core is always fullscreen"; exit 1; else echo "no fullscreen/windowed distinction"; fi
-	@# sys_config: the service events change in turn
-	@if grep -nE "m_mutex|mutex_service_events|lock_guard|reader_lock" ../../Emu/Cell/lv2/sys_config.cpp ../../Emu/Cell/lv2/sys_config.h; then echo "sys_config: a lock is back - the events change in turn"; exit 1; else echo "sys_config: no lock"; fi
+	@# sys_config: the service events and each listener's are changed by posted changes, one thread at a time (lf_post.h); find_event reads a published copy
+	@if grep -nE "m_mutex|mutex_service_events|lock_guard|reader_lock|turn_call|turn_calls" ../../Emu/Cell/lv2/sys_config.cpp ../../Emu/Cell/lv2/sys_config.h; then echo "sys_config: a lock or a turn is back - the events and the listeners' events are changed by posted changes (lf_post)"; exit 1; else echo "sys_config: changes posted, no lock, no turn"; fi
 	@# The performance meter is gone: no timing statistics kept or logged, no clock read for them
 	@if ls ../../Emu/perf_meter.cpp ../../Emu/perf_meter.hpp 2>/dev/null || grep -rnE "perf_meter|perf_stat_base|perf_report" --include=*.cpp --include=*.h --include=*.hpp ../../Emu ../../../Makefile.common; then echo "perf meter: it is back - the core keeps no timing statistics and logs none (AGENTS.md: no runtime logging)"; exit 1; else echo "perf meter: gone, no clock read for it on the hot paths"; fi
 	@# LLVM's SHA-1, SHA-256 and old atomics are gone: libretro-common's lrc_hash and retro_atomic stand in for them

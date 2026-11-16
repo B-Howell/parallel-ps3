@@ -99,25 +99,90 @@ void lv2_config::initialize()
 	lv2_config_service::create(SYS_CONFIG_SERVICE_PADMANAGER2, 0, 1, 0, hid_info, 0x1a)->notify();
 }
 
+// One change to the events: an event added, or the ID of one taken out
+struct lv2_config::event_change : mpsc_stack_node_t
+{
+	shared_ptr<lv2_config_service_event> event;
+	u32 id = 0;
+};
+
+// The events as find_event sees them: made by the applier, never changed
+struct lv2_config::events_copy : mpsc_stack_node_t
+{
+	events_t events;
+};
+
+void lv2_config::free_copy(mpsc_stack_node_t* node)
+{
+	delete static_cast<events_copy*>(node);
+}
+
+void lv2_config::post(event_change* c)
+{
+	lf_post(&m_changes, c, apply, this);
+}
+
+void lv2_config::apply(void* ctx, mpsc_stack_node_t* oldest)
+{
+	auto& self = *static_cast<lv2_config*>(ctx);
+
+	while (oldest)
+	{
+		mpsc_stack_node_t* next = oldest->next;
+		auto* c = static_cast<event_change*>(oldest);
+
+		if (c->event)
+		{
+			const u32 id = c->event->id;
+			self.events.emplace(id, std::move(c->event));
+		}
+		else if (auto it = self.events.find(c->id); it != self.events.end())
+		{
+			// Let go of with the change, below: its destructor may post again,
+			// which this thread applies before it lets go
+			c->event = std::move(it->second);
+			self.events.erase(it);
+		}
+
+		delete c;
+		oldest = next;
+	}
+
+	auto* made = new events_copy();
+	made->events = self.events;
+	auto* old = static_cast<events_copy*>(retro_atomic_exchange_ptr(&self.m_published, made));
+	retro_retire(&self.m_readers, old, free_copy);
+}
+
 void lv2_config::add_service_event(shared_ptr<lv2_config_service_event> event)
 {
-	turn_call(&m_turns, [&] { events.emplace(event->id, std::move(event)); });
+	auto* c = new event_change();
+	c->event = std::move(event);
+	post(c);
 }
 
 void lv2_config::remove_service_event(u32 id)
 {
-	shared_ptr<lv2_config_service_event> ptr;
+	auto* c = new event_change();
+	c->id = id;
+	post(c);
+}
 
-	// Moved out in the turn, let go of after it: the event's destructor
-	// comes back here
-	turn_call(&m_turns, [&]
+shared_ptr<lv2_config_service_event> lv2_config::find_event(u32 id)
+{
+	shared_ptr<lv2_config_service_event> found;
+
+	retro_retire_enter(&m_readers);
+	if (const auto* copy = static_cast<const events_copy*>(retro_atomic_load_acquire_ptr(&m_published)))
 	{
-		if (auto it = events.find(id); it != events.end())
+		if (const auto it = copy->events.find(id); it != copy->events.cend())
 		{
-			ptr = std::move(it->second);
-			events.erase(it);
+			found = it->second;
 		}
-	});
+	}
+	retro_retire_leave(&m_readers, free_copy);
+
+	return found ? found : null_ptr;
 }
 
 lv2_config_service_event& lv2_config_service_event::operator=(thread_state s) noexcept
@@ -148,13 +213,38 @@ lv2_config::~lv2_config() noexcept
 			retro_atomic_store_release_int(&event->m_destroyed, 1);
 		}
 	}
+
+	if (auto* copy = static_cast<events_copy*>(retro_atomic_exchange_ptr(&m_published, nullptr)))
+	{
+		for (auto& [key, event] : copy->events)
+		{
+			if (event)
+			{
+				retro_atomic_store_release_int(&event->m_destroyed, 1);
+			}
+		}
+		delete copy;
+	}
+	retro_retire_drain(&m_readers, free_copy);
+
+	for (mpsc_stack_node_t* n = mpsc_stack_drain(&m_changes.posted); n;)
+	{
+		mpsc_stack_node_t* next = n->next;
+		auto* c = static_cast<event_change*>(n);
+		if (c->event)
+		{
+			retro_atomic_store_release_int(&c->event->m_destroyed, 1);
+		}
+		delete c;
+		n = next;
+	}
 }
 
 // LV2 Config Service Listener
 bool lv2_config_service_listener::check_service(const lv2_config_service& service) const
 {
 	// Filter by type
-	if (type == SYS_CONFIG_SERVICE_LISTENER_ONCE && !service_events.empty())
+	if (type == SYS_CONFIG_SERVICE_LISTENER_ONCE && retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&m_has_events)))
 	{
 		return false;
 	}
@@ -176,34 +266,64 @@ bool lv2_config_service_listener::check_service(const lv2_config_service& servic
 	return true;
 }
 
-bool lv2_config_service_listener::notify(const shared_ptr<lv2_config_service>& service)
+// A service to tell the listener of
+struct lv2_config_service_listener::notify_change : mpsc_stack_node_t
 {
-	// The event made, registered and sent in the listener's turn, which takes
-	// the config's inside it; a failed one let go of after the turn
-	shared_ptr<lv2_config_service_event> failed;
+	shared_ptr<lv2_config_service> service;
+};
 
-	const bool sent = turn_call(&m_service_turns, [&]
+// One thread at a time: the listener's events are its
+void lv2_config_service_listener::apply_notifies(void* ctx, mpsc_stack_node_t* oldest)
+{
+	auto& self = *static_cast<lv2_config_service_listener*>(ctx);
+
+	while (oldest)
 	{
-		if (!check_service(*service))
-			return false;
+		mpsc_stack_node_t* next = oldest->next;
+		auto* c = static_cast<notify_change*>(oldest);
 
-		// Create service event and notify queue!
-		const auto event = lv2_config_service_event::create(handle, service, *this);
-		service_events.emplace_back(event);
-
-		if (!event->notify())
+		if (self.check_service(*c->service))
 		{
-			// If we fail to deliver the event to the queue just clean the event up or it'll hold the listener alive forever
-			g_fxo->get<lv2_config>().remove_service_event(event->id);
-			failed = std::move(service_events.back());
-			service_events.pop_back();
-			return false;
+			// Create service event and notify queue!
+			const auto event = lv2_config_service_event::create(self.handle, c->service, self);
+			self.service_events.emplace_back(event);
+			retro_atomic_store_release_int(&self.m_has_events, 1);
+
+			if (!event->notify())
+			{
+				// If we fail to deliver the event to the queue just clean the event up or it'll hold the listener alive forever
+				g_fxo->get<lv2_config>().remove_service_event(event->id);
+				self.service_events.pop_back();
+				retro_atomic_store_release_int(&self.m_has_events, self.service_events.empty() ? 0 : 1);
+			}
 		}
 
-		return true;
-	});
+		delete c;
+		oldest = next;
+	}
+}
 
-	return sent;
+// The event is made and sent by the thread applying the listener's changes:
+// this one, or another already at it, which does it before it lets go
+bool lv2_config_service_listener::notify(const shared_ptr<lv2_config_service>& service)
+{
+	if (!check_service(*service))
+		return false;
+
+	auto* c = new notify_change();
+	c->service = service;
+	lf_post(&m_notifies, c, apply_notifies, this);
+	return true;
+}
+
+lv2_config_service_listener::~lv2_config_service_listener() noexcept
+{
+	for (mpsc_stack_node_t* n = mpsc_stack_drain(&m_notifies.posted); n;)
+	{
+		mpsc_stack_node_t* next = n->next;
+		delete static_cast<notify_change*>(n);
+		n = next;
+	}
 }
 
 void lv2_config_service_listener::notify_all()
