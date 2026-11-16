@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_DYLIB -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_turn_calls test_turn_calls_tsan test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_vk_loader
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_turn_calls test_turn_calls_tsan test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_vk_loader
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -635,6 +635,12 @@ test_vk_interp_uploads: $(VK_INTERP_UPLOADS_DEPS)
 	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -c -o obj/vk_interpreter_uploads.o ../../Emu/RSX/VK/vk_interpreter_uploads.c
 	$(CC) $(CFLAGS) $(SANITIZE) -o $@ obj/test_vk_interp_uploads.o obj/vk_interpreter_uploads.o $(LDFLAGS) $(LDLIBS)
 
+# Changes posted from any thread, applied by one at a time (Utilities/lf_post.h)
+test_lf_post: test_lf_post.c test_common.h ../../../Utilities/lf_post.h
+	@mkdir -p obj
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -DLF_POST_TEST_WINDOW=sched_yield -include sched.h -c -o obj/test_lf_post.o test_lf_post.c
+	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ obj/test_lf_post.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
+
 # The NP libraries' memory pool, lock-free: alone and under ThreadSanitizer
 NP_POOL_DEPS := test_np_pool.c test_common.h ../../Emu/NP/np_pool.c ../../Emu/NP/np_pool.h
 
@@ -752,7 +758,7 @@ HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellIme
 LOCK_GUARD_MAX := 303
 # turn_call (turn_calls.h) is a lock without a lock object - a queued caller
 # still waits - and is going too: the count may only fall
-TURN_CALL_MAX := 145
+TURN_CALL_MAX := 140
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -834,6 +840,7 @@ check: all
 	./test_vk_heap_tsan
 	./test_np_pool
 	./test_np_pool_tsan
+	./test_lf_post
 	./test_vk_loader
 	./test_turn_calls
 	./test_turn_calls_tsan
@@ -963,8 +970,8 @@ check: all
 	@if grep -nE "m_mutex|lock_guard|turn_call|turn_calls" ../../Emu/Io/emulated_pad_config.h; then echo "emulated pads: a lock or a turn is back - one thread loads or saves at a time (m_writing), the polls read the table"; exit 1; else echo "emulated pads: no lock, no turn"; fi
 	@# NP DNS hook: a fixed table of watched sockets, each with its replies on a lock-free stack; no lock, no turn
 	@if grep -nE "lock_guard|shared_mutex|turn_call|turn_calls" ../../Emu/NP/np_dnshook.cpp ../../Emu/NP/np_dnshook.h; then echo "dnshook: a lock or a turn is back - a fixed table of sockets, replies on a lock-free stack each"; exit 1; else echo "dnshook: no lock, no turn"; fi
-	@# NP GUI room cache changes in turn
-	@if grep -nE "lock_guard|shared_mutex" ../../Emu/NP/np_gui_cache.cpp ../../Emu/NP/np_gui_cache.h; then echo "np gui cache: a lock is back"; exit 1; else echo "np gui cache: no lock"; fi
+	@# The matching GUI's room cache: changes posted and applied by one thread at a time (lf_post.h), readers read the snapshot it publishes
+	@if grep -nE "lock_guard|shared_mutex|turn_call|turn_calls" ../../Emu/NP/np_gui_cache.cpp ../../Emu/NP/np_gui_cache.h; then echo "np gui cache: a lock or a turn is back - changes are posted (lf_post), readers read a snapshot"; exit 1; else echo "np gui cache: changes posted, snapshots read, no lock, no turn"; fi
 	@# The NP libraries' memory pool: lock-free bitmaps of granules (np_pool.c), no turn
 	@if grep -nE "lock_guard|shared_mutex|turn_call|turn_calls|std::map<u32, u32> m_allocs" ../../Emu/NP/np_allocator.h; then echo "np allocator: a lock, a turn or the map of allocations is back - the pool is np_pool.c's bitmaps"; exit 1; else echo "np allocator: lock-free bitmaps (np_pool.c), no turn"; fi
 	@# The disc locations are kept in memory for the session: no games.yml, no game folder scan
