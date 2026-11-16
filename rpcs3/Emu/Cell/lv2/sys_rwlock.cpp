@@ -15,7 +15,27 @@ lv2_rwlock::lv2_rwlock(utils::serial& ar)
 	, key(ar)
 	, name(ar)
 {
-	retro_atomic_store_release_64(&owner, ar.pop<s64>());
+	// As LV2 keeps it: the writer's ID << 1, or -2 for each reader; bit 0
+	// for waiters, who wait again when they are loaded
+	const s64 owner = ar.pop<s64>();
+
+	if (owner > 0)
+	{
+		lv2_rwq_init(&q, static_cast<int>(slot_of_id(static_cast<u32>(owner >> 1))), 0);
+		retro_atomic_store_release_int(&writer_id, static_cast<int>(owner >> 1));
+	}
+	else
+	{
+		lv2_rwq_init(&q, -1, static_cast<unsigned>(-(owner & -2) >> 1));
+	}
+}
+
+static_assert(ppu_thread::id_count <= LV2_RWQ_SLOTS, "a PPU thread's slot in an rwlock's word is its ID's index");
+
+u32 lv2_rwlock::slot_of_id(u32 id)
+{
+	using traits = id_manager::id_traits<named_thread<ppu_thread>>;
+	return id_manager::get_index(id, traits::base, traits::step, traits::count, traits::invl_range);
 }
 
 std::function<void(void*)> lv2_rwlock::load(utils::serial& ar)
@@ -26,7 +46,89 @@ std::function<void(void*)> lv2_rwlock::load(utils::serial& ar)
 void lv2_rwlock::save(utils::serial& ar)
 {
 	USING_SERIALIZATION_VERSION(lv2_sync);
-	ar(protocol, key, name, static_cast<s64>(retro_atomic_load_acquire_64(&owner)));
+
+	const s64 waiting = lv2_rwq_any_waiter(&q) ? 1 : 0;
+	s64 owner = 0;
+
+	if (lv2_rwq_writer(&q) >= 0)
+	{
+		owner = s64{retro_atomic_load_acquire_int(&writer_id)} << 1 | waiting;
+	}
+	else if (const u32 readers = lv2_rwq_readers(&q))
+	{
+		owner = -2 * s64{readers} | waiting;
+	}
+
+	ar(protocol, key, name, owner);
+}
+
+// A writer waiting's rank on a priority rwlock: its thread's priority
+static int rwlock_rank(void* ctx, unsigned slot)
+{
+	auto& rw = *static_cast<lv2_rwlock*>(ctx);
+	const auto* ppu = static_cast<ppu_thread*>(retro_atomic_load_acquire_ptr(&rw.thread[slot]));
+	return ppu ? ppu->prio.load().prio : 0;
+}
+
+static lv2_rwq_rank_t rwlock_ranking(const lv2_rwlock& rw)
+{
+	return rw.protocol == SYS_SYNC_PRIORITY ? rwlock_rank : nullptr;
+}
+
+// A waiter that is to be saved again (a save state being made) is not
+// given the lock now: the unlock is done again after
+static bool rwlock_resaving(lv2_rwlock& rw)
+{
+	if (!lv2_rwq_any_waiter(&rw.q))
+	{
+		return false;
+	}
+
+	for (u32 slot = 0; slot < LV2_RWQ_SLOTS; slot++)
+	{
+		if (lv2_rwq_waits(&rw.q, slot))
+		{
+			const auto* cpu = static_cast<ppu_thread*>(retro_atomic_load_acquire_ptr(&rw.thread[slot]));
+
+			if (cpu && cpu->state & cpu_flag::again)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+// Those given the lock are woken - a writer's ID kept first; waking a
+// thread is for any thread to do
+static void rwlock_wake(lv2_rwlock& rw, const retro_u128_t& woken)
+{
+	const int writer = lv2_rwq_writer(&rw.q);
+	bool any = false;
+
+	for (u32 slot = 0; slot < LV2_RWQ_SLOTS; slot++)
+	{
+		const bool chosen = slot < 64 ? ((woken.lo >> slot) & 1) : ((woken.hi >> (slot - 64)) & 1);
+
+		if (chosen)
+		{
+			auto* const ppu = ensure(static_cast<ppu_thread*>(retro_atomic_load_acquire_ptr(&rw.thread[slot])));
+
+			if (static_cast<int>(slot) == writer)
+			{
+				retro_atomic_store_release_int(&rw.writer_id, static_cast<int>(ppu->id));
+			}
+
+			rw.append(ppu);
+			any = true;
+		}
+	}
+
+	if (any)
+	{
+		lv2_obj::awake_all();
+	}
 }
 
 error_code sys_rwlock_create(ppu_thread& ppu, vm::ptr<u32> rw_lock_id, vm::ptr<sys_rwlock_attribute_t> attr)
@@ -73,7 +175,7 @@ error_code sys_rwlock_destroy(ppu_thread& ppu, u32 rw_lock_id)
 
 	const auto rwlock = idm::withdraw<lv2_obj, lv2_rwlock>(rw_lock_id, [](lv2_rwlock& rw) -> CellError
 	{
-		if (retro_atomic_load_acquire_64(&rw.owner))
+		if (lv2_rwq_busy(&rw.q))
 		{
 			return CELL_EBUSY;
 		}
@@ -101,64 +203,31 @@ error_code sys_rwlock_rlock(ppu_thread& ppu, u32 rw_lock_id, u64 timeout)
 
 	sys_rwlock.trace("sys_rwlock_rlock(rw_lock_id=0x%x, timeout=0x%llx)", rw_lock_id, timeout);
 
+	const u32 slot = lv2_rwlock::slot_of_id(ppu.id);
+
 	// Found with no lock over the IDs. Taking the lock, or waiting for it, is
 	// what sys_rwlock_destroy asks about, so a destroy waits for this to be
 	// done before it looks (idm::get_entered).
 	const auto rwlock = idm::get_entered<lv2_obj, lv2_rwlock>(rw_lock_id, [&, notify = lv2_obj::notify_all_t()](lv2_rwlock& rwlock)
 	{
-		const s64 val = retro_atomic_load_acquire_64(&rwlock.owner);
-
-		if (val <= 0 && !(val & 1))
+		if (lv2_rwq_tryrlock(&rwlock.q) == LV2_RWQ_OWNED)
 		{
-			if (retro_atomic_cas_64(&rwlock.owner, val, val - 2))
-			{
-				return true;
-			}
+			return true;
 		}
 
 		lv2_obj::prepare_for_sleep(ppu);
 
-		// A waiter once on the queue, and may be given the lock before it has
-		// gone to sleep: that sleep is then cancelled (lv2_obj::sleep gives
+		// A waiter once queued, and may be given the lock before it has gone
+		// to sleep: that sleep is then cancelled (lv2_obj::sleep gives
 		// false), as sys_mutex_lock has it
 		ppu.cancel_sleep = 1;
+		retro_atomic_store_release_ptr(&rwlock.thread[slot], &ppu);
 
-		// Taken or queued in the rwlock's turn; going to sleep is this
-		// thread's own, after it
-		const bool queued = turn_call(&rwlock.turns, [&]
-		{
-			const s64 _old = [&]
-			{
-				for (;;)
-				{
-					const s64 seen = retro_atomic_load_acquire_64(&rwlock.owner);
-					s64 val = seen;
-					if (val <= 0 && !(val & 1))
-					{
-						val -= 2;
-					}
-					else
-					{
-						val |= 1;
-					}
+		// Taken, or queued: one change, with no turn
+		const int got = lv2_rwq_rlock(&rwlock.q, slot);
+		ensure(got != LV2_RWQ_BAD);
 
-					if (retro_atomic_cas_64(&rwlock.owner, seen, val))
-					{
-						return seen;
-					}
-				}
-			}();
-
-			if (_old > 0 || _old & 1)
-			{
-				lv2_obj::emplace(rwlock.rq, &ppu);
-				return true;
-			}
-
-			return false;
-		});
-
-		if (!queued || !rwlock.sleep(ppu, timeout))
+		if (got != LV2_RWQ_QUEUED || !rwlock.sleep(ppu, timeout))
 		{
 			// Taken, or given before it went to sleep
 			ppu.cancel_sleep = 0;
@@ -195,36 +264,13 @@ error_code sys_rwlock_rlock(ppu_thread& ppu, u32 rw_lock_id, u64 timeout)
 
 		if (is_stopped(state))
 		{
-			const bool waiting = turn_call(&rwlock->turns, [&]
-			{
-				for (auto cpu = +rwlock->rq; cpu; cpu = cpu->next_cpu)
-				{
-					if (cpu == &ppu)
-					{
-						return true;
-					}
-				}
-
-				return false;
-			});
-
-			if (waiting)
+			if (lv2_rwq_waits(&rwlock->q, slot))
 			{
 				ppu.state += cpu_flag::again;
 				return {};
 			}
 
 			break;
-		}
-
-		for (usz i = 0; cpu_flag::signal - ppu.state && i < 50; i++)
-		{
-			busy_wait(500);
-		}
-
-		if (ppu.state & cpu_flag::signal)
- 		{
-			continue;
 		}
 
 		if (timeout)
@@ -239,9 +285,9 @@ error_code sys_rwlock_rlock(ppu_thread& ppu, u32 rw_lock_id, u64 timeout)
 
 				ppu.state += cpu_flag::wait;
 
-				// Off the queue in the rwlock's turn, or given the lock by an
-				// unlock, whose turn has woken it by the time this one runs
-				if (turn_call(&rwlock->turns, [&] { return rwlock->unqueue(rwlock->rq, &ppu); }))
+				// Out of the readers waiting in one change, or given the lock
+				// by an unlock that took it first: then it is woken, and has it
+				if (lv2_rwq_rleave(&rwlock->q, slot))
 				{
 					ppu.gpr[3] = CELL_ETIMEDOUT;
 				}
@@ -267,25 +313,7 @@ error_code sys_rwlock_tryrlock(ppu_thread& ppu, u32 rw_lock_id)
 	// As sys_rwlock_rlock: it takes the lock
 	const auto rwlock = idm::get_entered<lv2_obj, lv2_rwlock>(rw_lock_id, [](lv2_rwlock& rwlock)
 	{
-		bool ok = false;
-
-		for (;;)
-		{
-			const s64 val = retro_atomic_load_acquire_64(&rwlock.owner);
-
-			if (!(val <= 0 && !(val & 1)))
-			{
-				break;
-			}
-
-			if (retro_atomic_cas_64(&rwlock.owner, val, val - 2))
-			{
-				ok = true;
-				break;
-			}
-		}
-
-		return ok;
+		return lv2_rwq_tryrlock(&rwlock.q) == LV2_RWQ_OWNED;
 	});
 
 	if (!rwlock)
@@ -307,21 +335,28 @@ error_code sys_rwlock_runlock(ppu_thread& ppu, u32 rw_lock_id)
 
 	sys_rwlock.trace("sys_rwlock_runlock(rw_lock_id=0x%x)", rw_lock_id);
 
-	// Found with no lock over the IDs: giving the lock up takes nothing a
-	// destroy asks about
-	const auto rwlock = idm::get_held<lv2_obj, lv2_rwlock>(rw_lock_id, [](lv2_rwlock& rwlock)
-	{
-		const s64 val = retro_atomic_load_acquire_64(&rwlock.owner);
+	lv2_obj::notify_all_t notify;
 
-		if (val < 0 && !(val & 1))
+	// Found with no lock over the IDs: giving the lock up takes nothing a
+	// destroy asks about. 0 done, 1 not a reader, 2 to be done again
+	const auto rwlock = idm::get_held<lv2_obj, lv2_rwlock>(rw_lock_id, [&](lv2_rwlock& rwlock) -> int
+	{
+		if (rwlock_resaving(rwlock))
 		{
-			if (retro_atomic_cas_64(&rwlock.owner, val, val + 2))
-			{
-				return true;
-			}
+			return 2;
 		}
 
-		return false;
+		// One reader less, and the lock handed to the best writer waiting
+		// by the last: one change
+		retro_u128_t woken{};
+
+		if (lv2_rwq_runlock(&rwlock.q, rwlock_ranking(rwlock), &rwlock, &woken) != 0)
+		{
+			return 1;
+		}
+
+		rwlock_wake(rwlock, woken);
+		return 0;
 	});
 
 	if (!rwlock)
@@ -329,75 +364,15 @@ error_code sys_rwlock_runlock(ppu_thread& ppu, u32 rw_lock_id)
 		return CELL_ESRCH;
 	}
 
-	lv2_obj::notify_all_t notify;
-
-	if (rwlock.ret)
+	if (rwlock.ret == 1)
 	{
-		return CELL_OK;
+		return CELL_EPERM;
 	}
-	else
+
+	if (rwlock.ret == 2)
 	{
-		// What the turn found: 0 done, 1 not a reader, 2 to be done again
-		const int done = turn_call(&rwlock->turns, [&]() -> int
-		{
-			// Remove one reader
-			const s64 _old = [&]
-			{
-				for (;;)
-				{
-					const s64 seen = retro_atomic_load_acquire_64(&rwlock->owner);
-					s64 val = seen;
-					if (val < -1)
-					{
-						val += 2;
-					}
-		
-					if (retro_atomic_cas_64(&rwlock->owner, seen, val))
-					{
-						return seen;
-					}
-				}
-			}();
-
-			if (_old >= 0)
-			{
-				return 1;
-			}
-
-			if (_old == -1)
-			{
-				if (const auto cpu = rwlock->schedule<ppu_thread>(rwlock->wq, rwlock->protocol))
-				{
-					if (static_cast<ppu_thread*>(cpu)->state & cpu_flag::again)
-					{
-						return 2;
-					}
-
-					retro_atomic_store_release_64(&rwlock->owner, static_cast<s64>(cpu->id << 1 | !!rwlock->wq | !!rwlock->rq));
-
-					rwlock->awake(cpu);
-				}
-				else
-				{
-					retro_atomic_store_release_64(&rwlock->owner, 0);
-
-					ensure(!rwlock->rq);
-				}
-			}
-
-			return 0;
-		});
-
-		if (done == 1)
-		{
-			return CELL_EPERM;
-		}
-
-		if (done == 2)
-		{
-			ppu.state += cpu_flag::again;
-			return {};
-		}
+		ppu.state += cpu_flag::again;
+		return {};
 	}
 
 	return CELL_OK;
@@ -409,63 +384,48 @@ error_code sys_rwlock_wlock(ppu_thread& ppu, u32 rw_lock_id, u64 timeout)
 
 	sys_rwlock.trace("sys_rwlock_wlock(rw_lock_id=0x%x, timeout=0x%llx)", rw_lock_id, timeout);
 
-	// As sys_rwlock_rlock
-	const auto rwlock = idm::get_entered<lv2_obj, lv2_rwlock>(rw_lock_id, [&, notify = lv2_obj::notify_all_t()](lv2_rwlock& rwlock) -> s64
-	{
-		const s64 val = retro_atomic_load_acquire_64(&rwlock.owner);
+	const u32 slot = lv2_rwlock::slot_of_id(ppu.id);
 
-		if (val == 0)
+	// As sys_rwlock_rlock. 0 taken (or given), 1 its own, 2 asleep
+	const auto rwlock = idm::get_entered<lv2_obj, lv2_rwlock>(rw_lock_id, [&, notify = lv2_obj::notify_all_t()](lv2_rwlock& rwlock) -> int
+	{
+		retro_atomic_store_release_ptr(&rwlock.thread[slot], &ppu);
+
+		switch (lv2_rwq_trywlock(&rwlock.q, slot))
 		{
-			if (retro_atomic_cas_64(&rwlock.owner, 0, static_cast<s64>(ppu.id << 1)))
-			{
-				return 0;
-			}
-		}
-		else if (val >> 1 == ppu.id)
-		{
-			return val;
+		case LV2_RWQ_OWNED:
+			retro_atomic_store_release_int(&rwlock.writer_id, static_cast<int>(ppu.id));
+			return 0;
+		case LV2_RWQ_MINE:
+			return 1;
+		default:
+			break;
 		}
 
 		lv2_obj::prepare_for_sleep(ppu);
 
-		// As sys_rwlock_rlock: queued in the turn, asleep after it
+		// As sys_rwlock_rlock: queued in one change, asleep after it
 		ppu.cancel_sleep = 1;
 
-		const s64 _old = turn_call(&rwlock.turns, [&]
+		const int got = lv2_rwq_wlock(&rwlock.q, slot);
+		ensure(got != LV2_RWQ_BAD);
+
+		if (got != LV2_RWQ_QUEUED)
 		{
-			const s64 _old = [&]
-			{
-				for (;;)
-				{
-					const s64 seen = retro_atomic_load_acquire_64(&rwlock.owner);
-					s64 val = seen;
-					if (val == 0)
-					{
-						val = ppu.id << 1;
-					}
-					else
-					{
-						val |= 1;
-					}
+			ppu.cancel_sleep = 0;
 
-					if (retro_atomic_cas_64(&rwlock.owner, seen, val))
-					{
-						return seen;
-					}
-				}
-			}();
-
-			if (_old != 0)
+			if (got == LV2_RWQ_MINE)
 			{
-				lv2_obj::emplace(rwlock.wq, &ppu);
+				return 1;
 			}
 
-			return _old;
-		});
+			retro_atomic_store_release_int(&rwlock.writer_id, static_cast<int>(ppu.id));
+			return 0;
+		}
 
-		if (_old == 0 || !rwlock.sleep(ppu, timeout))
+		if (!rwlock.sleep(ppu, timeout))
 		{
-			// Taken, or given before it went to sleep: the writer
+			// Given before it went to sleep: the writer
 			ppu.cancel_sleep = 0;
 			return 0;
 		}
@@ -476,7 +436,7 @@ error_code sys_rwlock_wlock(ppu_thread& ppu, u32 rw_lock_id, u64 timeout)
 		}
 
 		ppu.cancel_sleep = 0;
-		return _old;
+		return 2;
 	});
 
 	if (!rwlock)
@@ -489,7 +449,7 @@ error_code sys_rwlock_wlock(ppu_thread& ppu, u32 rw_lock_id, u64 timeout)
 		return CELL_OK;
 	}
 
-	if (rwlock.ret >> 1 == ppu.id)
+	if (rwlock.ret == 1)
 	{
 		return CELL_EDEADLK;
 	}
@@ -505,36 +465,13 @@ error_code sys_rwlock_wlock(ppu_thread& ppu, u32 rw_lock_id, u64 timeout)
 
 		if (is_stopped(state))
 		{
-			const bool waiting = turn_call(&rwlock->turns, [&]
-			{
-				for (auto cpu = +rwlock->wq; cpu; cpu = cpu->next_cpu)
-				{
-					if (cpu == &ppu)
-					{
-						return true;
-					}
-				}
-
-				return false;
-			});
-
-			if (waiting)
+			if (lv2_rwq_waits(&rwlock->q, slot))
 			{
 				ppu.state += cpu_flag::again;
 				return {};
 			}
 
 			break;
-		}
-
-		for (usz i = 0; cpu_flag::signal - ppu.state && i < 50; i++)
-		{
-			busy_wait(500);
-		}
-
-		if (ppu.state & cpu_flag::signal)
- 		{
-			continue;
 		}
 
 		if (timeout)
@@ -549,57 +486,16 @@ error_code sys_rwlock_wlock(ppu_thread& ppu, u32 rw_lock_id, u64 timeout)
 
 				ppu.state += cpu_flag::wait;
 
-				// Off the queue in the rwlock's turn, the readers it held back
-				// woken with it - or given the lock by an unlock, whose turn has
-				// woken it by the time this one runs
-				const bool timed_out = turn_call(&rwlock->turns, [&]
-				{
-					if (!rwlock->unqueue(rwlock->wq, &ppu))
-					{
-						return false;
-					}
+				// Out of the writers waiting in one change - the readers it
+				// held back let in after - or given the lock by an unlock that
+				// took it first: then it is woken, and has it
+				lv2_obj::notify_all_t notify;
+				retro_u128_t woken{};
 
-					// If the last waiter quit the writer sleep queue, wake blocked readers
-					if (rwlock->rq && !rwlock->wq && retro_atomic_load_acquire_64(&rwlock->owner) < 0)
-					{
-						s64 size = 0;
-
-						// Protocol doesn't matter here since they are all enqueued anyways
-						while (auto cpu = rwlock->schedule<ppu_thread>(rwlock->rq, SYS_SYNC_FIFO))
-						{
-							size++;
-							rwlock->append(cpu);
-						}
-
-						[&]
-						{
-							for (;;)
-							{
-								const s64 seen = retro_atomic_load_acquire_64(&rwlock->owner);
-								s64 val = seen;
-								val -= 2 * size; // Add readers to value
-								val &= -2; // Clear wait bit
-					
-								if (retro_atomic_cas_64(&rwlock->owner, seen, val))
-								{
-									return seen;
-								}
-							}
-						}();
-
-						lv2_obj::awake_all();
-					}
-					else if (!rwlock->rq && !rwlock->wq)
-					{
-						retro_atomic_fetch_and_64(&rwlock->owner, -2);
-					}
-
-					return true;
-				});
-
-				if (timed_out)
+				if (lv2_rwq_wleave(&rwlock->q, slot, rwlock_ranking(*rwlock), &*rwlock, &woken))
 				{
 					ppu.gpr[3] = CELL_ETIMEDOUT;
+					rwlock_wake(*rwlock, woken);
 				}
 
 				break;
@@ -620,20 +516,21 @@ error_code sys_rwlock_trywlock(ppu_thread& ppu, u32 rw_lock_id)
 
 	sys_rwlock.trace("sys_rwlock_trywlock(rw_lock_id=0x%x)", rw_lock_id);
 
+	const u32 slot = lv2_rwlock::slot_of_id(ppu.id);
+
 	// As sys_rwlock_rlock: it takes the lock
 	const auto rwlock = idm::get_entered<lv2_obj, lv2_rwlock>(rw_lock_id, [&](lv2_rwlock& rwlock)
 	{
-		const s64 val = retro_atomic_load_acquire_64(&rwlock.owner);
+		retro_atomic_store_release_ptr(&rwlock.thread[slot], &ppu);
 
-		// Return previous value
-		// The old value: 0 if it was taken
-		for (s64 seen = val;; seen = retro_atomic_load_acquire_64(&rwlock.owner))
+		const int got = lv2_rwq_trywlock(&rwlock.q, slot);
+
+		if (got == LV2_RWQ_OWNED)
 		{
-			if (seen != 0 || retro_atomic_cas_64(&rwlock.owner, 0, static_cast<s64>(ppu.id << 1)))
-			{
-				return seen;
-			}
+			retro_atomic_store_release_int(&rwlock.writer_id, static_cast<int>(ppu.id));
 		}
+
+		return got;
 	});
 
 	if (!rwlock)
@@ -641,13 +538,13 @@ error_code sys_rwlock_trywlock(ppu_thread& ppu, u32 rw_lock_id)
 		return CELL_ESRCH;
 	}
 
-	if (rwlock.ret != 0)
+	if (rwlock.ret == LV2_RWQ_MINE)
 	{
-		if (rwlock.ret >> 1 == ppu.id)
-		{
-			return CELL_EDEADLK;
-		}
+		return CELL_EDEADLK;
+	}
 
+	if (rwlock.ret != LV2_RWQ_OWNED)
+	{
 		return not_an_error(CELL_EBUSY);
 	}
 
@@ -660,20 +557,34 @@ error_code sys_rwlock_wunlock(ppu_thread& ppu, u32 rw_lock_id)
 
 	sys_rwlock.trace("sys_rwlock_wunlock(rw_lock_id=0x%x)", rw_lock_id);
 
-	// As sys_rwlock_runlock
-	const auto rwlock = idm::get_held<lv2_obj, lv2_rwlock>(rw_lock_id, [&](lv2_rwlock& rwlock)
-	{
-		const s64 val = retro_atomic_load_acquire_64(&rwlock.owner);
+	const u32 slot = lv2_rwlock::slot_of_id(ppu.id);
 
-		// Return previous value
-		// The old value: ours if it was released
-		for (s64 seen = val;; seen = retro_atomic_load_acquire_64(&rwlock.owner))
+	lv2_obj::notify_all_t notify;
+
+	// As sys_rwlock_runlock: 0 done, 1 not the writer, 2 to be done again
+	const auto rwlock = idm::get_held<lv2_obj, lv2_rwlock>(rw_lock_id, [&](lv2_rwlock& rwlock) -> int
+	{
+		if (lv2_rwq_writer(&rwlock.q) != static_cast<int>(slot))
 		{
-			if (seen != static_cast<s64>(ppu.id << 1) || retro_atomic_cas_64(&rwlock.owner, seen, 0))
-			{
-				return seen;
-			}
+			return 1;
 		}
+
+		if (rwlock_resaving(rwlock))
+		{
+			return 2;
+		}
+
+		// Handed to the best writer waiting, else to every reader waiting,
+		// else free: no turn
+		retro_u128_t woken{};
+
+		if (lv2_rwq_wunlock(&rwlock.q, slot, rwlock_ranking(rwlock), &rwlock, &woken) != 0)
+		{
+			return 1;
+		}
+
+		rwlock_wake(rwlock, woken);
+		return 0;
 	});
 
 	if (!rwlock)
@@ -681,63 +592,15 @@ error_code sys_rwlock_wunlock(ppu_thread& ppu, u32 rw_lock_id)
 		return CELL_ESRCH;
 	}
 
-	if (rwlock.ret >> 1 != ppu.id)
+	if (rwlock.ret == 1)
 	{
 		return CELL_EPERM;
 	}
 
-	if (lv2_obj::notify_all_t notify; rwlock.ret & 1)
+	if (rwlock.ret == 2)
 	{
-		// The next owner, or the readers, chosen and woken in the turn; false
-		// for an unlock to be done again
-		const bool done = turn_call(&rwlock->turns, [&]
-		{
-			if (auto cpu = rwlock->schedule<ppu_thread>(rwlock->wq, rwlock->protocol))
-			{
-				if (static_cast<ppu_thread*>(cpu)->state & cpu_flag::again)
-				{
-					return false;
-				}
-
-				retro_atomic_store_release_64(&rwlock->owner, static_cast<s64>(cpu->id << 1 | !!rwlock->wq | !!rwlock->rq));
-
-				rwlock->awake(cpu);
-			}
-			else if (rwlock->rq)
-			{
-				for (auto cpu = +rwlock->rq; cpu; cpu = cpu->next_cpu)
-				{
-					if (cpu->state & cpu_flag::again)
-					{
-						return false;
-					}
-				}
-
-				s64 size = 0;
-
-				// Protocol doesn't matter here since they are all enqueued anyways
-				while (auto cpu = rwlock->schedule<ppu_thread>(rwlock->rq, SYS_SYNC_FIFO))
-				{
-					size++;
-					rwlock->append(cpu);
-				}
-
-				retro_atomic_store_release_64(&rwlock->owner, -2 * static_cast<s64>(size));
-				lv2_obj::awake_all();
-			}
-			else
-			{
-				retro_atomic_store_release_64(&rwlock->owner, 0);
-			}
-
-			return true;
-		});
-
-		if (!done)
-		{
-			ppu.state += cpu_flag::again;
-			return {};
-		}
+		ppu.state += cpu_flag::again;
+		return {};
 	}
 
 	return CELL_OK;
