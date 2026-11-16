@@ -1,6 +1,9 @@
 #pragma once
 
-#include "Emu/CPU/turn_calls.h"
+#include <retro_atomic.h>
+
+#include "gcm_io_pages.h"
+
 #include "Emu/RSX/GCM.h"
 #include "Emu/Memory/vm_ptr.h"
 
@@ -34,13 +37,15 @@ struct gcm_config
 	CellGcmOffsetTable offsetTable{};
 	u16 IoMapTable[0xC00]{};
 
-	// The offset tables and IoMapTable change in turn (turn_calls.h): no
-	// lock. The IO pages a map or unmap is working on while it makes its
-	// syscall, out of the turn, are marked here: a search for free pages
-	// passes them over, and another map or unmap of one of them meanwhile is
-	// refused
-	turn_calls_cpp io_turns;
-	u64 io_pending[0x200 / 64]{};
+	// The IO pages a map or unmap is working on - its syscall, then the
+	// offset tables' and IoMapTable's entries for them - are marked here
+	// (gcm_io_pages.c): no lock, no turn. Marked, they are that map's or unmap's alone; a search for free
+	// pages passes them over, and another map or unmap of one of them
+	// meanwhile is refused
+	retro_atomic_64_t io_pending[GCM_IO_PAGES / 64]{};
+
+	// cellGcmMapLocalMemory's claim, once
+	retro_atomic_int_t local_mapped{};
 
 	u64 system_mode = 0;
 	u32 local_size = 0;

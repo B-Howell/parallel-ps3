@@ -3227,25 +3227,23 @@ namespace rsx
 				{
 					if (isHLE)
 					{
-						// In the turn cellGcmSys changes the offset tables in
-						turn_call(&cfg.io_turns, [&]
+						// The offset tables' entries for pages the RSX unmapped: a
+						// cellGcmSys map or unmap of them meanwhile is the game's race
+						int bit = 0;
+
+						while (to_unmap)
 						{
-							int bit = 0;
+							bit = (std::countr_zero<u64>(std::rotl<u64>(to_unmap, 0 - bit)) + bit);
+							to_unmap &= ~(1ull << bit);
 
-							while (to_unmap)
+							constexpr u16 null_entry = 0xFFFF;
+							const u32 ea = std::exchange(cfg.offsetTable.eaAddress[(i * 64 + bit)], null_entry);
+
+							if (ea < (rsx::constants::local_mem_base >> 20))
 							{
-								bit = (std::countr_zero<u64>(std::rotl<u64>(to_unmap, 0 - bit)) + bit);
-								to_unmap &= ~(1ull << bit);
-
-								constexpr u16 null_entry = 0xFFFF;
-								const u32 ea = std::exchange(cfg.offsetTable.eaAddress[(i * 64 + bit)], null_entry);
-
-								if (ea < (rsx::constants::local_mem_base >> 20))
-								{
-									cfg.offsetTable.ioAddress[ea] = null_entry;
-								}
+								cfg.offsetTable.ioAddress[ea] = null_entry;
 							}
-						});
+						}
 
 						continue;
 					}

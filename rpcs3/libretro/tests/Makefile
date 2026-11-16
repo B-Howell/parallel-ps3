@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_DYLIB -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_turn_calls test_turn_calls_tsan test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_vk_loader
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_turn_calls test_turn_calls_tsan test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_vk_loader
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -642,6 +642,13 @@ test_lv2_ownq: test_lv2_ownq.c test_common.h ../../Emu/Cell/lv2/lv2_ownq.c ../..
 	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/lv2_ownq.o ../../Emu/Cell/lv2/lv2_ownq.c
 	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ obj/test_lv2_ownq.o obj/lv2_ownq.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
 
+# The IO pages cellGcmSys maps and unmaps, marked with no lock, under ThreadSanitizer
+test_gcm_io_pages: test_gcm_io_pages.c test_common.h ../../Emu/Cell/Modules/gcm_io_pages.c ../../Emu/Cell/Modules/gcm_io_pages.h
+	@mkdir -p obj
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/test_gcm_io_pages.o test_gcm_io_pages.c
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -DGCM_IO_TEST_WINDOW=gcm_io_test_window -c -o obj/gcm_io_pages.o ../../Emu/Cell/Modules/gcm_io_pages.c
+	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ obj/test_gcm_io_pages.o obj/gcm_io_pages.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
+
 # An lv2 lightweight mutex's signal and sleepers in one 128-bit word, under ThreadSanitizer
 test_lv2_lwq: test_lv2_lwq.c test_common.h ../../Emu/Cell/lv2/lv2_lwq.c ../../Emu/Cell/lv2/lv2_lwq.h
 	@mkdir -p obj
@@ -814,7 +821,7 @@ HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellIme
 LOCK_GUARD_MAX := 303
 # turn_call (turn_calls.h) is a lock without a lock object - a queued caller
 # still waits - and is going too: the count may only fall
-TURN_CALL_MAX := 62
+TURN_CALL_MAX := 55
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -904,6 +911,7 @@ check: all
 	./test_lv2_flagq
 	./test_lv2_rwq
 	./test_lv2_lwq
+	./test_gcm_io_pages
 	./test_vk_loader
 	./test_turn_calls
 	./test_turn_calls_tsan
@@ -1019,12 +1027,14 @@ check: all
 	@if grep -n "mfc_prxy_mtx" ../../Emu/Cell/RawSPUThread.cpp ../../Emu/Cell/SPUThread.h; then echo "raw spu: the MFC proxy lock is back"; exit 1; else echo "raw spu: the MFC proxy takes no lock"; fi
 	@# Raw SPU run control: a stop request waits on the stop count, run requests take no lock
 	@if grep -n "run_ctrl_mtx" ../../Emu/Cell/RawSPUThread.cpp ../../Emu/Cell/SPUThread.h; then echo "raw spu: the run control lock is back - a stop request waits on stop_count"; exit 1; else echo "raw spu: run control takes no lock"; fi
-	@# cellGcmSys: the IO offset tables change in turn, the pages being mapped are marked
-	@if grep -n "gcmio_mutex" ../../Emu/Cell/Modules/cellGcmSys.cpp ../../Emu/Cell/Modules/cellGcmSys.h; then echo "cellGcmSys: the IO lock is back - the tables change in turn (io_turns), the pages a map works on are marked"; exit 1; else echo "cellGcmSys: the IO map takes no lock"; fi
+	@# cellGcmSys: the pages being mapped are marked with compare-and-swap (gcm_io_pages.c), their table entries theirs alone
+	@if grep -n "gcmio_mutex" ../../Emu/Cell/Modules/cellGcmSys.cpp ../../Emu/Cell/Modules/cellGcmSys.h; then echo "cellGcmSys: the IO lock is back - the pages a map works on are marked (gcm_io_pages.c), theirs alone"; exit 1; else echo "cellGcmSys: the IO map takes no lock"; fi
 	@# P2P port: the RPCN and signaling messages go on stacks, no lock
 	@if grep -nE "s_rpcn_mutex|s_sign_mutex" ../../Emu/Cell/lv2/sys_net/*.cpp ../../Emu/Cell/lv2/sys_net/*.h; then echo "p2p: a message queue lock is back - the messages go on mpsc_stacks"; exit 1; else echo "p2p: the message queues take no lock"; fi
 	@# lv2 timers: their state one 128-bit word changed with compare-and-swap (sys_timer_ctrl.c), the queue they send to put in place whole (atomic_ptr)
 	@if grep -nE "turn_call|turn_calls|lock_guard|shared_mutex|check_unlocked" ../../Emu/Cell/lv2/sys_timer.cpp ../../Emu/Cell/lv2/sys_timer.h; then echo "sys_timer: a turn or a lock is back - the timer's state is sys_timer_ctrl.c's word"; exit 1; else echo "sys_timer: no turn, no lock"; fi
+	@# cellGcmSys's IO map: no turn
+	@if grep -nE "io_turns|turn_call" ../../Emu/Cell/Modules/cellGcmSys.cpp ../../Emu/Cell/Modules/cellGcmSys.h; then echo "cellGcmSys: the IO map's turn is back - the pages are marked (gcm_io_pages.c)"; exit 1; else echo "cellGcmSys: the IO map takes no turn"; fi
 	@# A raw SPU's MFC proxy command: one 128-bit word, each register's write a compare-and-swap; no turn
 	@if grep -nE "mfc_prxy_turns|mfc_prxy_write_state" ../../Emu/Cell/SPUThread.h ../../Emu/Cell/SPUThread.cpp ../../Emu/Cell/RawSPUThread.cpp; then echo "RawSPU: the proxy command's turn is back - it is one word (mfc_prxy_word)"; exit 1; else echo "RawSPU: the proxy command one word, no turn"; fi
 	@# lv2 lwmutexes and lwconds: the signal and sleepers one word (lv2_lwq.c), an lwcond's waiters a waiter set; no turn, no spin
