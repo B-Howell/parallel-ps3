@@ -474,6 +474,7 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/rpcs3/Emu/NP/ip_address.cpp \
 	$(CORE_DIR)/rpcs3/Emu/NP/net_http_thread.cpp \
 	$(CORE_DIR)/rpcs3/Emu/NP/np_cache.cpp \
+	$(CORE_DIR)/rpcs3/Emu/NP/np_pool.c \
 	$(CORE_DIR)/rpcs3/Emu/NP/np_contexts.cpp \
 	$(CORE_DIR)/rpcs3/Emu/NP/np_dnshook.cpp \
 	$(CORE_DIR)/rpcs3/Emu/NP/np_gui_cache.cpp \

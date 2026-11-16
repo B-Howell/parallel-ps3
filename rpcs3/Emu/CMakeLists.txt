@@ -448,6 +448,7 @@ target_sources(rpcs3_emu PRIVATE
 target_sources(rpcs3_emu PRIVATE
     NP/pb_helpers.cpp
     NP/np_cache.cpp
+    NP/np_pool.c
     NP/np_gui_cache.cpp
     NP/np_contexts.cpp
     NP/np_dnshook.cpp

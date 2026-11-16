@@ -563,9 +563,35 @@ namespace np
 		np_memory.save(ar);
 	}
 
+	// The save state keeps the pool as the map of allocations it always had:
+	// offset to size, with the size and what was free
 	void memory_allocator::save(utils::serial& ar)
 	{
-		ar(m_pool, m_size, m_allocs, m_avail);
+		std::map<u32, u32> allocs;
+		u32 size = 0;
+		u32 avail = 0;
+
+		if (ar.is_writing())
+		{
+			size = np_pool_size(&m_free);
+			avail = np_pool_avail(&m_free);
+			for (u32 from = 0, offset = 0, length = 0; np_pool_next(&m_free, from, &offset, &length); from = offset + length)
+			{
+				allocs.emplace(offset, length);
+			}
+		}
+
+		ar(m_pool, size, allocs, avail);
+
+		if (!ar.is_writing())
+		{
+			np_pool_deinit(&m_free);
+			ensure(np_pool_init(&m_free, size));
+			for (const auto& [offset, length] : allocs)
+			{
+				ensure(np_pool_mark(&m_free, offset, length));
+			}
+		}
 	}
 
 	bool np_handler::discover_ip_address()
