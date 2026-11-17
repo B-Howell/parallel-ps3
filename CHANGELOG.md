@@ -4,6 +4,10 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- The RPCN client is reached with no lock:
+  - **The NP handler's reference to it:** this was a `std::shared_ptr` under `mutex_rpcn`, and the lock was held across the whole connection and login, so the handler's thread and every presence or trophy call waited on the network. About half the uses (every `get_rpcn()` in the requests) did not take the lock at all, against a reset on another thread. The reference is now published with no lock: a thread takes its own copy under `retro_retire`, and replacing or dropping it lets the old copy go once no reader is in it.
+  - **The one client (`rpcn_client::get_instance`):** this was a `weak_ptr` under `inst_mutex`. It is now published the same way. Making a client is claimed with compare-and-swap; a thread that finds it claimed waits for the one being made, then takes that.
+  - `std::lock_guard` count 242. No CI test: it needs the RPCN server. A check fails if `mutex_rpcn` or `inst_mutex` comes back. Not yet run online.
 - The RPCN client's friends, messages and connection take no lock:
   - **Friends:** the friend list and its callbacks were under one `shared_mutex`, held even while the callbacks ran. They are now one published state, read by any thread with no lock and replaced whole by a change (copy, change, compare-and-swap). The old state is freed once no reader is in it (`retro_retire`, libretro-common). A callback registered with a read of the list still sees every change after it and none before. Notifications now call the callbacks after the change is published, so a callback that reads the list sees it.
   - **Messages:** these were under a `shared_mutex` (the messages, the new and active lists, and the message callbacks), and are now one published state the same way. The message counter is atomic.

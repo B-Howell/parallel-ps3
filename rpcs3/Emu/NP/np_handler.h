@@ -12,6 +12,7 @@
 #include "Emu/Cell/Modules/cellSysutil.h"
 
 #include "Emu/NP/rpcn_client.h"
+#include <queues/retro_retire.h>
 #include "Emu/NP/np_allocator.h"
 #include "Emu/NP/np_cache.h"
 #include "Emu/NP/np_gui_cache.h"
@@ -519,9 +520,21 @@ namespace np
 		shared_mutex mutex_async_transactions;
 		std::unordered_map<u32, shared_ptr<generic_async_transaction_context>> async_transactions; // (req_id, transaction_ctx)
 
-		// RPCN
-		shared_mutex mutex_rpcn;
-		std::shared_ptr<rpcn::rpcn_client> rpcn;
+		// RPCN: the client, published with no lock - read by any thread (a
+		// reference taken under retro_retire), replaced or let go by a few,
+		// the reference let go of once no reader is in. It held a lock
+		// across the whole connection and login before
+		struct rpcn_box
+		{
+			mpsc_stack_node_t node{}; // first: retired as it is
+			std::shared_ptr<rpcn::rpcn_client> ptr;
+		};
+
+		mutable retro_atomic_ptr_t m_rpcn{}; // rpcn_box*, or nullptr
+		mutable retro_retire_t m_rpcn_retire{};
+
+		std::shared_ptr<rpcn::rpcn_client> load_rpcn() const;
+		void store_rpcn(std::shared_ptr<rpcn::rpcn_client> ptr);
 		std::shared_ptr<rpcn::rpcn_client> get_rpcn();
 
 		// The thread every HTTP transfer runs on, then UPnP over it: UPnP

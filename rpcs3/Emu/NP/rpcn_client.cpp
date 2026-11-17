@@ -346,7 +346,6 @@ namespace rpcn
 	rpcn_client::~rpcn_client()
 	{
 		terminate_connection();
-		std::lock_guard lock(inst_mutex);
 		terminate = true;
 		event();
 		sem_rpcn.release();
@@ -384,17 +383,51 @@ namespace rpcn
 			fmt::throw_exception("RPCN is required to use PSN online features.");
 		}
 
-		std::shared_ptr<rpcn_client> sptr;
-
-		std::lock_guard lock(inst_mutex);
-		sptr = instance.lock();
-		if (!sptr)
+		for (;;)
 		{
-			sptr = std::shared_ptr<rpcn_client>(new rpcn_client(binding_address));
-			sptr->register_friend_cb(overlay_friend_callback, nullptr);
-			instance = sptr;
-		}
+			if (std::shared_ptr<rpcn_client> sptr = load_instance())
+			{
+				return sptr;
+			}
 
+			if (!instance_making.compare_and_swap_test(0, 1))
+			{
+				// Another thread makes it: woken as it is made
+				instance_making.wait(1);
+				continue;
+			}
+
+			// Claimed: made, unless another made it meanwhile
+			std::shared_ptr<rpcn_client> sptr = load_instance();
+
+			if (!sptr)
+			{
+				sptr = std::shared_ptr<rpcn_client>(new rpcn_client(binding_address));
+				sptr->register_friend_cb(overlay_friend_callback, nullptr);
+
+				instance_box* const box = new instance_box;
+				box->ptr = sptr;
+				instance_box* const old = static_cast<instance_box*>(retro_atomic_exchange_ptr(&instance, box));
+				retro_retire(&instance_retire, old ? &old->node : nullptr, free_instance_box);
+			}
+
+			instance_making.release(0);
+			instance_making.notify_all();
+			return sptr;
+		}
+	}
+
+	void rpcn_client::free_instance_box(mpsc_stack_node_t* node)
+	{
+		delete static_cast<instance_box*>(static_cast<void*>(node));
+	}
+
+	std::shared_ptr<rpcn_client> rpcn_client::load_instance()
+	{
+		retro_retire_enter(&instance_retire);
+		const instance_box* const box = static_cast<const instance_box*>(retro_atomic_load_acquire_ptr(&instance));
+		std::shared_ptr<rpcn_client> sptr = box ? box->ptr.lock() : nullptr;
+		retro_retire_leave(&instance_retire, free_instance_box);
 		return sptr;
 	}
 

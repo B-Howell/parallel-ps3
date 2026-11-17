@@ -220,8 +220,22 @@ namespace rpcn
 	class rpcn_client
 	{
 	private:
-		static inline std::weak_ptr<rpcn_client> instance;
-		static inline shared_mutex inst_mutex;
+		// The one client (get_instance), published with no lock: a weak
+		// reference read under retro_retire. Making one is claimed with
+		// compare-and-swap; a thread that finds it claimed waits for the
+		// one made
+		struct instance_box
+		{
+			mpsc_stack_node_t node{}; // first: retired as it is
+			std::weak_ptr<rpcn_client> ptr;
+		};
+
+		static inline retro_atomic_ptr_t instance{}; // instance_box*
+		static inline retro_retire_t instance_retire{};
+		static inline atomic_t<u32> instance_making{0};
+
+		static std::shared_ptr<rpcn_client> load_instance();
+		static void free_instance_box(mpsc_stack_node_t* node);
 
 		atomic_t<bool> connected    = false;
 		atomic_t<bool> authentified = false;

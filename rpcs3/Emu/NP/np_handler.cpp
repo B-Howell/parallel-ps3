@@ -431,8 +431,8 @@ namespace np
 			auto& nc = g_fxo->get<p2p_context>();
 			nc.bind_sce_np_port();
 
-			std::lock_guard lock(mutex_rpcn);
-			rpcn = rpcn::rpcn_client::get_instance(bind_ip); libretro_event(); // the handler's thread looks
+			store_rpcn(rpcn::rpcn_client::get_instance(bind_ip));
+			libretro_event(); // the handler's thread looks
 		}
 	}
 
@@ -509,6 +509,8 @@ namespace np
 
 	np_handler::~np_handler()
 	{
+		store_rpcn(nullptr);
+
 		while (!basic_events_empty(&queue_basic_events))
 		{
 			std::free(basic_events_front(&queue_basic_events)->data);
@@ -536,8 +538,41 @@ namespace np
 		}
 	}
 
+	std::shared_ptr<rpcn::rpcn_client> np_handler::load_rpcn() const
+	{
+		struct leave_t
+		{
+			retro_retire_t& r;
+			~leave_t()
+			{
+				retro_retire_leave(&r, [](mpsc_stack_node_t* node) { delete static_cast<rpcn_box*>(static_cast<void*>(node)); });
+			}
+		};
+
+		retro_retire_enter(&m_rpcn_retire);
+		const leave_t leave{m_rpcn_retire};
+		const rpcn_box* const box = static_cast<const rpcn_box*>(retro_atomic_load_acquire_ptr(&m_rpcn));
+		return box ? box->ptr : nullptr;
+	}
+
+	void np_handler::store_rpcn(std::shared_ptr<rpcn::rpcn_client> ptr)
+	{
+		rpcn_box* box = nullptr;
+
+		if (ptr)
+		{
+			box = new rpcn_box;
+			box->ptr = std::move(ptr);
+		}
+
+		rpcn_box* const old = static_cast<rpcn_box*>(retro_atomic_exchange_ptr(&m_rpcn, box));
+		retro_retire(&m_rpcn_retire, old ? &old->node : nullptr, [](mpsc_stack_node_t* node) { delete static_cast<rpcn_box*>(static_cast<void*>(node)); });
+	}
+
 	std::shared_ptr<rpcn::rpcn_client> np_handler::get_rpcn()
 	{
+		const auto rpcn = load_rpcn();
+
 		if (!rpcn) [[unlikely]]
 		{
 			ensure(g_cfg.net.psn_status == np_psn_status::psn_fake);
@@ -841,13 +876,15 @@ namespace np
 			if (!is_psn_active)
 				break;
 
-			std::lock_guard lock(mutex_rpcn);
+			auto rpcn = load_rpcn();
 
 			bool was_already_started = true;
 
 			if (!rpcn)
 			{
-				rpcn = rpcn::rpcn_client::get_instance(bind_ip); libretro_event(); // the handler's thread looks
+				rpcn = rpcn::rpcn_client::get_instance(bind_ip);
+				store_rpcn(rpcn);
+				libretro_event(); // the handler's thread looks
 				was_already_started = false;
 			}
 
@@ -912,7 +949,7 @@ namespace np
 		presence_self.pr_data = {};
 		presence_self.advertised = false;
 
-		if (is_connected && is_psn_active && rpcn)
+		if (const auto rpcn = load_rpcn(); is_connected && is_psn_active && rpcn)
 		{
 			rpcn_log.notice("Setting RPCN state to disconnected!");
 			rpcn->reset_state();
@@ -962,7 +999,7 @@ namespace np
 			return;
 		}
 
-		std::lock_guard lock(mutex_rpcn);
+		const auto rpcn = load_rpcn();
 
 		if (!rpcn)
 		{
@@ -1190,14 +1227,8 @@ namespace np
 			const u32 events = g_libretro_events.load();
 
 			bool sleep = true;
-			if (rpcn)
+			if (const auto rpcn = load_rpcn())
 			{
-				std::lock_guard lock(mutex_rpcn);
-				if (!rpcn)
-				{
-					continue;
-				}
-
 				watched = rpcn;
 				seen = rpcn->m_events.load();
 
@@ -1400,7 +1431,7 @@ namespace np
 	bool np_handler::error_and_disconnect(std::string_view error_msg)
 	{
 		rpcn_log.error("%s", error_msg);
-		rpcn.reset();
+		store_rpcn(nullptr);
 		libretro_event(); // the handler's thread lets go of it
 
 		return false;
@@ -1693,7 +1724,7 @@ namespace np
 
 		if (is_psn_active && (!presence_self.advertised || send_update))
 		{
-			std::lock_guard lock(mutex_rpcn);
+			const auto rpcn = load_rpcn();
 
 			if (!rpcn)
 			{
@@ -1710,7 +1741,7 @@ namespace np
 		if (!is_psn_active || g_cfg.net.psn_status != np_psn_status::psn_rpcn)
 			return;
 
-		std::lock_guard lock(mutex_rpcn);
+		const auto rpcn = load_rpcn();
 		if (!rpcn || !rpcn->is_authentified())
 			return;
 
@@ -1724,7 +1755,7 @@ namespace np
 		if (!is_psn_active || g_cfg.net.psn_status != np_psn_status::psn_rpcn)
 			return {};
 
-		std::lock_guard lock(mutex_rpcn);
+		const auto rpcn = load_rpcn();
 		if (!rpcn || !rpcn->is_authentified())
 			return {};
 
@@ -1739,7 +1770,7 @@ namespace np
 			return SCE_NP_BASIC_ERROR_NOT_CONNECTED;
 		}
 
-		std::lock_guard lock(mutex_rpcn);
+		const auto rpcn = load_rpcn();
 
 		if (!rpcn)
 		{
@@ -1770,7 +1801,7 @@ namespace np
 			return SCE_NP_BASIC_ERROR_NOT_CONNECTED;
 		}
 
-		std::lock_guard lock(mutex_rpcn);
+		const auto rpcn = load_rpcn();
 		
 		if (!rpcn)
 		{
