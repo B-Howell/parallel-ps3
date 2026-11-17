@@ -44,6 +44,10 @@ void lf_hazard_drop(int record, int cell);
  * table, after it did. */
 int lf_hazard_any(const void *p);
 
+/* Until no cell holds p: woken by the drops, no spin. For the thread that
+ * took p out of the table, after it did */
+void lf_hazard_await(const void *p);
+
 #ifdef __cplusplus
 }
 #endif

@@ -564,13 +564,13 @@ test_lf_hazard: $(LF_HAZARD_DEPS)
 	@mkdir -p obj
 	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -c -o obj/test_lf_hazard.o test_lf_hazard.c
 	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -c -o obj/lf_hazard.o ../../../Utilities/lf_hazard.c
-	$(CC) $(CFLAGS) -std=gnu99 $(SANITIZE) -o $@ obj/test_lf_hazard.o obj/lf_hazard.o $(LDFLAGS) $(LDLIBS) -lpthread
+	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS $(SANITIZE) -o $@ obj/test_lf_hazard.o obj/lf_hazard.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
 
 test_lf_hazard_tsan: $(LF_HAZARD_DEPS)
 	@mkdir -p obj
 	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/test_lf_hazard_tsan.o test_lf_hazard.c
 	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/lf_hazard_tsan.o ../../../Utilities/lf_hazard.c
-	$(CC) $(CFLAGS) -std=gnu99 -fsanitize=thread -o $@ obj/test_lf_hazard_tsan.o obj/lf_hazard_tsan.o $(LDFLAGS) $(LDLIBS) -lpthread
+	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ obj/test_lf_hazard_tsan.o obj/lf_hazard_tsan.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
 
 DMA_VIEWS_DEPS := test_dma_views.c test_common.h ../../Emu/RSX/Common/dma_views.c ../../Emu/RSX/Common/dma_views.h
 
@@ -932,6 +932,8 @@ check: all
 	if [ $$n -gt $(LOCK_GUARD_MAX) ]; then echo "std::lock_guard: $$n in the core, more than the $(LOCK_GUARD_MAX) left - the locks are going, not coming (AGENTS.md)"; exit 1; \
 	elif [ $$n -lt $(LOCK_GUARD_MAX) ]; then echo "std::lock_guard: $$n in the core, fewer than LOCK_GUARD_MAX ($(LOCK_GUARD_MAX)): lower it to $$n"; exit 1; \
 	else echo "std::lock_guard: $$n left in the core"; fi
+	@# The IDs' waits - for threads entered on an ID to leave, for a withdrawal's answer, for a pinned object's look to end - are waits on a word, woken by whoever changes it: no spin
+	@if grep -nE "yield\(\)|busy_wait|sleep_for|wait_for\(" ../../Emu/IdManager.h ../../../Utilities/lf_hazard.c; then echo "idm: a spin or a sleep is back in the IDs' waits - they wait on the word (retro_waitaddr)"; exit 1; else echo "idm: its waits wait on the word, no spin"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

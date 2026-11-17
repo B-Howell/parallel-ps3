@@ -13,6 +13,7 @@
 
 #include "Utilities/lf_hazard.h"
 #include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 #include <thread>
 
 extern stx::manual_typemap<void, 0x20'00000, 128> g_fixed_typemap;
@@ -54,12 +55,60 @@ namespace id_manager
 	// of this word: for whoever has just taken the ID's object away, or
 	// has marked the word and is about to ask or change something those
 	// threads go by. They are there for a few instructions each.
+	// Above the threads entered, the threads waiting on the word (for
+	// them to leave, or for a withdrawal's answer): whoever takes some
+	// off the word then wakes them
+	constexpr int id_waiter = 0x01000000;
+	constexpr int id_entered_mask = id_waiter - 1;
+	constexpr int id_waiters_mask = id_deciding - id_waiter;
+
+	// Takes @amount off an ID's word - a thread entered, or a withdrawal's
+	// mark - and wakes the threads waiting on it
+	inline void release(retro_atomic_int_t& word, int amount)
+	{
+		if (retro_atomic_fetch_add_seq_cst_int(&word, -amount) & id_waiters_mask) [[unlikely]]
+		{
+			retro_waitaddr_notify_all(&word);
+		}
+	}
+
+	// Waits on an ID's word while @busy says so: counted on it first, so
+	// that whoever changes it wakes this - no spin, no sleep
+	template <typename F>
+	inline void wait_while(retro_atomic_int_t& word, F&& busy)
+	{
+		if (!busy(retro_atomic_load_seq_cst_int(&word))) [[likely]]
+		{
+			return;
+		}
+
+		(void)retro_atomic_fetch_add_seq_cst_int(&word, id_waiter);
+
+		while (true)
+		{
+			const int w = retro_atomic_load_seq_cst_int(&word);
+
+			if (!busy(w))
+			{
+				break;
+			}
+
+			const retro_waitaddr_t wait{&word, static_cast<u32>(w)};
+			retro_waitaddr_wait(&wait, 1, -1);
+		}
+
+		release(word, id_waiter);
+	}
+
 	inline void wait_unentered(retro_atomic_int_t& word)
 	{
-		while (retro_atomic_load_seq_cst_int(&word) & (id_deciding - 1)) [[unlikely]]
-		{
-			std::this_thread::yield();
-		}
+		wait_while(word, [](int w) { return (w & id_entered_mask) != 0; });
+	}
+
+	// Until a withdrawal deciding on the ID has its answer
+	inline void wait_undecided(retro_atomic_int_t& word)
+	{
+		wait_while(word, [](int w) { return (w & id_deciding) != 0; });
 	}
 
 	extern thread_local int g_hazard_record;
@@ -71,16 +120,15 @@ namespace id_manager
 		return record != -2 ? record : claim_hazard_record();
 	}
 
-	// For the thread that has just taken an object out of its ID slot, before
-	// it lets go of the lock under which IDs are made: waits until no thread
-	// that found the object with idm::pin() is still looking at it. Such a
-	// look is a handful of instructions, so this is short - but the looker
-	// may have been put off the processor, hence the yield.
+	// For the thread that has just taken an object out of its ID slot:
+	// waits until no thread that found the object with idm::pin() is still
+	// looking at it - a handful of instructions, but the looker may have
+	// been put off the processor. Woken by its drop, no spin
 	inline void wait_unpinned(const void* object)
 	{
-		while (object && lf_hazard_any(object)) [[unlikely]]
+		if (object)
 		{
-			std::this_thread::yield();
+			lf_hazard_await(object);
 		}
 	}
 
@@ -1003,7 +1051,7 @@ public:
 				func(*_ptr);
 				found.second->clear();
 				auto result = static_cast<stx::shared_ptr<Get>>(found.first->exchange(null_ptr));
-				(void)retro_atomic_fetch_sub_int(&closing, id_manager::id_deciding);
+				id_manager::release(closing, id_manager::id_deciding);
 				id_manager::wait_unpinned(removed);
 				return result;
 			}
@@ -1014,13 +1062,13 @@ public:
 				if (ret)
 				{
 					// If return value evaluates to true, don't delete the object (error code)
-					(void)retro_atomic_fetch_sub_int(&closing, id_manager::id_deciding);
+					id_manager::release(closing, id_manager::id_deciding);
 					return {static_cast<stx::shared_ptr<Get>>(found.first->load()), std::move(ret)};
 				}
 
 				found.second->clear();
 				auto result = static_cast<stx::shared_ptr<Get>>(found.first->exchange(null_ptr));
-				(void)retro_atomic_fetch_sub_int(&closing, id_manager::id_deciding);
+				id_manager::release(closing, id_manager::id_deciding);
 				id_manager::wait_unpinned(removed);
 				return {std::move(result), std::move(ret)};
 			}
@@ -1219,7 +1267,7 @@ public:
 		{
 			if (word)
 			{
-				(void)retro_atomic_fetch_sub_int(word, 1);
+				id_manager::release(*word, 1);
 			}
 		}
 
@@ -1262,19 +1310,16 @@ public:
 			if (retro_atomic_fetch_add_seq_cst_int(&word, 1) & id_manager::id_deciding) [[unlikely]]
 			{
 				// Out of the withdrawal's way until it has its answer
-				(void)retro_atomic_fetch_sub_int(&word, 1);
+				id_manager::release(word, 1);
 
-				while (retro_atomic_load_acquire_int(&word) & id_manager::id_deciding)
-				{
-					std::this_thread::yield();
-				}
+				id_manager::wait_undecided(word);
 
 				continue;
 			}
 
 			if (map.vec_data[index].observe() != static_cast<const T*>(object)) [[unlikely]]
 			{
-				(void)retro_atomic_fetch_sub_int(&word, 1);
+				id_manager::release(word, 1);
 				return result;
 			}
 
@@ -1335,12 +1380,9 @@ public:
 			if (retro_atomic_fetch_add_seq_cst_int(&word, 1) & id_manager::id_deciding) [[unlikely]]
 			{
 				// Out of the withdrawal's way until it has its answer
-				(void)retro_atomic_fetch_sub_int(&word, 1);
+				id_manager::release(word, 1);
 
-				while (retro_atomic_load_acquire_int(&word) & id_manager::id_deciding)
-				{
-					std::this_thread::yield();
-				}
+				id_manager::wait_undecided(word);
 
 				continue;
 			}
@@ -1357,7 +1399,7 @@ public:
 				return static_cast<Get*>(object);
 			}
 
-			(void)retro_atomic_fetch_sub_int(&word, 1);
+			id_manager::release(word, 1);
 			return nullptr;
 		}
 	}
@@ -1438,7 +1480,7 @@ public:
 		{
 			if (word)
 			{
-				(void)retro_atomic_fetch_sub_int(word, id_manager::id_deciding);
+				id_manager::release(*word, id_manager::id_deciding);
 			}
 		}
 	};
@@ -1477,10 +1519,7 @@ public:
 		// mark comes before its question
 		retro_atomic_thread_fence_seq_cst();
 
-		while (retro_atomic_load_acquire_int(&map.closing[index]) & id_manager::id_deciding) [[unlikely]]
-		{
-			std::this_thread::yield();
-		}
+		id_manager::wait_undecided(map.closing[index]);
 
 		return map.vec_data[index].observe() == static_cast<const T*>(object);
 	}

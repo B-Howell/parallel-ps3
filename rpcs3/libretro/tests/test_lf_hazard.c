@@ -6,7 +6,8 @@
  * - the use they are for: four readers look at whatever object a shared
  *   slot points at - load, hold, load again, use, drop - while a fifth
  *   thread swaps in a new object 20000 times, waits until the old one
- *   is no longer held and then poisons and recycles it. No reader ever
+ *   is no longer held (lf_hazard_await, woken by the drops) and then
+ *   poisons and recycles it. No reader ever
  *   sees a poisoned object. (Built a second time with ThreadSanitizer.)
  *
  * Usage: test_lf_hazard */
@@ -154,9 +155,10 @@ static void together(void)
       old = (struct object*)retro_atomic_exchange_ptr(&slot, fresh);
 
       /* (A reader may have been put off the processor while it holds
-       * the old one: let it run rather than spin a time slice away) */
-      while (lf_hazard_any(old))
-         sched_yield();
+       * the old one: waited for, woken by its drop - no spin) */
+      lf_hazard_await(old);
+      if (lf_hazard_any(old))
+         retro_atomic_inc_int(&bad);
 
       retro_atomic_store_release_int(&old->value, POISON);
    }
