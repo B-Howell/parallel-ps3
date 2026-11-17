@@ -474,6 +474,7 @@ target_sources(rpcs3_emu PRIVATE
     NP/clans_config.cpp
     NP/rpcn_client.cpp
     NP/rpcn_signal.c
+    NP/rpcn_reply_slots.c
     NP/rpcn_config.cpp
     NP/rpcn_countries.cpp
     NP/upnp_config.cpp

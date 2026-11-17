@@ -5,6 +5,10 @@
 #include <chrono>
 #include <thread>
 #include "rpcn_signal.h"
+#include "rpcn_reply_slots.h"
+#include <array>
+#include <retro_atomic.h>
+#include <queues/mpsc_stack.h>
 #include "Utilities/mutex.h"
 #include "Utilities/lockless.h"
 #include "Emu/localized_string_id.h"
@@ -485,11 +489,62 @@ namespace rpcn
 
 		atomic_t<u64> rpcn_request_counter = 0x100000001; // Counter used for commands whose result is not forwarded to NP handler(login, create, sendmessage, etc)
 
-		shared_mutex mutex_notifs, mutex_replies, mutex_replies_sync, mutex_presence_updates;
-		std::vector<std::pair<rpcn::NotificationType, std::vector<u8>>> notifications;       // notif type / data
-		std::map<u32, std::pair<rpcn::CommandType, std::vector<u8>>> replies;      // req id / (command / data)
-		std::map<u64, std::pair<rpcn::CommandType, std::vector<u8>>> replies_sync; // same but for sync replies(see handle_input())
-		std::unordered_map<std::string, friend_online_data> presence_updates;                // npid / presence data
+		// What the reader takes in for the NP handler's thread, which takes
+		// each list whole: pushed with no lock (mpsc_stack), oldest first
+		// once taken. Each entry is its own node
+		struct notif_node
+		{
+			mpsc_stack_node_t link{}; // first: the node is the entry
+			rpcn::NotificationType type{};
+			std::vector<u8> data;
+		};
+
+		struct reply_node
+		{
+			mpsc_stack_node_t link{};
+			u32 req_id = 0;
+			rpcn::CommandType command{};
+			std::vector<u8> data;
+		};
+
+		struct presence_node
+		{
+			mpsc_stack_node_t link{};
+			std::string npid;
+			friend_online_data data;
+
+			presence_node(const std::string& npid, const friend_online_data& data)
+				: npid(npid), data(data)
+			{
+			}
+		};
+
+		mpsc_stack_t notifications{};   // notif type / data
+		mpsc_stack_t replies{};         // req id / (command / data)
+		mpsc_stack_t presence_updates{}; // npid / presence data, the last for each npid winning
+
+		// Sync replies (see handle_input()), each for the one thread waiting
+		// for its id (get_reply): a slot claimed by the reader with
+		// compare-and-swap, taken by that thread the same way - no lock
+		// (rpcn_reply_slots.c: the claims; the data at the same index)
+		rpcn_reply_slots_t replies_sync{};
+		std::array<std::vector<u8>, RPCN_REPLY_SLOTS> replies_sync_data{};
+
+		bool take_sync_reply(u64 expected_id, std::vector<u8>& data);
+		void drop_sync_replies();
+
+		template <typename Node>
+		static Node* take_all(mpsc_stack_t& stack)
+		{
+			return node_of<Node>(mpsc_stack_reverse(mpsc_stack_drain(&stack)));
+		}
+
+		// The entry a node is the first member of
+		template <typename Node>
+		static Node* node_of(mpsc_stack_node_t* link)
+		{
+			return static_cast<Node*>(static_cast<void*>(link));
+		}
 
 		// Messages
 		struct message_cb_t

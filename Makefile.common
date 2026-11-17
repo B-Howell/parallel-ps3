@@ -498,6 +498,7 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/rpcs3/Emu/NP/pb_helpers.cpp \
 	$(CORE_DIR)/rpcs3/Emu/NP/rpcn_client.cpp \
 	$(CORE_DIR)/rpcs3/Emu/NP/rpcn_signal.c \
+	$(CORE_DIR)/rpcs3/Emu/NP/rpcn_reply_slots.c \
 	$(CORE_DIR)/rpcs3/Emu/NP/rpcn_config.cpp \
 	$(CORE_DIR)/rpcs3/Emu/NP/rpcn_countries.cpp \
 	$(CORE_DIR)/rpcs3/Emu/NP/signaling_handler.cpp \

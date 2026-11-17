@@ -353,6 +353,11 @@ namespace rpcn
 
 		disconnect();
 
+		// What the NP handler did not take
+		get_notifications();
+		get_replies();
+		get_presence_updates();
+
 		sem_connected.release();
 		sem_authentified.release();
 	}
@@ -690,15 +695,26 @@ namespace rpcn
 				command == CommandType::GetNetworkTime || command == CommandType::SetPresence || command == CommandType::Terminate ||
 				command == CommandType::SyncTrophies || command == CommandType::DeleteTrophies)
 			{
-				std::lock_guard lock(mutex_replies_sync);
-				replies_sync.insert(std::make_pair(packet_id, std::make_pair(command, std::move(data))));
+				// A free slot, claimed: then full, for the thread waiting for it
+				if (const int slot = rpcn_reply_slots_claim(&replies_sync); slot >= 0)
+				{
+					replies_sync_data[slot] = std::move(data);
+					rpcn_reply_slots_publish(&replies_sync, slot, packet_id);
+				}
+				else
+				{
+					rpcn_log.error("No room for the sync reply to 0x%x (%s): dropped", packet_id, command);
+				}
 			}
 			else
 			{
 				if (packet_id < 0x100000000)
 				{
-					std::lock_guard lock(mutex_replies);
-					replies.insert(std::make_pair(static_cast<u32>(packet_id), std::make_pair(command, std::move(data))));
+					reply_node* const node = new reply_node;
+					node->req_id = static_cast<u32>(packet_id);
+					node->command = command;
+					node->data = std::move(data);
+					mpsc_stack_push(&replies, &node->link);
 				}
 				else
 				{
@@ -730,8 +746,10 @@ namespace rpcn
 			}
 			default:
 			{
-				std::lock_guard lock(mutex_notifs);
-				notifications.emplace_back(std::make_pair(notif_type, std::move(data)));
+				notif_node* const node = new notif_node;
+				node->type = notif_type;
+				node->data = std::move(data);
+				mpsc_stack_push(&notifications, &node->link);
 				break;
 			}
 			}
@@ -987,6 +1005,7 @@ namespace rpcn
 		connected = false;
 		authentified = false;
 		server_info_received = false;
+		drop_sync_replies();
 		event();
 	}
 
@@ -1573,33 +1592,88 @@ namespace rpcn
 
 	std::vector<std::pair<rpcn::NotificationType, std::vector<u8>>> rpcn_client::get_notifications()
 	{
-		std::lock_guard lock(mutex_notifs);
-		auto notifs = std::move(notifications);
-		notifications.clear();
+		std::vector<std::pair<rpcn::NotificationType, std::vector<u8>>> notifs;
+
+		for (notif_node* node = take_all<notif_node>(notifications); node;)
+		{
+			notif_node* const next = node_of<notif_node>(node->link.next);
+			notifs.emplace_back(node->type, std::move(node->data));
+			delete node;
+			node = next;
+		}
+
 		return notifs;
 	}
 
 	std::map<u32, std::pair<rpcn::CommandType, std::vector<u8>>> rpcn_client::get_replies()
 	{
-		std::lock_guard lock(mutex_replies);
-		auto ret_replies = std::move(replies);
-		replies.clear();
+		std::map<u32, std::pair<rpcn::CommandType, std::vector<u8>>> ret_replies;
+
+		for (reply_node* node = take_all<reply_node>(replies); node;)
+		{
+			reply_node* const next = node_of<reply_node>(node->link.next);
+			ret_replies.insert_or_assign(node->req_id, std::make_pair(node->command, std::move(node->data)));
+			delete node;
+			node = next;
+		}
+
 		return ret_replies;
 	}
 
 	std::unordered_map<std::string, friend_online_data> rpcn_client::get_presence_updates()
 	{
-		std::lock_guard lock(mutex_presence_updates);
-		std::unordered_map<std::string, friend_online_data> ret_updates = std::move(presence_updates);
-		presence_updates.clear();
+		std::unordered_map<std::string, friend_online_data> ret_updates;
+
+		// Oldest first: the last for each npid stays, as it did in the map
+		for (presence_node* node = take_all<presence_node>(presence_updates); node;)
+		{
+			presence_node* const next = node_of<presence_node>(node->link.next);
+			ret_updates.insert_or_assign(std::move(node->npid), std::move(node->data));
+			delete node;
+			node = next;
+		}
+
 		return ret_updates;
 	}
 
 	std::map<std::string, friend_online_data> rpcn_client::get_presence_states()
 	{
-		std::scoped_lock lock(mutex_friends, mutex_presence_updates);
-		presence_updates.clear();
+		std::lock_guard lock(mutex_friends);
+
+		// The full states supersede the updates so far
+		for (presence_node* node = take_all<presence_node>(presence_updates); node;)
+		{
+			presence_node* const next = node_of<presence_node>(node->link.next);
+			delete node;
+			node = next;
+		}
+
 		return friend_infos.friends;
+	}
+
+	bool rpcn_client::take_sync_reply(u64 expected_id, std::vector<u8>& data)
+	{
+		const int slot = rpcn_reply_slots_take(&replies_sync, expected_id);
+
+		if (slot < 0)
+		{
+			return false;
+		}
+
+		data = std::move(replies_sync_data[slot]);
+		replies_sync_data[slot] = {};
+		rpcn_reply_slots_free(&replies_sync, slot);
+		return true;
+	}
+
+	void rpcn_client::drop_sync_replies()
+	{
+		// The connection gone: what no thread is waiting for any more goes
+		for (int slot = rpcn_reply_slots_drop(&replies_sync, 0); slot >= 0; slot = rpcn_reply_slots_drop(&replies_sync, slot + 1))
+		{
+			replies_sync_data[slot] = {};
+			rpcn_reply_slots_free(&replies_sync, slot);
+		}
 	}
 
 	std::vector<u64> rpcn_client::get_new_messages()
@@ -1614,14 +1688,7 @@ namespace rpcn
 	{
 		auto check_for_reply = [this, expected_id, &data]() -> bool
 		{
-			std::lock_guard lock(mutex_replies_sync);
-			if (auto r = replies_sync.find(expected_id); r != replies_sync.end())
-			{
-				data = std::move(r->second.second);
-				replies_sync.erase(r);
-				return true;
-			}
-			return false;
+			return take_sync_reply(expected_id, data);
 		};
 
 		// Woken by the next packet taken in, or the connection ending
@@ -3056,10 +3123,8 @@ namespace rpcn
 				// clear presence data on online/offline
 				u->second = friend_online_data(online, timestamp);
 
-				{
-					std::lock_guard lock(mutex_presence_updates);
-					presence_updates.insert_or_assign(username, u->second);
-				}
+				presence_node* const node = new presence_node(username, u->second);
+				mpsc_stack_push(&presence_updates, &node->link);
 
 				call_callbacks(ntype, username, online);
 			}
@@ -3092,8 +3157,8 @@ namespace rpcn
 				u->second.pr_comment = std::move(pr_comment);
 				u->second.pr_data = std::move(pr_data);
 
-				std::lock_guard lock(mutex_presence_updates);
-				presence_updates.insert_or_assign(username, u->second);
+				presence_node* const node = new presence_node(username, u->second);
+				mpsc_stack_push(&presence_updates, &node->link);
 			}
 
 			call_callbacks(ntype, username, false);
