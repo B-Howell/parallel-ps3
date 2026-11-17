@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_DYLIB -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_turn_calls test_turn_calls_tsan test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_vk_loader
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_turn_calls test_turn_calls_tsan test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_vk_loader
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -652,6 +652,13 @@ test_lv2_evq: $(LV2_EVQ_DEPS)
 	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/lv2_evq_ring.o ../../Emu/Cell/lv2/lv2_event_ring.c
 	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ obj/test_lv2_evq.o obj/lv2_evq.o obj/lv2_evq_ring.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
 
+# The lv2 scheduler's run queue with no lock, under ThreadSanitizer
+test_lv2_sched: test_lv2_sched.c test_common.h ../../Emu/Cell/lv2/lv2_sched.c ../../Emu/Cell/lv2/lv2_sched.h
+	@mkdir -p obj
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/test_lv2_sched.o test_lv2_sched.c
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -DLV2_SCHED_TEST_WINDOW=lv2_sched_test_window -c -o obj/lv2_sched.o ../../Emu/Cell/lv2/lv2_sched.c
+	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ obj/test_lv2_sched.o obj/lv2_sched.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
+
 # The IO pages cellGcmSys maps and unmaps, marked with no lock, under ThreadSanitizer
 test_gcm_io_pages: test_gcm_io_pages.c test_common.h ../../Emu/Cell/Modules/gcm_io_pages.c ../../Emu/Cell/Modules/gcm_io_pages.h
 	@mkdir -p obj
@@ -923,6 +930,7 @@ check: all
 	./test_lv2_lwq
 	./test_gcm_io_pages
 	./test_lv2_evq
+	./test_lv2_sched
 	./test_vk_loader
 	./test_turn_calls
 	./test_turn_calls_tsan
@@ -1050,6 +1058,8 @@ check: all
 	@if grep -nE "shared_ptr<lv2_event_queue> spup\\[|std::pair<u32, shared_ptr<lv2_event_queue>>|shared_ptr<lv2_event_queue> ep_" ../../Emu/Cell/SPUThread.h ../../Emu/Cell/lv2/sys_spu.h; then echo "spu: a port, queue binding or group event port is a plain shared_ptr again - read by the SPU as it is connected, it is an atomic_ptr"; exit 1; else echo "spu: ports and bindings atomic, no turn"; fi
 	@# lv2 event queues: the events a ring, the waiters two words (lv2_evq.c); no turn, no spin, here or where SPUs and the RSX use them
 	@if grep -nE "turn_call|turn_calls|busy_wait|lv2_events_|->pq\\b|->sq\\b" ../../Emu/Cell/lv2/sys_event.cpp ../../Emu/Cell/lv2/sys_event.h; then echo "sys_event: a turn, a spin or the linked queues are back - the events and waiters are lv2_evq.c's"; exit 1; elif grep -nE "queue->turns|held->turns|lv2_events_|turn_calls_busy" ../../Emu/Cell/SPUThread.cpp ../../Emu/Cell/lv2/sys_rsx.cpp || grep -n "busy_wait" ../../Emu/Cell/lv2/sys_rsx.cpp; then echo "sys_event: a queue's turn or a spin on it is back in the SPU or RSX code"; exit 1; else echo "sys_event: no turn, no spin"; fi
+	@# The lv2 scheduler's run queue (lv2_sched.c): a snapshot put in place with one compare-and-swap; no lock, no turn, no sleep, no spin
+	@if grep -nE "turn_call|turn_calls|busy_wait|sched_yield|mutex|\bsleep\(|_wait\(" ../../Emu/Cell/lv2/lv2_sched.c ../../Emu/Cell/lv2/lv2_sched.h; then echo "lv2_sched: a lock, a turn, a wait or a spin is in it"; exit 1; else echo "lv2_sched: no lock, no turn, no wait, no spin"; fi
 	@# sys_rsx: the RSX context's state changed with no turn, the context and the device's address claimed with compare-and-swap, no sleep for the RSX thread
 	@if grep -nE "sys_rsx_turns|wait_for\\(1000\\)|utils::pause" ../../Emu/Cell/lv2/sys_rsx.cpp ../../Emu/RSX/Core/RSXContext.h; then echo "sys_rsx: the context's turn, a sleep or a spin is back - claimed with compare-and-swap, the RSX thread waited for on its words"; exit 1; else echo "sys_rsx: no turn, no sleep, no spin"; fi
 	@# cellGcmSys's IO map: no turn
