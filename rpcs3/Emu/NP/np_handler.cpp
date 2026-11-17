@@ -432,7 +432,7 @@ namespace np
 			nc.bind_sce_np_port();
 
 			std::lock_guard lock(mutex_rpcn);
-			rpcn = rpcn::rpcn_client::get_instance(bind_ip);
+			rpcn = rpcn::rpcn_client::get_instance(bind_ip); libretro_event(); // the handler's thread looks
 		}
 	}
 
@@ -847,7 +847,7 @@ namespace np
 
 			if (!rpcn)
 			{
-				rpcn = rpcn::rpcn_client::get_instance(bind_ip);
+				rpcn = rpcn::rpcn_client::get_instance(bind_ip); libretro_event(); // the handler's thread looks
 				was_already_started = false;
 			}
 
@@ -1183,6 +1183,12 @@ namespace np
 
 		while (thread_ctrl::state() != thread_state::aborting && !Emu.IsStopped())
 		{
+			// Read before looking: the client's packets (m_events) and the
+			// emulator's state, or a client made (g_libretro_events)
+			std::shared_ptr<rpcn::rpcn_client> watched;
+			u32 seen = 0;
+			const u32 events = g_libretro_events.load();
+
 			bool sleep = true;
 			if (rpcn)
 			{
@@ -1191,6 +1197,9 @@ namespace np
 				{
 					continue;
 				}
+
+				watched = rpcn;
+				seen = rpcn->m_events.load();
 
 				auto replies = rpcn->get_replies();
 				for (auto& reply : replies)
@@ -1370,10 +1379,19 @@ namespace np
 				}
 			}
 
-			// TODO: replace with an appropriate semaphore
+			// Nothing to hand on: woken by the next packet, the emulator's
+			// state changing, or this thread told to end (a 200 ms poll before)
 			if (sleep)
 			{
-				thread_ctrl::wait_for(200'000);
+				thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+				{
+					list.template set<0>(g_libretro_events, events);
+
+					if (watched)
+						list.template set<1>(watched->m_events, seen);
+					else
+						list.template set<1>(g_libretro_events, events);
+				});
 				continue;
 			}
 		}
@@ -1383,6 +1401,7 @@ namespace np
 	{
 		rpcn_log.error("%s", error_msg);
 		rpcn.reset();
+		libretro_event(); // the handler's thread lets go of it
 
 		return false;
 	}

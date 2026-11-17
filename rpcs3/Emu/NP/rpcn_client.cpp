@@ -339,6 +339,7 @@ namespace rpcn
 		terminate_connection();
 		std::lock_guard lock(inst_mutex);
 		terminate = true;
+		event();
 		sem_rpcn.release();
 		sem_reader.release();
 		sem_writer.release();
@@ -749,6 +750,7 @@ namespace rpcn
 		default: return error_and_disconnect("Unknown packet received!");
 		}
 
+		event();
 		return true;
 	}
 
@@ -985,6 +987,7 @@ namespace rpcn
 		connected = false;
 		authentified = false;
 		server_info_received = false;
+		event();
 	}
 
 	bool rpcn_client::connect(std::string_view host)
@@ -1166,9 +1169,10 @@ namespace rpcn
 
 		rpcn_log.notice("connect: Waiting for protocol version");
 
-		while (!server_info_received && connected && !terminate)
+		// Woken by the server's info taken in, or the connection ending
+		for (u32 seen = m_events.load(); !server_info_received && connected && !terminate; seen = m_events.load())
 		{
-			std::this_thread::sleep_for(5ms);
+			m_events.wait(seen);
 		}
 
 		if (!connected || terminate)
@@ -1620,12 +1624,13 @@ namespace rpcn
 			return false;
 		};
 
-		while (connected && !terminate)
+		// Woken by the next packet taken in, or the connection ending
+		for (u32 seen = m_events.load(); connected && !terminate; seen = m_events.load())
 		{
 			if (check_for_reply())
 				return true;
 
-			std::this_thread::sleep_for(5ms);
+			m_events.wait(seen);
 		}
 
 		if (check_for_reply())
@@ -2875,6 +2880,7 @@ namespace rpcn
 	bool rpcn_client::error_and_disconnect(std::string_view error_msg)
 	{
 		connected = false;
+		event();
 		rpcn_log.error("%s", error_msg);
 		return false;
 	}
@@ -2882,6 +2888,7 @@ namespace rpcn
 	bool rpcn_client::error_and_disconnect_notice(std::string_view error_msg)
 	{
 		connected = false;
+		event();
 		rpcn_log.notice("%s", error_msg);
 		return false;
 	}

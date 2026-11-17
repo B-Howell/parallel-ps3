@@ -457,6 +457,21 @@ namespace rpcn
 		void* tls = nullptr;
 
 		atomic_t<bool> server_info_received = false;
+
+	public:
+		// Moved, and its waiters woken, by every packet the reader has taken
+		// in (a reply, a notification, the server's info) and by the
+		// connection ending: what get_reply, connect and the NP handler's
+		// thread wait on - they polled every 5 ms, 200 ms for the handler
+		atomic_t<u32> m_events{0};
+
+		void event()
+		{
+			m_events++;
+			m_events.notify_all();
+		}
+
+	private:
 		u32 received_version                = 0;
 
 		sockaddr_in addr_rpcn{};
