@@ -96,6 +96,17 @@ namespace rsx
 		{
 			return m_data.observe() != 0;
 		}
+
+		// Until the mask is no longer @old, woken by notify_all: no spin
+		void wait(T old) const
+		{
+			m_data.wait(static_cast<bitmask_type>(old));
+		}
+
+		void notify_all()
+		{
+			m_data.notify_all();
+		}
 	};
 
 	template <typename T, typename bitmask_type = u32>

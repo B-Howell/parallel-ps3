@@ -966,10 +966,11 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 			m_queue_status |= flush_queue_state::deadlock;
 			m_eng_interrupt_mask |= rsx::backend_interrupt;
 
-			// Wait for deadlock to clear
-			while (m_queue_status & flush_queue_state::deadlock)
+			// Wait for deadlock to clear: woken as the renderer clears it
+			// (do_local_task), no spin
+			for (auto status = m_queue_status.load(); status & flush_queue_state::deadlock; status = m_queue_status.load())
 			{
-				utils::pause();
+				m_queue_status.wait(status);
 			}
 
 			g_fxo->get<rsx::dma_manager>().clear_mem_fault_flag();
@@ -1770,6 +1771,7 @@ void VKGSRender::do_local_task(rsx::FIFO::state state)
 		on_invalidate_memory_range(m_offloader_fault_range, m_offloader_fault_cause);
 		zcull_ctrl->on_access_violation(m_offloader_fault_address);
 		m_queue_status.clear(flush_queue_state::deadlock);
+		m_queue_status.notify_all();
 	}
 
 	if (m_queue_status & flush_queue_state::flushing)
