@@ -65,4 +65,7 @@ namespace input
 	product_info get_product_info(product_type type);
 	product_type get_product_by_vid_pid(u16 vid, u16 pid);
 	std::vector<product_info> get_products_by_class(int class_id);
+	// The first of them, lent from the table (nothing copied or allocated),
+	// or nullptr
+	const product_info* get_first_product_by_class(int class_id);
 }

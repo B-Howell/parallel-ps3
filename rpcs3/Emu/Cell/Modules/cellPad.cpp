@@ -299,9 +299,9 @@ bool cellPad_NotifyStateChange(usz index, u64 /*state*/, bool /*locked*/, bool /
 
 		if (device.vendor_id == 0 || device.product_id == 0)
 		{
-			// Fallback to defaults
-			const std::vector<input::product_info> input_products = input::get_products_by_class(device.class_type);
-			const input::product_info& product = ::at32(input_products, 0);
+			// Fallback to defaults: the first of the class, lent from the
+			// table (a vector of them was made, on every try, before)
+			const input::product_info& product = *ensure(input::get_first_product_by_class(device.class_type));
 			reported_info.vendor_id = product.vendor_id;
 			reported_info.product_id = product.product_id;
 		}

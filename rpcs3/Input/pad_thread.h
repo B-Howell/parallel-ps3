@@ -22,7 +22,9 @@ public:
 	pad_thread& operator=(const pad_thread&) = delete;
 	~pad_thread();
 
-	void operator()();
+	// No thread of its own: the libretro core drives the handler from
+	// retro_run (frontend_update) - the polling loop that slept between
+	// looks at the pads is gone
 
 	PadInfo& GetInfo() { return m_info; }
 	std::array<std::shared_ptr<Pad>, CELL_PAD_MAX_PORT_NUM>& GetPads() { return m_pads; }
@@ -39,8 +41,6 @@ public:
 
 	static std::shared_ptr<PadHandlerBase> GetHandler(pad_handler type);
 	static void InitPadConfig(cfg_pad& cfg, pad_handler type, std::shared_ptr<PadHandlerBase>& handler);
-
-	static auto constexpr thread_name = "Pad Thread"sv;
 
 	void Init();
 
@@ -74,10 +74,6 @@ private:
 	void update_pad_states();
 	void update_ignore_input();
 
-	u32 m_mask_start_press_to_resume = 0;
-	u64 m_track_start_press_begin_timestamp = 0;
-	bool m_resume_emulation_flag = false;
-	bool m_ps_button_pressed = false;
 	retro_atomic_int_t m_home_menu_open{};
 };
 
@@ -87,8 +83,6 @@ namespace pad
 	extern std::string g_title_id;
 	extern retro_atomic_int_t g_enabled;
 	extern retro_atomic_int_t g_reset;
-	extern retro_atomic_int_t g_started;
-	extern retro_atomic_int_t g_home_menu_requested;
 
 	static inline class pad_thread* get_pad_thread(bool relaxed = false)
 	{

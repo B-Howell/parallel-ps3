@@ -259,6 +259,22 @@ namespace input
 		return product_type::playstation_3_controller;
 	}
 
+	const product_info* get_first_product_by_class(int class_id)
+	{
+		if (class_id >= CELL_PAD_FAKE_TYPE_COPILOT_1 && class_id <= CELL_PAD_FAKE_TYPE_COPILOT_7)
+		{
+			class_id = CELL_PAD_PCLASS_TYPE_STANDARD;
+		}
+
+		for (const auto& [type, product] : input_products)
+		{
+			if (product.class_id == class_id)
+				return &product;
+		}
+
+		return nullptr;
+	}
+
 	std::vector<product_info> get_products_by_class(int class_id)
 	{
 		if (class_id >= CELL_PAD_FAKE_TYPE_COPILOT_1 && class_id <= CELL_PAD_FAKE_TYPE_COPILOT_7)
