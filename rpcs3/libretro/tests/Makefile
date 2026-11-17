@@ -855,7 +855,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 288
+LOCK_GUARD_MAX := 287
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -998,6 +998,8 @@ check: all
 	@if grep -nE "wait_for\(|lf_queue<shared_ptr<vdec_context>>" ../../Emu/Cell/Modules/cellVdec.cpp ../../Emu/Cell/Modules/sys_io_.cpp || grep -n "std::this_thread::yield" ../../Emu/Cell/lv2/sys_ppu_thread.cpp; then echo "vdec / sys_io / ppu priority: a sleep, a poll or a yield is back"; exit 1; else echo "vdec / sys_io / ppu priority: no sleep, no poll"; fi
 	@# The RSX's report timestamps never wait for the clock (rsx_timestamp.c)
 	@if awk '/u64 thread::timestamp\(\)/{f=1} f&&/utils::pause|yield\(|busy_wait/{bad=1} f&&/^\t}/{exit} END{exit !bad}' ../../Emu/RSX/RSXThread.cpp; then echo "RSX timestamp: spins for the clock again - it is rsx_timestamp.c"; exit 1; elif grep -rnE "utils::pause|sleep_for|thread_ctrl::wait_for|busy_wait|this_thread::yield" ../../Emu/RSX/Overlays; then echo "overlays: a spin, a sleep or a poll is back - they wait on g_libretro_events (overlay_wait)"; exit 1; else echo "RSX timestamp, overlays: no spin, no sleep, no poll"; fi
+	@# The AV UART takes no lock and polls nothing: a send and a receive at a time by claim words, each ring's side waited on by the words the other moves; the game's buffers are read and written in place
+	@if grep -nE "shared_mutex|cond_variable|std::mutex|lock_guard|unique_lock|wait_unlock|make_unique<u8|make_shared<" ../../Emu/Cell/lv2/sys_uart.cpp ../../Emu/Cell/lv2/sys_uart.h || grep -n "thread_ctrl::wait_for" ../../Emu/Cell/lv2/sys_uart.cpp; then echo "sys_uart: a lock, a poll, a sleep or a buffer per call is back"; exit 1; else echo "sys_uart: no lock, no poll, no buffer per call"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

@@ -1719,15 +1719,22 @@ error_code sys_uart_receive(ppu_thread &ppu, vm::ptr<void> buffer, u64 size, u32
 		fmt::throw_exception("Buffer is too big");
 	}
 
-	const std::unique_ptr<u8[]> data = std::make_unique<u8[]>(size);
+	// Read straight into the game's buffer (a heap buffer, and a copy from
+	// it, before): writable for all it asked for first
+	if (!vm::check_addr(buffer.addr(), vm::page_writable, static_cast<u32>(size)))
+	{
+		return CELL_EFAULT;
+	}
+
+	u8* const data = static_cast<u8*>(buffer.get_ptr());
 	u32 read_size = 0;
 
 	auto vuart_read = [&](u8 *buf, u32 buf_size) -> s32
 	{
 		constexpr u32 ITER_SIZE = 4096;
-		std::unique_lock lock(vuart_thread.rx_mutex, std::defer_lock);
 
-		if (!lock.try_lock())
+		// One receive at a time: a second is told busy, as by the lock's try
+		if (!vuart_thread.rx_claim.compare_and_swap_test(0, 1))
 		{
 			return CELL_EBUSY;
 		}
@@ -1746,6 +1753,8 @@ error_code sys_uart_receive(ppu_thread &ppu, vm::ptr<void> buffer, u64 size, u32
 				break;
 		}
 
+		vuart_thread.rx_claim.release(0);
+		vuart_thread.rx_claim.notify_all();
 		return read_size;
 	};
 
@@ -1761,8 +1770,9 @@ error_code sys_uart_receive(ppu_thread &ppu, vm::ptr<void> buffer, u64 size, u32
 				return {};
 			}
 
-			std::unique_lock<shared_mutex> lock(vuart_thread.rx_wake_m);
-			const s32 read_result = vuart_read(data.get(), static_cast<u32>(size));
+			const u32 seen = vuart_thread.rx_put_seq.load();
+			const auto old_state = +ppu.state;
+			const s32 read_result = vuart_read(data, static_cast<u32>(size));
 
 			if (read_result > CELL_OK)
 			{
@@ -1770,14 +1780,26 @@ error_code sys_uart_receive(ppu_thread &ppu, vm::ptr<void> buffer, u64 size, u32
 				break;
 			}
 
-			vuart_thread.rx_wake_c.wait_unlock(5000, lock);
+			if (::is_stopped(old_state))
+			{
+				continue;
+			}
+
+			// Woken by data put in the ring, the other receive done, or this
+			// thread stopped (a 5 ms timed wait before)
+			thread_ctrl::wait_on_custom<3>([&](atomic_wait::list<5>& list)
+			{
+				list.template set<0>(ppu.state, old_state);
+				list.template set<1>(vuart_thread.rx_put_seq, seen);
+				list.template set<2>(vuart_thread.rx_claim, static_cast<u32>(read_result) == static_cast<u32>(CELL_EBUSY) ? 1u : 0u);
+			});
 		}
 
 		ppu.check_state();
 	}
 	else // NOT_BLOCKING_BIG_OP
 	{
-		const s32 read_result = vuart_read(data.get(), static_cast<u32>(size));
+		const s32 read_result = vuart_read(data, static_cast<u32>(size));
 
 		if (read_result <= CELL_OK)
 		{
@@ -1787,12 +1809,6 @@ error_code sys_uart_receive(ppu_thread &ppu, vm::ptr<void> buffer, u64 size, u32
 		read_size = read_result;
 	}
 
-	if (!vm::check_addr(buffer.addr(), vm::page_writable, read_size))
-	{
-		return CELL_EFAULT;
-	}
-
-	memcpy(buffer.get_ptr(), data.get(), read_size);
 	return not_an_error(read_size);
 }
 
@@ -1833,10 +1849,31 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 		return CELL_EFAULT;
 	}
 
-	const std::unique_ptr<u8[]> data = std::make_unique<u8[]>(size);
-	memcpy(data.get(), buffer.get_ptr(), size);
+	// Sent straight from the game's buffer (copied to a heap buffer first
+	// before)
+	const u8* const data = static_cast<const u8*>(buffer.get_ptr());
 
-	std::unique_lock lock(vuart_thread.tx_mutex, std::defer_lock);
+	// One send at a time (tx_claim): let go as this returns
+	struct tx_claimed
+	{
+		atomic_t<u32>& claim;
+		bool held = false;
+
+		bool try_take()
+		{
+			held = claim.compare_and_swap_test(0, 1);
+			return held;
+		}
+
+		~tx_claimed()
+		{
+			if (held)
+			{
+				claim.release(0);
+				claim.notify_all();
+			}
+		}
+	} lock{vuart_thread.tx_claim};
 
 	constexpr u32 ITER_SIZE = 4096;
 
@@ -1845,7 +1882,22 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 		// Yield before sending packets
 		lv2_obj::sleep(ppu);
 
-		lock.lock();
+		// Waits for the other send to be done, or this thread stopped
+		while (!lock.try_take())
+		{
+			const auto old_state = +ppu.state;
+
+			if (::is_stopped(old_state))
+			{
+				return {};
+			}
+
+			thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+			{
+				list.template set<0>(ppu.state, old_state);
+				list.template set<1>(vuart_thread.tx_claim, 1u);
+			});
+		}
 
 		auto vuart_send_all = [&](const u8 *data, u32 data_sz)
 		{
@@ -1858,15 +1910,21 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 					return false;
 				}
 
-				std::unique_lock<shared_mutex> lock(vuart_thread.tx_rdy_m);
+				// No room: woken as the AV thread takes some, or this thread
+				// stopped (a 5 ms timed wait before)
+				const u32 seen = vuart_thread.tx_take_seq.load();
+				const auto old_state = +ppu.state;
+
 				if (vuart_thread.get_tx_bytes() >= PS3AV_TX_BUF_SIZE)
 				{
-					vuart_thread.tx_rdy_c.wait_unlock(5000, lock);
+					thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+					{
+						list.template set<0>(ppu.state, old_state);
+						list.template set<1>(vuart_thread.tx_take_seq, seen);
+					});
+					continue;
 				}
-				else
-				{
-					lock.unlock();
-				}
+
 				rem_size -= vuart_thread.enque_tx_data(data + data_sz - rem_size, rem_size);
 			}
 
@@ -1879,7 +1937,7 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 		while (remaining)
 		{
 			const u32 packet_size = std::min(remaining, ITER_SIZE);
-			if (!vuart_send_all(data.get() + sent_size, packet_size)) return {};
+			if (!vuart_send_all(data + sent_size, packet_size)) return {};
 			sent_size += packet_size;
 			remaining -= packet_size;
 		}
@@ -1888,7 +1946,7 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 	}
 	else if (mode & NOT_BLOCKING_OP)
 	{
-		if (!lock.try_lock())
+		if (!lock.try_take())
 		{
 			return CELL_EBUSY;
 		}
@@ -1898,11 +1956,11 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 			return CELL_EAGAIN;
 		}
 
-		return not_an_error(vuart_thread.enque_tx_data(data.get(), static_cast<u32>(size)));
+		return not_an_error(vuart_thread.enque_tx_data(data, static_cast<u32>(size)));
 	}
 	else // NOT_BLOCKING_BIG_OP
 	{
-		if (!lock.try_lock())
+		if (!lock.try_take())
 		{
 			return CELL_EBUSY;
 		}
@@ -1913,7 +1971,7 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 		while (sent_size < size)
 		{
 			const u32 packet_size = std::min(remaining, ITER_SIZE);
-			const u32 nsent = vuart_thread.enque_tx_data(data.get() + sent_size, packet_size);
+			const u32 nsent = vuart_thread.enque_tx_data(data + sent_size, packet_size);
 			remaining -= nsent;
 
 			if (nsent < packet_size)
@@ -1971,9 +2029,12 @@ void vuart_av_thread::operator()()
 {
 	while (thread_ctrl::state() != thread_state::aborting)
 	{
+		// Paused: woken as the emulator's state changes (a 5 ms poll before)
+		const u32 events = g_libretro_events.load();
+
 		if (Emu.IsPausedOrReady())
 		{
-			thread_ctrl::wait_for(5000);
+			thread_ctrl::wait_on(g_libretro_events, events);
 			continue;
 		}
 
@@ -2005,23 +2066,21 @@ void vuart_av_thread::operator()()
 				return std::max(hdmi_event_dist[0], hdmi_event_dist[1]);
 		}();
 
-		std::unique_lock<shared_mutex> lock(tx_wake_m);
+		// Woken by a packet sent, or by the next HDMI event's time - the AV
+		// hardware's own timer
+		const u32 seen = tx_put_seq.load();
+
 		if (!uart_ring_used(tx_buf))
 		{
-			tx_wake_c.wait_unlock(wait_time ? wait_time : -1, lock);
-		}
-		else
-		{
-			lock.unlock();
+			thread_ctrl::wait_on(tx_put_seq, seen, wait_time ? wait_time : -1);
 		}
 
 		if (u32 read_size = read_tx_data(temp_tx_buf, PS3AV_TX_BUF_SIZE))
 		{
 			parse_tx_buffer(read_size);
 
-			// Give vsh some time
-			thread_ctrl::wait_for(1000 * 100 / g_cfg.core.clocks_scale);
-
+			// The replies go at once (it slept 100 us here first, "to give
+			// vsh some time")
 			commit_rx_buf(false);
 			commit_rx_buf(true);
 		}
@@ -2065,9 +2124,9 @@ void vuart_av_thread::parse_tx_buffer(u32 buf_size)
 		read_ptr += pkt_size;
 		buf_size = buf_size < pkt_size ? 0 : buf_size - pkt_size;
 
-		auto cmd = get_cmd(hdr->cid);
+		ps3av_cmd* const cmd = get_cmd(hdr->cid);
 
-		if (!cmd.get())
+		if (!cmd)
 		{
 			sys_uart.error("Unknown AV cmd: 0x%08x", hdr->cid);
 			continue;
@@ -2088,20 +2147,17 @@ void vuart_av_thread::parse_tx_buffer(u32 buf_size)
 
 vuart_av_thread &vuart_av_thread::operator=(thread_state)
 {
-	{
-		std::lock_guard lock(tx_wake_m);
-	}
-	tx_wake_c.notify_all();
+	tx_put_seq++;
+	tx_put_seq.notify_all();
 	return *this;
 }
 
 u32 vuart_av_thread::enque_tx_data(const void *data, u32 data_sz)
 {
-	std::unique_lock<shared_mutex> lock(tx_wake_m);
 	if (u32 size = uart_ring_push(tx_buf, PS3AV_TX_BUF_SIZE, data, data_sz))
 	{
-		lock.unlock();
-		tx_wake_c.notify_all();
+		tx_put_seq++;
+		tx_put_seq.notify_all();
 		return size;
 	}
 
@@ -2120,11 +2176,10 @@ u32 vuart_av_thread::read_rx_data(void *data, u32 data_sz)
 
 u32 vuart_av_thread::read_tx_data(void *data, u32 data_sz)
 {
-	std::unique_lock<shared_mutex> lock(tx_rdy_m);
 	if (u32 size = uart_ring_pop(tx_buf, data, data_sz))
 	{
-		lock.unlock();
-		tx_rdy_c.notify_all();
+		tx_take_seq++;
+		tx_take_seq.notify_all();
 		return size;
 	}
 	return 0;
@@ -2162,54 +2217,59 @@ void vuart_av_thread::write_resp(u32 cid, u32 status, const void *data, u16 data
 	}
 }
 
-std::shared_ptr<ps3av_cmd> vuart_av_thread::get_cmd(u32 cid)
+// The commands keep no state: one of each, made once, for every packet
+// (a std::make_shared for each one before)
+template <typename T>
+static T cmd_instance{};
+
+ps3av_cmd* vuart_av_thread::get_cmd(u32 cid)
 {
 	switch (cid)
 	{
 	case PS3AV_CID_AV_CEC_MESSAGE:
 	case PS3AV_CID_AV_UNK11:
 	case PS3AV_CID_AV_UNK12:
-		return std::make_shared<generic_reply_cmd>();
+		return &cmd_instance<generic_reply_cmd>;
 
 	// AV commands
-	case PS3AV_CID_AV_INIT:               return std::make_shared<av_init_cmd>();
-	case PS3AV_CID_AV_FIN:                return std::make_shared<av_fini_cmd>();
-	case PS3AV_CID_AV_GET_HW_CONF:        return std::make_shared<av_get_hw_conf_cmd>();
-	case PS3AV_CID_AV_GET_MONITOR_INFO:   return std::make_shared<av_get_monitor_info_cmd>();
-	case PS3AV_CID_AV_GET_BKSV_LIST:      return std::make_shared<av_get_bksv_list_cmd>();
-	case PS3AV_CID_AV_ENABLE_EVENT:       return std::make_shared<av_enable_event_cmd>();
-	case PS3AV_CID_AV_DISABLE_EVENT:      return std::make_shared<av_disable_event_cmd>();
-	case PS3AV_CID_AV_TV_MUTE:            return std::make_shared<av_tv_mute_cmd>();
-	case PS3AV_CID_AV_NULL_CMD:           return std::make_shared<av_null_cmd>();
-	case PS3AV_CID_AV_GET_AKSV:           return std::make_shared<av_get_aksv_list_cmd>();
-	case PS3AV_CID_AV_VIDEO_DISABLE_SIG:  return std::make_shared<video_disable_signal_cmd>();
-	case PS3AV_CID_AV_VIDEO_YTRAPCONTROL: return std::make_shared<av_video_ytrapcontrol_cmd>();
-	case PS3AV_CID_AV_AUDIO_MUTE:         return std::make_shared<av_audio_mute_cmd>();
-	case PS3AV_CID_AV_ACP_CTRL:           return std::make_shared<av_acp_ctrl_cmd>();
-	case PS3AV_CID_AV_SET_ACP_PACKET:     return std::make_shared<av_set_acp_packet_cmd>();
-	case PS3AV_CID_AV_ADD_SIGNAL_CTL:     return std::make_shared<av_add_signal_ctl_cmd>();
-	case PS3AV_CID_AV_SET_CGMS_WSS:       return std::make_shared<av_set_cgms_wss_cmd>();
-	case PS3AV_CID_AV_HDMI_MODE:          return std::make_shared<av_set_hdmi_mode_cmd>();
-	case PS3AV_CID_AV_GET_CEC_CONFIG:     return std::make_shared<av_get_cec_status_cmd>();
+	case PS3AV_CID_AV_INIT:               return &cmd_instance<av_init_cmd>;
+	case PS3AV_CID_AV_FIN:                return &cmd_instance<av_fini_cmd>;
+	case PS3AV_CID_AV_GET_HW_CONF:        return &cmd_instance<av_get_hw_conf_cmd>;
+	case PS3AV_CID_AV_GET_MONITOR_INFO:   return &cmd_instance<av_get_monitor_info_cmd>;
+	case PS3AV_CID_AV_GET_BKSV_LIST:      return &cmd_instance<av_get_bksv_list_cmd>;
+	case PS3AV_CID_AV_ENABLE_EVENT:       return &cmd_instance<av_enable_event_cmd>;
+	case PS3AV_CID_AV_DISABLE_EVENT:      return &cmd_instance<av_disable_event_cmd>;
+	case PS3AV_CID_AV_TV_MUTE:            return &cmd_instance<av_tv_mute_cmd>;
+	case PS3AV_CID_AV_NULL_CMD:           return &cmd_instance<av_null_cmd>;
+	case PS3AV_CID_AV_GET_AKSV:           return &cmd_instance<av_get_aksv_list_cmd>;
+	case PS3AV_CID_AV_VIDEO_DISABLE_SIG:  return &cmd_instance<video_disable_signal_cmd>;
+	case PS3AV_CID_AV_VIDEO_YTRAPCONTROL: return &cmd_instance<av_video_ytrapcontrol_cmd>;
+	case PS3AV_CID_AV_AUDIO_MUTE:         return &cmd_instance<av_audio_mute_cmd>;
+	case PS3AV_CID_AV_ACP_CTRL:           return &cmd_instance<av_acp_ctrl_cmd>;
+	case PS3AV_CID_AV_SET_ACP_PACKET:     return &cmd_instance<av_set_acp_packet_cmd>;
+	case PS3AV_CID_AV_ADD_SIGNAL_CTL:     return &cmd_instance<av_add_signal_ctl_cmd>;
+	case PS3AV_CID_AV_SET_CGMS_WSS:       return &cmd_instance<av_set_cgms_wss_cmd>;
+	case PS3AV_CID_AV_HDMI_MODE:          return &cmd_instance<av_set_hdmi_mode_cmd>;
+	case PS3AV_CID_AV_GET_CEC_CONFIG:     return &cmd_instance<av_get_cec_status_cmd>;
 
 	// Video commands
-	case PS3AV_CID_VIDEO_INIT:            return std::make_shared<video_init_cmd>();
-	case PS3AV_CID_VIDEO_ROUTE:           return std::make_shared<video_set_route_cmd>();
-	case PS3AV_CID_VIDEO_FORMAT:          return std::make_shared<video_set_format_cmd>();
-	case PS3AV_CID_VIDEO_PITCH:           return std::make_shared<video_set_pitch_cmd>();
-	case PS3AV_CID_VIDEO_GET_HW_CONF:     return std::make_shared<video_get_hw_cfg_cmd>();
+	case PS3AV_CID_VIDEO_INIT:            return &cmd_instance<video_init_cmd>;
+	case PS3AV_CID_VIDEO_ROUTE:           return &cmd_instance<video_set_route_cmd>;
+	case PS3AV_CID_VIDEO_FORMAT:          return &cmd_instance<video_set_format_cmd>;
+	case PS3AV_CID_VIDEO_PITCH:           return &cmd_instance<video_set_pitch_cmd>;
+	case PS3AV_CID_VIDEO_GET_HW_CONF:     return &cmd_instance<video_get_hw_cfg_cmd>;
 
 	// Audio commands
-	case PS3AV_CID_AUDIO_INIT:            return std::make_shared<audio_init_cmd>();
-	case PS3AV_CID_AUDIO_MODE:            return std::make_shared<audio_set_mode_cmd>();
-	case PS3AV_CID_AUDIO_MUTE:            return std::make_shared<audio_mute_cmd>();
-	case PS3AV_CID_AUDIO_ACTIVE:          return std::make_shared<audio_set_active_cmd>();
-	case PS3AV_CID_AUDIO_INACTIVE:        return std::make_shared<audio_set_inactive_cmd>();
-	case PS3AV_CID_AUDIO_SPDIF_BIT:       return std::make_shared<audio_spdif_bit_cmd>();
-	case PS3AV_CID_AUDIO_CTRL:            return std::make_shared<audio_ctrl_cmd>();
+	case PS3AV_CID_AUDIO_INIT:            return &cmd_instance<audio_init_cmd>;
+	case PS3AV_CID_AUDIO_MODE:            return &cmd_instance<audio_set_mode_cmd>;
+	case PS3AV_CID_AUDIO_MUTE:            return &cmd_instance<audio_mute_cmd>;
+	case PS3AV_CID_AUDIO_ACTIVE:          return &cmd_instance<audio_set_active_cmd>;
+	case PS3AV_CID_AUDIO_INACTIVE:        return &cmd_instance<audio_set_inactive_cmd>;
+	case PS3AV_CID_AUDIO_SPDIF_BIT:       return &cmd_instance<audio_spdif_bit_cmd>;
+	case PS3AV_CID_AUDIO_CTRL:            return &cmd_instance<audio_ctrl_cmd>;
 
 	// Multipacket
-	case PS3AV_CID_AVB_PARAM:             return std::make_shared<inc_avset_cmd>();
+	case PS3AV_CID_AVB_PARAM:             return &cmd_instance<inc_avset_cmd>;
 
 	default: return {};
 	}
@@ -2219,14 +2279,13 @@ void vuart_av_thread::commit_rx_buf(bool syscon_buf)
 {
 	temp_buf &buf = syscon_buf ? temp_rx_sc_buf : temp_rx_buf;
 
-	std::unique_lock<shared_mutex> lock(rx_wake_m);
 	uart_ring_push(rx_buf, PS3AV_RX_BUF_SIZE, buf.buf, buf.crnt_size);
 	buf.crnt_size = 0;
 
 	if (uart_ring_used(rx_buf))
 	{
-		lock.unlock();
-		rx_wake_c.notify_all();
+		rx_put_seq++;
+		rx_put_seq.notify_all();
 	}
 }
 
@@ -2403,13 +2462,12 @@ void vuart_av_thread::add_hdcp_done_event(bool hdmi_0, bool hdmi_1)
 
 void vuart_av_thread::commit_event_data(const void *data, u16 data_size)
 {
-	std::unique_lock<shared_mutex> lock(rx_wake_m);
 	uart_ring_push(rx_buf, PS3AV_RX_BUF_SIZE, data, data_size);
 
 	if (uart_ring_used(rx_buf))
 	{
-		lock.unlock();
-		rx_wake_c.notify_all();
+		rx_put_seq++;
+		rx_put_seq.notify_all();
 	}
 }
 

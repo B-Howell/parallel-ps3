@@ -3,13 +3,12 @@
 #include <retro_atomic.h>
 
 #include "Emu/Memory/vm_ptr.h"
-#include "Utilities/mutex.h"
-#include "Utilities/cond.h"
+#include "util/atomic.hpp"
 #include <retro_spsc.h>
 
 // The UART's two byte rings (libretro-common's retro_spsc: one thread writes
-// and one reads, each side behind its own mutex here). A ring holds @limit
-// bytes; a write takes as many as fit.
+// and one reads - a send or a receive at a time, by the claim words below).
+// A ring holds @limit bytes; a write takes as many as fit.
 inline u32 uart_ring_used(const retro_spsc_t& ring)
 {
 	return static_cast<u32>(retro_spsc_read_avail(&ring));
@@ -308,15 +307,15 @@ public:
 
 	retro_atomic_int_t initialized{};
 
-	shared_mutex rx_mutex{};
-	shared_mutex tx_mutex{};
-
-	shared_mutex tx_wake_m{};
-	cond_variable tx_wake_c{};
-	shared_mutex tx_rdy_m{};
-	cond_variable tx_rdy_c{};
-	shared_mutex rx_wake_m{};
-	cond_variable rx_wake_c{};
+	// No lock: a receive, and a send, at a time by a word claimed with
+	// compare-and-swap (a second is told it is busy, or a blocking send
+	// waits for it); each ring's side moves a word as it reads or writes,
+	// which the other side waits on
+	atomic_t<u32> rx_claim{}; // a sys_uart_receive reading
+	atomic_t<u32> tx_claim{}; // a sys_uart_send writing
+	atomic_t<u32> tx_put_seq{}; // moved by every write to tx_buf: this thread waits on it
+	atomic_t<u32> tx_take_seq{}; // moved by every read of tx_buf: a blocking send waits on it for room
+	atomic_t<u32> rx_put_seq{}; // moved by every write to rx_buf: a blocking receive waits on it
 
 	bool head_b_initialized = false;
 	u8 hdmi_behavior_mode = PS3AV_HDMI_BEHAVIOR_NORMAL;
@@ -352,8 +351,8 @@ private:
 		u8 buf[PS3AV_RX_BUF_SIZE]{};
 	};
 
-	retro_spsc_t tx_buf{}; // written by the game's thread (tx_wake_m), read by this one (tx_rdy_m)
-	retro_spsc_t rx_buf{}; // written by this thread (rx_wake_m), read by the game's (rx_mutex)
+	retro_spsc_t tx_buf{}; // written by the sending thread (tx_claim), read by this one
+	retro_spsc_t rx_buf{}; // written by this thread, read by the receiving one (rx_claim)
 
 	// uart_mngr could sometimes read past the tx_buffer due to weird size checks in FW,
 	// but no further than size of largest packet
@@ -365,7 +364,7 @@ private:
 	bool hdcp_first_auth[2]{ true, true };
 
 	u32 read_tx_data(void *data, u32 data_sz);
-	std::shared_ptr<ps3av_cmd> get_cmd(u32 cid);
+	static ps3av_cmd* get_cmd(u32 cid);
 	void commit_rx_buf(bool syscon_buf);
 
 	void add_unplug_event(bool hdmi_0, bool hdmi_1);
