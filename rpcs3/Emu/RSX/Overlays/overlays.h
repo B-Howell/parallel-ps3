@@ -32,6 +32,13 @@ namespace rsx
 		std::string get_sound_filepath(sound_effect sound);
 		void play_sound(sound_effect sound, std::optional<f32> volume = std::nullopt);
 
+		// An overlay thread's wait for the next frame's input, or a change it
+		// must see (a dialog closed, the input stack changed, the emulator's
+		// state): on g_libretro_events, read before looking (@seen) - no poll
+		u32 overlay_seen();
+		void overlay_wait(u32 seen);
+		void overlay_changed();
+
 		// Bitfield of UI signals to overlay manager
 		enum status_bits : u32
 		{

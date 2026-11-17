@@ -9,6 +9,8 @@ namespace rsx
 		std::shared_ptr<MsgDialogBase> dlg{};
 		atomic_t<int> ref_cnt{0};
 
+		void wait_unreferenced();
+
 		virtual ~shader_loading_dialog() = default;
 		virtual void create(const std::string& msg, const std::string& title);
 		virtual void update_msg(u32 index, std::string msg);

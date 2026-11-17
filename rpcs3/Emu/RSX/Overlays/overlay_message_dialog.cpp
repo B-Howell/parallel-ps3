@@ -280,10 +280,15 @@ namespace rsx
 				{
 					while (!m_stop_input_loop)
 					{
+						const u32 seen = overlay_seen();
+
 						refresh();
 
-						// Only update the screen at about 60fps since updating it everytime slows down the process
-						std::this_thread::sleep_for(16ms);
+						// Updated once a frame, woken by it (or the dialog closed), no sleep
+						if (!m_stop_input_loop)
+						{
+							overlay_wait(seen);
+						}
 					}
 				}
 			}
@@ -311,10 +316,16 @@ namespace rsx
 							{
 								while (!m_stop_input_loop && thread_ctrl::state() != thread_state::aborting)
 								{
+									const u32 seen = overlay_seen();
+
 									refresh();
 
-									// Only update the screen at about 60fps since updating it everytime slows down the process
-									std::this_thread::sleep_for(16ms);
+									// Updated once a frame, woken by it (or the dialog closed, or
+									// this thread told to end), no sleep
+									if (!m_stop_input_loop)
+									{
+										overlay_wait(seen);
+									}
 
 									if (!g_fxo->is_init<display_manager>())
 									{

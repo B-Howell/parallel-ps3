@@ -32,13 +32,11 @@ namespace rsx
 			{
 				dlg->Create(msg, title);
 				ref_cnt--;
+				ref_cnt.notify_all();
 			});
 		}
 
-		while (ref_cnt.load() && !Emu.IsStopped())
-		{
-			utils::pause();
-		}
+		wait_unreferenced();
 	}
 
 	void shader_loading_dialog::update_msg(u32 index, std::string msg)
@@ -54,6 +52,7 @@ namespace rsx
 		{
 			dlg->ProgressBarSetMsg(index, message);
 			ref_cnt--;
+			ref_cnt.notify_all();
 		});
 	}
 
@@ -70,6 +69,7 @@ namespace rsx
 		{
 			dlg->ProgressBarInc(index, value);
 			ref_cnt--;
+			ref_cnt.notify_all();
 		});
 	}
 
@@ -86,6 +86,7 @@ namespace rsx
 		{
 			dlg->ProgressBarSetValue(index, value);
 			ref_cnt--;
+			ref_cnt.notify_all();
 		});
 	}
 
@@ -102,7 +103,28 @@ namespace rsx
 		{
 			dlg->ProgressBarSetLimit(index, limit);
 			ref_cnt--;
+			ref_cnt.notify_all();
 		});
+	}
+
+	// The main thread's calls done, or the emulator stopping (which skips
+	// them): woken by either (ref_cnt, g_libretro_events), no spin
+	void shader_loading_dialog::wait_unreferenced()
+	{
+		for (;;)
+		{
+			const int refs = ref_cnt.load();
+			const u32 events = g_libretro_events.load();
+
+			if (!refs || Emu.IsStopped())
+			{
+				return;
+			}
+
+			atomic_wait::list<2> list(ref_cnt, g_libretro_events);
+			list.values(refs, events);
+			list.wait();
+		}
 	}
 
 	void shader_loading_dialog::refresh()
@@ -111,9 +133,6 @@ namespace rsx
 
 	void shader_loading_dialog::close()
 	{
-		while (ref_cnt.load() && !Emu.IsStopped())
-		{
-			utils::pause();
-		}
+		wait_unreferenced();
 	}
 }

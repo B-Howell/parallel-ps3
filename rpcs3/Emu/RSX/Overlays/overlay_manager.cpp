@@ -21,6 +21,7 @@ namespace rsx
 			{
 				// This keeps the input thread from looping again
 				m_input_thread_abort.store(true);
+				overlay_changed();
 
 				// Wake it if it is asleep
 				const input_thread_context_t wakeup_node =
@@ -212,6 +213,7 @@ namespace rsx
 
 				// Signal input thread loop after pushing to avoid a race.
 				m_input_thread_interrupted = true;
+				overlay_changed();
 			}
 		}
 

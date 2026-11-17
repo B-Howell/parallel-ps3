@@ -3211,6 +3211,10 @@ void retro_run(void)
         g_libretro_pad_thread->frontend_update(connected);
     }
 
+    // The pads are new: an overlay's input loop, waiting for them, looks
+    // (rsx::overlays::overlay_wait)
+    libretro_event();
+
     // One PS3 VBLANK per frame owed - two where the VBLANK runs at twice the
     // rate the core shows frames at (a 30 fps game of the VBlank Frequency
     // list). The frontend paces; nothing in the core does.

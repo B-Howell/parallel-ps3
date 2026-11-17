@@ -75,6 +75,29 @@ namespace rsx
 		// Singleton instance declaration
 		fontmgr* fontmgr::m_instance = nullptr;
 
+		u32 overlay_seen()
+		{
+			return g_libretro_events.load();
+		}
+
+		void overlay_wait(u32 seen)
+		{
+			if (thread_ctrl::get_current())
+			{
+				// Also woken as the thread is told to end
+				thread_ctrl::wait_on(g_libretro_events, seen);
+			}
+			else
+			{
+				g_libretro_events.wait(seen);
+			}
+		}
+
+		void overlay_changed()
+		{
+			libretro_event();
+		}
+
 		s32 user_interface::run_input_loop(std::function<bool()> check_state)
 		{
 			user_interface::thread_bits_allocator thread_bits_alloc(this);
@@ -155,6 +178,8 @@ namespace rsx
 
 			while (!m_stop_input_loop)
 			{
+				const u32 seen = overlay_seen();
+
 				if (check_state && !check_state())
 				{
 					// Interrupted externally.
@@ -168,11 +193,13 @@ namespace rsx
 
 				if (Emu.IsPaused() && !m_allow_input_on_pause)
 				{
-					thread_ctrl::wait_for(10000);
+					overlay_wait(seen);
 					continue;
 				}
 
-				thread_ctrl::wait_for(1000);
+				// The pads move once a frame (retro_run): woken by it, by this
+				// dialog closed, or by the input stack changed - no 1 ms poll
+				overlay_wait(seen);
 
 				if (!is_input_allowed())
 				{
@@ -514,6 +541,7 @@ namespace rsx
 			// Force unload
 			m_stop_pad_interception.release(stop_pad_interception);
 			m_stop_input_loop.release(true);
+			overlay_changed();
 
 			while (u32 b = thread_bits)
 			{
