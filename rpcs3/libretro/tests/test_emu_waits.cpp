@@ -87,6 +87,35 @@ int main()
 		waiter.join();
 	}
 
+	// A host thread waiting on a word (libretro_wait_on): woken by the word
+	// moved, and by the emulator's state changing - not otherwise
+	{
+		atomic_t<u32> word = 0;
+		std::atomic<int> returns{0};
+		std::atomic<bool> stop{false};
+		std::thread waiter([&]
+		{
+			while (!stop)
+			{
+				libretro_wait_on(word, word.load());
+				returns++;
+			}
+		});
+
+		CHECK(!reaches(returns, 1)); // nothing happened: still waiting
+		const int idle = returns;
+		word++;
+		word.notify_all();
+		CHECK(reaches(returns, idle + 1)); // the word moved
+		const int moved = returns;
+		libretro_event();
+		CHECK(reaches(returns, moved + 1)); // a change of state, or a retro_run
+		stop = true;
+		libretro_event();
+		waiter.join();
+		std::printf("test_emu_waits: libretro_wait_on returned %d time(s) idle, woken by the word and by an event\n", idle);
+	}
+
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");
 	return failures ? 1 : 0;
 }

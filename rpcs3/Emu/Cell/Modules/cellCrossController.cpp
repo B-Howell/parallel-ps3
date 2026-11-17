@@ -84,21 +84,12 @@ struct cross_controller
 
 		connection_thread = std::make_unique<named_thread<std::function<void()>>>(fmt::format("Cross-Controller Thread"), [this]()
 		{
+			// TODO: establish connection to PS Vita (on_connection_established).
+			// Until there is one there is nothing to do but wait to be told to
+			// end - it looked every millisecond before
 			while (thread_ctrl::state() != thread_state::aborting)
 			{
-				if (Emu.IsPaused())
-				{
-					thread_ctrl::wait_for(10'000);
-					continue;
-				}
-
-				// TODO: establish connection to PS Vita
-				if (false)
-				{
-					on_connection_established(CELL_OK);
-				}
-
-				thread_ctrl::wait_for(1000);
+				thread_ctrl::wait_on_custom<0>([](atomic_wait::list<2>&) {});
 			}
 
 			status = CELL_CROSS_CONTROLLER_STATUS_FINALIZED;

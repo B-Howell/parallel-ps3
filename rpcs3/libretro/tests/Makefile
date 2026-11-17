@@ -855,7 +855,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 287
+LOCK_GUARD_MAX := 283
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -1002,6 +1002,8 @@ check: all
 	@if grep -nE "shared_mutex|cond_variable|std::mutex|lock_guard|unique_lock|wait_unlock|make_unique<u8|make_shared<" ../../Emu/Cell/lv2/sys_uart.cpp ../../Emu/Cell/lv2/sys_uart.h || grep -n "thread_ctrl::wait_for" ../../Emu/Cell/lv2/sys_uart.cpp; then echo "sys_uart: a lock, a poll, a sleep or a buffer per call is back"; exit 1; else echo "sys_uart: no lock, no poll, no buffer per call"; fi
 	@# The pads have no polling thread (retro_run drives them), and a pad plugged in mid-game allocates nothing
 	@if grep -nE "thread_ctrl::wait_for|void operator\(\)\(\)" ../../Input/pad_thread.cpp ../../Input/pad_thread.h || grep -n "get_products_by_class" ../../Emu/Cell/Modules/cellPad.cpp; then echo "pads: the polling loop, or a vector per hotplug, is back"; exit 1; else echo "pads: no polling loop, nothing allocated per hotplug"; fi
+	@# The OSK and message dialogs, the Cross Controller and the NP bandwidth test: no yield, no poll, no lock - waits on words (libretro_wait_on), the fake bandwidth test one word of guest time
+	@if grep -nE "this_thread::yield|thread_ctrl::wait_for" ../../Emu/Cell/Modules/cellOskDialog.cpp ../../Emu/Cell/Modules/cellMsgDialog.cpp ../../Emu/Cell/Modules/cellCrossController.cpp ../../Emu/Cell/Modules/sceNpUtil.cpp || grep -nE "shared_mutex|lock_guard|named_thread" ../../Emu/Cell/Modules/sceNpUtil.cpp; then echo "dialogs / cross controller / np util: a yield, a poll, a lock or the test thread is back"; exit 1; else echo "dialogs / cross controller / np util: no yield, no poll, no lock"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

@@ -180,7 +180,7 @@ extern bool close_osk_from_ps_button()
 
 	if (auto cb = info.osk_force_finish_callback.load())
 	{
-		bool done = false;
+		atomic_t<u32> done = 0;
 		bool close_osk = false;
 
 		sysutil_register_cb([&](ppu_thread& cb_ppu) -> s32
@@ -188,14 +188,16 @@ extern bool close_osk_from_ps_button()
 			cellOskDialog.notice("osk_force_finish_callback()");
 			close_osk = cb(cb_ppu);
 			cellOskDialog.notice("osk_force_finish_callback returned %d", close_osk);
-			done = true;
+			done.release(1);
+			done.notify_all();
 			return 0;
 		});
 
-		// wait for check callback
+		// Wait for the check callback: woken as it is done, or as the
+		// emulator stops (a yield loop before)
 		while (!done && !Emu.IsStopped())
 		{
-			std::this_thread::yield();
+			libretro_wait_on(done, 0u);
 		}
 
 		if (!close_osk)
@@ -300,8 +302,10 @@ error_code cellOskDialogLoadAsync(u32 container, vm::ptr<CellOskDialogParam> dia
 		{
 			if (auto ccb = info.osk_confirm_callback.load())
 			{
-				std::vector<u16> string_to_send(CELL_OSKDIALOG_STRING_SIZE);
-				atomic_t<bool> done = false;
+				// On this thread's stack, lent to the callback, which this thread
+				// waits for (a vector, moved into the callback, before)
+				std::array<u16, CELL_OSKDIALOG_STRING_SIZE> string_to_send{};
+				atomic_t<u32> done = 0;
 				u32 i;
 
 				for (i = 0; i < CELL_OSKDIALOG_STRING_SIZE - 1; i++)
@@ -310,7 +314,7 @@ error_code cellOskDialogLoadAsync(u32 container, vm::ptr<CellOskDialogParam> dia
 					if (osk->osk_text[i] == 0) break;
 				}
 
-				sysutil_register_cb([&, length = i, string_to_send = std::move(string_to_send)](ppu_thread& cb_ppu) -> s32
+				sysutil_register_cb([&, length = i](ppu_thread& cb_ppu) -> s32
 				{
 					vm::var<u16[], vm::hle_malloc_allocator> string_var(CELL_OSKDIALOG_STRING_SIZE, string_to_send.data());
 
@@ -322,14 +326,15 @@ error_code cellOskDialogLoadAsync(u32 container, vm::ptr<CellOskDialogParam> dia
 						osk->osk_text[i] = string_var.begin()[i];
 					}
 
-					done = true;
+					done.release(1);
+					done.notify_all();
 					return 0;
 				});
 
-				// wait for check callback
+				// Wait for the check callback, as above: no yield loop
 				while (!done && !Emu.IsStopped())
 				{
-					std::this_thread::yield();
+					libretro_wait_on(done, 0u);
 				}
 			}
 

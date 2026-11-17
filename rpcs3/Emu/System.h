@@ -85,6 +85,24 @@ inline void libretro_event()
 	g_libretro_events.notify_all();
 }
 
+// A host thread's wait for @word to leave @old, or for the emulator's state
+// to change (a stop that skips what was waited for is one): untimed, no
+// poll. The caller looks again at what it waits for, and at the state
+template <typename T>
+inline void libretro_wait_on(atomic_t<T>& word, T old)
+{
+	const u32 events = g_libretro_events.load();
+
+	if (word.load() != old)
+	{
+		return;
+	}
+
+	atomic_wait::list<2> list(word, g_libretro_events);
+	list.values(old, events);
+	list.wait();
+}
+
 class Emulator final
 {
 	atomic_t<system_state> m_state{system_state::stopped};

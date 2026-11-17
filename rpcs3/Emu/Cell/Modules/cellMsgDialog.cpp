@@ -122,12 +122,21 @@ struct msg_dlg_thread_info
 				continue;
 			}
 
-			while (get_guest_system_time() < new_value)
+			// The guest's time moves on once a frame, which moves
+			// g_libretro_events: woken by that, or by wait_until changed - no
+			// 10 ms poll
+			while (get_guest_system_time() < new_value && thread_ctrl::state() != thread_state::aborting)
 			{
-				if (wait_until.load() != new_value)
+				const u32 events = g_libretro_events.load();
+
+				if (wait_until.load() != new_value || get_guest_system_time() >= new_value)
 					break;
 
-				thread_ctrl::wait_for(10'000);
+				thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+				{
+					list.template set<0>(wait_until, static_cast<u32>(new_value));
+					list.template set<1>(g_libretro_events, events);
+				});
 			}
 
 			if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
@@ -248,6 +257,7 @@ error_code open_msg_dialog(bool is_blocking, u32 type, vm::cptr<char> msgString,
 
 		if (dlg && dlg->state.compare_and_swap_test(MsgDialogState::Open, MsgDialogState::Close))
 		{
+			dlg->state.notify_all(); // a blocking open waits for it
 			sysutil_send_system_cmd(CELL_SYSUTIL_DRAWING_END, 0);
 
 			if (callback)
@@ -298,13 +308,16 @@ error_code open_msg_dialog(bool is_blocking, u32 type, vm::cptr<char> msgString,
 
 	if (is_blocking)
 	{
+		// Woken as the dialog's state changes, or the emulator's (a yield
+		// loop before)
 		while (auto dlg = g_fxo->get<msg_info>().get())
 		{
 			if (Emu.IsStopped() || dlg->state != MsgDialogState::Open)
 			{
 				break;
 			}
-			std::this_thread::yield();
+
+			libretro_wait_on(dlg->state, MsgDialogState::Open);
 		}
 	}
 
@@ -329,6 +342,7 @@ void close_msg_dialog()
 	if (const auto dlg = g_fxo->get<msg_info>().get())
 	{
 		dlg->state = MsgDialogState::Close;
+		dlg->state.notify_all();
 		g_fxo->get<msg_dlg_thread>().wait_until = 0;
 		g_fxo->get<msg_info>().remove(); // this shouldn't call on_close
 		input::SetIntercepted(false);    // so we need to reenable the pads here
@@ -574,6 +588,8 @@ error_code cellMsgDialogAbort()
 	{
 		return CELL_SYSUTIL_ERROR_BUSY;
 	}
+
+	dlg->state.notify_all();
 
 	g_fxo->get<msg_dlg_thread>().wait_until = 0;
 	g_fxo->get<msg_info>().remove(); // this shouldn't call on_close
