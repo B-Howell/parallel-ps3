@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_DYLIB -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_jit_cores test_rpcn_signal test_rsx_wake test_rsx_wake_tsan test_rsx_hold test_rsx_hold_tsan test_vk_loader
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_jit_cores test_rpcn_signal test_rsx_wake test_rsx_wake_tsan test_rsx_hold test_rsx_hold_tsan test_rsx_timestamp test_vk_loader
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -630,6 +630,9 @@ test_rsx_hold: $(RSX_HOLD_DEPS)
 test_rsx_hold_tsan: $(RSX_HOLD_DEPS)
 	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ test_rsx_hold.c $(RSX_HOLD_SRC) $(LDFLAGS) $(LDLIBS) -lpthread
 
+test_rsx_timestamp: test_rsx_timestamp.c test_common.h ../../Emu/RSX/Common/rsx_timestamp.c ../../Emu/RSX/Common/rsx_timestamp.h
+	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -o $@ test_rsx_timestamp.c ../../Emu/RSX/Common/rsx_timestamp.c $(LDFLAGS) $(LDLIBS)
+
 VK_INTERP_UPLOADS_DEPS := test_vk_interp_uploads.c test_common.h ../../Emu/RSX/VK/vk_interpreter_uploads.c ../../Emu/RSX/VK/vk_interpreter_uploads.h
 
 test_vk_interp_uploads: $(VK_INTERP_UPLOADS_DEPS)
@@ -951,6 +954,7 @@ check: all
 	./test_rsx_wake_tsan
 	./test_rsx_hold
 	./test_rsx_hold_tsan
+	./test_rsx_timestamp
 	./test_vk_loader
 	./test_eeprom_table
 	./test_eeprom_table_tsan
@@ -992,6 +996,8 @@ check: all
 	@if awk '/^error_code sys_ppu_thread_start/{f=1} f&&/get_system_time|yield\(|busy_wait/{bad=1} f&&/^error_code sys_ppu_thread_rename/{exit} END{exit !bad}' ../../Emu/Cell/lv2/sys_ppu_thread.cpp || awk '/case ppu_cmd::entry_call:/{f=1} f&&/get_system_time|yield\(|busy_wait/{bad=1} f&&/case ppu_cmd::hle_call:/{exit} END{exit !bad}' ../../Emu/Cell/PPUThread.cpp; then echo "PPU thread start: a spin or a clock is back - the caller and the new thread wait on words"; exit 1; else echo "PPU thread start: no spin, no clock"; fi
 	@# No sleep and no poll in the video decoder's close and reaper, the pad config event thread, or the priority read: waits on words
 	@if grep -nE "wait_for\(|lf_queue<shared_ptr<vdec_context>>" ../../Emu/Cell/Modules/cellVdec.cpp ../../Emu/Cell/Modules/sys_io_.cpp || grep -n "std::this_thread::yield" ../../Emu/Cell/lv2/sys_ppu_thread.cpp; then echo "vdec / sys_io / ppu priority: a sleep, a poll or a yield is back"; exit 1; else echo "vdec / sys_io / ppu priority: no sleep, no poll"; fi
+	@# The RSX's report timestamps never wait for the clock (rsx_timestamp.c)
+	@if awk '/u64 thread::timestamp\(\)/{f=1} f&&/utils::pause|yield\(|busy_wait/{bad=1} f&&/^\t}/{exit} END{exit !bad}' ../../Emu/RSX/RSXThread.cpp; then echo "RSX timestamp: spins for the clock again - it is rsx_timestamp.c"; exit 1; elif grep -n "utils::pause" ../../Emu/RSX/Overlays/overlay_manager.cpp; then echo "overlays: the input thread's join spins again"; exit 1; else echo "RSX timestamp, overlay join: no spin"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

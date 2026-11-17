@@ -33,12 +33,9 @@ namespace rsx
 				};
 				m_input_token_stack.push(wakeup_node);
 
-				// Wait for join
-				*m_input_thread = thread_state::aborting;
-				while (*m_input_thread <= thread_state::aborting)
-				{
-					utils::pause();
-				}
+				// Aborted and joined: waits for it to finish (thread_base::join),
+				// no spin
+				*m_input_thread = thread_state::finished;
 			}
 		}
 

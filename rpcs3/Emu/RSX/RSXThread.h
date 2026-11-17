@@ -3,6 +3,7 @@
 #include <retro_atomic.h>
 #include "Common/rsx_wake.h"
 #include "Common/rsx_hold.h"
+#include "Common/rsx_timestamp.h"
 #include <deque>
 #include <queues/retro_deque.h>
 
@@ -112,7 +113,6 @@ namespace rsx
 	class thread : public cpu_thread, public GCM_context, public GRAPH_backend
 	{
 		u64 timestamp_ctrl = 0;
-		u64 timestamp_subvalue = 0;
 		u64 m_cycles_counter = 0;
 
 		display_flip_info_t m_queued_flip{};

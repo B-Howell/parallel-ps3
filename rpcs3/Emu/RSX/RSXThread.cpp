@@ -1317,32 +1317,9 @@ namespace rsx
 			return (t / freq * 1'000'000'000 + t % freq * 1'000'000'000 / freq);
 		};
 
-		const u64 t = get_time_ns();
-		if (t != timestamp_ctrl)
-		{
-			timestamp_ctrl = t;
-			timestamp_subvalue = 0;
-			return t;
-		}
-
-		// Check if we passed the limit of what fixed increments is legal for
-		// Wait for the next time value reported if we passed the limit
-		if ((1'000'000'000 / freq) - timestamp_subvalue <= 2)
-		{
-			u64 now = get_time_ns();
-
-			for (; t == now; now = get_time_ns())
-			{
-				utils::pause();
-			}
-
-			timestamp_ctrl = now;
-			timestamp_subvalue = 0;
-			return now;
-		}
-
-		timestamp_subvalue += 2;
-		return t + timestamp_subvalue;
+		// Strictly rising, ahead of the clock in a burst rather than spinning
+		// for it to move on (rsx_timestamp.c)
+		return rsx_timestamp_next(&timestamp_ctrl, get_time_ns());
 	}
 
 	void thread::do_local_task(FIFO::state state)
