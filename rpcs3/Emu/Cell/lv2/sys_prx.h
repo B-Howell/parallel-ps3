@@ -191,7 +191,17 @@ struct lv2_prx final : ppu_module<lv2_obj>
 	static const u32 id_base = 0x23000000;
 
 	retro_atomic_int_t state{PRX_STATE_INITIALIZED}; // a u32
-	shared_mutex mutex;
+	// Threads loading or unloading the exports (each has the state that
+	// lets it, won by compare-and-swap); unloading the module waits for
+	// them to be done - no lock
+	atomic_t<u32> exports_busy{0};
+
+	void exports_enter() { exports_busy++; }
+	void exports_leave()
+	{
+		if (--exports_busy == 0)
+			exports_busy.notify_all();
+	}
 	u32 hle_data = 0;
 
 	std::unordered_map<u32, u32> specials;

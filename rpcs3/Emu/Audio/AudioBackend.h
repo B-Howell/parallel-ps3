@@ -396,10 +396,10 @@ protected:
 	u32 m_channels = 2;
 	audio_channel_layout m_layout = audio_channel_layout::automatic;
 
-	std::timed_mutex m_cb_mutex{};
+	// The setting thread's: no backend here calls them from another (the
+	// Null one never calls them, the libretro one keeps its own write
+	// callback, taken with no lock) - no lock
 	std::function<u32(u32, void*)> m_write_callback{};
-
-	shared_mutex m_state_cb_mutex{};
 	std::function<void(AudioStateEvent)> m_state_callback{};
 
 	bool m_playing = false;

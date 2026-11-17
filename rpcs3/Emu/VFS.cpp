@@ -9,6 +9,7 @@
 #include "Utilities/mutex.h"
 
 #include <retro_atomic.h>
+#include <queues/mpsc_stack.h>
 #include "Utilities/StrUtil.h"
 #include "util/cctype.hpp"
 
@@ -34,25 +35,42 @@ struct vfs_directory
 // directory listing a game makes - takes the tree that is current and walks
 // it; a tree is never changed once it is published. Mounting and unmounting,
 // which happen at boot and when a device comes or goes, copy the current
-// tree, change the copy and publish it, one at a time under the mutex. The
-// trees they replace are kept until the manager goes, so a lookup that is
-// still walking one walks memory that is there: a few dozen small trees over
-// a session.
+// tree, change the copy and publish it with a compare-and-swap - one that
+// lost to another is made again from the newer tree, no lock. The trees
+// they replace are kept until the manager goes, so a lookup that is still
+// walking one walks memory that is there: a few dozen small trees over a
+// session.
 struct vfs_manager
 {
-	// Mounting and unmounting, against each other
-	shared_mutex mutex{};
-
 	// The current tree (const vfs_directory*)
 	retro_atomic_ptr_t root{};
 
-	// Every tree published so far, the current one last
-	std::vector<std::unique_ptr<vfs_directory>> trees;
+	// Every tree published so far (kept_tree, mpsc_stack)
+	struct kept_tree
+	{
+		mpsc_stack_node_t link{}; // first: the node is the entry
+		std::unique_ptr<vfs_directory> tree;
+	};
+
+	mpsc_stack_t trees{};
 
 	vfs_manager()
 	{
-		trees.emplace_back(std::make_unique<vfs_directory>());
-		retro_atomic_ptr_init(&root, trees.back().get());
+		mpsc_stack_init(&trees);
+		kept_tree* const first = new kept_tree;
+		first->tree = std::make_unique<vfs_directory>();
+		retro_atomic_ptr_init(&root, first->tree.get());
+		mpsc_stack_push(&trees, &first->link);
+	}
+
+	~vfs_manager()
+	{
+		for (mpsc_stack_node_t* link = mpsc_stack_drain(&trees); link;)
+		{
+			kept_tree* const kept = static_cast<kept_tree*>(static_cast<void*>(link));
+			link = link->next;
+			delete kept;
+		}
 	}
 
 	const vfs_directory* current() const
@@ -60,16 +78,27 @@ struct vfs_manager
 		return static_cast<const vfs_directory*>(retro_atomic_load_acquire_ptr(const_cast<retro_atomic_ptr_t*>(&root)));
 	}
 
-	// A copy of the current tree, to change and publish (mutex held)
-	std::unique_ptr<vfs_directory> copy() const
+	// A copy of @based_on (the current tree), to change and publish
+	static std::unique_ptr<vfs_directory> copy(const vfs_directory* based_on)
 	{
-		return clone(*current());
+		return clone(*based_on);
 	}
 
-	void publish(std::unique_ptr<vfs_directory> tree)
+	// In place of @based_on, if it is still the current tree; false when
+	// another change got in first (the caller makes it again)
+	bool publish(std::unique_ptr<vfs_directory> tree, const vfs_directory* based_on)
 	{
-		trees.emplace_back(std::move(tree));
-		retro_atomic_store_release_ptr(&root, trees.back().get());
+		vfs_directory* const now = tree.get();
+
+		if (!retro_atomic_cas_ptr(&root, const_cast<vfs_directory*>(based_on), now))
+		{
+			return false;
+		}
+
+		kept_tree* const kept = new kept_tree;
+		kept->tree = std::move(tree);
+		mpsc_stack_push(&trees, &kept->link);
+		return true;
 	}
 
 private:
@@ -103,12 +132,11 @@ bool vfs::mount(std::string_view vpath, std::string_view path, bool is_dir)
 
 	// TODO: scan roots of mounted devices for undeleted vfs::host::unlink remnants, and try to delete them (_WIN32 only)
 
-	std::lock_guard lock(table.mutex);
-
 	const std::string_view vpath_backup = vpath;
 
 	// Changed in a copy, which is published once the mount is in it
-	std::unique_ptr<vfs_directory> tree = table.copy();
+	const vfs_directory* const based_on = table.current();
+	std::unique_ptr<vfs_directory> tree = vfs_manager::copy(based_on);
 
 	for (std::vector<vfs_directory*> list{tree.get()};;)
 	{
@@ -136,8 +164,13 @@ bool vfs::mount(std::string_view vpath, std::string_view path, bool is_dir)
 			if (path == "/") // Special
 				list.back()->path = "/";
 
+			if (!table.publish(std::move(tree), based_on))
+			{
+				// Another mount or unmount got in first: made again on its tree
+				return vfs::mount(vpath_backup, path, is_dir);
+			}
+
 			vfs_log.notice("Mounted path \"%s\" to \"%s\"", vpath_backup, list.back()->path);
-			table.publish(std::move(tree));
 			return true;
 		}
 
@@ -211,8 +244,6 @@ bool vfs::unmount(std::string_view vpath)
 
 	auto& table = g_fxo->get<vfs_manager>();
 
-	std::lock_guard lock(table.mutex);
-
 	// Search entry recursively and remove it (including all children)
 	std::function<void(vfs_directory&, usz)> unmount_children;
 	unmount_children = [&entry_list, &unmount_children](vfs_directory& dir, usz depth) -> void
@@ -246,12 +277,19 @@ bool vfs::unmount(std::string_view vpath)
 			++it;
 		}
 	};
-	// In a copy, published when the entry is out of it
-	std::unique_ptr<vfs_directory> tree = table.copy();
-	unmount_children(*tree, 0);
-	table.publish(std::move(tree));
+	// In a copy, published when the entry is out of it - made again on a
+	// newer tree if another change got in first
+	for (;;)
+	{
+		const vfs_directory* const based_on = table.current();
+		std::unique_ptr<vfs_directory> tree = vfs_manager::copy(based_on);
+		unmount_children(*tree, 0);
 
-	return true;
+		if (table.publish(std::move(tree), based_on))
+		{
+			return true;
+		}
+	}
 }
 
 std::string vfs::get(std::string_view vpath, std::vector<std::string>* out_dir, std::string* out_path, std::source_location src_loc)

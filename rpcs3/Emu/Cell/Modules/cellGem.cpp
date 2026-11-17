@@ -657,22 +657,19 @@ namespace gem
 	struct gem_position
 	{
 	public:
+		// Both in one word: read and written whole, no lock
 		void set_position(f32 x, f32 y)
 		{
-			std::lock_guard lock(m_mutex);
-			m_x = x;
-			m_y = y;
+			m_xy.release(u64{std::bit_cast<u32>(x)} << 32 | std::bit_cast<u32>(y));
 		}
 		void get_position(f32& x, f32& y)
 		{
-			std::lock_guard lock(m_mutex);
-			x = m_x;
-			y = m_y;
+			const u64 xy = m_xy.load();
+			x = std::bit_cast<f32>(static_cast<u32>(xy >> 32));
+			y = std::bit_cast<f32>(static_cast<u32>(xy));
 		}
 	private:
-		std::mutex m_mutex;
-		f32 m_x = 0.0f;
-		f32 m_y = 0.0f;
+		atomic_t<u64> m_xy{0};
 	};
 
 	std::array<gem_position, CELL_GEM_MAX_NUM> positions {};

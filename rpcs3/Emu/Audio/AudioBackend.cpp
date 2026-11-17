@@ -9,14 +9,12 @@ AudioBackend::AudioBackend() {}
 
 void AudioBackend::SetWriteCallback(std::function<u32(u32 /* byte_cnt */, void* /* buffer */)> cb)
 {
-	std::lock_guard lock(m_cb_mutex);
-	m_write_callback = cb;
+	m_write_callback = std::move(cb);
 }
 
 void AudioBackend::SetStateCallback(std::function<void(AudioStateEvent)> cb)
 {
-	std::lock_guard lock(m_state_cb_mutex);
-	m_state_callback = cb;
+	m_state_callback = std::move(cb);
 }
 
 /*

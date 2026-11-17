@@ -594,10 +594,12 @@ error_code _sys_prx_start_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sys
 	{
 	case 1:
 	{
-		std::lock_guard lock(prx->mutex);
+		prx->exports_enter();
 
 		if (!retro_atomic_cas_int(&prx->state, PRX_STATE_INITIALIZED, PRX_STATE_STARTING))
 		{
+			prx->exports_leave();
+
 			if (static_cast<u32>(retro_atomic_load_acquire_int(&prx->state)) == PRX_STATE_DESTROYED)
 			{
 				return CELL_ESRCH;
@@ -607,6 +609,7 @@ error_code _sys_prx_start_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sys
 		}
 
 		prx->load_exports();
+		prx->exports_leave();
 		break;
 	}
 	case 2:
@@ -712,10 +715,11 @@ error_code _sys_prx_stop_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sys_
 		case 0:
 		{
 			// No error code on invalid state, so throw on unexpected state
-			std::lock_guard lock(prx->mutex);
+			prx->exports_enter();
 			ensure(prx->exports_end <= prx->exports_start || (static_cast<u32>(retro_atomic_load_acquire_int(&prx->state)) == PRX_STATE_STOPPING));
 
 			prx->unload_exports();
+			prx->exports_leave();
 
 			ensure(retro_atomic_cas_int(&prx->state, PRX_STATE_STOPPING, PRX_STATE_STOPPED));
 			return CELL_OK;
@@ -806,7 +810,12 @@ error_code _sys_prx_unload_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sy
 
 	sys_prx.success("_sys_prx_unload_module(id=0x%x, flags=0x%x, pOpt=*0x%x): name='%s'", id, flags, pOpt, prx->name);
 
-	prx->mutex.lock_unlock();
+	// A thread still loading or unloading its exports done first: woken as
+	// the last leaves
+	for (u32 busy = prx->exports_busy.load(); busy; busy = prx->exports_busy.load())
+	{
+		prx->exports_busy.wait(busy);
+	}
 
 	if (prx->hle_data)
 	{
