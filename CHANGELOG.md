@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The on-screen keyboard's text takes no lock.** The text cellOskDialog serves to the game was a buffer under a `shared_mutex`, taken by eight calls; three of them did not touch the text at all, and one held it while waiting for the game's force-finish callback.
+  - The text now lives in a new C89 module, `osk_text.c`. Each set writes a whole text into a node from a fixed pool of eight and publishes it by swapping a pointer.
+  - The node it replaces goes back to the pool once no reader is in (`retro_retire`). Getting the text copies it from the published node straight into the game's buffer, so a reader never sees half of one text and half of another.
+  - A set waits for a free node only if readers are holding back every retired one, and is woken as they leave. Nothing is allocated.
+  - `test_osk_text` (also under ThreadSanitizer) has two threads setting texts 100000 times while two read them. It fails on a mutant that writes into the published node. A check fails if a lock comes back in cellOskDialog. `std::lock_guard` count 192. The overlay keyboard's preview lock is not touched here. Not yet run on a game.
 - Guest page faults take no lock and no clock:
   - **The areas watched for faults** (`sys_mmapper_enable_page_fault_notification`) were a vector under a mutex, searched on every fault. They are now 16 slots, one per 256 MB, since such an area starts on that bound. Enabling takes a slot by compare-and-swap, freeing the area clears it, and a fault reads its slot with no search. Save states keep the format they had.
   - **The threads waiting out a fault** were a map under a mutex. Each thread is now marked in its own word, set before the event goes so that the game's recovery finds it. A recovery takes the mark by compare-and-swap, so only one wins. Freeing an area looks at the threads' marks only while some thread is faulted.

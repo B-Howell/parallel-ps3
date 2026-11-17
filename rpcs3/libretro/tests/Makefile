@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_DYLIB -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_jit_cores test_rpcn_signal test_rsx_wake test_rsx_wake_tsan test_rsx_hold test_rsx_hold_tsan test_rsx_timestamp test_rpcn_reply_slots test_rpcn_reply_slots_tsan test_vk_loader
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_jit_cores test_rpcn_signal test_rsx_wake test_rsx_wake_tsan test_rsx_hold test_rsx_hold_tsan test_rsx_timestamp test_rpcn_reply_slots test_rpcn_reply_slots_tsan test_osk_text test_osk_text_tsan test_vk_loader
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -633,6 +633,15 @@ test_rsx_hold_tsan: $(RSX_HOLD_DEPS)
 test_rsx_timestamp: test_rsx_timestamp.c test_common.h ../../Emu/RSX/Common/rsx_timestamp.c ../../Emu/RSX/Common/rsx_timestamp.h
 	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -o $@ test_rsx_timestamp.c ../../Emu/RSX/Common/rsx_timestamp.c $(LDFLAGS) $(LDLIBS)
 
+OSK_TEXT_DEPS := test_osk_text.c test_common.h ../../Emu/Cell/Modules/osk_text.c ../../Emu/Cell/Modules/osk_text.h
+OSK_TEXT_SRC  := ../../Emu/Cell/Modules/osk_text.c $(LRC)/rthreads/retro_waitaddr.c $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
+
+test_osk_text: $(OSK_TEXT_DEPS)
+	$(CC) $(CFLAGS) $(TEST_STD) -DHAVE_THREADS $(SANITIZE) -o $@ test_osk_text.c $(OSK_TEXT_SRC) $(LDFLAGS) $(LDLIBS) -lpthread
+
+test_osk_text_tsan: $(OSK_TEXT_DEPS)
+	$(CC) $(CFLAGS) $(TEST_STD) -DHAVE_THREADS -fsanitize=thread -o $@ test_osk_text.c $(OSK_TEXT_SRC) $(LDFLAGS) $(LDLIBS) -lpthread
+
 RPCN_REPLY_SLOTS_DEPS := test_rpcn_reply_slots.c test_common.h ../../Emu/NP/rpcn_reply_slots.c ../../Emu/NP/rpcn_reply_slots.h
 RPCN_REPLY_SLOTS_SRC  := ../../Emu/NP/rpcn_reply_slots.c $(LRC)/rthreads/rthreads.c
 
@@ -864,7 +873,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 200
+LOCK_GUARD_MAX := 192
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -966,6 +975,8 @@ check: all
 	./test_rsx_timestamp
 	./test_rpcn_reply_slots
 	./test_rpcn_reply_slots_tsan
+	./test_osk_text
+	./test_osk_text_tsan
 	./test_vk_loader
 	./test_eeprom_table
 	./test_eeprom_table_tsan
@@ -1031,6 +1042,8 @@ check: all
 	@if grep -nE "shared_mutex|std::mutex|timed_mutex|lock_guard|lock_unlock" ../../Emu/VFS.cpp ../../Emu/Audio/AudioBackend.cpp ../../Emu/Audio/AudioBackend.h ../../Emu/Cell/lv2/sys_prx.cpp ../../Emu/Cell/lv2/sys_prx.h || awk '/struct gem_position/{f=1} f&&/mutex|lock_guard/{bad=1} f&&/^\t};/{exit} END{exit !bad}' ../../Emu/Cell/Modules/cellGem.cpp; then echo "VFS / PRX / Gem / audio backend: a lock is back"; exit 1; else echo "VFS / PRX / Gem / audio backend: no lock"; fi
 	@# Guest page faults: the watched areas are slots taken by compare-and-swap, a faulted thread is marked in its own word, and a full queue is waited on for room - no lock, no clock
 	@if grep -nE "pf_mutex|pf_entries\.mutex|sleep_until, 1000" ../../../Utilities/Thread.cpp ../../Emu/Cell/lv2/sys_mmapper.cpp ../../Emu/Cell/lv2/sys_mmapper.h ../../Emu/Cell/lv2/sys_ppu_thread.cpp || grep -nE "shared_mutex|std::mutex" ../../Emu/Cell/lv2/sys_mmapper.h; then echo "page faults: a lock or a clock is back"; exit 1; else echo "page faults: no lock, no clock"; fi
+	@# The on-screen keyboard's text for the game is published whole and read in place (osk_text.c): no lock in cellOskDialog
+	@if grep -nE "text_mtx|shared_mutex|std::mutex|lock_guard|unique_lock" ../../Emu/Cell/Modules/cellOskDialog.cpp ../../Emu/Cell/Modules/cellOskDialog.h; then echo "cellOskDialog: a lock is back"; exit 1; else echo "cellOskDialog: no lock"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

@@ -3,7 +3,7 @@
 #include "util/types.hpp"
 #include "util/atomic.hpp"
 #include "util/init_mutex.hpp"
-#include "Utilities/mutex.h"
+#include "osk_text.h"
 #include "Emu/Memory/vm_ptr.h"
 #include <string>
 #include <functional>
@@ -331,8 +331,15 @@ struct osk_info
 {
 	std::shared_ptr<OskDialogBase> dlg;
 
-	std::array<char16_t, CELL_OSKDIALOG_STRING_SIZE> valid_text{}; // The string that's going to be served to the game.
-	shared_mutex text_mtx;
+	// The string that's going to be served to the game: each set published
+	// whole, read in place with no lock (osk_text.c)
+	osk_text_t valid_text;
+
+	static_assert(OSK_TEXT_CHARS == CELL_OSKDIALOG_STRING_SIZE);
+
+	osk_info() { osk_text_init(&valid_text); }
+	osk_info(const osk_info&) = delete;
+	osk_info& operator=(const osk_info&) = delete;
 
 	atomic_t<bool> use_separate_windows = false;
 

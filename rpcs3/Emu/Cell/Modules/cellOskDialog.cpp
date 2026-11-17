@@ -55,10 +55,8 @@ void fmt_class_string<CellOskDialogContinuousMode>::format(std::string& out, u64
 
 void osk_info::reset()
 {
-	std::lock_guard lock(text_mtx);
-
 	dlg.reset();
-	valid_text = {};
+	osk_text_set(&valid_text, nullptr, 0);
 	use_separate_windows = false;
 	lock_ext_input_device = false;
 	device_mask = 0;
@@ -176,8 +174,6 @@ extern bool close_osk_from_ps_button()
 		return false;
 	}
 
-	std::lock_guard lock(info.text_mtx);
-
 	if (auto cb = info.osk_force_finish_callback.load())
 	{
 		atomic_t<u32> done = 0;
@@ -255,10 +251,7 @@ error_code cellOskDialogLoadAsync(u32 container, vm::ptr<CellOskDialogParam> dia
 	osk->osk_text = {};
 
 	// Also clear the info text just to be sure (it should be zeroed at this point anyway)
-	{
-		std::lock_guard lock(info.text_mtx);
-		info.valid_text = {};
-	}
+	osk_text_set(&info.valid_text, nullptr, 0);
 
 	if (inputFieldInfo->init_text)
 	{
@@ -418,7 +411,6 @@ error_code cellOskDialogLoadAsync(u32 container, vm::ptr<CellOskDialogParam> dia
 	osk->on_osk_key_input_entered = [](CellOskDialogKeyMessage key_message)
 	{
 		auto& info = g_fxo->get<osk_info>();
-		std::lock_guard lock(info.text_mtx);
 		auto event_hook_callback = info.osk_hardware_keyboard_event_hook_callback.load();
 
 		cellOskDialog.notice("on_osk_key_input_entered: led=%d, mkey=%d, keycode=%d, hook_event_mode=%d, event_hook_callback=*0x%x", key_message.led, key_message.mkey, key_message.keycode, info.hook_event_mode.load(), event_hook_callback);
@@ -547,9 +539,6 @@ error_code cellOskDialogLoadAsync(u32 container, vm::ptr<CellOskDialogParam> dia
 					return 0;
 				}
 
-				auto& info = g_fxo->get<osk_info>();
-				std::lock_guard lock(info.text_mtx);
-
 				switch (*action)
 				{
 				case CELL_OSKDIALOG_CHANGE_NO_EVENT:
@@ -672,16 +661,14 @@ error_code getText(vm::ptr<CellOskDialogCallbackReturnParam> OutputInfo, bool is
 
 	const bool keep_seperate_window_open = info.use_separate_windows.load() && (info.osk_continuous_mode.load() != CELL_OSKDIALOG_CONTINUOUS_MODE_NONE);
 
-	info.text_mtx.lock();
-
 	// Update text buffer if called from cellOskDialogUnloadAsync or if the user accepted the dialog during continuous seperate window mode.
 	if (is_unload || (keep_seperate_window_open && info.last_dialog_state == CELL_SYSUTIL_OSKDIALOG_INPUT_ENTERED))
 	{
-		for (s32 i = 0; i < CELL_OSKDIALOG_STRING_SIZE - 1; i++)
-		{
-			info.valid_text[i] = osk->osk_text[i];
-		}
+		osk_text_set(&info.valid_text, reinterpret_cast<const u16*>(osk->osk_text.data()), CELL_OSKDIALOG_STRING_SIZE - 1);
 	}
+
+	// Read in place, straight into the game's buffer
+	const u16* const valid_text = osk_text_enter(&info.valid_text);
 
 	if (is_unload)
 	{
@@ -689,7 +676,7 @@ error_code getText(vm::ptr<CellOskDialogCallbackReturnParam> OutputInfo, bool is
 	}
 	else
 	{
-		if (info.valid_text[0] == 0)
+		if (valid_text[0] == 0)
 		{
 			OutputInfo->result = CELL_OSKDIALOG_INPUT_FIELD_RESULT_NO_INPUT_TEXT;
 		}
@@ -705,9 +692,9 @@ error_code getText(vm::ptr<CellOskDialogCallbackReturnParam> OutputInfo, bool is
 	{
 		if (i < OutputInfo->numCharsResultString)
 		{
-			OutputInfo->pResultString[i] = info.valid_text[i];
+			OutputInfo->pResultString[i] = valid_text[i];
 
-			if (info.valid_text[i] == 0)
+			if (valid_text[i] == 0)
 			{
 				break;
 			}
@@ -719,7 +706,7 @@ error_code getText(vm::ptr<CellOskDialogCallbackReturnParam> OutputInfo, bool is
 		}
 	}
 
-	info.text_mtx.unlock();
+	osk_text_leave(&info.valid_text);
 
 	if (is_unload)
 	{
@@ -750,10 +737,7 @@ error_code getText(vm::ptr<CellOskDialogCallbackReturnParam> OutputInfo, bool is
 		case CELL_SYSUTIL_OSKDIALOG_INPUT_CANCELED:
 		case CELL_SYSUTIL_OSKDIALOG_INPUT_ENTERED:
 		{
-			auto& info = g_fxo->get<osk_info>();
-			std::lock_guard lock(info.text_mtx);
-
-			info.valid_text = {};
+			osk_text_set(&info.valid_text, nullptr, 0);
 			osk->Clear(true);
 			break;
 		}
@@ -1208,13 +1192,7 @@ error_code cellOskDialogExtUpdateInputText()
 
 	if (osk)
 	{
-		auto& info = g_fxo->get<osk_info>();
-		std::lock_guard lock(info.text_mtx);
-
-		for (s32 i = 0; i < CELL_OSKDIALOG_STRING_SIZE - 1; i++)
-		{
-			info.valid_text[i] = osk->osk_text[i];
-		}
+		osk_text_set(&g_fxo->get<osk_info>().valid_text, reinterpret_cast<const u16*>(osk->osk_text.data()), CELL_OSKDIALOG_STRING_SIZE - 1);
 	}
 
 	return CELL_OK;
@@ -1278,7 +1256,6 @@ error_code cellOskDialogExtRegisterForceFinishCallback(vm::ptr<cellOskDialogForc
 	}
 
 	osk_info& info = g_fxo->get<osk_info>();
-	std::lock_guard lock(info.text_mtx);
 	info.osk_force_finish_callback = pCallback;
 
 	// We use the force finish callback when the PS-Button is pressed and a System dialog shall be spawned while the OSK is loaded
