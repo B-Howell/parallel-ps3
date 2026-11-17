@@ -2048,21 +2048,9 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
 		vm::temporary_unlock(*cpu);
 		u32 pf_port_id = 0;
 
-		if (auto& pf_entries = g_fxo->get<page_fault_notification_entries>(); true)
+		if (auto mem = vm::get(vm::any, addr))
 		{
-			if (auto mem = vm::get(vm::any, addr))
-			{
-				reader_lock lock(pf_entries.mutex);
-
-				for (const auto& entry : pf_entries.entries)
-				{
-					if (entry.start_addr == mem->addr)
-					{
-						pf_port_id = entry.port_id;
-						break;
-					}
-				}
-			}
+			pf_port_id = g_fxo->get<page_fault_notification_entries>().port_of(mem->addr);
 		}
 
 		if (auto pf_port = idm::get_unlocked<lv2_obj, lv2_event_port>(pf_port_id); pf_port && pf_port->queue)
@@ -2116,18 +2104,28 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
 				lv2_obj::sleep(*cpu);
 			}
 
+			// Marked before the event goes, so that the game's recovery,
+			// which may follow it at once, finds the mark; taken off again if
+			// the event does not go
+			const auto queue = pf_port->queue;
+
 			auto send_event = [&]() -> error_code
 			{
 				lv2_obj::notify_all_t notify_later{};
 
-				std::lock_guard pf_lock(pf_events.pf_mutex);
+				retro_atomic_store_release_64(&cpu->pf_fault, static_cast<s64>((u64{1} << 32) | addr));
+				retro_atomic_fetch_add_int(&pf_events.faulted, 1);
 
-				if (auto error = pf_port->queue->send(pf_port->name ? pf_port->name : ((u64{process_getpid() + 0u} << 32) | u64{pf_port_id}), data1, data2, data3))
+				if (auto error = queue->send(pf_port->name ? pf_port->name : ((u64{process_getpid() + 0u} << 32) | u64{pf_port_id}), data1, data2, data3))
 				{
+					if (retro_atomic_cas_64(&cpu->pf_fault, static_cast<s64>((u64{1} << 32) | addr), 0))
+					{
+						retro_atomic_fetch_add_int(&pf_events.faulted, -1);
+					}
+
 					return error;
 				}
 
-				pf_events.events.emplace(cpu, addr);
 				return {};
 			};
 
@@ -2144,9 +2142,15 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
 
 			error_code sending_error = not_an_error(CELL_EBUSY);
 
-			// If we fail due to being busy, wait a bit and try again.
-			for (u64 sleep_until = get_system_time(); static_cast<u32>(sending_error) == CELL_EBUSY; thread_ctrl::wait_until(&sleep_until, 1000))
+			// The queue full: watched, so that an event the game takes from
+			// it (or the queue going, or the port disconnected) wakes this
+			// thread to send again - no timeout
+			unsigned seen = lv2_evq_watch(&queue->q);
+
+			while (true)
 			{
+				const auto old_state = +cpu->state;
+
 				sending_error = send_event();
 
 				if (cpu->is_stopped())
@@ -2154,7 +2158,22 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
 					sending_error = {};
 					break;
 				}
+
+				if (static_cast<u32>(sending_error) != CELL_EBUSY)
+				{
+					break;
+				}
+
+				thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+				{
+					list.template set<0>(cpu->state, old_state);
+					list.template set<1>(queue->q.changes, seen);
+				});
+
+				seen = static_cast<unsigned>(retro_atomic_load_acquire_int(&queue->q.changes));
 			}
+
+			lv2_evq_unwatch(&queue->q);
 
 			if (sending_error)
 			{

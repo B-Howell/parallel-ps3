@@ -864,7 +864,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 203
+LOCK_GUARD_MAX := 200
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -1029,6 +1029,8 @@ check: all
 	@if awk '/^struct ppu_far_jumps_t/{f=1} f&&/shared_mutex|reader_lock|lock_guard/{bad=1} f&&/^u32 ppu_get_far_jump/{exit} END{exit !bad}' ../../Emu/Cell/PPUThread.cpp || awk '/^struct ppu_toc_manager/{f=1} f&&/shared_mutex|reader_lock|lock_guard/{bad=1} f&&/^static void ppu_check_toc/{f=2} f==2&&/reader_lock|lock_guard/{bad=1} f==2&&/^}/{exit} END{exit !bad}' ../../Emu/Cell/PPUThread.cpp; then echo "PPU far jumps / TOC: a lock is back on the jump"; exit 1; else echo "PPU far jumps / TOC: no lock"; fi
 	@# The VFS tree is published with compare-and-swap, a PRX's exports are guarded by its state and a busy count, the Gem positions are one word each, the audio backend's callbacks are the setting thread's: no lock in any
 	@if grep -nE "shared_mutex|std::mutex|timed_mutex|lock_guard|lock_unlock" ../../Emu/VFS.cpp ../../Emu/Audio/AudioBackend.cpp ../../Emu/Audio/AudioBackend.h ../../Emu/Cell/lv2/sys_prx.cpp ../../Emu/Cell/lv2/sys_prx.h || awk '/struct gem_position/{f=1} f&&/mutex|lock_guard/{bad=1} f&&/^\t};/{exit} END{exit !bad}' ../../Emu/Cell/Modules/cellGem.cpp; then echo "VFS / PRX / Gem / audio backend: a lock is back"; exit 1; else echo "VFS / PRX / Gem / audio backend: no lock"; fi
+	@# Guest page faults: the watched areas are slots taken by compare-and-swap, a faulted thread is marked in its own word, and a full queue is waited on for room - no lock, no clock
+	@if grep -nE "pf_mutex|pf_entries\.mutex|sleep_until, 1000" ../../../Utilities/Thread.cpp ../../Emu/Cell/lv2/sys_mmapper.cpp ../../Emu/Cell/lv2/sys_mmapper.h ../../Emu/Cell/lv2/sys_ppu_thread.cpp || grep -nE "shared_mutex|std::mutex" ../../Emu/Cell/lv2/sys_mmapper.h; then echo "page faults: a lock or a clock is back"; exit 1; else echo "page faults: no lock, no clock"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

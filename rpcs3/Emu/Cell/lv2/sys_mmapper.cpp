@@ -2,6 +2,7 @@
 #include "sys_mmapper.h"
 
 #include "Emu/Cell/PPUThread.h"
+#include "Emu/Cell/SPUThread.h"
 #include "Emu/Cell/lv2/sys_event.h"
 #include "Emu/savestate_utils.hpp"
 #include "Emu/Memory/vm_var.h"
@@ -188,12 +189,50 @@ void lv2_memory::release_memory()
 
 page_fault_notification_entries::page_fault_notification_entries(utils::serial& ar)
 {
+	// The format of old: the entries in a vector
+	std::vector<page_fault_notification_entry> entries;
 	ar(entries);
+
+	for (const auto& entry : entries)
+	{
+		if (!(entry.start_addr & 0x0fffffff) && entry.port_id)
+		{
+			retro_atomic_store_release_64(&slots[slot_of(entry.start_addr)], static_cast<s64>((u64{entry.event_queue_id} << 32) | entry.port_id));
+		}
+	}
 }
 
 void page_fault_notification_entries::save(utils::serial& ar)
 {
+	std::vector<page_fault_notification_entry> entries;
+
+	for (u32 i = 0; i < std::size(slots); i++)
+	{
+		if (const u64 v = static_cast<u64>(retro_atomic_load_acquire_64(&slots[i])))
+		{
+			entries.push_back({i << 28, static_cast<u32>(v >> 32), static_cast<u32>(v)});
+		}
+	}
+
 	ar(entries);
+}
+
+// Whether a thread waits out a page fault on an address in [@addr, @last]
+static bool page_faulted_in(u32 addr, u32 last)
+{
+	if (!retro_atomic_load_acquire_int(&g_fxo->get<page_fault_event_entries>().faulted))
+	{
+		return false;
+	}
+
+	auto in = [&](u32, cpu_thread& cpu)
+	{
+		const u64 f = static_cast<u64>(retro_atomic_load_acquire_64(&cpu.pf_fault));
+		return (f >> 32) != 0 && addr <= static_cast<u32>(f) && static_cast<u32>(f) <= last;
+	};
+
+	return idm::select<named_thread<ppu_thread>>([&](u32 id, named_thread<ppu_thread>& t) { return in(id, t); }).ret
+		|| idm::select<named_thread<spu_thread>>([&](u32 id, named_thread<spu_thread>& t) { return in(id, t); }).ret;
 }
 
 template <bool exclusive = false>
@@ -643,10 +682,6 @@ error_code sys_mmapper_free_address(ppu_thread& ppu, u32 addr)
 		return {CELL_EINVAL, addr};
 	}
 
-	// If page fault notify exists and an address in this area is faulted, we can't free the memory.
-	auto& pf_events = g_fxo->get<page_fault_event_entries>();
-	std::lock_guard pf_lock(pf_events.pf_mutex);
-
 	const auto mem = vm::get(vm::any, addr);
 
 	if (!mem || mem->addr != addr || !(mem->flags & vm::mapping_comp))
@@ -654,12 +689,10 @@ error_code sys_mmapper_free_address(ppu_thread& ppu, u32 addr)
 		return {CELL_EINVAL, addr};
 	}
 
-	for (const auto& ev : pf_events.events)
+	// If page fault notify exists and an address in this area is faulted, we can't free the memory.
+	if (page_faulted_in(addr, addr + mem->size - 1))
 	{
-		if (addr <= ev.second && ev.second <= addr + mem->size - 1)
-		{
-			return CELL_EBUSY;
-		}
+		return CELL_EBUSY;
 	}
 
 	// Try to unmap area
@@ -677,20 +710,9 @@ error_code sys_mmapper_free_address(ppu_thread& ppu, u32 addr)
 
 	// If a memory block is freed, remove it from page notification table.
 	auto& pf_entries = g_fxo->get<page_fault_notification_entries>();
-	std::unique_lock lock(pf_entries.mutex);
-	auto ind_to_remove = pf_entries.entries.begin();
-	for (; ind_to_remove != pf_entries.entries.end(); ++ind_to_remove)
+
+	if (const u32 port_id = static_cast<u32>(retro_atomic_exchange_64(&pf_entries.slots[page_fault_notification_entries::slot_of(addr)], 0)))
 	{
-		if (addr == ind_to_remove->start_addr)
-		{
-			break;
-		}
-	}
-	if (ind_to_remove != pf_entries.entries.end())
-	{
-		u32 port_id = ind_to_remove->port_id;
-		pf_entries.entries.erase(ind_to_remove);
-		lock.unlock();
 		sys_event_port_disconnect(ppu, port_id);
 		sys_event_port_destroy(ppu, port_id);
 	}
@@ -980,22 +1002,14 @@ error_code sys_mmapper_enable_page_fault_notification(ppu_thread& ppu, u32 start
 	sys_event_port_connect_local(ppu, *port_id, event_queue_id);
 
 	auto& pf_entries = g_fxo->get<page_fault_notification_entries>();
-	std::unique_lock lock(pf_entries.mutex);
 
 	// Return error code if page fault notifications are already enabled
-	for (const auto& entry : pf_entries.entries)
+	if (!retro_atomic_cas_64(&pf_entries.slots[page_fault_notification_entries::slot_of(start_addr)], 0, static_cast<s64>((u64{event_queue_id} << 32) | port_id->value())))
 	{
-		if (entry.start_addr == start_addr)
-		{
-			lock.unlock();
-			sys_event_port_disconnect(ppu, *port_id);
-			sys_event_port_destroy(ppu, *port_id);
-			return CELL_EBUSY;
-		}
+		sys_event_port_disconnect(ppu, *port_id);
+		sys_event_port_destroy(ppu, *port_id);
+		return CELL_EBUSY;
 	}
-
-	page_fault_notification_entry entry{ start_addr, event_queue_id, port_id->value() };
-	pf_entries.entries.emplace_back(entry);
 
 	return CELL_OK;
 }
@@ -1003,18 +1017,17 @@ error_code sys_mmapper_enable_page_fault_notification(ppu_thread& ppu, u32 start
 error_code mmapper_thread_recover_page_fault(cpu_thread* cpu)
 {
 	// We can only wake a thread if it is being suspended for a page fault.
-	auto& pf_events = g_fxo->get<page_fault_event_entries>();
 	{
-		std::lock_guard pf_lock(pf_events.pf_mutex);
-		const auto pf_event_ind = pf_events.events.find(cpu);
+		// One recovery wins the thread's mark
+		const s64 fault = retro_atomic_load_acquire_64(&cpu->pf_fault);
 
-		if (pf_event_ind == pf_events.events.end())
+		if (!(static_cast<u64>(fault) >> 32) || !retro_atomic_cas_64(&cpu->pf_fault, fault, 0))
 		{
 			// if not found...
 			return CELL_EINVAL;
 		}
 
-		pf_events.events.erase(pf_event_ind);
+		retro_atomic_fetch_add_int(&g_fxo->get<page_fault_event_entries>().faulted, -1);
 
 		if (cpu->get_class() == thread_class::ppu)
 		{

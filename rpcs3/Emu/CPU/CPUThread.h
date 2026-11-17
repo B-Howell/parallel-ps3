@@ -72,6 +72,11 @@ public:
 	// Public thread state
 	atomic_bs_t<cpu_flag> state{cpu_flag::stop + cpu_flag::wait};
 
+	// While the thread waits out a guest page fault sent to the game: bit 32
+	// set, the address faulted on in the low half. Taken by compare-and-swap,
+	// so one recovery wins (sys_mmapper)
+	retro_atomic_64_t pf_fault{0};
+
 	// Process thread state, return true if the checker must return
 	bool check_state() noexcept;
 

@@ -81,11 +81,22 @@ struct page_fault_notification_entry
 	u32 port_id; // Port used to notify the queue.
 };
 
-// Used to hold list of queues to be notified on page fault event.
+// The queues to be told of a page fault, no lock: one slot per 256 MB, as
+// the areas watched (sys_mmapper_allocate_address) start on such a bound
+// and are that big at least. A slot holds the queue's ID in the high half
+// and the port's in the low (never 0), 0 for none; set and cleared by
+// compare-and-swap
 struct page_fault_notification_entries
 {
-	std::vector<page_fault_notification_entry> entries;
-	shared_mutex mutex;
+	retro_atomic_64_t slots[16]{};
+
+	static u32 slot_of(u32 start_addr) { return start_addr >> 28; }
+
+	// The port of the area starting at @start_addr, 0 for none
+	u32 port_of(u32 start_addr)
+	{
+		return (start_addr & 0x0fffffff) ? 0 : static_cast<u32>(retro_atomic_load_acquire_64(&slots[slot_of(start_addr)]));
+	}
 
 	SAVESTATE_INIT_POS(44);
 
@@ -94,11 +105,12 @@ struct page_fault_notification_entries
 	void save(utils::serial& ar);
 };
 
+// A thread waiting out a page fault is marked in its own word
+// (cpu_thread::pf_fault); this counts them, so that freeing an area looks
+// at the threads only when there are any
 struct page_fault_event_entries
 {
-	// First = thread, second = addr
-	std::unordered_map<class cpu_thread*, u32> events;
-	shared_mutex pf_mutex;
+	retro_atomic_int_t faulted{0};
 };
 
 struct mmapper_unk_entry_struct0

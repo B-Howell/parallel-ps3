@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- Guest page faults take no lock and no clock:
+  - **The areas watched for faults** (`sys_mmapper_enable_page_fault_notification`) were a vector under a mutex, searched on every fault. They are now 16 slots, one per 256 MB, since such an area starts on that bound. Enabling takes a slot by compare-and-swap, freeing the area clears it, and a fault reads its slot with no search. Save states keep the format they had.
+  - **The threads waiting out a fault** were a map under a mutex. Each thread is now marked in its own word, set before the event goes so that the game's recovery finds it. A recovery takes the mark by compare-and-swap, so only one wins. Freeing an area looks at the threads' marks only while some thread is faulted.
+  - **A full event queue:** the faulting thread tried again every millisecond. It now waits for the game to take an event from the queue, or for the queue to go away, the port to be disconnected or the thread to stop, as the RSX's event sends already do.
+  - `std::lock_guard` count 200. A check fails if the lock or the clock comes back. No test drives it: a fault needs a guest page fault on a watched area, which only a game sets up. Not yet run on a game.
 - Four more places take no lock:
   - **The VFS:** mounting and unmounting were one at a time under a mutex. Each now publishes its changed copy of the tree with a compare-and-swap; one that loses to another is made again from the newer tree. The trees replaced are kept on a lock-free stack (`mpsc_stack`) until the manager goes. Lookups already took no lock.
   - **A PRX's exports:** loading and unloading them took the module's mutex, and unloading the module took it to wait out either. The module's state, won by compare-and-swap, already lets only one thread at them; unloading the module now waits on a busy count, woken as the last thread leaves.
