@@ -2941,7 +2941,8 @@ error_code raw_spu_create_interrupt_tag(u32 id, u32 class_id, u32 /*hwthread*/, 
 	{
 		shared_ptr<lv2_int_tag> result;
 
-		auto thread = idm::check_unlocked<named_thread<spu_thread>>(spu_thread::find_raw_spu(id));
+		// Counted: no lock over the IDs keeps the thread from being destroyed
+		const auto thread = idm::get_unlocked<named_thread<spu_thread>>(spu_thread::find_raw_spu(id));
 
 		if (!thread || *thread == thread_state::aborting || thread->get_type() != (isolated ? spu_type::isolated : spu_type::raw))
 		{

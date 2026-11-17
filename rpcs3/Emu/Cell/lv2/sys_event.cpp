@@ -786,7 +786,11 @@ error_code sys_event_port_connect_local(cpu_thread& cpu, u32 eport_id, u32 equeu
 
 	sys_event.warning("sys_event_port_connect_local(eport_id=0x%x, equeue_id=0x%x)", eport_id, equeue_id);
 
-	std::lock_guard lock(id_manager::g_mutex);
+	// sys_event_port_send reads the port's queue with no lock over the IDs,
+	// inside the port's entered function: it is let finish, and kept out,
+	// while the queue is changed. Closed first, the port is not withdrawn
+	// (sys_event_port_destroy waits for the answer) while it is looked at
+	const auto closed = idm::close<lv2_obj, lv2_event_port>(eport_id);
 
 	const auto port = idm::check_unlocked<lv2_obj, lv2_event_port>(eport_id);
 	auto queue = idm::get_unlocked<lv2_obj, lv2_event_queue>(equeue_id);
@@ -795,11 +799,6 @@ error_code sys_event_port_connect_local(cpu_thread& cpu, u32 eport_id, u32 equeu
 	{
 		return CELL_ESRCH;
 	}
-
-	// sys_event_port_send reads the port's queue with no lock over the IDs,
-	// inside the port's entered function: it is let finish, and kept out,
-	// while the queue is changed
-	const auto closed = idm::close<lv2_obj, lv2_event_port>(eport_id);
 
 	if (port->type != SYS_EVENT_PORT_LOCAL)
 	{
@@ -829,7 +828,8 @@ error_code sys_event_port_connect_ipc(ppu_thread& ppu, u32 eport_id, u64 ipc_key
 
 	auto queue = lv2_event_queue::find(ipc_key);
 
-	std::lock_guard lock(id_manager::g_mutex);
+	// As sys_event_port_connect_local
+	const auto closed = idm::close<lv2_obj, lv2_event_port>(eport_id);
 
 	const auto port = idm::check_unlocked<lv2_obj, lv2_event_port>(eport_id);
 
@@ -837,9 +837,6 @@ error_code sys_event_port_connect_ipc(ppu_thread& ppu, u32 eport_id, u64 ipc_key
 	{
 		return CELL_ESRCH;
 	}
-
-	// As sys_event_port_connect_local
-	const auto closed = idm::close<lv2_obj, lv2_event_port>(eport_id);
 
 	if (port->type != SYS_EVENT_PORT_IPC)
 	{
@@ -862,7 +859,8 @@ error_code sys_event_port_disconnect(ppu_thread& ppu, u32 eport_id)
 
 	sys_event.warning("sys_event_port_disconnect(eport_id=0x%x)", eport_id);
 
-	std::lock_guard lock(id_manager::g_mutex);
+	// As sys_event_port_connect_local
+	const auto closed = idm::close<lv2_obj, lv2_event_port>(eport_id);
 
 	const auto port = idm::check_unlocked<lv2_obj, lv2_event_port>(eport_id);
 
@@ -870,9 +868,6 @@ error_code sys_event_port_disconnect(ppu_thread& ppu, u32 eport_id)
 	{
 		return CELL_ESRCH;
 	}
-
-	// As sys_event_port_connect_local
-	const auto closed = idm::close<lv2_obj, lv2_event_port>(eport_id);
 
 	if (!lv2_obj::check(port->queue))
 	{

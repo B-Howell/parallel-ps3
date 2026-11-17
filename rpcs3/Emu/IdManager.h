@@ -42,8 +42,9 @@ namespace id_manager
 {
 	using pointer_keeper = std::function<void(void*)>;
 
-	// Common global mutex
-	extern shared_mutex g_mutex;
+	// IDs being made right now (idm::create_id): counted, so that a stop
+	// can wait for the threads being made to see it (wait_uncreating)
+	inline retro_atomic_int_t g_creating{};
 
 	// The calling thread's record of hazard cells (Utilities/lf_hazard.h):
 	// -2 until the thread first asks, -1 when there was none left for it
@@ -109,6 +110,35 @@ namespace id_manager
 	inline void wait_undecided(retro_atomic_int_t& word)
 	{
 		wait_while(word, [](int w) { return (w & id_deciding) != 0; });
+	}
+
+	// The ID's deciding mark taken, for this thread alone: a withdrawal, a
+	// removal or a close. One deciding on the ID already is waited for,
+	// woken by its answer (what the lock over the IDs made them before)
+	inline void claim_deciding(retro_atomic_int_t& word)
+	{
+		while (true)
+		{
+			const int w = retro_atomic_load_seq_cst_int(&word);
+
+			if (!(w & id_deciding))
+			{
+				if (retro_atomic_cas_int(&word, w, w | id_deciding))
+				{
+					return;
+				}
+
+				continue;
+			}
+
+			wait_undecided(word);
+		}
+	}
+
+	// Until no ID is being made: the threads being made see a stop
+	inline void wait_uncreating()
+	{
+		wait_while(g_creating, [](int w) { return (w & id_entered_mask) != 0; });
 	}
 
 	extern thread_local int g_hazard_record;
@@ -368,7 +398,70 @@ namespace id_manager
 		{
 			return m_value;
 		}
+
+		u64 packed() const noexcept
+		{
+			return u64{m_base} << 32 | m_value;
+		}
+
+		static id_key unpack(u64 w) noexcept
+		{
+			return id_key(static_cast<u32>(w), static_cast<u32>(w >> 32));
+		}
 	};
+
+	// An ID's key in one word, the type above the value: an ID is given out
+	// by a compare-and-swap on it, with no lock. Free while its type is umax
+	// (the value kept: the invalidation count goes on from it)
+	struct id_key_slot
+	{
+		retro_atomic_64_t word{static_cast<int64_t>(~u64{0} << 32)};
+
+		id_key load() const noexcept
+		{
+			return id_key::unpack(static_cast<u64>(retro_atomic_load_acquire_64(const_cast<retro_atomic_64_t*>(&word))));
+		}
+
+		void store(id_key k) noexcept
+		{
+			retro_atomic_store_release_64(&word, static_cast<int64_t>(k.packed()));
+		}
+
+		bool claim(id_key seen, id_key k) noexcept
+		{
+			return retro_atomic_cas_64(&word, static_cast<int64_t>(seen.packed()), static_cast<int64_t>(k.packed()));
+		}
+
+		u32 value() const noexcept
+		{
+			return load().value();
+		}
+
+		u32 type() const noexcept
+		{
+			return load().type();
+		}
+
+		// By the one removing the ID's object alone
+		void clear() noexcept
+		{
+			store(id_key(load().value(), umax));
+		}
+	};
+
+	// The highest index given out yet, plus one: raised, never lowered
+	inline void raise_highest(retro_atomic_int_t& highest, u32 to)
+	{
+		while (true)
+		{
+			const int h = retro_atomic_load_acquire_int(&highest);
+
+			if (static_cast<u32>(h) >= to || retro_atomic_cas_int(&highest, h, static_cast<int>(to)))
+			{
+				return;
+			}
+		}
+	}
 
 	template <typename T>
 	struct id_map
@@ -377,15 +470,13 @@ namespace id_manager
 
 		std::array<stx::atomic_ptr<T>, T::id_count> vec_data{};
 		std::array<stx::shared_ptr<T>, T::id_count> private_copy{};
-		std::array<id_key, T::id_count> vec_keys{};
-		u32 highest_index = 0;
+		std::array<id_key_slot, T::id_count> vec_keys{};
+		retro_atomic_int_t highest_index{};
 
 		// id_deciding while a withdrawal is asking its question about the
 		// ID's object and has not yet decided (see idm::still_named()),
 		// plus the number of threads it waits for first (idm::enter())
 		std::array<retro_atomic_int_t, T::id_count> closing{};
-
-		shared_mutex mutex{}; // TODO: Use this instead of global mutex
 
 		id_map() noexcept = default;
 
@@ -431,20 +522,23 @@ namespace id_manager
 				auto& obj = ::at32(vec_data, object_index);
 				ensure(!obj);
 
-				highest_index = std::max(highest_index, object_index + 1);
+				raise_highest(highest_index, object_index + 1);
 
-				vec_keys[object_index] = id_key(id, static_cast<u32>(static_cast<u64>(type_init_pos >> 64)));
+				vec_keys[object_index].store(id_key(id, static_cast<u32>(static_cast<u64>(type_init_pos >> 64))));
 				info->load(ar)(&obj);
 			}
 		}
 
 		void save(utils::serial& ar) requires IdmSavable<T>
 		{
-			for (const auto& p : vec_data)
+			for (usz i = 0; i < vec_data.size(); i++)
 			{
+				// Counted: no lock keeps a withdrawal from freeing it meanwhile
+				const auto p = vec_data[i].load();
+
 				if (!p) continue;
 
-				auto& key = vec_keys[&p - vec_data.data()];
+				const id_key key = vec_keys[i].load();
 
 				const u128 type_init_pos = u128{key.type()} << 64 | std::bit_cast<u64>(T::savestate_init_pos);
 				const typeinfo* info = nullptr;
@@ -459,13 +553,13 @@ namespace id_manager
 				}
 
 				// Save each object with needed information
-				if (info && info->savable(p.observe()))
+				if (info && info->savable(p.get()))
 				{
 					// Create a tag for each object
 					serial_breathe_and_tag(ar, g_fxo->get_name<id_map<T>>(), false);
 
 					ar(key.value(), key.type());
-					info->save(ar, p.observe());
+					info->save(ar, p.get());
 				}
 			}
 
@@ -475,15 +569,10 @@ namespace id_manager
 
 		id_map& operator=(thread_state state) noexcept requires (std::is_assignable_v<T&, thread_state>)
 		{
-			if (highest_index)
+			// Save all entries: counted loads, no lock
+			for (u32 i = 0, n = static_cast<u32>(retro_atomic_load_acquire_int(&highest_index)); i < n; i++)
 			{
-				reader_lock lock(g_mutex);
-
-				// Save all entries
-				for (u32 i = 0; i < highest_index; i++)
-				{
-					private_copy[i] = vec_data[i].load();
-				}
+				private_copy[i] = vec_data[i].load();
 			}
 
 			// Signal or join threads
@@ -586,31 +675,33 @@ class idm
 	}
 
 	// Prepare new ID (returns nullptr if out of resources)
-	static id_manager::id_key* allocate_id(std::span<id_manager::id_key> keys, u32& highest_index, u32 type_id, u32 dst_id, u32 base, u32 step, u32 count, bool uses_lowest_id, std::pair<u32, u32> invl_range);
+	static id_manager::id_key_slot* allocate_id(std::span<id_manager::id_key_slot> keys, retro_atomic_int_t& highest_index, u32 type_id, u32 dst_id, u32 base, u32 step, u32 count, bool uses_lowest_id, std::pair<u32, u32> invl_range);
 
 	// Get object by internal index if exists (additionally check type if types are not equal)
 	template <typename T, typename Type>
-	static std::pair<atomic_ptr<T>*, id_manager::id_key*> find_index(u32 index, u32 id)
+	static std::pair<atomic_ptr<T>*, id_manager::id_key_slot*> find_index(u32 index, u32 id)
 	{
 		static_assert(IdmTypesCompatible<T, Type>, "Invalid ID type combination");
 
 		auto& map = g_fxo->get<id_manager::id_map<T>>();
 
-		if (index >= map.highest_index)
+		if (index >= static_cast<u32>(retro_atomic_load_acquire_int(&map.highest_index)))
 		{
 			return {};
 		}
 
 		auto& data = map.vec_data[index];
-		auto& key = map.vec_keys[index];
+		auto& slot = map.vec_keys[index];
 
 		if (data)
 		{
+			const id_manager::id_key key = slot.load();
+
 			if (std::is_same_v<T, Type> || key.type() == get_type<Type>())
 			{
 				if (!id_manager::id_traits<Type>::invl_range.second || key.value() == id)
 				{
-					return { &data, &key };
+					return { &data, &slot };
 				}
 			}
 		}
@@ -620,7 +711,7 @@ class idm
 
 	// Find ID
 	template <typename T, typename Type>
-	static std::pair<atomic_ptr<T>*, id_manager::id_key*> find_id(u32 id)
+	static std::pair<atomic_ptr<T>*, id_manager::id_key_slot*> find_id(u32 id)
 	{
 		static_assert(IdmTypesCompatible<T, Type>, "Invalid ID type combination");
 
@@ -641,26 +732,31 @@ class idm
 		// Ensure make_typeinfo() is used for this type
 		[[maybe_unused]] auto& td = stx::typedata<id_manager::typeinfo, Type>();
 
-		// Allocate new id
-		std::lock_guard lock(id_manager::g_mutex);
+		// Allocate new id: its key claimed with a compare-and-swap, no lock.
+		// Counted as being made, for a stop to wait for (wait_uncreating)
+		(void)retro_atomic_fetch_add_seq_cst_int(&id_manager::g_creating, 1);
 
 		auto& map = g_fxo->get<id_manager::id_map<T>>();
+		stx::shared_ptr<Type> result;
 
 		if (auto* key_ptr = allocate_id({map.vec_keys.data(), map.vec_keys.size()}, map.highest_index, get_type<Type>(), id, traits::base, traits::step, traits::count, traits::uses_lowest_id, traits::invl_range))
 		{
 			auto& place = map.vec_data[key_ptr - map.vec_keys.data()];
 
-			// Get object, store it
+			// Get object, store it (found from here: the key is its own)
 			if (auto object = provider())
 			{
 				place = object;
-				return object;
+				result = std::move(object);
 			}
-
-			*key_ptr = {};
+			else
+			{
+				key_ptr->clear();
+			}
 		}
 
-		return {};
+		id_manager::release(id_manager::g_creating, 1);
+		return result;
 	}
 
 public:
@@ -669,8 +765,6 @@ public:
 	template <typename T>
 	static inline void clear()
 	{
-		std::lock_guard lock(id_manager::g_mutex);
-
 		auto& map = g_fxo->get<id_manager::id_map<T>>();
 
 		for (usz i = 0; i < map.vec_data.size(); i++)
@@ -767,37 +861,6 @@ public:
 	}
 
 	// Check the ID, access object under shared lock
-	template <typename T, typename Get = T, typename F, typename FRT = std::invoke_result_t<F, Get&>>
-		requires IdmTypesCompatible<T, Get>
-	static inline std::conditional_t<std::is_void_v<FRT>, Get*, return_pair<Get*, FRT>> check(u32 id, F&& func)
-	{
-		const u32 index = get_index<Get>(id);
-
-		if (index >= id_manager::id_traits<Get>::count)
-		{
-			return {};
-		}
-
-		reader_lock lock(id_manager::g_mutex);
-
-		if (const auto found = find_index<T, Get>(index, id); found.first)
-		{
-			const auto ptr = static_cast<Get*>(found.first->observe());
-
-			if constexpr (!std::is_void_v<FRT>)
-			{
-				return return_pair<Get*, FRT>{ptr, func(*ptr)};
-			}
-			else
-			{
-				func(*ptr);
-				return ptr;
-			}
-		}
-
-		return {};
-	}
-
 	// Get the object without locking (can be called from other method)
 	template <typename T, typename Get = T>
 		requires IdmTypesCompatible<T, Get>
@@ -813,48 +876,6 @@ public:
 		return static_cast<stx::shared_ptr<Get>>(found.first->load());
 	}
 
-	// Get the object, access object under reader lock
-	template <typename T, typename Get = T, typename F, typename FRT = std::invoke_result_t<F, Get&>>
-		requires IdmTypesCompatible<T, Get>
-	static inline std::conditional_t<std::is_void_v<FRT>, stx::shared_ptr<Get>, return_pair<stx::shared_ptr<Get>, FRT>> get(u32 id, F&& func)
-	{
-		const u32 index = get_index<Get>(id);
-
-		if (index >= id_manager::id_traits<Get>::count)
-		{
-			return {};
-		}
-
-		reader_lock lock(id_manager::g_mutex);
-
-		const auto found = find_index<T, Get>(index, id);
-
-		if (!found.first) [[unlikely]]
-		{
-			return {};
-		}
-
-		auto ptr = static_cast<stx::shared_ptr<Get>>(found.first->load());
-		Get* obj_ptr = ptr.get();
-
-		// It is there, under the lock. The compiler cannot tell: without
-		// this it warns that func may be writing to address zero.
-		if (!obj_ptr) [[unlikely]]
-		{
-			return {};
-		}
-
-		if constexpr (std::is_void_v<FRT>)
-		{
-			func(*obj_ptr);
-			return ptr;
-		}
-		else
-		{
-			return {std::move(ptr), func(*obj_ptr)};
-		}
-	}
-
 	static constexpr std::false_type unlocked{};
 
 	// Access all objects of specified type. Returns the number of objects processed.
@@ -865,8 +886,9 @@ public:
 	{
 		static_assert((IdmTypesCompatible<T, Get> && ...), "Invalid ID type combination");
 
-		[[maybe_unused]] std::conditional_t<!!Lock(), reader_lock, const shared_mutex&> lock(id_manager::g_mutex);
-
+		// No lock: each object is held by a counted reference while func
+		// looks at it, so a withdrawal meanwhile does not free it (Lock is
+		// kept for the callers that said they held one)
 		using func_traits = function_traits<decltype(&decltype(std::function(std::declval<F>()))::operator())>;
 		using object_type = typename func_traits::object_type;
 		using result_type = typename func_traits::result_type;
@@ -877,11 +899,26 @@ public:
 
 		auto& map = g_fxo->get<id_manager::id_map<T>>();
 
-		for (auto& id : map.vec_data)
+		for (usz i = 0; i < map.vec_data.size(); i++)
 		{
-			if (auto ptr = static_cast<object_type*>(id.observe()))
+			auto& id = map.vec_data[i];
+
+			if (!id.observe())
 			{
-				auto& key = map.vec_keys[&id - map.vec_data.data()];
+				continue;
+			}
+
+			if (auto held = id.load())
+			{
+				const id_manager::id_key key = map.vec_keys[i].load();
+
+				// Replaced since it was loaded: the key read is another's
+				if (id.observe() != held.get())
+				{
+					continue;
+				}
+
+				const auto ptr = static_cast<object_type*>(held.get());
 
 				if (sizeof...(Get) == 0 || ((key.type() == get_type<Get>()) || ...))
 				{
@@ -894,7 +931,7 @@ public:
 					{
 						if ((result.ret = func(key, *ptr)))
 						{
-							result.ptr = static_cast<stx::shared_ptr<object_type>>(id.load());
+							result.ptr = static_cast<stx::shared_ptr<object_type>>(std::move(held));
 							break;
 						}
 					}
@@ -905,42 +942,72 @@ public:
 		return result;
 	}
 
+	// The removal of an ID's object (remove, remove_verify, withdraw), with
+	// no lock: the ID's deciding mark taken for this thread alone (unless
+	// the caller holds it already, by idm::close: @claim false), the object
+	// found and, when @check says so, taken out; then the threads entered on
+	// the ID and pinning the object are waited for before the key is let
+	// go, so that its place is not given to another object while they look.
+	template <typename T, typename Get, typename Check>
+	static inline stx::shared_ptr<T> take_out(u32 id, bool claim, Check&& check)
+	{
+		const u32 index = get_index<Get>(id);
+
+		if (index >= id_manager::id_traits<Get>::count)
+		{
+			return {};
+		}
+
+		retro_atomic_int_t& closing = g_fxo->get<id_manager::id_map<T>>().closing[index];
+
+		if (claim)
+		{
+			id_manager::claim_deciding(closing);
+		}
+
+		stx::shared_ptr<T> ptr;
+		const auto found = find_index<T, Get>(index, id);
+		const bool take = found.first && check(*found.first);
+		const T* removed = take ? found.first->observe() : nullptr;
+
+		if (take)
+		{
+			ptr = found.first->exchange(null_ptr);
+			id_manager::wait_unentered(closing);
+		}
+
+		// The answer given before the pins are waited for: a thread that
+		// pinned the object may be asking still_named() for it
+		if (claim)
+		{
+			id_manager::release(closing, id_manager::id_deciding);
+		}
+
+		if (take)
+		{
+			id_manager::wait_unpinned(removed);
+			found.second->clear();
+		}
+
+		return ptr;
+	}
+
 	// Remove the ID
 	template <typename T, typename Get = T>
 		requires IdmTypesCompatible<T, Get>
 	static inline bool remove(u32 id)
 	{
-		stx::shared_ptr<T> ptr;
+		const auto ptr = take_out<T, Get>(id, true, [](const atomic_ptr<T>&) { return true; });
+
+		if (!ptr)
 		{
-			const u32 index = get_index<Get>(id);
-
-			if (index >= id_manager::id_traits<Get>::count)
-			{
-				return false;
-			}
-
-			std::lock_guard lock(id_manager::g_mutex);
-
-			if (const auto found = find_index<T, Get>(index, id); found.first)
-			{
-				ptr = found.first->exchange(null_ptr);
-				found.second->clear();
-				id_manager::wait_unentered(g_fxo->get<id_manager::id_map<T>>().closing[index]);
-				id_manager::wait_unpinned(ptr.get());
-			}
-			else
-			{
-				return false;
-			}
+			return false;
 		}
 
 		if constexpr (std::is_assignable_v<Get&, thread_state>)
 		{
-			if (ptr)
-			{
-				constexpr thread_state destroying_context{7};
-				*static_cast<Get*>(ptr.get()) = destroying_context;
-			}
+			constexpr thread_state destroying_context{7};
+			*static_cast<Get*>(ptr.get()) = destroying_context;
 		}
 
 		return true;
@@ -951,72 +1018,36 @@ public:
 		requires IdmTypesCompatible<T, Get> && std::is_convertible_v<Lock, bool>
 	static inline bool remove_verify(u32 id, Ptr&& sptr, Lock = std::true_type{})
 	{
-		stx::shared_ptr<T> ptr;
+		const auto ptr = take_out<T, Get>(id, !!Lock(), [&](const atomic_ptr<T>& data) { return data.is_equal(sptr); });
+
+		if (!ptr)
 		{
-			const u32 index = get_index<Get>(id);
-
-			if (index >= id_manager::id_traits<Get>::count)
-			{
-				return false;
-			}
-
-			[[maybe_unused]] std::conditional_t<!!Lock(), std::lock_guard<shared_mutex>, const shared_mutex&> lock(id_manager::g_mutex);
-
-			if (const auto found = find_index<T, Get>(index, id); found.first && found.first->is_equal(sptr))
-			{
-				ptr = found.first->exchange(null_ptr);
-				found.second->clear();
-				id_manager::wait_unentered(g_fxo->get<id_manager::id_map<T>>().closing[index]);
-				id_manager::wait_unpinned(ptr.get());
-			}
-			else
-			{
-				return false;
-			}
+			return false;
 		}
 
 		if constexpr (std::is_assignable_v<Get&, thread_state>)
 		{
-			if (ptr)
-			{
-				constexpr thread_state destroying_context{7};
-				*static_cast<Get*>(ptr.get()) = destroying_context;
-			}
+			constexpr thread_state destroying_context{7};
+			*static_cast<Get*>(ptr.get()) = destroying_context;
 		}
 
 		return true;
 	}
 
-	// Remove the ID and return the object
+	// Remove the ID and return the object (Lock false: the caller holds the
+	// ID closed, idm::close)
 	template <typename T, typename Get = T, typename Lock = std::true_type>
 		requires IdmTypesCompatible<T, Get>
 	static inline stx::shared_ptr<Get> withdraw(u32 id, int = 0, Lock = std::true_type{})
 	{
-		stx::shared_ptr<Get> ptr;
-		{
-			const u32 index = get_index<Get>(id);
-
-			if (index >= id_manager::id_traits<Get>::count)
-			{
-				return ptr;
-			}
-
-			[[maybe_unused]] std::conditional_t<!!Lock(), std::lock_guard<shared_mutex>, const shared_mutex&> lock(id_manager::g_mutex);
-
-			if (const auto found = find_index<T, Get>(index, id); found.first)
-			{
-				const T* removed = found.first->observe();
-				ptr = static_cast<stx::shared_ptr<Get>>(found.first->exchange(null_ptr));
-				found.second->clear();
-				id_manager::wait_unentered(g_fxo->get<id_manager::id_map<T>>().closing[index]);
-				id_manager::wait_unpinned(removed);
-			}
-		}
-
-		return ptr;
+		return static_cast<stx::shared_ptr<Get>>(take_out<T, Get>(id, !!Lock(), [](const atomic_ptr<T>&) { return true; }));
 	}
 
-	// Remove the ID after accessing the object under writer lock, return the object and propagate return value
+	// Remove the ID after func has looked at the object and said yes, return the
+	// object and propagate return value. While func decides, the ID is this
+	// thread's alone - another withdrawal or a close waits for its answer, and
+	// a thread that acted on the object without a lock waits to hear it
+	// (still_named) - with no lock over the IDs
 	template <typename T, typename Get = T, typename F, typename FRT = std::invoke_result_t<F, Get&>>
 		requires IdmTypesCompatible<T, Get> && std::is_invocable_v<F, Get&>
 	static inline std::conditional_t<std::is_void_v<FRT>, stx::shared_ptr<Get>, return_pair<stx::shared_ptr<Get>, FRT>> withdraw(u32 id, F&& func)
@@ -1028,58 +1059,63 @@ public:
 			return {};
 		}
 
-		std::unique_lock lock(id_manager::g_mutex);
+		// The mark taken first: what a thread acting on the object without
+		// a lock did before it looks at the mark is seen by func
+		retro_atomic_int_t& closing = g_fxo->get<id_manager::id_map<T>>().closing[index];
+		id_manager::claim_deciding(closing);
 
-		if (const auto found = find_index<T, Get>(index, id); found.first)
+		const auto found = find_index<T, Get>(index, id);
+
+		if (!found.first)
 		{
-			const T* removed = found.first->observe();
-			const auto _ptr = static_cast<Get*>(found.first->observe());
-
-			// From here until the ID is gone or kept, a thread that acted on
-			// the object without the lock waits to hear which (still_named).
-			// An exchange, for the barrier: what such a thread did before it
-			// looks at this is seen by func.
-			retro_atomic_int_t& closing = g_fxo->get<id_manager::id_map<T>>().closing[index];
-			(void)retro_atomic_fetch_add_seq_cst_int(&closing, id_manager::id_deciding);
-
-			// Threads that are making themselves known to func right now
-			// (idm::enter) finish first: a few instructions each
-			id_manager::wait_unentered(closing);
-
-			if constexpr (std::is_void_v<FRT>)
-			{
-				func(*_ptr);
-				found.second->clear();
-				auto result = static_cast<stx::shared_ptr<Get>>(found.first->exchange(null_ptr));
-				id_manager::release(closing, id_manager::id_deciding);
-				id_manager::wait_unpinned(removed);
-				return result;
-			}
-			else
-			{
-				FRT ret = func(*_ptr);
-
-				if (ret)
-				{
-					// If return value evaluates to true, don't delete the object (error code)
-					id_manager::release(closing, id_manager::id_deciding);
-					return {static_cast<stx::shared_ptr<Get>>(found.first->load()), std::move(ret)};
-				}
-
-				found.second->clear();
-				auto result = static_cast<stx::shared_ptr<Get>>(found.first->exchange(null_ptr));
-				id_manager::release(closing, id_manager::id_deciding);
-				id_manager::wait_unpinned(removed);
-				return {std::move(result), std::move(ret)};
-			}
+			id_manager::release(closing, id_manager::id_deciding);
+			return {};
 		}
 
-		return {};
+		const T* removed = found.first->observe();
+		const auto _ptr = static_cast<Get*>(found.first->observe());
+
+		// Threads that are making themselves known to func right now
+		// (idm::enter) finish first: a few instructions each
+		id_manager::wait_unentered(closing);
+
+		const auto take = [&]()
+		{
+			auto result = static_cast<stx::shared_ptr<Get>>(found.first->exchange(null_ptr));
+
+			// The answer given before the pins are waited for: a thread that
+			// pinned the object may be asking still_named() for it. The key
+			// is let go after them, its place not given again before
+			id_manager::release(closing, id_manager::id_deciding);
+			id_manager::wait_unpinned(removed);
+			found.second->clear();
+			return result;
+		};
+
+		if constexpr (std::is_void_v<FRT>)
+		{
+			func(*_ptr);
+			return take();
+		}
+		else
+		{
+			FRT ret = func(*_ptr);
+
+			if (ret)
+			{
+				// If return value evaluates to true, don't delete the object (error code)
+				auto kept = static_cast<stx::shared_ptr<Get>>(found.first->load());
+				id_manager::release(closing, id_manager::id_deciding);
+				return {std::move(kept), std::move(ret)};
+			}
+
+			return {take(), std::move(ret)};
+		}
 	}
 
 	// An object found by its ID with no lock and no reference counted
 	// (pin()). It is not freed while this is alive - which is to be a few
-	// instructions: no waiting, no taking of id_manager::g_mutex, since
+	// instructions: no waiting, since
 	// whoever removes the ID waits for this to go.
 	template <typename Get>
 	struct pinned
@@ -1249,7 +1285,7 @@ public:
 	// What idm::enter gives: while it is alive, a withdrawal that asks a
 	// question about the object (withdraw with a function) waits before
 	// asking. To be alive for a few instructions only: no sleeping, no
-	// taking of id_manager::g_mutex.
+	// waiting on another ID.
 	struct entered
 	{
 		retro_atomic_int_t* word = nullptr;
@@ -1407,8 +1443,8 @@ public:
 	// check() without the lock: the function runs with the ID entered, so
 	// the object stays, and a withdrawal that asks a question waits for
 	// the function before asking - what the reader lock gave, for this ID
-	// alone. The function is to be short: no sleeping, no taking of
-	// id_manager::g_mutex. As with check(), the pointer returned is not a
+	// alone. The function is to be short: no sleeping, no waiting on
+	// another ID. The pointer returned is not a
 	// reference.
 	template <typename T, typename Get = T, typename F, typename FRT = std::invoke_result_t<F, Get&>>
 		requires IdmTypesCompatible<T, Get>
@@ -1485,18 +1521,27 @@ public:
 		}
 	};
 
-	// For code that holds id_manager::g_mutex and is about to change
-	// something in an ID's object that entered functions read without a
-	// lock of the object's own (an event port's queue, say): the ID is
-	// marked as for a withdrawal and the threads inside are waited for.
+	// For code about to change something in an ID's object that entered
+	// functions read without a lock of the object's own (an event port's
+	// queue, say): the ID is marked as for a withdrawal, for this thread
+	// alone (another deciding on it is waited for), and the threads inside
+	// are waited for.
 	template <typename T, typename Get = T>
 		requires IdmTypesCompatible<T, Get>
 	static inline closed close(u32 id)
 	{
 		closed result;
-		retro_atomic_int_t& word = g_fxo->get<id_manager::id_map<T>>().closing[get_index<Get>(id)];
+		const u32 index = get_index<Get>(id);
 
-		(void)retro_atomic_fetch_add_seq_cst_int(&word, id_manager::id_deciding);
+		// No such ID can be: nothing to close
+		if (index >= id_manager::id_traits<Get>::count)
+		{
+			return result;
+		}
+
+		retro_atomic_int_t& word = g_fxo->get<id_manager::id_map<T>>().closing[index];
+
+		id_manager::claim_deciding(word);
 		id_manager::wait_unentered(word);
 
 		result.word = &word;

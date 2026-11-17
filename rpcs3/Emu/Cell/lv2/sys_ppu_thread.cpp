@@ -24,11 +24,13 @@ LOG_CHANNEL(sys_ppu_thread);
 // Simple structure to cleanup previous thread, because can't remove its own thread
 struct ppu_thread_cleaner
 {
-	shared_ptr<named_thread<ppu_thread>> old;
+	// The last thread to leave the IDs, to be joined: exchanged as the next
+	// one leaves, read at a stop - no lock
+	atomic_ptr<named_thread<ppu_thread>> old;
 
 	shared_ptr<named_thread<ppu_thread>> clean(shared_ptr<named_thread<ppu_thread>> ptr)
 	{
-		return std::exchange(old, std::move(ptr));
+		return old.exchange(std::move(ptr));
 	}
 
 	ppu_thread_cleaner() = default;
@@ -39,12 +41,10 @@ struct ppu_thread_cleaner
 
 	ppu_thread_cleaner& operator=(thread_state state) noexcept
 	{
-		reader_lock lock(id_manager::g_mutex);
-
-		if (old)
+		if (const auto ptr = old.load())
 		{
 			// It is detached from IDM now so join must be done explicitly now
-			*static_cast<named_thread<ppu_thread>*>(old.get()) = state;
+			*static_cast<named_thread<ppu_thread>*>(ptr.get()) = state;
 		}
 
 		return *this;
@@ -93,15 +93,13 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 		lv2_obj::notify_all_t notify;
 		lv2_obj::prepare_for_sleep(ppu);
 
-		std::lock_guard lock(id_manager::g_mutex);
-
-		// Joining, detaching and the other calls on this thread's ID no
-		// longer take the lock over the IDs: they count themselves in on
-		// the ID. What this lock kept from them is kept this way - the ones
-		// inside finish first, and no other gets in until the thread has
-		// settled its joiner and, if nobody will join it, left the IDs. A
-		// join that had named itself the joiner is asleep by then, so the
-		// wake-up below finds it.
+		// Joining, detaching and the other calls on this thread's ID count
+		// themselves in on the ID, with no lock over the IDs: the ID closed,
+		// the ones inside finish first, and no other gets in until the
+		// thread has settled its joiner and, if nobody will join it, left the
+		// IDs (withdrawn while closed: std::false_type). A join that had
+		// named itself the joiner is asleep by then, so the wake-up below
+		// finds it.
 		const auto closed = idm::close<named_thread<ppu_thread>>(ppu.id);
 
 		// Get joiner ID

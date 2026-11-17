@@ -1780,12 +1780,11 @@ int main()
 
 				if (n % 3)
 				{
-					std::lock_guard lock(id_manager::g_mutex);
+					// As sys_event_port_connect_local: closed first, then looked at
+					const auto closed = idm::close<lv2_obj, lv2_event_port>(id);
 
 					if (const auto port = idm::check_unlocked<lv2_obj, lv2_event_port>(id))
 					{
-						const auto closed = idm::close<lv2_obj, lv2_event_port>(id);
-
 						if (retro_atomic_load_acquire_int(&s_inside6[place(id)]))
 							retro_atomic_fetch_add_int(&s_bad6, 1);
 
@@ -1905,7 +1904,7 @@ int main()
 			std::printf("  spu: an inbound mailbox reserved by 4 threads at once 2000 times, %d wrong\n", wrong);
 		}
 
-		// What a lookup costs one thread: the reader lock, and the pin
+		// What a lookup costs one thread: entered, and the pin
 		{
 			const u32 id = make_mutex();
 			constexpr int rounds = 5000000;
@@ -1915,7 +1914,7 @@ int main()
 			clock_gettime(CLOCK_MONOTONIC, &t0);
 			for (int i = 0; i < rounds; i++)
 			{
-				const auto found = idm::check<lv2_obj, lv2_mutex>(id, [&](lv2_mutex& mutex) { return mutex.recursive; });
+				const auto found = idm::check_entered<lv2_obj, lv2_mutex>(id, [&](lv2_mutex& mutex) { return mutex.recursive; });
 				sink += found.ret;
 			}
 			clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -1930,16 +1929,16 @@ int main()
 			{
 				return ((b.tv_sec - a.tv_sec) * 1e9 + (b.tv_nsec - a.tv_nsec)) / rounds;
 			};
-			std::printf("  id lookup, one thread: %.1f ns under the reader lock, %.1f ns pinned (%llu)\n", ns(t0, t1), ns(t1, t2), static_cast<unsigned long long>(sink));
+			std::printf("  id lookup, one thread: %.1f ns entered, %.1f ns pinned (%llu)\n", ns(t0, t1), ns(t1, t2), static_cast<unsigned long long>(sink));
 
 			// And with the object kept, as a thread that may sleep keeps it:
-			// idm::get, and its two replacements
+			// counted with no pin first (get_unlocked), held and entered
 			timespec t3, t4, t5, t6;
 			clock_gettime(CLOCK_MONOTONIC, &t3);
 			for (int i = 0; i < rounds; i++)
 			{
-				const auto found = idm::get<lv2_obj, lv2_mutex>(id, [&](lv2_mutex& mutex) { return mutex.recursive; });
-				sink += found.ret;
+				const auto found = idm::get_unlocked<lv2_obj, lv2_mutex>(id);
+				sink += found->recursive;
 			}
 			clock_gettime(CLOCK_MONOTONIC, &t4);
 			for (int i = 0; i < rounds; i++)
@@ -1954,7 +1953,7 @@ int main()
 				sink += found.ret;
 			}
 			clock_gettime(CLOCK_MONOTONIC, &t6);
-			std::printf("  id lookup keeping the object, one thread: %.1f ns under the reader lock, %.1f ns held, %.1f ns entered (%llu)\n", ns(t3, t4), ns(t4, t5), ns(t5, t6), static_cast<unsigned long long>(sink));
+			std::printf("  id lookup keeping the object, one thread: %.1f ns counted, %.1f ns held, %.1f ns entered (%llu)\n", ns(t3, t4), ns(t4, t5), ns(t5, t6), static_cast<unsigned long long>(sink));
 
 			// And idm::check's replacement, which keeps nothing
 			timespec t7;

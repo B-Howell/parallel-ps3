@@ -3353,10 +3353,8 @@ void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savesta
 				Resume();
 			}, nullptr, true, read_counter);
 
-			std::shared_lock rlock(id_manager::g_mutex, std::defer_lock); 
-
 			// Check if the EXITGAME signal was read. We allow the game to terminate itself if that's the case.
-			if (!read_sysutil_signal && read_counter != get_sysutil_cb_manager_read_count() && rlock.try_lock())
+			if (!read_sysutil_signal && read_counter != get_sysutil_cb_manager_read_count())
 			{
 				sys_log.notice("The game received the exit request. Waiting for it to terminate itself...");
 				kill_timeout_ms += 5000; // Grant a couple more seconds
@@ -3366,12 +3364,7 @@ void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savesta
 				idm::select<named_thread<ppu_thread>>([&](u32 id, cpu_thread&)
 				{
 					ppu_thread_list.emplace_back(idm::get_unlocked<named_thread<ppu_thread>>(id));
-				}, idm::unlocked);
-			}
-
-			if (rlock)
-			{
-				rlock.unlock();
+				});
 			}
 
 			if (static_cast<u64>(info) != m_stop_ctr || Emu.IsStopped())
@@ -3672,8 +3665,9 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 
 	sys_log.notice("All emulation threads have been signaled.");
 
-	// Wait fot newly created cpu_thread to see that emulation has been stopped
-	id_manager::g_mutex.lock_unlock();
+	// Wait fot newly created cpu_thread to see that emulation has been stopped:
+	// the IDs being made now are made (a wait on their count, no lock)
+	id_manager::wait_uncreating();
 
 	// Type-less smart pointer container for thread (cannot know its type with this approach)
 	// There is no race condition because it is only accessed by the same thread

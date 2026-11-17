@@ -68,6 +68,8 @@ lv2_memory::lv2_memory(utils::serial& ar)
 	, shm(null_ptr)
 {
 	const u32 addr{ar};
+	// What a savestate brings back has its memory taken already
+	retro_atomic_store_release_int(&holds, 1);
 	retro_atomic_store_release_int(&counter, static_cast<int>(ar.pop<u32>()));
 	retro_atomic_store_release_int(&external_refs, static_cast<int>(ar.pop<u32>()));
 
@@ -85,8 +87,9 @@ lv2_memory::lv2_memory(utils::serial& ar)
 
 CellError lv2_memory::on_id_create()
 {
-	if (!retro_atomic_load_acquire_int(&exists) && !retro_atomic_load_acquire_int(&external_refs) && ct && !ct->take(size))
+	if (!retro_atomic_exchange_int(&holds, 1) && ct && !ct->take(size))
 	{
+		retro_atomic_store_release_int(&holds, 0);
 		sys_mmapper.error("lv2_memory::on_id_create(): Cannot allocate 0x%x bytes (0x%x available)", size, ct->size - ct->used_now());
 		return CELL_ENOMEM;
 	}
@@ -158,8 +161,16 @@ void lv2_memory::save_data(utils::serial& ar)
 
 void lv2_memory::release_memory()
 {
-	// the caller holds the id manager lock
-	if (retro_atomic_load_acquire_int(&exists) || retro_atomic_load_acquire_int(&external_refs))
+	// No lock over the IDs: the game's free (exists gone) and audio's last
+	// reference (external_refs gone) both come here once their count is
+	// down, each looking at the other's after its own (sequentially
+	// consistent), and the one that takes holds gives the memory back
+	if (retro_atomic_load_seq_cst_int(&exists) || retro_atomic_load_seq_cst_int(&external_refs))
+	{
+		return;
+	}
+
+	if (!retro_atomic_exchange_int(&holds, 0))
 	{
 		return;
 	}

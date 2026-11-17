@@ -432,8 +432,9 @@ namespace
 	{
 		if (memory)
 		{
-			std::lock_guard lock(id_manager::g_mutex);
-			ensure(retro_atomic_fetch_add_int(&memory->external_refs, -1));
+			// No lock over the IDs: whichever of this and the memory's free
+			// sees both its references gone releases it, once (release_memory)
+			ensure(retro_atomic_fetch_add_seq_cst_int(&memory->external_refs, -1));
 			memory->release_memory();
 			memory.reset();
 		}

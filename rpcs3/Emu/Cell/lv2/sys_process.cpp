@@ -460,7 +460,6 @@ void lv2_exitspawn(ppu_thread& ppu, std::vector<std::string>& argv, std::vector<
 
 		if (!is_real_reboot)
 		{
-			reader_lock rlock{id_manager::g_mutex};
 			g_fxo->get<id_map<lv2_memory_container>>().save(*idm_capture);
 			stx::serial_breathe_and_tag(*idm_capture, "id_map<lv2_memory_container>", false);
 		}

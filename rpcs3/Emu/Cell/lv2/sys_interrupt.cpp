@@ -137,6 +137,13 @@ error_code _sys_interrupt_thread_establish(ppu_thread& ppu, vm::ptr<u32> ih, u32
 
 	CellError error = CELL_EAGAIN;
 
+	// The tag closed while the handler is made: no lock over the IDs keeps it
+	// from being destroyed (sys_interrupt_tag_destroy waits for the answer),
+	// and a raw SPU raising an interrupt reads its handler with no lock,
+	// counted in on the tag's ID (spu_int_ctrl_t::set): it is let finish
+	// before the handler it may be reading is replaced
+	const auto closed = idm::close<lv2_obj, lv2_int_tag>(intrtag);
+
 	const u32 id = idm::import<lv2_obj, lv2_int_serv>([&]()
 	{
 		shared_ptr<lv2_int_serv> result;
@@ -175,13 +182,7 @@ error_code _sys_interrupt_thread_establish(ppu_thread& ppu, vm::ptr<u32> ih, u32
 
 		result = make_shared<lv2_int_serv>(it, arg1, arg2);
 
-		{
-			// A raw SPU raising an interrupt reads the tag's handler with no
-			// lock, counted in on the tag's ID (spu_int_ctrl_t::set): it is
-			// let finish before the handler it may be reading is replaced
-			const auto closed = idm::close<lv2_obj, lv2_int_tag>(intrtag);
-			tag->handler = result;
-		}
+		tag->handler = result;
 
 		it->cmd_list
 		({

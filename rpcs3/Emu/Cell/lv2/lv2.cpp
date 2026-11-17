@@ -2098,12 +2098,9 @@ void lv2_obj::make_scheduler_ready()
 
 std::pair<ppu_thread_status, u32> lv2_obj::ppu_state(ppu_thread* ppu, bool lock_idm, bool /*lock_lv2*/)
 {
-	std::optional<reader_lock> opt_lock;
-
-	if (lock_idm)
-	{
-		opt_lock.emplace(id_manager::g_mutex);
-	}
+	// No lock over the IDs: the caller holds the thread (lock_idm is kept
+	// for its callers)
+	(void)lock_idm;
 
 	if (!Emu.IsReady() ? ppu->state.all_of(cpu_flag::stop) : ppu->stop_flag_removal_protection)
 	{
