@@ -111,10 +111,7 @@ void config_event_entry(ppu_thread& ppu)
 			return;
 		}
 
-		// Some delay
-		thread_ctrl::wait_for(10000);
-
-		// Wakeup
+		// Wakeup (it slept 10 ms here first, for no reason given)
 		ppu.check_state();
 		ppu.state += cpu_flag::wait;
 
@@ -126,17 +123,9 @@ void config_event_entry(ppu_thread& ppu)
 
 		if (arg1 == 1)
 		{
-			while (!cellPad_NotifyStateChange(arg2, arg3, false))
-			{
-				if (!retro_atomic_load_acquire_int(&queue->exists))
-				{
-					// Exit condition
-					queue = null_ptr;
-					break;
-				}
-
-				thread_ctrl::wait_for(100);
-			}
+			// Takes no lock and always succeeds: the 100 microsecond poll
+			// for it to is gone
+			cellPad_NotifyStateChange(arg2, arg3, false);
 		}
 	}
 

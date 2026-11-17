@@ -26,6 +26,7 @@
 #include <queue>
 #include <cmath>
 #include <queues/retro_deque.h>
+#include <queues/mpsc_stack.h>
 #include "Utilities/lockless.h"
 #include <variant>
 #include "util/asm.hpp"
@@ -253,6 +254,14 @@ struct vdec_context final
 	u64 next_dts{};
 	atomic_t<u32> ppu_tid{};
 
+	// Closed: the reaper's (vdec_context_reaper), until it lets go
+	struct reap_node
+	{
+		mpsc_stack_node_t link; // first: the node is the struct
+		vdec_context* owner;
+	} reap_link{{}, this};
+	shared_ptr<vdec_context> reap_ref{};
+
 	const u32 out_max = 60;
 	vdec_frames_t decoded{};   // the decoder thread's own: the pictures of the AU it is on
 
@@ -424,6 +433,7 @@ struct vdec_context final
 	{
 
 		ppu_tid.release(ppu.id);
+		ppu_tid.notify_all(); // cellVdecClose may be waiting for it
 
 		for (auto slice = in_cmd.pop_all(); thread_ctrl::state() != thread_state::aborting; [&]
 		{
@@ -737,31 +747,57 @@ struct vdec_context final
 
 // Frees the decoders of closed contexts on a host thread.
 // Freeing a decoder takes milliseconds, which would otherwise delay the guest thread closing it.
+// A closed context is pushed by its own node (mpsc_stack): nothing is
+// allocated, and the reaper waits for the next one, no sleep.
 struct vdec_context_reaper
 {
-	lf_queue<shared_ptr<vdec_context>> contexts;
+	mpsc_stack_t contexts{};
+	atomic_t<u32> pushed = 0;
+
+	vdec_context_reaper()
+	{
+		mpsc_stack_init(&contexts);
+	}
+
+	void reap_later(shared_ptr<vdec_context> vdec)
+	{
+		vdec_context* const ctx = vdec.get();
+		ctx->reap_ref = std::move(vdec);
+		mpsc_stack_push(&contexts, &ctx->reap_link.link);
+		pushed++;
+		pushed.notify_one();
+	}
+
+	void reap()
+	{
+		for (mpsc_stack_node_t* node = mpsc_stack_drain(&contexts); node;)
+		{
+			mpsc_stack_node_t* const next = node->next;
+			vdec_context* const ctx = reinterpret_cast<vdec_context::reap_node*>(node)->owner;
+
+			// Let go: freed here, or - still used by an HLE call in progress -
+			// by that call as it lets go (~vdec_context frees the decoder)
+			shared_ptr<vdec_context> ref = std::move(ctx->reap_ref);
+			ref.reset();
+			node = next;
+		}
+	}
 
 	void operator()()
 	{
 		while (thread_ctrl::state() != thread_state::aborting)
 		{
-			thread_ctrl::wait_on(contexts);
+			const u32 seen = pushed.load();
 
-			// Let the closing sequence of the caller complete first: freeing this much memory slows down the other threads
-			thread_ctrl::wait_for(100'000);
+			reap();
 
-			for (auto&& vdec : contexts.pop_all())
+			if (mpsc_stack_empty(&contexts))
 			{
-				if (vdec.use_count() > 1)
-				{
-					// Still used by an HLE call in progress, retry later
-					contexts.push(std::move(vdec));
-					continue;
-				}
-
-				vdec->release_decoder();
+				thread_ctrl::wait_on(pushed, seen);
 			}
 		}
+
+		reap();
 	}
 
 	static constexpr auto thread_name = "HLE Video Decoder Reaper"sv;
@@ -1589,9 +1625,27 @@ error_code cellVdecClose(ppu_thread& ppu, u32 handle)
 	retro_waitaddr_notify_all(&vdec->out_taken); // a decoder thread waiting for room looks again
 	vdec->in_cmd.push(vdec_cmd(vdec_cmd_type::close, seq_id, cmd_id));
 
-	while (!vdec->ppu_tid)
+	// Woken as its thread starts (exec), or as this one stops - no poll
+	while (!vdec->ppu_tid && !ppu.is_stopped())
 	{
-		thread_ctrl::wait_for(1000);
+		const auto old_state = +ppu.state;
+
+		if (vdec->ppu_tid || ::is_stopped(old_state))
+		{
+			break;
+		}
+
+		thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+		{
+			list.template set<0>(ppu.state, old_state);
+			list.template set<1>(vdec->ppu_tid, 0u);
+		});
+	}
+
+	if (!vdec->ppu_tid)
+	{
+		// The emulator is stopping (this waited forever before)
+		return {};
 	}
 
 	const u32 tid = vdec->ppu_tid.exchange(-1);
@@ -1610,7 +1664,7 @@ error_code cellVdecClose(ppu_thread& ppu, u32 handle)
 	}
 
 	// Let the reaper free the decoder so that the caller does not pay for it
-	g_fxo->get<named_thread<vdec_context_reaper>>().contexts.push(std::move(vdec));
+	g_fxo->get<named_thread<vdec_context_reaper>>().reap_later(std::move(vdec));
 
 	return CELL_OK;
 }

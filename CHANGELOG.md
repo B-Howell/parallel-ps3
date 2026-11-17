@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- Four more sleeps, polls and yields are gone:
+  - **`cellVdecClose`** polled every millisecond for the decoder's PPU thread to start. It now waits on `ppu_tid`, which that thread notifies as it starts, and on its own state. It also returns if the emulator stops, where before it waited forever.
+  - **The video decoder reaper**, which frees closed decoders off the guest thread, slept 100 ms after each close. A context still in use was pushed back and retried after another sleep. The sleep is gone. A closed context goes to the reaper through its own node (`mpsc_stack`), so nothing is allocated per close (it was an `lf_queue` item). The reaper lets go of it, and if an HLE call still holds it, that call frees the decoder as it lets go (`~vdec_context`) rather than the reaper polling.
+  - **The pad config event thread (`sys_io`)** slept 10 ms after each event, for no stated reason, and polled every 100 microseconds for `cellPad_NotifyStateChange` to succeed. That function takes no lock and always returns true now, so the sleep and the poll are both gone.
+  - **`sys_ppu_thread_get_priority`** yielded between looks at its own state. A suspended thread already waits in `check_state` until it is resumed, so the yield did nothing.
+  - No CI test: each needs a booted game. A check fails if a sleep, a poll or a yield comes back in these places. Not yet run on a game.
 - `sys_ppu_thread_start` no longer spins or reads the host clock. Its caller yielded in a loop for up to 5 ms of wall time, and the new thread for up to 1 ms plus a 10 microsecond "head start". Both now wait on words, with no timeout:
   - **Lower or equal priority:** the caller waits until the new thread takes its entry command, or until either thread is told to stop by the scheduler. The new thread then runs no guest code until the caller has left the syscall (`start_gate_open`).
   - **Higher priority:** the caller waits until the new thread has started, then leaves it to the scheduler. If the caller is past the run slots, it is told to stop as it leaves the syscall.

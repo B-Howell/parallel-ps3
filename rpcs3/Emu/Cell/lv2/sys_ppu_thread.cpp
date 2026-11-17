@@ -381,8 +381,9 @@ error_code sys_ppu_thread_get_priority(ppu_thread& ppu, u32 thread_id, vm::ptr<s
 
 	if (thread_id == ppu.id)
 	{
-		// Fast path for self
-		for (; !ppu.is_stopped(); std::this_thread::yield())
+		// Fast path for self. Suspended, the thread waits in check_state until
+		// it is not: no yield between looks
+		while (!ppu.is_stopped())
 		{
 			// No scheduler lock: the priority is one word, read between two
 			// looks at this thread's own state. Not suspended before and
@@ -407,7 +408,7 @@ error_code sys_ppu_thread_get_priority(ppu_thread& ppu, u32 thread_id, vm::ptr<s
 		return CELL_OK;
 	}
 
-	for (; !ppu.is_stopped(); std::this_thread::yield())
+	while (!ppu.is_stopped())
 	{
 		bool check_state = false;
 		const auto thread = idm::check_entered<named_thread<ppu_thread>>(thread_id, [&](ppu_thread& thread)
