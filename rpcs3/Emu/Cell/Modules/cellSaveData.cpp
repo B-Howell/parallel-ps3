@@ -21,7 +21,7 @@
 #include "Loader/PSF.h"
 #include "Utilities/StrUtil.h"
 #include "Utilities/date_time.h"
-#include "Utilities/sema.h"
+#include <retro_atomic.h>
 
 #include <mutex>
 #include <algorithm>
@@ -131,9 +131,43 @@ vm::gvar<savedata_context> g_savedata_context;
 
 struct savedata_manager
 {
-	semaphore<> mutex;
+	// One save data call at a time: a second is told it is busy, it never
+	// waits - a word claimed with a compare-and-swap (savedata_claim)
+	retro_atomic_int_t busy{};
 	atomic_t<bool> enable_overlay{false};
 	atomic_t<s32> last_cbresult_error_dialog{0}; // CBRESULT errors are negative
+};
+
+// The save data manager claimed for one call, and let go as it returns:
+// false when another call has it
+class savedata_claim
+{
+	retro_atomic_int_t* m_word = nullptr;
+
+public:
+	explicit savedata_claim(retro_atomic_int_t& word) noexcept
+	{
+		if (retro_atomic_cas_int(&word, 0, 1))
+		{
+			m_word = &word;
+		}
+	}
+
+	savedata_claim(const savedata_claim&) = delete;
+	savedata_claim& operator=(const savedata_claim&) = delete;
+
+	~savedata_claim()
+	{
+		if (m_word)
+		{
+			retro_atomic_store_release_int(m_word, 0);
+		}
+	}
+
+	explicit operator bool() const noexcept
+	{
+		return m_word != nullptr;
+	}
 };
 
 int check_filename(std::string_view file_path, bool disallow_system_files, bool account_sfo_pfd)
@@ -308,7 +342,7 @@ static error_code select_and_delete(ppu_thread& ppu)
 		return {};
 	}
 
-	std::unique_lock lock(g_fxo->get<savedata_manager>().mutex, std::try_to_lock);
+	const savedata_claim lock(g_fxo->get<savedata_manager>().busy);
 
 	if (!lock)
 	{
@@ -764,7 +798,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 		return {};
 	}
 
-	std::unique_lock lock(g_fxo->get<savedata_manager>().mutex, std::try_to_lock);
+	const savedata_claim lock(g_fxo->get<savedata_manager>().busy);
 
 	if (!lock)
 	{
