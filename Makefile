@@ -403,9 +403,10 @@ REMOVE_OBJECTS = $(if $(wildcard $(OBJ_DIRS)),find $(wildcard $(OBJ_DIRS)) -maxd
 # the same checkout clears the last one's first, at parse time, before make
 # reads their dependency files. Not for `make clean`, which removes them all.
 # Nor for `make llvm`, which the CMake build runs with its own compilers and
-# its own place for LLVM's objects: it must not clear this build's.
+# its own place for LLVM's objects: it must not clear this build's. Nor for
+# the tests' `make llvm-host-lrc-srcs`, a query, whose output is a file list.
 BUILD_TAG := $(CC)|$(CXX)|$(platform)|$(arch)|$(HAVE_LLVM)|$(SYSTEM_LLVM)|$(if $(filter 1,$(SYSTEM_LLVM)),$(shell $(LLVM_CONFIG) --version))|$(DEBUG)|$(LTO)|$(DEPFLAGS)
-ifeq ($(filter clean llvm,$(MAKECMDGOALS)),)
+ifeq ($(filter clean llvm llvm-host-lrc-srcs,$(MAKECMDGOALS)),)
 BUILD_TAG_STATUS := $(shell \
 	if [ ! -f .build-tag ] || [ "`cat .build-tag 2>/dev/null`" != "$(BUILD_TAG)" ]; then \
 		if [ -f .build-tag ]; then \
@@ -444,6 +445,18 @@ $(filter-out $(LLVM_ARCHIVE),$(ARCHIVES)):
 	$(SAY) AR $@
 	$(Q)rm -f $@
 	$(Q)$(AR) rcs $@ $^
+
+# The parts of libretro-common LLVM's Support calls in place of its own
+# (MD5, XXH64, XXH3 with the CPU's features, and rtime for the sleep the
+# CPU feature code takes on Windows and macOS, where it is a function and
+# not a macro), built for the host's TableGen tools as well
+LLVM_HOST_LRC_SRCS := $(addprefix $(CORE_DIR)/rpcs3/libretro/libretro-common/,utils/md5.c encodings/encoding_xxh64.c \
+   encodings/encoding_xxh3.c features/features_cpu.c compat/compat_strl.c \
+   time/rtime.c)
+# The list for the tests' cross-link of it on Windows (rpcs3/libretro/tests),
+# with or without LLVM in the core: it is a query, not a build
+llvm-host-lrc-srcs:
+	@echo $(LLVM_HOST_LRC_SRCS)
 
 ifneq ($(LLVM_ARCHIVE),)
 # ---- LLVM, from 3rdparty/llvm/llvm ----
@@ -485,18 +498,7 @@ $(LLVM_HOST_OBJ)/%.c.o: $(LLVM_SRC)/%.c
 	$(SAY) HOSTCC $<
 	$(Q)$(HOST_CC) -MMD -MP -c -o $@ $< -O2 -DNDEBUG -w $(call llvm_defs,$(HOST_OS)) $(LLVM_CPPFLAGS)
 
-# The parts of libretro-common LLVM's Support calls in place of its own
-# (MD5, XXH64, XXH3 with the CPU's features, and rtime for the sleep the
-# CPU feature code takes on Windows and macOS, where it is a function and
-# not a macro), built for the host's TableGen tools as well
-LLVM_HOST_LRC_SRCS := $(addprefix $(CORE_DIR)/rpcs3/libretro/libretro-common/,utils/md5.c encodings/encoding_xxh64.c \
-   encodings/encoding_xxh3.c features/features_cpu.c compat/compat_strl.c \
-   time/rtime.c)
 LLVM_HOST_LRC_OBJS := $(patsubst $(CORE_DIR)/rpcs3/libretro/libretro-common/%.c,$(LLVM_HOST_OBJ)/lrc/%.c.o,$(LLVM_HOST_LRC_SRCS))
-
-# The list for the tests' cross-link of it on Windows (rpcs3/libretro/tests)
-llvm-host-lrc-srcs:
-	@echo $(LLVM_HOST_LRC_SRCS)
 
 $(LLVM_HOST_OBJ)/lrc/%.c.o: $(CORE_DIR)/rpcs3/libretro/libretro-common/%.c
 	@mkdir -p $(@D)
