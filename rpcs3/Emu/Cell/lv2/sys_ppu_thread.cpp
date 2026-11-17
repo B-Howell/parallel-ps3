@@ -627,29 +627,46 @@ error_code sys_ppu_thread_start(ppu_thread& ppu, u32 thread_id)
 	thread->cmd_notify.store(1);
 	thread->cmd_notify.notify_one();
 
+	// Woken by a scheduler edge put to either thread, the new one reaching
+	// its entry, or this one stopped - no spin, no clock
+	const auto wait_for = [&](auto&& done)
+	{
+		for (;;)
+		{
+			const u32 seen_new = thread->sched_watch.load();
+			const u32 seen_own = ppu.sched_watch.load();
+			const auto old_state = +ppu.state;
+
+			if (done() || ::is_stopped(old_state))
+			{
+				return;
+			}
+
+			thread_ctrl::wait_on_custom<3>([&](atomic_wait::list<5>& list)
+			{
+				list.template set<0>(ppu.state, old_state);
+				list.template set<1>(thread->sched_watch, seen_new);
+				list.template set<2>(ppu.sched_watch, seen_own);
+			});
+		}
+	};
+
 	if (is_lower_prio)
 	{
-		// The new thread has higher priority: wait until it has started and stops running, blocked or preempted (bounded)
-		// A preempted thread stays ahead of the caller in the scheduler queue, so there is no need to wait for it to block
-		const auto is_running = [&]()
-		{
-			return lv2_obj::ppu_state(thread.ptr.get()).first == PPU_THREAD_STATUS_ONPROC;
-		};
-
-		// Keep waiting when the caller is suspended: another thread leaving its hardware thread may resume it before the new thread starts
-		for (const u64 start = get_system_time(); (thread->cmd_queue.size() || is_running()) && !ppu.is_stopped() && get_system_time() - start < 5000;)
-		{
-			std::this_thread::yield();
-		}
+		// The new thread has higher priority: wait until it has started -
+		// taken its entry command. From there the scheduler decides: this
+		// thread, past the run slots, is told to stop as it leaves
+		wait_for([&]() { return thread->entry_reached || ::is_stopped(+thread->state); });
 	}
 	else
 	{
-		// The new thread has lower or equal priority: if it got a free hardware thread, wait until it reaches its entry command (bounded)
+		// The new thread has lower or equal priority: if it got a free hardware thread, wait until it reaches its entry command
 		// It then waits in turn for this caller to leave the syscall before running (see ppu_cmd::entry_call)
-		for (const u64 start = get_system_time(); thread->start_gate_caller && cpu_flag::suspend - thread->state && cpu_flag::suspend - ppu.state && !ppu.is_stopped() && get_system_time() - start < 5000;)
-		{
-			std::this_thread::yield();
-		}
+		wait_for([&]() { return !thread->start_gate_caller || !(cpu_flag::suspend - thread->state) || !(cpu_flag::suspend - ppu.state) || ::is_stopped(+thread->state); });
+
+		// Leaving: the new thread may run
+		thread->start_gate_open.release(1);
+		thread->start_gate_open.notify_all();
 	}
 
 	return CELL_OK;

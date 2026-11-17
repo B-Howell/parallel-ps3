@@ -305,6 +305,9 @@ public:
 	atomic_t<u32> cmd_notify = 0;
 
 	atomic_t<u32> start_gate_caller = 0; // Caller of sys_ppu_thread_start waiting for this thread to reach its entry command, cleared by this thread
+	atomic_t<u32> start_gate_open = 0; // Set by that caller as it leaves sys_ppu_thread_start: this thread may run its entry
+	atomic_t<u32> entry_reached = 0; // Set as this thread takes its entry command
+	atomic_t<u32> sched_watch = 0; // Moved by every scheduler edge put to this thread, and as it reaches its entry command: what threads watching it wait on
 
 	alignas(64) const ppu_func_opd_t entry_func;
 	u64 start_time{0}; // Sleep start timepoint

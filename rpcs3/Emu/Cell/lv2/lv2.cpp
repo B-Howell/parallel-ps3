@@ -1403,6 +1403,9 @@ static void sched_notify(sched_notes* notes, ppu_thread* target)
 
 // An edge, put to its thread: let in (schedule_all's wake), or told to stop
 // (awake_unlocked's suspend, or the thread's own sleep, which set it already)
+static void sched_edge_put(ppu_thread* target, void* ctx, int edge);
+
+// An edge put, then the threads watching the target told (sched_watch)
 static void sched_edge(void* ctx, unsigned slot, int edge)
 {
 	ppu_thread* const target = slot_ppu(slot);
@@ -1412,6 +1415,14 @@ static void sched_edge(void* ctx, unsigned slot, int edge)
 		return;
 	}
 
+	sched_edge_put(target, ctx, edge);
+
+	target->sched_watch++;
+	target->sched_watch.notify_all();
+}
+
+static void sched_edge_put(ppu_thread* target, void* ctx, int edge)
+{
 	if (edge == LV2_SCHED_STOP)
 	{
 		ppu_log.trace("suspend(): %s", target->id);

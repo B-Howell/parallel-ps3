@@ -2567,38 +2567,32 @@ void ppu_thread::cpu_task()
 		}
 		case ppu_cmd::entry_call:
 		{
-			if (const u32 caller_id = start_gate_caller.exchange(0))
+			const bool gated = start_gate_caller.exchange(0) != 0;
+
+			// Reached: the caller of sys_ppu_thread_start, which may be
+			// waiting for this, told
+			entry_reached.release(1);
+			sched_watch++;
+			sched_watch.notify_all();
+
+			if (gated)
 			{
-				// The caller of sys_ppu_thread_start has higher or equal priority and waits for the exchange above:
-				// let it leave the syscall and run its first instructions before this thread starts
-				// Bounded, as it may enter another syscall right away (e.g. joining this thread), and ended on suspension, which cannot be acknowledged here
-				if (const auto caller = idm::get_unlocked<named_thread<ppu_thread>>(caller_id))
+				// No guest code before that caller has left the syscall: woken as
+				// it does (start_gate_open), or as this thread stops - no spin
+				while (!start_gate_open && !is_stopped())
 				{
-					for (const u64 wait_start = get_system_time(); !is_stopped() && cpu_flag::suspend - state && get_system_time() - wait_start < 1000;)
+					const auto old_state = +state;
+
+					if (start_gate_open || ::is_stopped(old_state))
 					{
-						const auto caller_state = +caller->state;
-
-						// Cannot run anyway: nothing to wait for
-						if (caller_state.all_of(cpu_flag::suspend) || ::is_stopped(caller_state))
-						{
-							break;
-						}
-
-						// Left the syscall: heuristic margin, as the first instructions it runs are not observable
-						if (caller_state.none_of(cpu_flag::wait))
-						{
-							constexpr u64 caller_head_start_us = 10;
-
-							for (const u64 start = get_system_time(); !is_stopped() && cpu_flag::suspend - state && get_system_time() - start < caller_head_start_us;)
-							{
-								std::this_thread::yield();
-							}
-
-							break;
-						}
-
-						std::this_thread::yield();
+						break;
 					}
+
+					thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+					{
+						list.template set<0>(state, old_state);
+						list.template set<1>(start_gate_open, 0u);
+					});
 				}
 			}
 
