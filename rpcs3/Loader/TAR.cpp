@@ -1,6 +1,7 @@
 #include "stdafx.h"
 
 #include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 
 #include "Emu/VFS.h"
 #include "Emu/System.h"
@@ -330,8 +331,21 @@ bool tar_object::extract(const std::string& prefix_path, bool is_vfs)
 				std::unique_ptr<named_thread<std::function<void()>>> async_reader;
 
 				// One thread reads the archive ahead and counts read_pos up, this
-				// one writes the file and counts write_pos up
-				retro_atomic_size_t filedata_read_pos{}, filedata_write_pos{};
+				// one writes the file and counts write_pos up; each waits on the
+				// other's count (no poll, no yield). Counted in chunks
+				retro_atomic_int_t filedata_read_pos{}, filedata_write_pos{};
+
+				const auto count_up = [](retro_atomic_int_t& pos)
+				{
+					retro_atomic_inc_int(&pos);
+					retro_waitaddr_notify_one(&pos);
+				};
+
+				const auto wait_moved = [](retro_atomic_int_t& pos, int seen)
+				{
+					const retro_waitaddr_t w{&pos, static_cast<u32>(seen)};
+					retro_waitaddr_wait(&w, 1, -1);
+				};
 
 				while (!should_ignore && filesize)
 				{
@@ -344,8 +358,8 @@ bool tar_object::extract(const std::string& prefix_path, bool is_vfs)
 					// Feed itself if smaller than one chunk
 					if (filedata_buffers.size() == 1)
 					{
-						file_data->try_read(get_span_at(retro_atomic_load_relaxed_size(&filedata_read_pos)));
-						retro_atomic_inc_size(&filedata_read_pos);
+						file_data->try_read(get_span_at(retro_atomic_load_relaxed_int(&filedata_read_pos)));
+						count_up(filedata_read_pos);
 					}
 					else if (!async_reader)
 					{
@@ -353,12 +367,15 @@ bool tar_object::extract(const std::string& prefix_path, bool is_vfs)
 						{
 							while (true)
 							{
-								while (retro_atomic_load_relaxed_size(&filedata_read_pos) - retro_atomic_load_acquire_size(&filedata_write_pos) == filedata_buffers.size())
+								// Every buffer full: woken as the writer frees one (a 1 ms poll before)
+								for (int written = retro_atomic_load_acquire_int(&filedata_write_pos);
+									static_cast<usz>(retro_atomic_load_relaxed_int(&filedata_read_pos) - written) == filedata_buffers.size();
+									written = retro_atomic_load_acquire_int(&filedata_write_pos))
 								{
-									thread_ctrl::wait_for(1000);
+									wait_moved(filedata_write_pos, written);
 								}
 
-								const usz read_pos = retro_atomic_load_relaxed_size(&filedata_read_pos);
+								const usz read_pos = retro_atomic_load_relaxed_int(&filedata_read_pos);
 								const usz unread_size = file_data->try_read(get_span_at(read_pos));
 
 								if (unread_size)
@@ -367,22 +384,26 @@ bool tar_object::extract(const std::string& prefix_path, bool is_vfs)
 									break;
 								}
 
-								retro_atomic_inc_size(&filedata_read_pos);
+								count_up(filedata_read_pos);
 							}
 						});
 					}
 
-					while (retro_atomic_load_acquire_size(&filedata_read_pos) == retro_atomic_load_relaxed_size(&filedata_write_pos))
+					// Nothing read ahead yet: woken as the reader has a chunk (a
+					// yield loop before)
+					for (int read = retro_atomic_load_acquire_int(&filedata_read_pos);
+						read == retro_atomic_load_relaxed_int(&filedata_write_pos);
+						read = retro_atomic_load_acquire_int(&filedata_read_pos))
 					{
-						std::this_thread::yield();
+						wait_moved(filedata_read_pos, read);
 					}
 
-					const auto data_span = get_span_at(retro_atomic_load_relaxed_size(&filedata_write_pos));
+					const auto data_span = get_span_at(retro_atomic_load_relaxed_int(&filedata_write_pos));
 
 					file.write(data_span.data(), data_span.size());
-					retro_atomic_inc_size(&filedata_write_pos);
+					count_up(filedata_write_pos);
 
-					if (retro_atomic_load_relaxed_size(&filedata_write_pos) == utils::aligned_div<usz>(filesize, filedata_buffers[0].size()))
+					if (static_cast<usz>(retro_atomic_load_relaxed_int(&filedata_write_pos)) == utils::aligned_div<usz>(filesize, filedata_buffers[0].size()))
 					{
 						if (async_reader)
 						{

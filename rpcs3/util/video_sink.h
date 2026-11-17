@@ -102,6 +102,7 @@ namespace utils
 			slot.frame.pixel_format = pixel_format;
 			slot.epoch = retro_atomic_load_acquire_size(&m_epoch);
 			give(m_frame_filled, index);
+			wake_consumer();
 			return true;
 		}
 
@@ -136,6 +137,7 @@ namespace utils
 				std::memcpy(slot.sample.data.data(), buf + static_cast<usz>(done) * channels * sizeof(f32), static_cast<usz>(count) * channels * sizeof(f32));
 				slot.epoch = epoch;
 				give(m_sample_filled, index);
+				wake_consumer();
 				done += count;
 			}
 
@@ -303,6 +305,35 @@ namespace utils
 			retro_waitaddr_notify_all(&m_freed);
 		}
 
+	protected:
+		// The consumer (the encoder) waits on this when there is nothing to
+		// take: moved by every frame or block handed over, and by a pause,
+		// a flush or a stop asked (wake_consumer)
+		void wake_consumer()
+		{
+			retro_atomic_fetch_add_seq_cst_int(&m_filled, 1);
+			retro_waitaddr_notify_all(&m_filled);
+		}
+
+		u32 filled_seen()
+		{
+			return static_cast<u32>(retro_atomic_load_seq_cst_int(&m_filled));
+		}
+
+		void wait_filled(u32 seen)
+		{
+			const retro_waitaddr_t w{&m_filled, seen};
+			retro_waitaddr_wait(&w, 1, -1);
+		}
+
+		// The producer's side (pause, stop) waits on m_freed for a flush to
+		// be done: moved as the consumer finishes one, or ends
+		void wake_producer()
+		{
+			retro_atomic_fetch_add_seq_cst_int(&m_freed, 1);
+			retro_waitaddr_notify_all(&m_freed);
+		}
+
 		u32 freed_seen()
 		{
 			return static_cast<u32>(retro_atomic_load_seq_cst_int(&m_freed));
@@ -315,6 +346,9 @@ namespace utils
 		}
 
 		retro_atomic_int_t m_freed{};
+		retro_atomic_int_t m_filled{};
+
+	private:
 
 		retro_atomic_size_t m_epoch;
 

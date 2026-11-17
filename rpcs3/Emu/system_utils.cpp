@@ -74,8 +74,6 @@ namespace rpcs3::utils
 	{
 		sys_log.success("Installing package: %s", path);
 
-		int int_progress = 0;
-
 		package_reader reader(path);
 
 		// Run PKG unpacking asynchronously
@@ -86,19 +84,8 @@ namespace rpcs3::utils
 			return result.error == package_install_result::error_type::no_error;
 		});
 
-		// Wait for the completion
-		while (std::this_thread::sleep_for(5ms), worker <= thread_state::aborting)
-		{
-			// TODO: update unified progress dialog
-			const int pval = reader.get_progress(100);
-
-			if (pval > int_progress)
-			{
-				int_progress = pval;
-				sys_log.success("... %u%%", int_progress);
-			}
-		}
-
+		// Joined: waits for it to finish (it slept 5 ms at a time to log the
+		// progress before)
 		return worker();
 	}
 

@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- The recording encoder, the TAR extractor and the package install no longer sleep or poll:
+  - **Recording encoder (`video_encoder`):** with nothing to take it slept 1 µs at a time, effectively spinning, or 10 ms while paused. It now waits on the sink's filled word, which moves with every frame or audio block handed over and with a pause, flush or stop asked (`wake_consumer`). It is also woken as its thread is told to end. A pause or stop that asked for a flush slept 1 µs or 1 ms at a time until the encoder had flushed; it now waits on the freed word, which the encoder moves as it finishes the flush or ends.
+  - **TAR extraction:** the archive reader, with every buffer full, polled every 1 ms for room, and the file writer yielded in a loop for the next chunk. Each now waits on the other's count, which is notified as it moves.
+  - **Package install (`install_pkg`):** it slept 5 ms at a time to log the progress while the installer ran. It now joins the installer, which waits.
+  - **Tests:** `test_video_sink` (also under ThreadSanitizer) covers the sink's waits. A check fails if a sleep, a poll or a yield comes back in these three. Not yet run on a game.
+  - `cellRec`'s own recording thread still wakes every microsecond, pending a decision on how it should catch up on audio blocks. The RPCN client's 5 ms polls go with its own patch.
 - The renderer no longer spins while waiting for the GPU or another thread:
   - **Vulkan fences:** a wait with no time limit (`vk::wait_for_fence`, used by every command buffer's `wait()` and so by `begin()`, `wait_all()` and the resize sync) spun on `vkGetFenceStatus`. It now blocks in `vkWaitForFences`, which the driver wakes as the GPU signals. Waiting for the offloader to submit (`fence::wait_flush`) spun on its flag; it now waits on it, and the submit notifies it.
   - **Occlusion query results:** a ZCULL read that needed its result spun on `vkGetQueryPoolResults`. After the first non-waiting look (which can still answer early if a sample passed), it now asks once with `VK_QUERY_RESULT_WAIT_BIT`, so the driver blocks until the result is there.

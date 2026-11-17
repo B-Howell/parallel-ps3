@@ -475,13 +475,15 @@ namespace utils
 		{
 			m_paused = true;
 			m_flush = flush;
+			wake_consumer();
 
 			if (flush)
 			{
-				// Let's assume this will finish in a timely manner
-				while (m_flush && m_running)
+				// Woken as the encoder has flushed, or ended (it slept 1 us at
+				// a time before)
+				for (u32 seen = freed_seen(); m_flush && m_running; seen = freed_seen())
 				{
-					std::this_thread::sleep_for(1us);
+					wait_freed(seen);
 				}
 			}
 		}
@@ -494,13 +496,14 @@ namespace utils
 		if (m_thread)
 		{
 			m_flush = flush;
+			wake_consumer();
 
 			if (flush)
 			{
-				// Let's assume this will finish in a timely manner
-				while (m_flush && m_running)
+				// As in pause (it slept 1 ms at a time)
+				for (u32 seen = freed_seen(); m_flush && m_running; seen = freed_seen())
 				{
-					std::this_thread::sleep_for(1ms);
+					wait_freed(seen);
 				}
 			}
 
@@ -581,6 +584,7 @@ namespace utils
 				set_error();
 				m_flush = false;
 				m_running = false;
+				wake_producer();
 				return;
 			}
 
@@ -592,6 +596,10 @@ namespace utils
 
 			while ((thread_ctrl::state() != thread_state::aborting || m_flush) && !has_error)
 			{
+				// Read before looking: anything handed over, or asked, after
+				// this moves it, and the wait below returns
+				const u32 filled = filled_seen();
+
 				// Fetch video frame
 				const bool got_frame = pop_frame(frame_data);
 
@@ -666,6 +674,7 @@ namespace utils
 					if (m_flush)
 					{
 						m_flush = false;
+						wake_producer();
 
 						if (!m_paused)
 						{
@@ -674,9 +683,14 @@ namespace utils
 						}
 					}
 
-					// We only actually pause after we process all frames
-					const u64 sleeptime_us = m_paused ? 10000 : 1;
-					thread_ctrl::wait_for(sleeptime_us);
+					// Nothing to take: woken by the next frame or block, or a
+					// pause, flush or stop asked - it slept 1 us (10 ms paused)
+					// at a time before
+					// (also as the thread is told to end)
+					thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list)
+					{
+						list.template set<0>(*utils::bless<atomic_t<u32>>(&m_filled), filled);
+					});
 					continue;
 				}
 			}
@@ -688,6 +702,7 @@ namespace utils
 
 			m_flush = false;
 			m_running = false;
+			wake_producer();
 		});
 	}
 }
