@@ -231,6 +231,7 @@ target_sources(rpcs3_emu PRIVATE
     Cell/lv2/lv2_countq.c
     Cell/lv2/lv2_ownq.c
     Cell/lv2/lv2_sched.c
+    Cell/jit_cores.c
     Cell/lv2/lv2_flagq.c
     Cell/lv2/lv2_rwq.c
     Cell/lv2/lv2_lwq.c

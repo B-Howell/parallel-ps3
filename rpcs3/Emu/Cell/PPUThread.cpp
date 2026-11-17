@@ -1,5 +1,6 @@
 #include <queues/retro_deque.h>
 #include "stdafx.h"
+#include "jit_cores.h"
 #include "Emu/system_config.h"
 #include "Utilities/JIT.h"
 #include "Utilities/StrUtil.h"
@@ -68,7 +69,6 @@ void jit_register_analyses(llvm::LoopAnalysisManager& lam, llvm::FunctionAnalysi
 #include "util/fnv_hash.hpp"
 #include "util/cctype.hpp"
 
-#include "Utilities/sema.h"
 
 #ifdef __APPLE__
 #include <libkern/OSCacheControl.h>
@@ -3874,12 +3874,43 @@ struct jit_core_allocator
 {
 	const s16 thread_count = g_cfg.core.llvm_threads ? std::min<s32>(g_cfg.core.llvm_threads, limit()) : limit();
 
-	// Initialize global semaphore with the max number of threads
-	::semaphore<0x7fff> sem{std::max<s16>(thread_count, 1)};
+	// The cores compiles may use at once: taken and given back with no lock,
+	// a compile finding none free waiting for one to be given back
+	jit_cores_t cores;
+
+	jit_core_allocator() noexcept
+	{
+		jit_cores_init(&cores, std::max<s16>(thread_count, 1));
+	}
 
 	static s16 limit()
 	{
 		return static_cast<s16>(std::min<s32>(0x7fff, utils::get_thread_count()));
+	}
+};
+
+// A core of jit_core_allocator's held, given back as it goes
+struct jit_core_held
+{
+	jit_cores_t* cores = nullptr;
+
+	jit_core_held() = default;
+
+	explicit jit_core_held(jit_cores_t& c) noexcept
+		: cores(&c)
+	{
+		jit_cores_take(cores);
+	}
+
+	jit_core_held(const jit_core_held&) = delete;
+	jit_core_held& operator=(const jit_core_held&) = delete;
+
+	~jit_core_held()
+	{
+		if (cores)
+		{
+			jit_cores_give(cores);
+		}
 	}
 };
 
@@ -4596,7 +4627,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 					}
 
 					// Participate in thread execution limitation (takes a long time)
-					if (std::lock_guard lock(g_fxo->get<jit_core_allocator>().sem); !ovlm->analyse(0, ovlm->entry, ovlm->seg0_code_end, ovlm->applied_patches, std::vector<u32>{}, []()
+					if (const jit_core_held core(g_fxo->get<jit_core_allocator>().cores); !ovlm->analyse(0, ovlm->entry, ovlm->seg0_code_end, ovlm->applied_patches, std::vector<u32>{}, []()
 					{
 						return Emu.IsStopped();
 					}))
@@ -5687,10 +5718,13 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 			const std::string& cache_path;
 			const cpu_thread* cpu;
 
-			std::unique_lock<decltype(jit_core_allocator::sem)> core_lock;
+			// The core this worker holds, once taken (try_lock_thread), given
+			// back as it ends
+			jit_cores_t* cores;
+			bool holds = false;
 
 			thread_op(atomic_t<u64>* _work_cv, atomic_t<u64>* _work_done, std::vector<std::pair<std::string, ppu_module<lv2_obj>>>& workload
-				, const cpu_thread* cpu, const ppu_module<lv2_obj>& main_module, const std::string& cache_path, decltype(jit_core_allocator::sem)& sem) noexcept
+				, const cpu_thread* cpu, const ppu_module<lv2_obj>& main_module, const std::string& cache_path, jit_cores_t& _cores) noexcept
 
 				: work_cv(_work_cv)
 				, work_done(_work_done)
@@ -5698,9 +5732,8 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 				, main_module(main_module)
 				, cache_path(cache_path)
 				, cpu(cpu)
+				, cores(&_cores)
 			{
-				// Save mutex
-				core_lock = std::unique_lock{sem, std::defer_lock};
 			}
 
 			thread_op(const thread_op& other) noexcept
@@ -5710,15 +5743,30 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 				, main_module(other.main_module)
 				, cache_path(other.cache_path)
 				, cpu(other.cpu)
+				, cores(other.cores)
 			{
-				if (auto mtx = other.core_lock.mutex())
-				{
-					// Save mutex
-					core_lock = std::unique_lock{*mtx, std::defer_lock};
-				}
+				// A copy holds no core of its own until it takes one
 			}
 
-			thread_op(thread_op&& other) noexcept = default;
+			thread_op(thread_op&& other) noexcept
+				: work_cv(other.work_cv)
+				, work_done(other.work_done)
+				, workload(other.workload)
+				, main_module(other.main_module)
+				, cache_path(other.cache_path)
+				, cpu(other.cpu)
+				, cores(other.cores)
+				, holds(std::exchange(other.holds, false))
+			{
+			}
+
+			~thread_op()
+			{
+				if (holds)
+				{
+					jit_cores_give(cores);
+				}
+			}
 
 			void operator()()
 			{
@@ -5749,7 +5797,10 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 					ppu_log.success("LLVM: Compiled module %s", obj_name);
 				}
 
-				core_lock.unlock();
+				if (std::exchange(holds, false))
+				{
+					jit_cores_give(cores);
+				}
 			}
 		};
 
@@ -5766,15 +5817,17 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 				return false;
 			}
 
-			// Allocate "core"
-			op.core_lock.lock();
+			// Allocate "core": waits for one given back, no spin
+			jit_cores_take(op.cores);
+			op.holds = true;
 
 			// Second check before creating another thread
 			const bool to_unlock = !((thread_index + *op.work_done) < workload.size() && (cpu ? !cpu->state.all_of(cpu_flag::exit) : !Emu.IsStopped()));
 
 			if (to_unlock)
 			{
-				op.core_lock.unlock();
+				op.holds = false;
+				jit_cores_give(op.cores);
 				return false;
 			}
 
@@ -5782,13 +5835,13 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 		};
 
 		named_thread_group threads(worker_group_name, thread_count
-			, thread_op(&work_cv, &work_done, workload, cpu, info, cache_path, g_fxo->get<jit_core_allocator>().sem)
+			, thread_op(&work_cv, &work_done, workload, cpu, info, cache_path, g_fxo->get<jit_core_allocator>().cores)
 			, try_lock_thread);
 
 		const auto old_name = thread_ctrl::get_name();
 		thread_ctrl::set_name(worker_group_name + std::to_string(thread_count + 1));
 
-		thread_op cur_op(&work_cv, &work_done, workload, cpu, info, cache_path, g_fxo->get<jit_core_allocator>().sem);
+		thread_op cur_op(&work_cv, &work_done, workload, cpu, info, cache_path, g_fxo->get<jit_core_allocator>().cores);
 
 		if (try_lock_thread(thread_count, cur_op))
 		{
