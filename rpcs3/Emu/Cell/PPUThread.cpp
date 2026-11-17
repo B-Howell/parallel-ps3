@@ -62,6 +62,7 @@ void jit_register_analyses(llvm::LoopAnalysisManager& lam, llvm::FunctionAnalysi
 #include <charconv>
 
 #include "util/asm.hpp"
+#include <queues/retro_retire.h>
 #include "util/vm.hpp"
 #include "util/v128.hpp"
 #include "util/simd.hpp"
@@ -726,11 +727,59 @@ extern bool ppu_test_address_may_be_mmio(std::span<const be_t<u32>> insts)
 	return false;
 }
 
+// The expected TOCs (ppu_debug): one published map, read by ppu_check_toc
+// with no lock, added to whole by a module's load (copy, add,
+// compare-and-swap), the old one freed once no reader is in it
 struct ppu_toc_manager
 {
-	std::unordered_map<u32, u32> toc_map;
+	struct state_t
+	{
+		mpsc_stack_node_t node{}; // first: retired as it is
+		std::unordered_map<u32, u32> toc_map;
+	};
 
-	shared_mutex mutex;
+	retro_atomic_ptr_t m_state{};
+	retro_retire_t m_retire{};
+
+	ppu_toc_manager()
+	{
+		retro_atomic_store_release_ptr(&m_state, new state_t);
+	}
+
+	~ppu_toc_manager()
+	{
+		retro_retire_drain(&m_retire, free_state);
+		delete static_cast<state_t*>(retro_atomic_exchange_ptr(&m_state, nullptr));
+	}
+
+	static void free_state(mpsc_stack_node_t* node)
+	{
+		delete static_cast<state_t*>(static_cast<void*>(node));
+	}
+
+	void add(const std::vector<std::pair<u32, u32>>& tocs)
+	{
+		retro_retire_enter(&m_retire);
+
+		for (;;)
+		{
+			state_t* const old = static_cast<state_t*>(retro_atomic_load_acquire_ptr(&m_state));
+			state_t* const now = new state_t(*old);
+
+			for (const auto& [addr, toc] : tocs)
+				now->toc_map[addr] = toc;
+
+			if (retro_atomic_cas_ptr(&m_state, old, now))
+			{
+				retro_retire(&m_retire, &old->node, free_state);
+				break;
+			}
+
+			delete now;
+		}
+
+		retro_retire_leave(&m_retire, free_state);
+	}
 };
 
 static void ppu_check_toc(ppu_thread& ppu, ppu_opcode_t op, be_t<u32>* this_op, ppu_intrp_func* next_fn)
@@ -740,9 +789,9 @@ static void ppu_check_toc(ppu_thread& ppu, ppu_opcode_t op, be_t<u32>* this_op, 
 	{
 		auto& toc_manager = g_fxo->get<ppu_toc_manager>();
 
-		reader_lock lock(toc_manager.mutex);
+		retro_retire_enter(&toc_manager.m_retire);
 
-		auto& ppu_toc = toc_manager.toc_map;
+		auto& ppu_toc = static_cast<ppu_toc_manager::state_t*>(retro_atomic_load_acquire_ptr(&toc_manager.m_state))->toc_map;
 
 		const auto found = ppu_toc.find(ppu.cia);
 
@@ -757,6 +806,8 @@ static void ppu_check_toc(ppu_thread& ppu, ppu_opcode_t op, be_t<u32>* this_op, 
 				atomic_storage<u32>::exchange(found->second, u32{umax});
 			}
 		}
+
+		retro_retire_leave(&toc_manager.m_retire, ppu_toc_manager::free_state);
 	}
 
 	// Fallback to the interpreter function
@@ -935,52 +986,121 @@ struct ppu_far_jumps_t
 		}
 	};
 
-	ppu_far_jumps_t(int) noexcept {}
-
-	std::map<u32, all_info_t> vals;
-	std::pair<u32, u32> vals_range{0, 0};
-	::jit_runtime rt;
-
-	mutable shared_mutex mutex;
-
-	void add_value(u32 addr, all_info_t info)
+	ppu_far_jumps_t(int) noexcept
 	{
-		vals.insert_or_assign(addr, std::move(info));
+		retro_atomic_store_release_ptr(&m_state, new state_t);
+	}
 
-		if (vals.size() == 1)
+	~ppu_far_jumps_t()
+	{
+		retro_retire_drain(&m_retire, free_state);
+		delete static_cast<state_t*>(retro_atomic_exchange_ptr(&m_state, nullptr));
+	}
+
+	// The jumps, one published state: read on every far jump with no lock,
+	// replaced whole by a change (copy, change, compare-and-swap), the old
+	// one freed once no reader is in it (retro_retire). A reader lock on
+	// every jump, and a lock over the changes, before
+	struct state_t
+	{
+		mpsc_stack_node_t node{}; // first: retired as it is
+		std::map<u32, all_info_t> vals;
+		std::pair<u32, u32> vals_range{0, 0};
+	};
+
+	retro_atomic_ptr_t m_state{};
+	retro_retire_t m_retire{};
+
+	// The range, as a hint read with no entry: (first << 32 | second)
+	atomic_t<u64> m_range{0};
+
+	static void free_state(mpsc_stack_node_t* node)
+	{
+		delete static_cast<state_t*>(static_cast<void*>(node));
+	}
+
+	template <typename F>
+	decltype(auto) read(F&& f)
+	{
+		struct leave_t
 		{
-			vals_range.first = addr;
-			vals_range.second = addr;
+			retro_retire_t& r;
+			~leave_t() { retro_retire_leave(&r, free_state); }
+		};
+
+		retro_retire_enter(&m_retire);
+		const leave_t leave{m_retire};
+		return f(*static_cast<const state_t*>(retro_atomic_load_acquire_ptr(&m_state)));
+	}
+
+	template <typename F>
+	void change(F&& f)
+	{
+		retro_retire_enter(&m_retire);
+
+		for (;;)
+		{
+			state_t* const old = static_cast<state_t*>(retro_atomic_load_acquire_ptr(&m_state));
+			state_t* const now = new state_t(*old);
+
+			if (!f(*now))
+			{
+				delete now;
+				break;
+			}
+
+			if (retro_atomic_cas_ptr(&m_state, old, now))
+			{
+				m_range.release(u64{now->vals_range.first} << 32 | now->vals_range.second);
+				retro_retire(&m_retire, &old->node, free_state);
+				break;
+			}
+
+			delete now;
+		}
+
+		retro_retire_leave(&m_retire, free_state);
+	}
+
+	static void add_value(state_t& st, u32 addr, all_info_t info)
+	{
+		st.vals.insert_or_assign(addr, std::move(info));
+
+		if (st.vals.size() == 1)
+		{
+			st.vals_range.first = addr;
+			st.vals_range.second = addr;
 		}
 		else
 		{
-			vals_range.first = std::min<u32>(vals_range.first, addr);
-			vals_range.second = std::max<u32>(vals_range.second, addr);
+			st.vals_range.first = std::min<u32>(st.vals_range.first, addr);
+			st.vals_range.second = std::max<u32>(st.vals_range.second, addr);
 		}
+	}
+
+	bool in_range(u32 first, u32 last) const
+	{
+		const u64 range = m_range.load();
+		return !(static_cast<u32>(range >> 32) > last || static_cast<u32>(range) < first);
 	}
 
 	// Get target address, 'ppu' is used in ppu_far_jump in order to modify registers
 	u32 get_target(u32 pc, ppu_thread* ppu = nullptr)
 	{
-		if (vals_range.first > pc)
+		if (!in_range(pc, pc))
 		{
 			return 0;
 		}
 
-		if (vals_range.second < pc)
+		return read([&](const state_t& st) -> u32
 		{
+			if (auto it = st.vals.find(pc); it != st.vals.end())
+			{
+				return it->second.get_target(pc, ppu);
+			}
+
 			return 0;
-		}
-
-		reader_lock lock(mutex);
-
-		if (auto it = vals.find(pc); it != vals.end())
-		{
-			all_info_t& all_info = it->second;
-			return all_info.get_target(pc, ppu);
-		}
-
-		return 0;
+		});
 	}
 
 	// Get function patches in range (entry -> target)
@@ -988,85 +1108,100 @@ struct ppu_far_jumps_t
 	{
 		std::vector<std::pair<u32, u32>> targets;
 
-		if (vals_range.first >= pc + size)
+		if (!size || !in_range(pc, pc + size - 1))
 		{
 			return targets;
 		}
 
-		if (vals_range.second < pc)
+		read([&](const state_t& st)
 		{
-			return targets;
-		}
-
-		reader_lock lock(mutex);
-
-		auto it = vals.lower_bound(pc);
-
-		if (it == vals.end())
-		{
-			return targets;
-		}
-
-		if (it->first >= pc + size)
-		{
-			return targets;
-		}
-
-		for (auto end = vals.lower_bound(pc + size); it != end; it++)
-		{
-			all_info_t& all_info = it->second;
-
-			if (u32 target = all_info.get_target(it->first))
+			for (auto it = st.vals.lower_bound(pc), end = st.vals.lower_bound(pc + size); it != end; it++)
 			{
-				targets.emplace_back(it->first, target);
+				if (u32 target = it->second.get_target(it->first))
+				{
+					targets.emplace_back(it->first, target);
+				}
 			}
-		}
+		});
 
 		return targets;
 	}
 
-	// Generate a mini-function which updates PC (for LLVM) and jumps to ppu_far_jump to handle redirections
-	template <bool Locked = true>
+	// A mini-function which updates PC (for LLVM) and jumps to ppu_far_jump
+	static ppu_intrp_func_t build_jump(u32 pc, ::jit_runtime& rt)
+	{
+		return build_function_asm<ppu_intrp_func_t>("", [&](native_asm& c, auto& args)
+		{
+			using namespace asmjit;
+
+#ifdef ARCH_X64
+			c.mov(args[0], x86::rbp);
+			c.mov(args[2], vm::g_base_addr + pc);
+			c.jmp(ppu_far_jump);
+#else
+			Label jmp_address = c.newLabel();
+			Label this_op_address = c.newLabel();
+
+			c.ldr(args[2], arm::ptr(this_op_address));
+			c.ldr(args[1], arm::ptr(jmp_address));
+			c.br(args[1]);
+
+			c.align(AlignMode::kCode, 16);
+			c.bind(jmp_address);
+			c.embedUInt64(reinterpret_cast<u64>(ppu_far_jump));
+			c.bind(this_op_address);
+			c.embedUInt64(reinterpret_cast<u64>(vm::g_base_addr) + pc);
+#endif
+		}, &rt);
+	}
+
+	// The jump's mini-function, made once (two threads making it at once
+	// keep the first published)
 	ppu_intrp_func_t gen_jump(u32 pc)
 	{
-		[[maybe_unused]] std::conditional_t<Locked, std::lock_guard<shared_mutex>, const shared_mutex&> lock(mutex);
+		const auto known = read([&](const state_t& st) -> std::pair<bool, ppu_intrp_func_t>
+		{
+			const auto it = st.vals.find(pc);
+			return it == st.vals.end() ? std::pair<bool, ppu_intrp_func_t>{false, nullptr} : std::pair<bool, ppu_intrp_func_t>{true, it->second.func};
+		});
 
-		auto it = vals.find(pc);
-
-		if (it == vals.end())
+		if (!known.first)
 		{
 			return nullptr;
 		}
 
-		if (!it->second.func)
+		if (known.second)
 		{
-			it->second.func = build_function_asm<ppu_intrp_func_t>("", [&](native_asm& c, auto& args)
-			{
-				using namespace asmjit;
-
-#ifdef ARCH_X64
-				c.mov(args[0], x86::rbp);
-				c.mov(args[2], vm::g_base_addr + pc);
-				c.jmp(ppu_far_jump);
-#else
-				Label jmp_address = c.newLabel();
-				Label this_op_address = c.newLabel();
-
-				c.ldr(args[2], arm::ptr(this_op_address));
-				c.ldr(args[1], arm::ptr(jmp_address));
-				c.br(args[1]);
-
-				c.align(AlignMode::kCode, 16);
-				c.bind(jmp_address);
-				c.embedUInt64(reinterpret_cast<u64>(ppu_far_jump));
-				c.bind(this_op_address);
-				c.embedUInt64(reinterpret_cast<u64>(vm::g_base_addr) + pc);
-#endif
-			}, &rt);
+			return known.second;
 		}
 
-		return it->second.func;
+		const ppu_intrp_func_t made = build_jump(pc, rt);
+		ppu_intrp_func_t result = made;
+
+		change([&](state_t& st)
+		{
+			const auto it = st.vals.find(pc);
+
+			if (it == st.vals.end())
+			{
+				return false;
+			}
+
+			if (it->second.func)
+			{
+				result = it->second.func;
+				return false;
+			}
+
+			it->second.func = made;
+			result = made;
+			return true;
+		});
+
+		return result;
 	}
+
+	::jit_runtime rt;
 };
 
 u32 ppu_get_far_jump(u32 pc)
@@ -1149,9 +1284,19 @@ bool ppu_form_branch_to_code(u32 entry, u32 target, bool link, bool with_toc, st
 	// Register branch target in host memory, not guest memory
 	auto& jumps = g_fxo->get<ppu_far_jumps_t>();
 
-	std::lock_guard lock(jumps.mutex);
-	jumps.add_value(entry, ppu_far_jumps_t::all_info_t{target, link, with_toc, std::move(module_name)});
-	ppu_register_function_at(entry, 4, g_cfg.core.ppu_decoder == ppu_decoder_type::_static ? &ppu_far_jump : ensure(g_fxo->get<ppu_far_jumps_t>().gen_jump<false>(entry)));
+	// Its mini-function made first, then published with it (no lock)
+	ppu_far_jumps_t::all_info_t info{target, link, with_toc, std::move(module_name)};
+	info.func = g_cfg.core.ppu_decoder == ppu_decoder_type::_static ? nullptr : ppu_far_jumps_t::build_jump(entry, jumps.rt);
+
+	const ppu_intrp_func_t func = info.func;
+
+	jumps.change([&](ppu_far_jumps_t::state_t& st)
+	{
+		ppu_far_jumps_t::add_value(st, entry, info);
+		return true;
+	});
+
+	ppu_register_function_at(entry, 4, g_cfg.core.ppu_decoder == ppu_decoder_type::_static ? &ppu_far_jump : ensure(func));
 
 	return true;
 }
@@ -1180,18 +1325,24 @@ void ppu_remove_hle_instructions(u32 addr, u32 size)
 
 	auto& jumps = g_fxo->get<ppu_far_jumps_t>();
 
-	std::lock_guard lock(jumps.mutex);
-
-	for (auto it = jumps.vals.begin(); it != jumps.vals.end();)
+	jumps.change([&](ppu_far_jumps_t::state_t& st)
 	{
-		if (it->first >= addr && it->first <= addr + size - 1 && size)
+		bool removed = false;
+
+		for (auto it = st.vals.begin(); it != st.vals.end();)
 		{
-			it = jumps.vals.erase(it);
-			continue;
+			if (it->first >= addr && it->first <= addr + size - 1 && size)
+			{
+				it = st.vals.erase(it);
+				removed = true;
+				continue;
+			}
+
+			it++;
 		}
 
-		it++;
-	}
+		return removed;
+	});
 }
 
 atomic_t<bool> g_debugger_pause_all_threads_on_bp = false;
@@ -4949,11 +5100,9 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 			return false;
 		}
 
-		auto& toc_manager = g_fxo->get<ppu_toc_manager>();
-
-		std::lock_guard lock(toc_manager.mutex);
-
-		auto& ppu_toc = toc_manager.toc_map;
+		// The TOCs published before their checks are put in (no lock)
+		std::vector<std::pair<u32, u32>> tocs;
+		std::vector<u32> checked;
 
 		for (const auto& func : info.get_funcs())
 		{
@@ -4980,8 +5129,18 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 
 			if (g_cfg.core.ppu_debug && func.size && func.toc != umax && !ppu_get_far_jump(func.addr))
 			{
-				ppu_toc[func.addr] = func.toc;
-				write_to_ptr_unsafe<ppu_intrp_func_t>(ppu_ptr(func.addr), &ppu_check_toc);
+				tocs.emplace_back(func.addr, func.toc);
+				checked.push_back(func.addr);
+			}
+		}
+
+		if (!tocs.empty())
+		{
+			g_fxo->get<ppu_toc_manager>().add(tocs);
+
+			for (const u32 addr : checked)
+			{
+				write_to_ptr_unsafe<ppu_intrp_func_t>(ppu_ptr(addr), &ppu_check_toc);
 			}
 		}
 
