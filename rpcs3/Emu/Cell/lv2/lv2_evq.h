@@ -125,6 +125,10 @@ void lv2_evq_each(lv2_evq_t *q, lv2_event_ring_each_t fn, void *ctx);
  * (lv2_evq_watch_wait, until it moves or @us microseconds pass; negative
  * for no bound), and done watching (lv2_evq_unwatch) */
 unsigned lv2_evq_watch(lv2_evq_t *q);
+
+/* The watchers told to look again, the queue no longer as they knew it
+ * (destroyed, or a port to it disconnected) */
+void lv2_evq_poke(lv2_evq_t *q);
 void lv2_evq_watch_wait(lv2_evq_t *q, unsigned seen, int64_t us);
 void lv2_evq_unwatch(lv2_evq_t *q);
 

@@ -435,6 +435,9 @@ error_code sys_event_queue_destroy(ppu_thread& ppu, u32 equeue_id, s32 mode)
 		return queue.ret;
 	}
 
+	// A sender waiting for room in it sends again, and finds it gone
+	lv2_evq_poke(&queue->q);
+
 	std::string lost_data;
 
 	if (had_waiters)
@@ -881,7 +884,11 @@ error_code sys_event_port_disconnect(ppu_thread& ppu, u32 eport_id)
 		return CELL_EBUSY;
 	}
 
+	const auto queue = port->queue;
 	port->queue.reset();
+
+	// A sender waiting for room in it sends again, and finds it gone
+	lv2_evq_poke(&queue->q);
 
 	return CELL_OK;
 }

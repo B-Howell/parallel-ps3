@@ -362,6 +362,11 @@ void lv2_evq_each(lv2_evq_t *q, lv2_event_ring_each_t fn, void *ctx)
    lv2_event_ring_each(&q->ring, fn, ctx);
 }
 
+void lv2_evq_poke(lv2_evq_t *q)
+{
+   eq_changed(q);
+}
+
 unsigned lv2_evq_watch(lv2_evq_t *q)
 {
    retro_atomic_fetch_add_int(&q->watchers, 1);

@@ -97,6 +97,19 @@ static void basics(void)
     * after it joined, and takes it */
    window_send = 77;
    TEST_CHECK(lv2_evq_wait(&q, 3, got) == LV2_EVQ_GOT && got[0] == 77 && !lv2_evq_any_waiter(&q));
+
+   /* A sender watching for room is told when the queue is gone: a poke
+    * moves the count it waits on, and a wait on the old count returns */
+   {
+      const unsigned seen = lv2_evq_watch(&q);
+      int moved;
+      lv2_evq_poke(&q);
+      moved = (unsigned)retro_atomic_load_acquire_int(&q.changes) != seen;
+      TEST_CHECK(moved);
+      if (moved)
+         lv2_evq_watch_wait(&q, seen, -1);
+      lv2_evq_unwatch(&q);
+   }
    lv2_evq_deinit(&q);
 }
 

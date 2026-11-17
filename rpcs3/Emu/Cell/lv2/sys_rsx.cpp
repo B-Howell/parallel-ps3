@@ -236,8 +236,10 @@ bool rsx::thread::send_event(u64 data1, u64 event_flags, u64 data3)
 
 		if (cpu && cpu->get_class() == thread_class::ppu)
 		{
-			// Deschedule
-			lv2_obj::sleep(*cpu, 100);
+			// Deschedule, until the queue changes: its events taken, or it
+			// destroyed or the port disconnected (lv2_evq_poke) - no timeout
+			// to send again on
+			lv2_obj::sleep(*cpu);
 		}
 
 		if (queue)
