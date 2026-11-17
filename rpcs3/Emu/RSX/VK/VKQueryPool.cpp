@@ -208,15 +208,13 @@ namespace vk
 		// Check for cached result
 		auto& query_info = query_slot_status[index];
 
-		if (!query_info.ready)
+		if (!query_info.ready && !poke_query(query_info, index, result_flags))
 		{
-			poke_query(query_info, index, result_flags);
-
-			while (!query_info.ready)
-			{
-				utils::pause();
-				poke_query(query_info, index, result_flags);
-			}
+			// Not known yet (no sample passed so far): the result is waited for
+			// in the driver, which wakes this as the GPU makes it available - it
+			// spun on vkGetQueryPoolResults before
+			poke_query(query_info, index, (result_flags & ~VK_QUERY_RESULT_PARTIAL_BIT) | VK_QUERY_RESULT_WAIT_BIT);
+			ensure(query_info.ready);
 		}
 
 		return query_info.data;

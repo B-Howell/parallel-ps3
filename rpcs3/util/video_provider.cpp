@@ -7,6 +7,7 @@
 #include "util/media_encode.h"
 
 #include <thread>
+#include <rthreads/retro_waitaddr.h>
 
 LOG_CHANNEL(media_log, "Media");
 
@@ -41,7 +42,11 @@ namespace utils
 
 	video_provider::sink_use::~sink_use()
 	{
-		retro_atomic_fetch_sub_int(&users, 1);
+		// The last one out wakes set_video_sink(), which may wait for it
+		if (retro_atomic_fetch_sub_int(&users, 1) == 1)
+		{
+			retro_waitaddr_notify_all(&users);
+		}
 	}
 
 	video_provider::video_provider()
@@ -104,10 +109,14 @@ namespace utils
 			// queues clear without stopping either side.
 			if (old != sink)
 			{
-				while (retro_atomic_fetch_add_seq_cst_int(&m_video_users, 0) != 0 ||
-					retro_atomic_fetch_add_seq_cst_int(&m_audio_users, 0) != 0)
+				// Woken as the last user of each lets go, no yield loop
+				for (retro_atomic_int_t* users : {&m_video_users, &m_audio_users})
 				{
-					std::this_thread::yield();
+					for (int n = retro_atomic_fetch_add_seq_cst_int(users, 0); n != 0; n = retro_atomic_fetch_add_seq_cst_int(users, 0))
+					{
+						const retro_waitaddr_t w{users, static_cast<u32>(n)};
+						retro_waitaddr_wait(&w, 1, -1);
+					}
 				}
 			}
 

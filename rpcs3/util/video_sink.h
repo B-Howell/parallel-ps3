@@ -5,6 +5,7 @@
 
 #include <retro_atomic.h>
 #include <retro_spsc.h>
+#include <rthreads/retro_waitaddr.h>
 
 #include <array>
 #include <cmath>
@@ -84,11 +85,11 @@ namespace utils
 				return false;
 
 			u32 index;
-			while (!take(m_frame_free, index))
+			for (u32 freed = freed_seen(); !take(m_frame_free, index); freed = freed_seen())
 			{
 				if (!wait || has_error)
 					return false;
-				std::this_thread::yield();
+				wait_freed(freed);
 			}
 
 			slot_frame& slot = m_frames[index];
@@ -121,11 +122,11 @@ namespace utils
 				const u32 count = std::min(sample_count - done, max_block_samples);
 				u32 index;
 
-				while (!take(m_sample_free, index))
+				for (u32 freed = freed_seen(); !take(m_sample_free, index); freed = freed_seen())
 				{
 					if (!wait || has_error)
 						return false;
-					std::this_thread::yield();
+					wait_freed(freed);
 				}
 
 				slot_sample& slot = m_samples[index];
@@ -162,7 +163,7 @@ namespace utils
 					out.pixel_format = slot.frame.pixel_format;
 				}
 
-				give(m_frame_free, index);
+				give_free(m_frame_free, index);
 
 				if (current)
 					return true;
@@ -184,7 +185,7 @@ namespace utils
 				if (m_samples[m_sample_held].epoch != retro_atomic_load_acquire_size(&m_epoch))
 				{
 					// Handed over before the last clear
-					give(m_sample_free, m_sample_held);
+					give_free(m_sample_free, m_sample_held);
 					m_sample_held = umax;
 				}
 			}
@@ -196,7 +197,7 @@ namespace utils
 		{
 			if (m_sample_held != umax)
 			{
-				give(m_sample_free, m_sample_held);
+				give_free(m_sample_free, m_sample_held);
 				m_sample_held = umax;
 			}
 		}
@@ -226,6 +227,14 @@ namespace utils
 		}
 
 		atomic_t<bool> has_error{false};
+
+		// The encoder failed: a producer waiting for a free slot gives up
+		void set_error()
+		{
+			has_error = true;
+			retro_atomic_fetch_add_seq_cst_int(&m_freed, 1);
+			retro_waitaddr_notify_all(&m_freed);
+		}
 
 		// These two variables should only be set once before we start encoding, so we don't need mutexes or atomics.
 		bool use_internal_audio = false; // True if we want to fetch samples from cellAudio
@@ -284,6 +293,28 @@ namespace utils
 			// Never full: it has room for every slot
 			retro_spsc_write(&ring, &index, sizeof(u32));
 		}
+
+		// A slot back to the producer: one waiting for it (add_frame, add_
+		// audio_samples with @wait) woken - it yielded in a loop before
+		void give_free(retro_spsc_t& ring, u32 index)
+		{
+			give(ring, index);
+			retro_atomic_fetch_add_seq_cst_int(&m_freed, 1);
+			retro_waitaddr_notify_all(&m_freed);
+		}
+
+		u32 freed_seen()
+		{
+			return static_cast<u32>(retro_atomic_load_seq_cst_int(&m_freed));
+		}
+
+		void wait_freed(u32 seen)
+		{
+			const retro_waitaddr_t w{&m_freed, seen};
+			retro_waitaddr_wait(&w, 1, -1);
+		}
+
+		retro_atomic_int_t m_freed{};
 
 		retro_atomic_size_t m_epoch;
 

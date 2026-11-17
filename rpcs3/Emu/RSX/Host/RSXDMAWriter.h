@@ -113,7 +113,11 @@ namespace rsx
 		void deregister_handler(int dispatch_class);
 
 		void enqueue(const host_gpu_write_op_t& request);
-		void drain_label_queue();
+		// Until the GPU has run every command up to the last label released.
+		// @wait_gpu, when given, waits for the submitted work in the driver
+		// (Vulkan: the submissions' fences); without it this polls the
+		// GPU-written counter (OpenGL, which has no such wait here yet)
+		void drain_label_queue(void (*wait_gpu)(void* ctx) = nullptr, void* ctx = nullptr);
 
 		volatile host_gpu_context_t* host_ctx() const
 		{

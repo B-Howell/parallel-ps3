@@ -168,19 +168,21 @@ namespace vk
 	void fence::reset()
 	{
 		vkResetFences(owner, 1, &handle);
-		flushed.release(false);
+		flushed.release(0);
 	}
 
 	void fence::signal_flushed()
 	{
-		flushed.release(true);
+		flushed.release(1);
+		flushed.notify_all();
 	}
 
 	void fence::wait_flush()
 	{
+		// Woken as the submit is made (signal_flushed), no spin
 		while (!flushed)
 		{
-			utils::pause();
+			flushed.wait(0);
 		}
 	}
 
@@ -570,17 +572,12 @@ namespace vk
 		}
 		else
 		{
-			while (auto status = vkGetFenceStatus(*g_render_device, pFence->handle))
+			// No time limit: waited for in the driver, which wakes this as the
+			// GPU signals the fence - it spun on vkGetFenceStatus before
+			if (const VkResult status = vkWaitForFences(*g_render_device, 1, &pFence->handle, VK_FALSE, UINT64_MAX); status != VK_SUCCESS)
 			{
-				switch (status)
-				{
-				case VK_NOT_READY:
-					utils::pause();
-					continue;
-				default:
-					die_with_error(status);
-					return status;
-				}
+				die_with_error(status);
+				return status;
 			}
 
 			return VK_SUCCESS;

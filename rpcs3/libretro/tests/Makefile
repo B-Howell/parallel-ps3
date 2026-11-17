@@ -410,10 +410,10 @@ VIDEO_SINK_DEPS := test_video_sink.cpp ../../util/video_sink.h $(LRC)/queues/ret
 VIDEO_SINK_FLAGS := -std=c++20 -O1 -g -Wall -Wextra -I../.. -I$(LRC)/include
 
 test_video_sink: $(VIDEO_SINK_DEPS)
-	$(CXX) $(VIDEO_SINK_FLAGS) $(SANITIZE) -o $@ test_video_sink.cpp -x c -std=gnu99 $(LRC)/queues/retro_spsc.c -x none -lpthread
+	$(CXX) $(VIDEO_SINK_FLAGS) $(SANITIZE) -o $@ test_video_sink.cpp -x c -std=gnu99 -DHAVE_THREADS $(LRC)/queues/retro_spsc.c $(LRC)/rthreads/retro_waitaddr.c $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c -x none -lpthread
 
 test_video_sink_tsan: $(VIDEO_SINK_DEPS)
-	$(CXX) $(VIDEO_SINK_FLAGS) -fsanitize=thread -o $@ test_video_sink.cpp -x c -std=gnu99 $(LRC)/queues/retro_spsc.c -x none -lpthread
+	$(CXX) $(VIDEO_SINK_FLAGS) -fsanitize=thread -o $@ test_video_sink.cpp -x c -std=gnu99 -DHAVE_THREADS $(LRC)/queues/retro_spsc.c $(LRC)/rthreads/retro_waitaddr.c $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c -x none -lpthread
 
 # The libretro swapchain's image bookkeeping, also under ThreadSanitizer
 VK_IMAGES_DEPS := test_vk_images.c test_common.h ../../Emu/RSX/VK/vkutils/libretro_images.h $(LRC)/include/retro_atomic.h
@@ -1004,6 +1004,8 @@ check: all
 	@if grep -nE "thread_ctrl::wait_for|void operator\(\)\(\)" ../../Input/pad_thread.cpp ../../Input/pad_thread.h || grep -n "get_products_by_class" ../../Emu/Cell/Modules/cellPad.cpp; then echo "pads: the polling loop, or a vector per hotplug, is back"; exit 1; else echo "pads: no polling loop, nothing allocated per hotplug"; fi
 	@# The OSK and message dialogs, the Cross Controller and the NP bandwidth test: no yield, no poll, no lock - waits on words (libretro_wait_on), the fake bandwidth test one word of guest time
 	@if grep -nE "this_thread::yield|thread_ctrl::wait_for" ../../Emu/Cell/Modules/cellOskDialog.cpp ../../Emu/Cell/Modules/cellMsgDialog.cpp ../../Emu/Cell/Modules/cellCrossController.cpp ../../Emu/Cell/Modules/sceNpUtil.cpp || grep -nE "shared_mutex|lock_guard|named_thread" ../../Emu/Cell/Modules/sceNpUtil.cpp; then echo "dialogs / cross controller / np util: a yield, a poll, a lock or the test thread is back"; exit 1; else echo "dialogs / cross controller / np util: no yield, no poll, no lock"; fi
+	@# The renderer waits on the GPU in the driver (fences, query results) and on words, never spinning: a skipped draw does not yield, the swapchain's readers and the recording sinks' users are waited for, the zcull hard sync does not spin first
+	@if grep -nE "utils::pause|this_thread::yield|sleep_for|thread_ctrl::wait_for|busy_wait\(" ../../Emu/RSX/VK/VKQueryPool.cpp ../../Emu/RSX/VK/VKDraw.cpp ../../Emu/RSX/GL/GLDraw.cpp ../../Emu/RSX/VK/VKPresent.cpp ../../Emu/RSX/VK/vkutils/swapchain_core.h ../../Emu/RSX/rsx_cache.h ../../util/video_sink.h ../../util/video_provider.cpp || awk '/void fence::wait_flush|VkResult wait_for_fence/{f=1} f&&/utils::pause/{bad=1} f&&/^\t}/{f=0} END{exit !bad}' ../../Emu/RSX/VK/vkutils/sync.cpp || grep -n "busy_wait" ../../Emu/RSX/VK/VKGSRender.cpp; then echo "renderer: a spin, a yield or a sleep is back on a GPU or reader wait"; exit 1; else echo "renderer: GPU waits in the driver, no spin"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

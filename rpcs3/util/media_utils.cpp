@@ -541,7 +541,7 @@ namespace utils
 		if (const std::string dir = fs::get_parent_dir(m_path); !fs::is_dir(dir))
 		{
 			media_log.error("video_encoder: Could not find directory: '%s' for file '%s'", dir, m_path);
-			has_error = true;
+			set_error();
 			return;
 		}
 
@@ -578,7 +578,7 @@ namespace utils
 			if (!enc)
 			{
 				media_log.error("video_encoder: Could not start '%s'", path);
-				has_error = true;
+				set_error();
 				m_flush = false;
 				m_running = false;
 				return;
@@ -612,7 +612,7 @@ namespace utils
 						if (!me_video(enc, frame_data.data.data(), pitch, frame_data.width, frame_data.height, frame_data.pixel_format, pts))
 						{
 							media_log.error("video_encoder: Could not write a frame (%dx%d, format %d)", frame_data.width, frame_data.height, frame_data.pixel_format);
-							has_error = true;
+							set_error();
 							break;
 						}
 
@@ -630,7 +630,7 @@ namespace utils
 					if (sample->channels != m_channels)
 					{
 						media_log.error("video_encoder: Audio sample channel count %d does not match the recording's %d", sample->channels, m_channels);
-						has_error = true;
+						set_error();
 						break;
 					}
 
@@ -650,7 +650,7 @@ namespace utils
 							!me_audio(enc, sample->data.data(), sample->sample_count))
 						{
 							media_log.error("video_encoder: Could not write audio");
-							has_error = true;
+							set_error();
 							break;
 						}
 

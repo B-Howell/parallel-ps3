@@ -238,7 +238,7 @@ static void full()
 	std::thread failer([&]
 	{
 		std::this_thread::sleep_for(std::chrono::milliseconds(50));
-		s.has_error = true;
+		s.set_error(); // wakes the waiting producer
 	});
 	buf = make_frame(0);
 	CHECK(!s.add_frame(buf, frame_bytes, 1, 2, 0, 0, true));

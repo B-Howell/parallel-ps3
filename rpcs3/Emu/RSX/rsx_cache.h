@@ -244,6 +244,7 @@ namespace rsx
 				}
 				// Do not account for an extra shader that was never processed
 				processed--;
+				processed.notify_all(); // await_workers looks
 			};
 
 			await_workers(nb_workers, 0, shader_load_worker, processed, entry_count, dlg);
@@ -265,6 +266,7 @@ namespace rsx
 				}
 				// Do not account for an extra shader that was never processed
 				processed--;
+				processed.notify_all(); // await_workers looks
 			};
 
 			await_workers(nb_workers, 1, shader_comp_worker, processed, entry_count, dlg);
@@ -305,7 +307,19 @@ namespace rsx
 				u32 last_update_progress = 0;
 				while ((current_progress < entry_count) && !Emu.IsStopped())
 				{
-					thread_ctrl::wait_for(16'000); // Around 60fps should be good enough
+					// Woken once a frontend frame (g_libretro_events) to update the
+					// dialog, or as a worker is done - it slept 16 ms
+					{
+						const u32 events = g_libretro_events.load();
+						const u32 seen = processed.load();
+
+						if (seen < entry_count && !Emu.IsStopped())
+						{
+							atomic_wait::list<2> list(processed, g_libretro_events);
+							list.values(seen, events);
+							list.wait();
+						}
+					}
 
 					if (Emu.IsStopped()) break;
 

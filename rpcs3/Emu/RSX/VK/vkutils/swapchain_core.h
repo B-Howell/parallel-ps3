@@ -11,6 +11,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <rthreads/retro_waitaddr.h>
 
 namespace vk
 {
@@ -242,8 +243,13 @@ namespace vk
 		void retire_images()
 		{
 			retro_atomic_store_release_ptr(&m_published, nullptr);
-			while (retro_atomic_load_acquire_int(&m_readers) != 0)
-				std::this_thread::yield();
+			// Woken as the last reader lets go (release_image, get_hw_image),
+			// no yield loop
+			for (int n = retro_atomic_load_acquire_int(&m_readers); n != 0; n = retro_atomic_load_acquire_int(&m_readers))
+			{
+				const retro_waitaddr_t w{&m_readers, static_cast<u32>(n)};
+				retro_waitaddr_wait(&w, 1, -1);
+			}
 
 			if (m_current && m_hw)
 			{
@@ -374,7 +380,8 @@ namespace vk
 			retro_atomic_fetch_add_int(&m_readers, 1);
 			if (image_set* set = published())
 				lr_image_slots_release(&set->slots, index);
-			retro_atomic_fetch_sub_int(&m_readers, 1);
+			if (retro_atomic_fetch_sub_int(&m_readers, 1) == 1)
+				retro_waitaddr_notify_all(&m_readers);
 		}
 
 		struct hw_image
@@ -401,7 +408,8 @@ namespace vk
 				out.width = set->width;
 				out.height = set->height;
 			}
-			retro_atomic_fetch_sub_int(&readers, 1);
+			if (retro_atomic_fetch_sub_int(&readers, 1) == 1)
+				retro_waitaddr_notify_all(&readers);
 			return ok;
 		}
 

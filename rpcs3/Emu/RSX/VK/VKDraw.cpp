@@ -1313,8 +1313,8 @@ void VKGSRender::end()
 
 	if (!load_program())
 	{
-		// Program is not ready, skip drawing this
-		std::this_thread::yield();
+		// Program is not ready, skip drawing this (no yield: the renderer
+		// goes on to the next command)
 		execute_nop_draw();
 		// m_rtts.on_write(); - breaks games for obvious reasons
 		rsx::thread::end();

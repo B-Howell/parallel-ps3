@@ -46,14 +46,20 @@ namespace rsx
 		ensure(host_gpu_write_ops_push_back_growing(&m_job_queue, &request));
 	}
 
-	void RSXDMAWriter::drain_label_queue()
+	void RSXDMAWriter::drain_label_queue(void (*wait_gpu)(void* ctx), void* ctx)
 	{
 		if (!m_host_context_ptr)
 		{
 			return;
 		}
 
-		// FIXME: This is a busy wait, consider yield to improve responsiveness on weak devices.
+		if (wait_gpu && !m_host_context_ptr->in_flight_commands_completed())
+		{
+			// Waited for in the driver: woken as the GPU is done, no spin
+			wait_gpu(ctx);
+		}
+
+		// OpenGL only: polls the counter the GPU writes
 		while (!m_host_context_ptr->in_flight_commands_completed())
 		{
 			utils::pause();

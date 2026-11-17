@@ -1632,7 +1632,7 @@ bool VKGSRender::release_GCM_label(u32 type, u32 address, u32 args)
 	{
 		// All texture loads already seen by the host GPU
 		// Wait for all previously submitted labels to be flushed
-		m_host_dma_ctrl->drain_label_queue();
+		m_host_dma_ctrl->drain_label_queue([](void* self) { static_cast<VKGSRender*>(self)->m_primary_cb_list.wait_all(); }, this);
 		return false;
 	}
 
@@ -1644,7 +1644,7 @@ bool VKGSRender::release_GCM_label(u32 type, u32 address, u32 args)
 		// NVIDIA GPUs can disappoint when DMA blocks straddle VirtualAlloc boundaries.
 		// Take the L and try the fallback.
 		rsx_log.warning("Host label update at 0x%x was not possible.", address);
-		m_host_dma_ctrl->drain_label_queue();
+		m_host_dma_ctrl->drain_label_queue([](void* self) { static_cast<VKGSRender*>(self)->m_primary_cb_list.wait_all(); }, this);
 		return false;
 	}
 
@@ -2903,8 +2903,9 @@ void VKGSRender::get_occlusion_query_result(rsx::reports::occlusion_query_info* 
 			}
 			m_flush_queue_busy = false;
 
+			// The sync below waits for the submission (it spun a while here
+			// first, for nothing)
 			rsx_log.warning("[Performance warning] Unexpected ZCULL read caused a hard sync");
-			busy_wait();
 		}
 
 		data.sync();

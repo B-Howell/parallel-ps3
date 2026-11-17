@@ -20,7 +20,7 @@ namespace vk
 
 	struct fence
 	{
-		atomic_t<bool> flushed = false;
+		atomic_t<u32> flushed = 0; // the submit made (waited on: wait_flush)
 		VkFence handle         = VK_NULL_HANDLE;
 		VkDevice owner         = VK_NULL_HANDLE;
 

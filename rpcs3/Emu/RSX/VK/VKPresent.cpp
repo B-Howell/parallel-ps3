@@ -535,7 +535,11 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 				return;
 			}
 
-			std::this_thread::sleep_for(100ms);
+			// Tried again at the next frontend frame (retro_run moves
+			// g_libretro_events), or as the emulator's state changes - it
+			// slept 100 ms
+			const u32 events = g_libretro_events.load();
+			g_libretro_events.wait(events);
 		}
 	}
 
