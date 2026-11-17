@@ -1,8 +1,6 @@
 #pragma once
 
 #include <optional>
-#include <condition_variable>
-#include <thread>
 #include <variant>
 
 #include "Utilities/mutex.h"
@@ -20,19 +18,33 @@ struct generic_async_transaction_context
 
 	generic_async_transaction_context(const SceNpCommunicationId& communicationId, const SceNpCommunicationPassphrase& passphrase, u64 timeout);
 
-	std::optional<s32> get_transaction_status() const;
+	// No lock and no thread. A request is registered (np_handler) before
+	// it is sent; then the first of its reply, an abort or its timeout to
+	// claim it finishes it (claim, finish) and the others are told no. The
+	// requester touches tdata only while no request is in flight; the
+	// reply's handler, only once it has claimed it. A timeout is seen by
+	// whoever looks after the deadline (the status asked, the wait, the
+	// reply) - it took a thread per request before
+	std::optional<s32> get_transaction_status();
 	void abort_transaction();
 	error_code wait_for_completion();
-	void set_result_and_wake(error_code err);
 
-	mutable shared_mutex mutex;
-	std::condition_variable_any wake_cond, completion_cond;
-	std::optional<error_code> result;
+	bool claim();                    // pending -> being finished: true for one only
+	void finish(error_code err);     // after claim: the result, waiters woken
+	void complete_now(error_code err); // the requester, no request in flight
+	void reset();                    // the requester, before a request: pending
+	bool has_result() const { return state.load() == 2; }
+	void start(u32 req_id);          // as the request is registered: its deadline
+
+	// 0 pending, 1 being finished, 2 done (result_value set)
+	atomic_t<u32> state{0};
+	s32 result_value = 0;
+	u64 deadline_us = 0;
+	u32 req_id = 0;
+
 	SceNpCommunicationId communicationId;
 	SceNpCommunicationPassphrase passphrase;
 	u64 timeout;
-
-	std::thread thread;
 
 	u32 idm_id;
 };

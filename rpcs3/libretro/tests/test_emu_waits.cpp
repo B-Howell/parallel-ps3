@@ -14,11 +14,15 @@
 
 #include "stdafx.h"
 #include "Emu/System.h"
+#include "Emu/NP/np_contexts.h"
+#include "Emu/Cell/timers.hpp"
 
 #include <atomic>
 #include <cstdio>
 #include <functional>
 #include <thread>
+#include <memory>
+#include <vector>
 
 void qt_events_aware_op(int repeat_duration_ms, std::function<bool()> wrapped_op);
 
@@ -114,6 +118,89 @@ int main()
 		libretro_event();
 		waiter.join();
 		std::printf("test_emu_waits: libretro_wait_on returned %d time(s) idle, woken by the word and by an event\n", idle);
+	}
+
+	// An NP transaction (np_contexts.cpp): no lock and no thread - finished
+	// once, by the first of its reply, an abort or its timeout to claim it
+	{
+		const SceNpCommunicationId com_id{};
+		const SceNpCommunicationPassphrase pass{};
+
+		// Two threads claiming each of 20000 transactions at once: one wins
+		// each
+		int both = 0, neither = 0;
+		{
+			constexpr int rounds = 20000;
+			std::vector<std::unique_ptr<generic_async_transaction_context>> ts;
+			for (int i = 0; i < rounds; i++)
+			{
+				ts.emplace_back(std::make_unique<generic_async_transaction_context>(com_id, pass, 10'000'000));
+				ts.back()->start(1);
+			}
+
+			std::vector<std::atomic<int>> wins(rounds), arrived(rounds);
+			const auto claimer = [&]
+			{
+				for (int i = 0; i < rounds; i++)
+				{
+					// Both at the same transaction, then both claim it
+					arrived[i]++;
+					while (arrived[i] < 2) {}
+					if (ts[i]->claim())
+						wins[i]++;
+				}
+			};
+			std::thread a(claimer), b(claimer);
+			a.join();
+			b.join();
+			for (int i = 0; i < rounds; i++)
+			{
+				both += wins[i] == 2;
+				neither += wins[i] == 0;
+			}
+		}
+		CHECK(both == 0 && neither == 0);
+
+		// A reply finishes it: the waiter woken with its result, and an abort
+		// after is told no
+		{
+			generic_async_transaction_context t(com_id, pass, 10'000'000);
+			t.start(1);
+			std::atomic<s32> got{-1};
+			named_thread waiter("NP wait test", [&] { got = t.wait_for_completion(); });
+			for (int i = 0; i < 200000; i++)
+				std::this_thread::yield();
+			CHECK(got == -1);
+			CHECK(t.claim());
+			t.finish(not_an_error(7));
+			waiter();
+			CHECK(got == 7);
+			t.abort_transaction();
+			CHECK(t.result_value == 7);
+		}
+
+		// Nothing comes: timed out at its deadline, by the wait or by the
+		// status asked - and a reply after finds it taken
+		{
+			generic_async_transaction_context t(com_id, pass, 20'000);
+			t.start(1);
+			std::atomic<s32> got{-1};
+			named_thread waiter("NP timeout test", [&] { got = t.wait_for_completion(); });
+			waiter();
+			CHECK(got == static_cast<s32>(SCE_NP_COMMUNITY_ERROR_TIMEOUT));
+			CHECK(!t.claim());
+
+			generic_async_transaction_context u(com_id, pass, 20'000);
+			u.start(2);
+			CHECK(!u.get_transaction_status());
+			const u64 until = get_system_time() + 40'000;
+			while (get_system_time() < until)
+				std::this_thread::yield();
+			CHECK(u.get_transaction_status() == static_cast<s32>(SCE_NP_COMMUNITY_ERROR_TIMEOUT));
+			CHECK(!u.claim());
+		}
+
+		std::printf("test_emu_waits: NP transactions finished once (20000 races), woken by the reply, timed out at the deadline\n");
 	}
 
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");

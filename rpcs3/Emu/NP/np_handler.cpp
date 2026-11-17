@@ -519,23 +519,18 @@ namespace np
 
 		basic_events_free(&queue_basic_events);
 
-		std::unordered_map<u32, shared_ptr<generic_async_transaction_context>> moved_trans;
+		// The transactions still in flight, aborted (no thread to join)
+		for (int slot = rpcn_reply_slots_drop(&async_transactions, 0); slot >= 0; slot = rpcn_reply_slots_drop(&async_transactions, slot + 1))
 		{
-			std::lock_guard lock(mutex_async_transactions);
-			moved_trans = std::move(async_transactions);
-			async_transactions.clear();
+			const shared_ptr<generic_async_transaction_context> trans = std::move(async_transaction_ctx[slot]);
+			async_transaction_ctx[slot].reset();
+			rpcn_reply_slots_free(&async_transactions, slot);
+
+			if (trans)
+				trans->abort_transaction();
 		}
 
-		for (auto& [trans_id, trans] : moved_trans)
-		{
-			trans->abort_transaction();
-		}
-
-		for (auto& [trans_id, trans] : moved_trans)
-		{
-			if (trans->thread.joinable())
-				trans->thread.join();
-		}
+		run_np_jobs();
 	}
 
 	std::shared_ptr<rpcn::rpcn_client> np_handler::load_rpcn() const
@@ -1225,6 +1220,9 @@ namespace np
 			std::shared_ptr<rpcn::rpcn_client> watched;
 			u32 seen = 0;
 			const u32 events = g_libretro_events.load();
+
+			// A requester's changes first, before the replies after them
+			run_np_jobs();
 
 			bool sleep = true;
 			if (const auto rpcn = load_rpcn())

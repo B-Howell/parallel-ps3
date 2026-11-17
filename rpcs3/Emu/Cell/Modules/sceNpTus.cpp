@@ -328,7 +328,7 @@ error_code scenp_tus_set_multislot_variable(s32 transId, T targetNpId, vm::cptr<
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpTusSetMultiSlotVariable(s32 transId, vm::cptr<SceNpId> targetNpId, vm::cptr<SceNpTusSlotId> slotIdArray, vm::cptr<s64> variableArray, s32 arrayNum, vm::ptr<void> option)
@@ -415,7 +415,7 @@ error_code scenp_tus_get_multislot_variable(s32 transId, T targetNpId, vm::cptr<
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpTusGetMultiSlotVariable(s32 transId, vm::cptr<SceNpId> targetNpId, vm::cptr<SceNpTusSlotId> slotIdArray, vm::ptr<SceNpTusVariable> variableArray, u32 variableArraySize, s32 arrayNum, vm::ptr<void> option)
@@ -508,7 +508,7 @@ error_code scenp_tus_get_multiuser_variable(s32 transId, T targetNpIdArray, SceN
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpTusGetMultiUserVariable(s32 transId, vm::cptr<SceNpId> targetNpIdArray, SceNpTusSlotId slotId, vm::ptr<SceNpTusVariable> variableArray, u32 variableArraySize, s32 arrayNum, vm::ptr<void> option)
@@ -601,7 +601,7 @@ error_code scenp_tus_get_friends_variable(s32 transId, SceNpTusSlotId slotId, s3
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpTusGetFriendsVariable(s32 transId, SceNpTusSlotId slotId, s32 includeSelf, s32 sortType, vm::ptr<SceNpTusVariable> variableArray, u32 variableArraySize, s32 arrayNum, vm::ptr<void> option)
@@ -661,7 +661,7 @@ error_code scenp_tus_add_and_get_variable(s32 transId, T targetNpId, SceNpTusSlo
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpTusAddAndGetVariable(s32 transId, vm::cptr<SceNpId> targetNpId, SceNpTusSlotId slotId, s64 inVariable, vm::ptr<SceNpTusVariable> outVariable, u32 outVariableSize, vm::ptr<SceNpTusAddAndGetVariableOptParam> option)
@@ -738,7 +738,7 @@ error_code scenp_tus_try_and_set_variable(s32 transId, T targetNpId, SceNpTusSlo
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpTusTryAndSetVariable(s32 transId, vm::cptr<SceNpId> targetNpId, SceNpTusSlotId slotId, s32 opeType, s64 variable, vm::ptr<SceNpTusVariable> resultVariable, u32 resultVariableSize, vm::ptr<SceNpTusTryAndSetVariableOptParam> option)
@@ -815,7 +815,7 @@ error_code scenp_tus_delete_multislot_variable(s32 transId, T targetNpId, vm::cp
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpTusDeleteMultiSlotVariable(s32 transId, vm::cptr<SceNpId> targetNpId, vm::cptr<SceNpTusSlotId> slotIdArray, s32 arrayNum, vm::ptr<void> option)
@@ -887,7 +887,7 @@ error_code scenp_tus_set_data(s32 transId, T targetNpId, SceNpTusSlotId slotId, 
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpTusSetData(s32 transId, vm::cptr<SceNpId> targetNpId, SceNpTusSlotId slotId, u32 totalSize, u32 sendSize, vm::cptr<void> data, vm::cptr<SceNpTusDataInfo> info, u32 infoStructSize, vm::ptr<SceNpTusSetDataOptParam> option)
@@ -959,7 +959,7 @@ error_code scenp_tus_get_data(s32 transId, T targetNpId, SceNpTusSlotId slotId, 
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpTusGetData(s32 transId, vm::cptr<SceNpId> targetNpId, SceNpTusSlotId slotId, vm::ptr<SceNpTusDataStatus> dataStatus, u32 dataStatusSize, vm::ptr<void> data, u32 recvSize, vm::ptr<void> option)
@@ -1046,7 +1046,7 @@ error_code scenp_tus_get_multislot_data_status(s32 transId, T targetNpId, vm::cp
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpTusGetMultiSlotDataStatus(s32 transId, vm::cptr<SceNpId> targetNpId, vm::cptr<SceNpTusSlotId> slotIdArray, vm::ptr<SceNpTusDataStatus> statusArray, u32 statusArraySize, s32 arrayNum, vm::ptr<void> option)
@@ -1139,7 +1139,7 @@ error_code scenp_tus_get_multiuser_data_status(s32 transId, T targetNpIdArray, S
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpTusGetMultiUserDataStatus(s32 transId, vm::cptr<SceNpId> targetNpIdArray, SceNpTusSlotId slotId, vm::ptr<SceNpTusDataStatus> statusArray, u32 statusArraySize, s32 arrayNum, vm::ptr<void> option)
@@ -1232,7 +1232,7 @@ error_code scenp_tus_get_friends_data_status(s32 transId, SceNpTusSlotId slotId,
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpTusGetFriendsDataStatus(s32 transId, SceNpTusSlotId slotId, s32 includeSelf, s32 sortType, vm::ptr<SceNpTusDataStatus> statusArray, u32 statusArraySize, s32 arrayNum, vm::ptr<void> option)
@@ -1297,7 +1297,7 @@ error_code scenp_tus_delete_multislot_data(s32 transId, T targetNpId, vm::cptr<S
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 
@@ -1329,7 +1329,7 @@ void scenp_tss_no_file(const shared_ptr<tus_transaction_ctx>& trans, vm::ptr<Sce
 {
 	// TSS are files stored on PSN by developers, no dumps available atm
 	std::memset(dataStatus.get_ptr(), 0, sizeof(SceNpTssDataStatus));
-	trans->result = not_an_error(0);
+	trans->complete_now(not_an_error(0));
 }
 
 error_code sceNpTssGetData(s32 transId, SceNpTssSlotId slotId, vm::ptr<SceNpTssDataStatus> dataStatus, u32 dataStatusSize, vm::ptr<void> data, u32 recvSize, vm::ptr<SceNpTssGetDataOptParam> option)

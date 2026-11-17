@@ -5565,13 +5565,10 @@ std::pair<std::optional<error_code>, shared_ptr<score_transaction_ctx>> get_scor
 		// Check for games reusing score transaction context
 		// Unsure about the actual behaviour, only one game does this afaik(Marvel vs Capcom Origins)
 		// For now we just clean the context and pretend it's a new one
-		std::lock_guard lock(trans_ctx->mutex);
-		if (trans_ctx->result)
+		// Nothing in flight once it has a result: the requester's alone
+		if (trans_ctx->has_result())
 		{
-			if (trans_ctx->thread.joinable())
-				trans_ctx->thread.join();
-			
-			trans_ctx->result = {};
+			trans_ctx->reset();
 			trans_ctx->tdata = {};
 		}
 	}
@@ -5614,7 +5611,7 @@ error_code scenp_score_get_board_info(s32 transId, SceNpScoreBoardId boardId, vm
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpScoreGetBoardInfo(s32 transId, SceNpScoreBoardId boardId, vm::ptr<SceNpScoreBoardInfo> boardInfo, vm::ptr<void> option)
@@ -5684,7 +5681,7 @@ error_code scenp_score_record_score(s32 transId, SceNpScoreBoardId boardId, SceN
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpScoreRecordScore(s32 transId, SceNpScoreBoardId boardId, SceNpScoreValue score, vm::cptr<SceNpScoreComment> scoreComment, vm::cptr<SceNpScoreGameInfo> gameInfo,
@@ -5739,7 +5736,7 @@ error_code scenp_score_record_game_data(s32 transId, SceNpScoreBoardId boardId, 
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpScoreRecordGameData(s32 transId, SceNpScoreBoardId boardId, SceNpScoreValue score, u32 totalSize, u32 sendSize, vm::cptr<void> data, vm::ptr<void> option)
@@ -5786,7 +5783,7 @@ error_code scenp_score_get_game_data(s32 transId, SceNpScoreBoardId boardId, vm:
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpScoreGetGameData(s32 transId, SceNpScoreBoardId boardId, vm::cptr<SceNpId> npId, vm::ptr<u32> totalSize, u32 recvSize, vm::ptr<void> data, vm::ptr<void> option)
@@ -5896,7 +5893,7 @@ error_code scenp_score_get_ranking_by_npid(s32 transId, SceNpScoreBoardId boardI
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpScoreGetRankingByNpId(s32 transId, SceNpScoreBoardId boardId, vm::cptr<SceNpId> npIdArray, u32 npIdArraySize, vm::ptr<SceNpScorePlayerRankData> rankArray, u32 rankArraySize,
@@ -6000,7 +5997,7 @@ error_code scenp_score_get_ranking_by_range(s32 transId, SceNpScoreBoardId board
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpScoreGetRankingByRange(s32 transId, SceNpScoreBoardId boardId, SceNpScoreRankNumber startSerialRank, vm::ptr<SceNpScoreRankData> rankArray, u32 rankArraySize,
@@ -6082,7 +6079,7 @@ error_code scenp_score_get_friends_ranking(s32 transId, SceNpScoreBoardId boardI
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpScoreGetFriendsRanking(s32 transId, SceNpScoreBoardId boardId, s32 includeSelf, vm::ptr<SceNpScoreRankData> rankArray, u32 rankArraySize, vm::ptr<SceNpScoreComment> commentArray,
@@ -6138,14 +6135,14 @@ error_code scenp_score_censor_comment(s32 transId, vm::cptr<char> comment, vm::p
 		return *res;
 
 	// TODO: actual implementation of this
-	trans_ctx->result = CELL_OK;
+	trans_ctx->complete_now(CELL_OK);
 
 	if (async)
 	{
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpScoreCensorComment(s32 transId, vm::cptr<char> comment, vm::ptr<void> option)
@@ -6194,14 +6191,14 @@ error_code scenp_score_sanitize_comment(s32 transId, vm::cptr<char> comment, vm:
 
 	// TODO: actual implementation of this
 	memcpy(sanitizedComment.get_ptr(), comment.get_ptr(), comment_len + 1);
-	trans_ctx->result = CELL_OK;
+	trans_ctx->complete_now(CELL_OK);
 
 	if (async)
 	{
 		return CELL_OK;
 	}
 
-	return *trans_ctx->result;
+	return not_an_error(trans_ctx->result_value);
 }
 
 error_code sceNpScoreSanitizeComment(s32 transId, vm::cptr<char> comment, vm::ptr<char> sanitizedComment, vm::ptr<void> option)

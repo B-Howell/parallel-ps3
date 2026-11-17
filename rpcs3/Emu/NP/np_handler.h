@@ -1,6 +1,8 @@
 #pragma once
 
 #include <queue>
+#include <array>
+#include <functional>
 #include <queues/retro_deque.h>
 #include <map>
 #include <unordered_map>
@@ -222,7 +224,21 @@ namespace np
 		void set_current_gui_ctx_id(u32 id);
 
 		// Score requests
-		void transaction_async_handler(std::unique_lock<shared_mutex> lock, const shared_ptr<generic_async_transaction_context>& trans_ctx, u32 req_id, bool async);
+		// Before the request is sent: its context found by the reply's id
+		bool register_transaction(const shared_ptr<generic_async_transaction_context>& trans_ctx, u32 req_id);
+		// After: a sync caller waits for it to finish
+		void transaction_async_handler(const shared_ptr<generic_async_transaction_context>& trans_ctx, u32 req_id, bool async);
+
+	public:
+		// The reply's handler, or one finishing it otherwise: the context the
+		// request registered, taken out - once, by one thread
+		shared_ptr<generic_async_transaction_context> take_transaction(u32 req_id);
+
+		// Run on this thread (np_handler::operator()), before the replies it
+		// handles next: a requester's change to a transaction in flight,
+		// which only the reply's handler may otherwise touch
+		void run_on_np_thread(std::function<void()> job);
+
 		void get_board_infos(shared_ptr<score_transaction_ctx>& trans_ctx, SceNpScoreBoardId boardId, vm::ptr<SceNpScoreBoardInfo> boardInfo, bool async);
 		void record_score(shared_ptr<score_transaction_ctx>& trans_ctx, SceNpScoreBoardId boardId, SceNpScoreValue score, vm::cptr<SceNpScoreComment> scoreComment, const u8* data, u32 data_size, vm::ptr<SceNpScoreRankNumber> tmpRank, bool async);
 		void record_score_data(shared_ptr<score_transaction_ctx>& trans_ctx, SceNpScoreBoardId boardId, SceNpScoreValue score, u32 totalSize, u32 sendSize, const u8* score_data, bool async);
@@ -517,8 +533,20 @@ namespace np
 		} gui_notifications;
 
 		// Async transaction threads
-		shared_mutex mutex_async_transactions;
-		std::unordered_map<u32, shared_ptr<generic_async_transaction_context>> async_transactions; // (req_id, transaction_ctx)
+		// The transactions in flight, by request id: slots claimed and taken
+		// with compare-and-swap (rpcn_reply_slots.c), the contexts at the
+		// same index - no lock
+		rpcn_reply_slots_t async_transactions{};
+		std::array<shared_ptr<generic_async_transaction_context>, RPCN_REPLY_SLOTS> async_transaction_ctx{};
+
+		struct np_job
+		{
+			mpsc_stack_node_t link{}; // first: the node is the job
+			std::function<void()> run;
+		};
+
+		mpsc_stack_t np_jobs{};
+		void run_np_jobs();
 
 		// RPCN: the client, published with no lock - read by any thread (a
 		// reference taken under retro_retire), replaced or let go by a few,

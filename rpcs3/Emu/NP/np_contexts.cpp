@@ -5,6 +5,7 @@
 #include "Emu/IdManager.h"
 #include "Emu/Cell/Modules/cellSysutil.h"
 #include "np_helpers.h"
+#include "Emu/Cell/timers.hpp"
 
 LOG_CHANNEL(sceNp2);
 
@@ -16,45 +17,91 @@ generic_async_transaction_context::generic_async_transaction_context(const SceNp
 
 generic_async_transaction_context::~generic_async_transaction_context()
 {
-	if (thread.joinable())
-	{
-		if (std::this_thread::get_id() == thread.get_id())
-			thread.detach();
-		else
-			thread.join();
-	}
 }
 
-std::optional<s32> generic_async_transaction_context::get_transaction_status() const
+// np_requests.cpp: the request's slot let go of, if it still holds it
+extern void np_transaction_finished(u32 req_id);
+
+void generic_async_transaction_context::start(u32 id)
 {
-	std::lock_guard lock(mutex);
-	return result;
+	req_id = id;
+	deadline_us = get_system_time() + timeout;
 }
+
+bool generic_async_transaction_context::claim()
+{
+	return state.compare_and_swap_test(0, 1);
+}
+
+void generic_async_transaction_context::finish(error_code err)
+{
+	result_value = err;
+	state.release(2);
+	state.notify_all();
+	np_transaction_finished(req_id);
+}
+
+void generic_async_transaction_context::complete_now(error_code err)
+{
+	result_value = err;
+	state.release(2);
+	state.notify_all();
+}
+
+void generic_async_transaction_context::reset()
+{
+	state.release(0);
+}
+
+std::optional<s32> generic_async_transaction_context::get_transaction_status()
+{
+	if (state.load() != 2 && get_system_time() >= deadline_us && claim())
+	{
+		finish(SCE_NP_COMMUNITY_ERROR_TIMEOUT);
+	}
+
+	if (state.load() != 2)
+	{
+		return std::nullopt;
+	}
+
+	return result_value;
+}
+
 void generic_async_transaction_context::abort_transaction()
 {
-	std::lock_guard lock(mutex);
-
-	result = SCE_NP_COMMUNITY_ERROR_ABORTED;
-	wake_cond.notify_one();
+	if (claim())
+	{
+		finish(SCE_NP_COMMUNITY_ERROR_ABORTED);
+	}
 }
+
 error_code generic_async_transaction_context::wait_for_completion()
 {
-	std::unique_lock lock(mutex);
-
-	if (result)
+	// Woken as it is finished, or at its deadline - no condition variable
+	for (u32 s = state.load(); s != 2; s = state.load())
 	{
-		return *result;
+		const u64 now = get_system_time();
+
+		if (now >= deadline_us)
+		{
+			if (claim())
+			{
+				finish(SCE_NP_COMMUNITY_ERROR_TIMEOUT);
+			}
+			else if (state.load() == 1)
+			{
+				// Being finished: done in a moment, woken by it
+				state.wait(1);
+			}
+
+			continue;
+		}
+
+		thread_ctrl::wait_on(state, s, deadline_us - now);
 	}
 
-	completion_cond.wait(lock, [this] { return result.has_value(); });
-
-	return *result;
-}
-
-void generic_async_transaction_context::set_result_and_wake(error_code err)
-{
-	result = err;
-	wake_cond.notify_one();
+	return not_an_error(result_value);
 }
 
 tus_ctx::tus_ctx(vm::cptr<SceNpCommunicationId> communicationId, vm::cptr<SceNpCommunicationPassphrase> passphrase)

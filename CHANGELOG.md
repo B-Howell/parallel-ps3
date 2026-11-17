@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- Score and TUS transactions (`sceNpScore*`, `sceNpTus*` online leaderboards and storage) take no lock and start no thread. Each transaction had a mutex and two condition variables, an asynchronous one started a `std::thread` of its own just to wait out its timeout, and the transactions in flight were a map under another mutex:
+  - **Registration:** a request is now registered before it is sent, in slots claimed with compare-and-swap (`rpcn_reply_slots.c`). Before, it was registered after it was sent, so a reply faster than the registration found nothing.
+  - **Finishing:** it is finished once, by the first to claim it of its reply, an abort or its timeout (`claim`, `finish`); the others are told no.
+  - **Timeouts:** whoever looks after the deadline sees the timeout: the status asked, the wait, or the reply itself. A synchronous call waits on the transaction's state, woken as it finishes or at its deadline.
+  - **Multi-part reads:** a requester changing the output buffers of a transaction still in flight (`get_score_data`, `tus_get_data`) has the change made on the NP handler's thread, where the reply's handler runs. No lock is needed between them.
+  - **Tests:** `test_emu_waits` now has two threads claim each of 20000 transactions at the same moment and checks one wins each; it fails with the claim as a load and a store. It also checks a waiter woken by the reply, and a timeout seen by the wait and by the status. `std::lock_guard` count 215.
+  - A check fails if a lock, a condition variable or a thread per request comes back. Not yet run online.
 - The RPCN client is reached with no lock:
   - **The NP handler's reference to it:** this was a `std::shared_ptr` under `mutex_rpcn`, and the lock was held across the whole connection and login, so the handler's thread and every presence or trophy call waited on the network. About half the uses (every `get_rpcn()` in the requests) did not take the lock at all, against a reset on another thread. The reference is now published with no lock: a thread takes its own copy under `retro_retire`, and replacing or dropping it lets the old copy go once no reader is in it.
   - **The one client (`rpcn_client::get_instance`):** this was a `weak_ptr` under `inst_mutex`. It is now published the same way. Making a client is claimed with compare-and-swap; a thread that finds it claimed waits for the one being made, then takes that.

@@ -7,6 +7,8 @@
 #include "Emu/Cell/PPUCallback.h"
 #include "Emu/Cell/lv2/sys_sync.h"
 #include "Emu/system_config.h"
+#include "Emu/System.h"
+#include "Emu/Cell/timers.hpp"
 #include "Emu/Cell/Modules/cellSysutil.h"
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/IdManager.h"
@@ -19,6 +21,16 @@
 #include "Emu/NP/ip_address.h"
 
 LOG_CHANNEL(rpcn_log, "rpcn");
+
+// A transaction finished by an abort or its timeout: its slot let go of, if
+// the reply has not taken it (np_contexts.cpp)
+void np_transaction_finished(u32 req_id)
+{
+	if (auto* const nph = g_fxo->try_get<named_thread<np::np_handler>>())
+	{
+		nph->take_transaction(req_id);
+	}
+}
 
 namespace np
 {
@@ -948,71 +960,117 @@ namespace np
 		}
 	}
 
-	void np_handler::transaction_async_handler(std::unique_lock<shared_mutex> lock, const shared_ptr<generic_async_transaction_context>& trans_ctx, u32 req_id, bool async)
+	bool np_handler::register_transaction(const shared_ptr<generic_async_transaction_context>& trans_ctx, u32 req_id)
 	{
-		auto worker_function = [trans_ctx = trans_ctx, req_id, this](std::unique_lock<shared_mutex> lock)
+		const int slot = rpcn_reply_slots_claim(&async_transactions);
+
+		if (slot < 0)
 		{
-			thread_base::set_name("NP Trans Worker");
-
-			bool has_value = trans_ctx->wake_cond.wait_for(lock, std::chrono::microseconds(trans_ctx->timeout), [&]
-				{
-					return trans_ctx->result.has_value();
-				});
-			{
-				std::lock_guard lock_threads(this->mutex_async_transactions);
-				this->async_transactions.erase(req_id);
-			}
-
-			if (!has_value)
-			{
-				trans_ctx->result = SCE_NP_COMMUNITY_ERROR_TIMEOUT;
-				return;
-			}
-
-			// Only 2 cases should be timeout or caller setting result
-			ensure(trans_ctx->result, "transaction_async_handler: trans_ctx->result is not set");
-			trans_ctx->completion_cond.notify_one();
-		};
-
-		{
-			std::lock_guard lock_score(mutex_async_transactions);
-			ensure(async_transactions.insert({req_id, trans_ctx}).second, "transaction_async_handler: async_transactions insert failed");
+			rpcn_log.error("Too many transactions in flight: transaction(%d) dropped", req_id);
+			return false;
 		}
 
+		trans_ctx->reset();
+		trans_ctx->start(req_id);
+		async_transaction_ctx[slot] = trans_ctx;
+		rpcn_reply_slots_publish(&async_transactions, slot, req_id);
+		return true;
+	}
+
+	shared_ptr<generic_async_transaction_context> np_handler::take_transaction(u32 req_id)
+	{
+		const int slot = rpcn_reply_slots_take(&async_transactions, req_id);
+
+		if (slot < 0)
+		{
+			return {};
+		}
+
+		shared_ptr<generic_async_transaction_context> trans_ctx = std::move(async_transaction_ctx[slot]);
+		async_transaction_ctx[slot].reset();
+		rpcn_reply_slots_free(&async_transactions, slot);
+
+		// A reply past the deadline: timed out, as it was when a thread
+		// waited for it (and the reply found nothing)
+		if (trans_ctx && trans_ctx->state.load() == 0 && get_system_time() >= trans_ctx->deadline_us)
+		{
+			if (trans_ctx->claim())
+			{
+				trans_ctx->finish(SCE_NP_COMMUNITY_ERROR_TIMEOUT);
+			}
+
+			return {};
+		}
+
+		return trans_ctx;
+	}
+
+	void np_handler::run_on_np_thread(std::function<void()> job)
+	{
+		np_job* const node = new np_job;
+		node->run = std::move(job);
+		mpsc_stack_push(&np_jobs, &node->link);
+		libretro_event(); // this thread looks
+	}
+
+	void np_handler::run_np_jobs()
+	{
+		for (mpsc_stack_node_t* link = mpsc_stack_reverse(mpsc_stack_drain(&np_jobs)); link;)
+		{
+			np_job* const job = static_cast<np_job*>(static_cast<void*>(link));
+			link = link->next;
+			job->run();
+			delete job;
+		}
+	}
+
+	void np_handler::transaction_async_handler(const shared_ptr<generic_async_transaction_context>& trans_ctx, [[maybe_unused]] u32 req_id, bool async)
+	{
+		// Async: nothing waits, the game asks for the status (no thread)
 		if (async)
 		{
-			trans_ctx->thread = std::thread(worker_function, std::move(lock));
 			return;
 		}
 
 		auto& cpu_thread = *get_current_cpu_thread();
 		lv2_obj::sleep(cpu_thread);
-		worker_function(std::move(lock));
+		trans_ctx->wait_for_completion();
 		cpu_thread.check_state();
 	}
 
 	void np_handler::get_board_infos(shared_ptr<score_transaction_ctx>& trans_ctx, SceNpScoreBoardId boardId, vm::ptr<SceNpScoreBoardInfo> boardInfo, bool async)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
 
 		const u32 req_id = get_req_id(REQUEST_ID_HIGH::SCORE);
 		trans_ctx->tdata = tdata_get_board_infos{.boardInfo = boardInfo};
+		if (!register_transaction(trans_ctx, req_id))
+		{
+			trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+			return;
+		}
+
 		get_rpcn()->get_board_infos(req_id, trans_ctx->communicationId, boardId);
 
-		transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+		transaction_async_handler(trans_ctx, req_id, async);
 	}
 
 	void np_handler::reply_get_board_infos(u32 req_id, rpcn::ErrorType error, vec_stream& reply)
 	{
-		std::lock_guard lock_trans(mutex_async_transactions);
-		if (!async_transactions.count(req_id))
+		const auto taken = take_transaction(req_id);
+		if (!taken)
 		{
 			rpcn_log.error("Couldn't find transaction(%d) in trans_id!", req_id);
 			return;
 		}
 
-		auto score_trans = idm::get_unlocked<score_transaction_ctx>(::at32(async_transactions, req_id)->idm_id);
+		auto score_trans = idm::get_unlocked<score_transaction_ctx>(taken->idm_id);
 		ensure(score_trans);
+
+		// Aborted or timed out meanwhile: nothing to do
+		if (!score_trans->claim())
+		{
+			return;
+		}
 
 		s32 error_code = CELL_OK;
 
@@ -1025,9 +1083,7 @@ namespace np
 
 		if (error_code != CELL_OK)
 		{
-			std::lock_guard lock(score_trans->mutex);
-			score_trans->result = error_code;
-			score_trans->wake_cond.notify_one();
+			score_trans->finish(error_code);
 			return;
 		}
 
@@ -1042,19 +1098,15 @@ namespace np
 			.uploadSizeLimit = resp->uploadsizelimit()
 		};
 
-		std::lock_guard lock(score_trans->mutex);
-
 		const auto* tdata = std::get_if<tdata_get_board_infos>(&score_trans->tdata);
 		ensure(tdata);
 
 		memcpy(reinterpret_cast<u8*>(tdata->boardInfo.get_ptr()), &board_info, sizeof(SceNpScoreBoardInfo));
-		score_trans->result = CELL_OK;
-		score_trans->wake_cond.notify_one();
+		score_trans->finish(CELL_OK);
 	}
 
 	void np_handler::record_score(shared_ptr<score_transaction_ctx>& trans_ctx, SceNpScoreBoardId boardId, SceNpScoreValue score, vm::cptr<SceNpScoreComment> scoreComment, const u8* data, u32 data_size, vm::ptr<SceNpScoreRankNumber> tmpRank, bool async)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
 		const u32 req_id = get_req_id(REQUEST_ID_HIGH::SCORE);
 		std::optional<std::string> str_comment = scoreComment ? std::optional(std::string(reinterpret_cast<const char*>(scoreComment->data))) : std::nullopt;
 		std::optional<std::vector<u8>> vec_data;
@@ -1066,32 +1118,41 @@ namespace np
 
 		trans_ctx->tdata = tdata_record_score{.tmpRank = tmpRank};
 
+		if (!register_transaction(trans_ctx, req_id))
+		{
+			trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+			return;
+		}
+
 		get_rpcn()->record_score(req_id, trans_ctx->communicationId, boardId, trans_ctx->pcId, score, str_comment, vec_data);
 
-		transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+		transaction_async_handler(trans_ctx, req_id, async);
 	}
 
 	void np_handler::reply_record_score(u32 req_id, rpcn::ErrorType error, vec_stream& reply)
 	{
-		std::lock_guard lock_trans(mutex_async_transactions);
-		if (!async_transactions.count(req_id))
+		const auto taken = take_transaction(req_id);
+		if (!taken)
 		{
 			rpcn_log.error("Couldn't find transaction(%d) in trans_id!", req_id);
 			return;
 		}
 
-		auto score_trans = idm::get_unlocked<score_transaction_ctx>(::at32(async_transactions, req_id)->idm_id);
+		auto score_trans = idm::get_unlocked<score_transaction_ctx>(taken->idm_id);
 		ensure(score_trans);
 
-		std::lock_guard lock(score_trans->mutex);
+		// Aborted or timed out meanwhile: nothing to do
+		if (!score_trans->claim())
+		{
+			return;
+		}
 
 		switch (error)
 		{
 		case rpcn::ErrorType::NoError: break;
 		case rpcn::ErrorType::ScoreNotBest:
 		{
-			score_trans->result = SCE_NP_COMMUNITY_SERVER_ERROR_NOT_BEST_SCORE;
-			score_trans->wake_cond.notify_one();
+			score_trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_NOT_BEST_SCORE);
 			return;
 		}
 		default: fmt::throw_exception("Unexpected error in reply_record_score: %s", error);
@@ -1108,14 +1169,11 @@ namespace np
 			*tdata->tmpRank = tmp_rank;
 		}
 
-		score_trans->result = CELL_OK;
-		score_trans->wake_cond.notify_one();
+		score_trans->finish(CELL_OK);
 	}
 
 	void np_handler::record_score_data(shared_ptr<score_transaction_ctx>& trans_ctx, SceNpScoreBoardId boardId, SceNpScoreValue score, u32 totalSize, u32 sendSize, const u8* score_data, bool async)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
-
 		auto* tdata = std::get_if<tdata_record_score_data>(&trans_ctx->tdata);
 		if (!tdata)
 		{
@@ -1128,60 +1186,83 @@ namespace np
 
 		if (tdata->game_data.size() == tdata->game_data_size)
 		{
-			trans_ctx->result = std::nullopt;
 			const u32 req_id = get_req_id(REQUEST_ID_HIGH::SCORE);
+			if (!register_transaction(trans_ctx, req_id))
+			{
+				trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+				return;
+			}
+
 			get_rpcn()->record_score_data(req_id, trans_ctx->communicationId, trans_ctx->pcId, boardId, score, tdata->game_data);
-			transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+			transaction_async_handler(trans_ctx, req_id, async);
 		}
 		else
 		{
-			trans_ctx->result = CELL_OK;
+			trans_ctx->complete_now(CELL_OK);
 		}
 	}
 
 	void np_handler::reply_record_score_data(u32 req_id, rpcn::ErrorType error)
 	{
-		std::lock_guard lock_trans(mutex_async_transactions);
-		if (!async_transactions.count(req_id))
+		const auto trans = take_transaction(req_id);
+		if (!trans)
 		{
 			rpcn_log.error("Couldn't find transaction(%d) in trans_id!", req_id);
 			return;
 		}
 
-		auto trans = ::at32(async_transactions, req_id);
-		std::lock_guard lock(trans->mutex);
+		// Aborted or timed out meanwhile: nothing to do
+		if (!trans->claim())
+		{
+			return;
+		}
 
 		switch (error)
 		{
-		case rpcn::ErrorType::NoError: trans->set_result_and_wake(CELL_OK); break;
-		case rpcn::ErrorType::NotFound: trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_RANKING_STORE_NOT_FOUND); break;
-		case rpcn::ErrorType::ScoreInvalid: trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_INVALID_SCORE); break;
-		case rpcn::ErrorType::ScoreHasData: trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_GAME_DATA_ALREADY_EXISTS); break;
+		case rpcn::ErrorType::NoError: trans->finish(CELL_OK); break;
+		case rpcn::ErrorType::NotFound: trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_RANKING_STORE_NOT_FOUND); break;
+		case rpcn::ErrorType::ScoreInvalid: trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_INVALID_SCORE); break;
+		case rpcn::ErrorType::ScoreHasData: trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_GAME_DATA_ALREADY_EXISTS); break;
 		default: fmt::throw_exception("Unexpected error in reply to RecordScoreData: %s", error);
 		}
 	}
 
 	void np_handler::get_score_data(shared_ptr<score_transaction_ctx>& trans_ctx, SceNpScoreBoardId boardId, const SceNpId& npId, vm::ptr<u32> totalSize, u32 recvSize, vm::ptr<void> score_data, bool async)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
-
 		auto* tdata = std::get_if<tdata_get_score_data>(&trans_ctx->tdata);
 		if (!tdata)
 		{
 			trans_ctx->tdata = tdata_get_score_data{.totalSize = totalSize, .recvSize = recvSize, .score_data = score_data};
 
 			const u32 req_id = get_req_id(REQUEST_ID_HIGH::SCORE);
+			if (!register_transaction(trans_ctx, req_id))
+			{
+				trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+				return;
+			}
+
 			get_rpcn()->get_score_data(req_id, trans_ctx->communicationId, trans_ctx->pcId, boardId, npId);
-			transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+			transaction_async_handler(trans_ctx, req_id, async);
 			return;
 		}
 
-		// Check if the transaction has actually completed, otherwise adjust tdata parameters
-		if (!trans_ctx->result)
+		// Check if the transaction has actually completed, otherwise adjust
+		// tdata parameters - on the NP handler's thread, where the reply's
+		// handler, the only other to touch them, runs (no lock)
+		if (!trans_ctx->has_result())
 		{
-			tdata->totalSize = totalSize;
-			tdata->recvSize = recvSize;
-			tdata->score_data = score_data;
+			run_on_np_thread([trans_ctx = trans_ctx, totalSize, recvSize, score_data]()
+			{
+				if (trans_ctx->state.load() != 0)
+					return; // finished meanwhile
+
+				if (auto* const pending = std::get_if<tdata_get_score_data>(&trans_ctx->tdata))
+				{
+					pending->totalSize = totalSize;
+					pending->recvSize = recvSize;
+					pending->score_data = score_data;
+				}
+			});
 			return;
 		}
 
@@ -1190,26 +1271,31 @@ namespace np
 		std::memcpy(score_data.get_ptr(), tdata->game_data.data(), to_copy);
 		tdata->game_data.erase(tdata->game_data.begin(), tdata->game_data.begin() + to_copy);
 		*totalSize = tdata->game_data_size;
-		trans_ctx->result = not_an_error(to_copy);
+		trans_ctx->complete_now(not_an_error(to_copy));
 	}
 
 	void np_handler::reply_get_score_data(u32 req_id, rpcn::ErrorType error, vec_stream& reply)
 	{
-		std::lock_guard lock_trans(mutex_async_transactions);
-		if (!async_transactions.count(req_id))
+		const auto taken = take_transaction(req_id);
+		if (!taken)
 		{
 			rpcn_log.error("Couldn't find transaction(%d) in trans_id!", req_id);
 			return;
 		}
 
-		auto score_trans = idm::get_unlocked<score_transaction_ctx>(::at32(async_transactions, req_id)->idm_id);
+		auto score_trans = idm::get_unlocked<score_transaction_ctx>(taken->idm_id);
 		ensure(score_trans);
-		std::lock_guard lock(score_trans->mutex);
+
+		// Aborted or timed out meanwhile: nothing to do
+		if (!score_trans->claim())
+		{
+			return;
+		}
 
 		switch (error)
 		{
 		case rpcn::ErrorType::NoError: break;
-		case rpcn::ErrorType::NotFound: score_trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_RANKING_GAME_DATA_MASTER_NOT_FOUND); return;
+		case rpcn::ErrorType::NotFound: score_trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_RANKING_GAME_DATA_MASTER_NOT_FOUND); return;
 		default: fmt::throw_exception("Unexpected error in reply to GetScoreData: %s", error);
 		}
 
@@ -1226,12 +1312,11 @@ namespace np
 		tdata->game_data.erase(tdata->game_data.begin(), tdata->game_data.begin() + to_copy);
 		*tdata->totalSize = tdata->game_data_size;
 
-		score_trans->set_result_and_wake(not_an_error(to_copy));
+		score_trans->finish(not_an_error(to_copy));
 	}
 
 	void np_handler::get_score_range(shared_ptr<score_transaction_ctx>& trans_ctx, SceNpScoreBoardId boardId, SceNpScoreRankNumber startSerialRank, vm::ptr<SceNpScoreRankData> rankArray, u32 rankArraySize, vm::ptr<SceNpScoreComment> commentArray, [[maybe_unused]] u32 commentArraySize, vm::ptr<void> infoArray, u32 infoArraySize, u32 arrayNum, vm::ptr<CellRtcTick> lastSortDate, vm::ptr<SceNpScoreRankNumber> totalRecord, bool async, bool deprecated)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
 		const u32 req_id = get_req_id(REQUEST_ID_HIGH::SCORE);
 
 		trans_ctx->tdata = tdata_get_score_generic{
@@ -1250,9 +1335,15 @@ namespace np
 		bool with_comments = !!commentArray;
 		bool with_gameinfo = !!infoArray;
 
+		if (!register_transaction(trans_ctx, req_id))
+		{
+			trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+			return;
+		}
+
 		get_rpcn()->get_score_range(req_id, trans_ctx->communicationId, boardId, startSerialRank, arrayNum, with_comments, with_gameinfo);
 
-		transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+		transaction_async_handler(trans_ctx, req_id, async);
 	}
 
 	template <typename T>
@@ -1276,16 +1367,21 @@ namespace np
 
 	void np_handler::handle_GetScoreResponse(u32 req_id, rpcn::ErrorType error, vec_stream& reply, bool simple_result)
 	{
-		std::lock_guard lock_trans(mutex_async_transactions);
-		if (!async_transactions.count(req_id))
+		const auto taken = take_transaction(req_id);
+		if (!taken)
 		{
 			rpcn_log.error("Couldn't find transaction(%d) in trans_id!", req_id);
 			return;
 		}
 
-		auto score_trans = idm::get_unlocked<score_transaction_ctx>(::at32(async_transactions, req_id)->idm_id);
+		auto score_trans = idm::get_unlocked<score_transaction_ctx>(taken->idm_id);
 		ensure(score_trans);
-		std::lock_guard lock(score_trans->mutex);
+
+		// Aborted or timed out meanwhile: nothing to do
+		if (!score_trans->claim())
+		{
+			return;
+		}
 
 		switch (error)
 		{
@@ -1391,11 +1487,9 @@ namespace np
 		*tdata->totalRecord = resp->totalrecord();
 
 		if (num_scores_registered)
-			score_trans->result = simple_result ? CELL_OK : not_an_error(resp->rankarray_size());
+			score_trans->finish(simple_result ? CELL_OK : not_an_error(resp->rankarray_size()));
 		else
-			score_trans->result = SCE_NP_COMMUNITY_SERVER_ERROR_GAME_RANKING_NOT_FOUND;
-
-		score_trans->wake_cond.notify_one();
+			score_trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_GAME_RANKING_NOT_FOUND);
 	}
 
 	void np_handler::reply_get_score_range(u32 req_id, rpcn::ErrorType error, vec_stream& reply)
@@ -1405,7 +1499,6 @@ namespace np
 
 	void np_handler::get_score_friend(shared_ptr<score_transaction_ctx>& trans_ctx, SceNpScoreBoardId boardId, bool include_self, vm::ptr<SceNpScoreRankData> rankArray, u32 rankArraySize, vm::ptr<SceNpScoreComment> commentArray, [[maybe_unused]] u32 commentArraySize, vm::ptr<void> infoArray, u32 infoArraySize, u32 arrayNum, vm::ptr<CellRtcTick> lastSortDate, vm::ptr<SceNpScoreRankNumber> totalRecord, bool async, bool deprecated)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
 		const u32 req_id = get_req_id(REQUEST_ID_HIGH::SCORE);
 		trans_ctx->tdata = tdata_get_score_generic{
 			.rankArray = rankArray,
@@ -1423,9 +1516,15 @@ namespace np
 		bool with_comments = !!commentArray;
 		bool with_gameinfo = !!infoArray;
 
+		if (!register_transaction(trans_ctx, req_id))
+		{
+			trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+			return;
+		}
+
 		get_rpcn()->get_score_friend(req_id, trans_ctx->communicationId, boardId, include_self, with_comments, with_gameinfo, arrayNum);
 
-		transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+		transaction_async_handler(trans_ctx, req_id, async);
 	}
 	void np_handler::reply_get_score_friends(u32 req_id, rpcn::ErrorType error, vec_stream& reply)
 	{
@@ -1434,7 +1533,6 @@ namespace np
 
 	void np_handler::get_score_npid(shared_ptr<score_transaction_ctx>& trans_ctx, SceNpScoreBoardId boardId, const std::vector<std::pair<SceNpId, s32>>& npid_vec, vm::ptr<SceNpScorePlayerRankData> rankArray, u32 rankArraySize, vm::ptr<SceNpScoreComment> commentArray, [[maybe_unused]] u32 commentArraySize, vm::ptr<void> infoArray, u32 infoArraySize, u32 arrayNum, vm::ptr<CellRtcTick> lastSortDate, vm::ptr<SceNpScoreRankNumber> totalRecord, bool async, bool deprecated)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
 		const u32 req_id = get_req_id(REQUEST_ID_HIGH::SCORE);
 		trans_ctx->tdata = tdata_get_score_generic{
 			.rankArray = rankArray,
@@ -1452,9 +1550,15 @@ namespace np
 		bool with_comments = !!commentArray;
 		bool with_gameinfo = !!infoArray;
 
+		if (!register_transaction(trans_ctx, req_id))
+		{
+			trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+			return;
+		}
+
 		get_rpcn()->get_score_npid(req_id, trans_ctx->communicationId, boardId, npid_vec, with_comments, with_gameinfo);
 
-		transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+		transaction_async_handler(trans_ctx, req_id, async);
 	}
 	void np_handler::reply_get_score_npid(u32 req_id, rpcn::ErrorType error, vec_stream& reply)
 	{
@@ -1463,45 +1567,53 @@ namespace np
 
 	void np_handler::handle_tus_no_data(u32 req_id, rpcn::ErrorType error)
 	{
-		std::lock_guard lock_trans(mutex_async_transactions);
-		if (!async_transactions.count(req_id))
+		const auto trans = take_transaction(req_id);
+		if (!trans)
 		{
 			rpcn_log.error("Couldn't find transaction(%d) in trans_id!", req_id);
 			return;
 		}
 
-		auto trans = ::at32(async_transactions, req_id);
-		std::lock_guard lock(trans->mutex);
+		// Aborted or timed out meanwhile: nothing to do
+		if (!trans->claim())
+		{
+			return;
+		}
 
 		switch (error)
 		{
-		case rpcn::ErrorType::NoError: trans->set_result_and_wake(CELL_OK); break;
-		case rpcn::ErrorType::NotFound: trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_USER_NOT_ASSIGNED); break;
-		case rpcn::ErrorType::Unauthorized: trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_FORBIDDEN); break;
-		case rpcn::ErrorType::CondFail: trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_CONDITIONS_NOT_SATISFIED); break;
+		case rpcn::ErrorType::NoError: trans->finish(CELL_OK); break;
+		case rpcn::ErrorType::NotFound: trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_USER_NOT_ASSIGNED); break;
+		case rpcn::ErrorType::Unauthorized: trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_FORBIDDEN); break;
+		case rpcn::ErrorType::CondFail: trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_CONDITIONS_NOT_SATISFIED); break;
 		default: fmt::throw_exception("Unexpected error in handle_tus_no_data: %s", error);
 		}
 	}
 
 	void np_handler::handle_TusVarResponse(u32 req_id, rpcn::ErrorType error, vec_stream& reply)
 	{
-		std::lock_guard lock_trans(mutex_async_transactions);
-		if (!async_transactions.count(req_id))
+		const auto taken = take_transaction(req_id);
+		if (!taken)
 		{
 			rpcn_log.error("Couldn't find transaction(%d) in trans_id!", req_id);
 			return;
 		}
 
-		auto tus_trans = idm::get_unlocked<tus_transaction_ctx>(::at32(async_transactions, req_id)->idm_id);
+		auto tus_trans = idm::get_unlocked<tus_transaction_ctx>(taken->idm_id);
 		ensure(tus_trans);
-		std::lock_guard lock(tus_trans->mutex);
+
+		// Aborted or timed out meanwhile: nothing to do
+		if (!tus_trans->claim())
+		{
+			return;
+		}
 
 		switch (error)
 		{
 		case rpcn::ErrorType::NoError: break;
-		case rpcn::ErrorType::NotFound: return tus_trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_USER_NOT_ASSIGNED);
-		case rpcn::ErrorType::Unauthorized: return tus_trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_FORBIDDEN);
-		case rpcn::ErrorType::CondFail: return tus_trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_CONDITIONS_NOT_SATISFIED);
+		case rpcn::ErrorType::NotFound: return tus_trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_USER_NOT_ASSIGNED);
+		case rpcn::ErrorType::Unauthorized: return tus_trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_FORBIDDEN);
+		case rpcn::ErrorType::CondFail: return tus_trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_CONDITIONS_NOT_SATISFIED);
 		default: fmt::throw_exception("Unexpected error in handle_TusVarResponse: %s", error);
 		}
 
@@ -1535,29 +1647,33 @@ namespace np
 			cur_var->oldVariable = cur_pb_var.oldvariable();
 		}
 
-		tus_trans->result = not_an_error(resp->vars_size());
-		tus_trans->wake_cond.notify_one();
+		tus_trans->finish(not_an_error(resp->vars_size()));
 	}
 
 	void np_handler::handle_TusVariable(u32 req_id, rpcn::ErrorType error, vec_stream& reply)
 	{
-		std::lock_guard lock_trans(mutex_async_transactions);
-		if (!async_transactions.count(req_id))
+		const auto taken = take_transaction(req_id);
+		if (!taken)
 		{
 			rpcn_log.error("Couldn't find transaction(%d) in trans_id!", req_id);
 			return;
 		}
 
-		auto tus_trans = idm::get_unlocked<tus_transaction_ctx>(::at32(async_transactions, req_id)->idm_id);
+		auto tus_trans = idm::get_unlocked<tus_transaction_ctx>(taken->idm_id);
 		ensure(tus_trans);
-		std::lock_guard lock(tus_trans->mutex);
+
+		// Aborted or timed out meanwhile: nothing to do
+		if (!tus_trans->claim())
+		{
+			return;
+		}
 
 		switch (error)
 		{
 		case rpcn::ErrorType::NoError: break;
-		case rpcn::ErrorType::NotFound: return tus_trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_USER_NOT_ASSIGNED);
-		case rpcn::ErrorType::Unauthorized: return tus_trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_FORBIDDEN);
-		case rpcn::ErrorType::CondFail: return tus_trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_CONDITIONS_NOT_SATISFIED);
+		case rpcn::ErrorType::NotFound: return tus_trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_USER_NOT_ASSIGNED);
+		case rpcn::ErrorType::Unauthorized: return tus_trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_FORBIDDEN);
+		case rpcn::ErrorType::CondFail: return tus_trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_CONDITIONS_NOT_SATISFIED);
 		default: fmt::throw_exception("Unexpected error in handle_TusVariable: %s", error);
 		}
 
@@ -1583,29 +1699,33 @@ namespace np
 			var->oldVariable = pb_var->oldvariable();
 		}
 
-		tus_trans->result = CELL_OK;
-		tus_trans->wake_cond.notify_one();
+		tus_trans->finish(CELL_OK);
 	}
 
 	void np_handler::handle_TusDataStatusResponse(u32 req_id, rpcn::ErrorType error, vec_stream& reply)
 	{
-		std::lock_guard lock_trans(mutex_async_transactions);
-		if (!async_transactions.count(req_id))
+		const auto taken = take_transaction(req_id);
+		if (!taken)
 		{
 			rpcn_log.error("Couldn't find transaction(%d) in trans_id!", req_id);
 			return;
 		}
 
-		auto tus_trans = idm::get_unlocked<tus_transaction_ctx>(::at32(async_transactions, req_id)->idm_id);
+		auto tus_trans = idm::get_unlocked<tus_transaction_ctx>(taken->idm_id);
 		ensure(tus_trans);
-		std::lock_guard lock(tus_trans->mutex);
+
+		// Aborted or timed out meanwhile: nothing to do
+		if (!tus_trans->claim())
+		{
+			return;
+		}
 
 		switch (error)
 		{
 		case rpcn::ErrorType::NoError: break;
-		case rpcn::ErrorType::NotFound: return tus_trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_USER_NOT_ASSIGNED);
-		case rpcn::ErrorType::Unauthorized: return tus_trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_FORBIDDEN);
-		case rpcn::ErrorType::CondFail: return tus_trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_CONDITIONS_NOT_SATISFIED);
+		case rpcn::ErrorType::NotFound: return tus_trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_USER_NOT_ASSIGNED);
+		case rpcn::ErrorType::Unauthorized: return tus_trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_FORBIDDEN);
+		case rpcn::ErrorType::CondFail: return tus_trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_CONDITIONS_NOT_SATISFIED);
 		default: fmt::throw_exception("Unexpected error in handle_TusDataStatusResponse: %s", error);
 		}
 
@@ -1640,17 +1760,21 @@ namespace np
 			memcpy(cur_status->info.data, cur_pb_status.info().data(), cur_pb_status.info().size());
 		}
 
-		tus_trans->result = not_an_error(resp->status_size());
-		tus_trans->wake_cond.notify_one();
+		tus_trans->finish(not_an_error(resp->status_size()));
 	}
 
 	void np_handler::tus_set_multislot_variable(shared_ptr<tus_transaction_ctx>& trans_ctx, const SceNpOnlineId& targetNpId, vm::cptr<SceNpTusSlotId> slotIdArray, vm::cptr<s64> variableArray, s32 arrayNum, bool vuser, bool async)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
 		const u32 req_id = get_req_id(REQUEST_ID_HIGH::TUS);
 
+		if (!register_transaction(trans_ctx, req_id))
+		{
+			trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+			return;
+		}
+
 		get_rpcn()->tus_set_multislot_variable(req_id, trans_ctx->communicationId, targetNpId, slotIdArray, variableArray, arrayNum, vuser);
-		transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+		transaction_async_handler(trans_ctx, req_id, async);
 	}
 
 	void np_handler::reply_tus_set_multislot_variable(u32 req_id, rpcn::ErrorType error)
@@ -1660,7 +1784,6 @@ namespace np
 
 	void np_handler::tus_get_multislot_variable(shared_ptr<tus_transaction_ctx>& trans_ctx, const SceNpOnlineId& targetNpId, vm::cptr<SceNpTusSlotId> slotIdArray, vm::ptr<SceNpTusVariable> variableArray, s32 arrayNum, bool vuser, bool async)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
 		const u32 req_id = get_req_id(REQUEST_ID_HIGH::TUS);
 
 		trans_ctx->tdata = tdata_tus_get_variables_generic {
@@ -1668,8 +1791,14 @@ namespace np
 			.arrayNum = arrayNum,
 		};
 
+		if (!register_transaction(trans_ctx, req_id))
+		{
+			trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+			return;
+		}
+
 		get_rpcn()->tus_get_multislot_variable(req_id, trans_ctx->communicationId, targetNpId, slotIdArray, arrayNum, vuser);
-		transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+		transaction_async_handler(trans_ctx, req_id, async);
 	}
 
 	void np_handler::reply_tus_get_multislot_variable(u32 req_id, rpcn::ErrorType error, vec_stream& reply)
@@ -1679,7 +1808,6 @@ namespace np
 
 	void np_handler::tus_get_multiuser_variable(shared_ptr<tus_transaction_ctx>& trans_ctx, std::vector<SceNpOnlineId> targetNpIdArray, SceNpTusSlotId slotId, vm::ptr<SceNpTusVariable> variableArray, s32 arrayNum, bool vuser, bool async)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
 		const u32 req_id = get_req_id(REQUEST_ID_HIGH::TUS);
 
 		trans_ctx->tdata = tdata_tus_get_variables_generic {
@@ -1687,8 +1815,14 @@ namespace np
 			.arrayNum = arrayNum,
 		};
 
+		if (!register_transaction(trans_ctx, req_id))
+		{
+			trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+			return;
+		}
+
 		get_rpcn()->tus_get_multiuser_variable(req_id, trans_ctx->communicationId, targetNpIdArray, slotId, arrayNum, vuser);
-		transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+		transaction_async_handler(trans_ctx, req_id, async);
 	}
 
 	void np_handler::reply_tus_get_multiuser_variable(u32 req_id, rpcn::ErrorType error, vec_stream& reply)
@@ -1698,7 +1832,6 @@ namespace np
 
 	void np_handler::tus_get_friends_variable(shared_ptr<tus_transaction_ctx>& trans_ctx, SceNpTusSlotId slotId, s32 includeSelf, s32 sortType, vm::ptr<SceNpTusVariable> variableArray,s32 arrayNum, bool async)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
 		const u32 req_id = get_req_id(REQUEST_ID_HIGH::TUS);
 
 		trans_ctx->tdata = tdata_tus_get_variables_generic {
@@ -1706,8 +1839,14 @@ namespace np
 			.arrayNum = arrayNum,
 		};
 
+		if (!register_transaction(trans_ctx, req_id))
+		{
+			trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+			return;
+		}
+
 		get_rpcn()->tus_get_friends_variable(req_id, trans_ctx->communicationId, slotId, !!includeSelf, sortType, arrayNum);
-		transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+		transaction_async_handler(trans_ctx, req_id, async);
 	}
 
 	void np_handler::reply_tus_get_friends_variable(u32 req_id, rpcn::ErrorType error, vec_stream& reply)
@@ -1717,15 +1856,20 @@ namespace np
 
 	void np_handler::tus_add_and_get_variable(shared_ptr<tus_transaction_ctx>& trans_ctx, const SceNpOnlineId& targetNpId, SceNpTusSlotId slotId, s64 inVariable, vm::ptr<SceNpTusVariable> outVariable, vm::ptr<SceNpTusAddAndGetVariableOptParam> option, bool vuser, bool async)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
 		const u32 req_id = get_req_id(REQUEST_ID_HIGH::TUS);
 
 		trans_ctx->tdata = tdata_tus_get_variable_generic {
 			.outVariable = outVariable,
 		};
 
+		if (!register_transaction(trans_ctx, req_id))
+		{
+			trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+			return;
+		}
+
 		get_rpcn()->tus_add_and_get_variable(req_id, trans_ctx->communicationId, targetNpId, slotId, inVariable, option, vuser);
-		transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+		transaction_async_handler(trans_ctx, req_id, async);
 	}
 
 	void np_handler::reply_tus_add_and_get_variable(u32 req_id, rpcn::ErrorType error, vec_stream& reply)
@@ -1735,15 +1879,20 @@ namespace np
 
 	void np_handler::tus_try_and_set_variable(shared_ptr<tus_transaction_ctx>& trans_ctx, const SceNpOnlineId& targetNpId, SceNpTusSlotId slotId, s32 opeType, s64 variable, vm::ptr<SceNpTusVariable> resultVariable, vm::ptr<SceNpTusTryAndSetVariableOptParam> option, bool vuser, bool async)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
 		const u32 req_id = get_req_id(REQUEST_ID_HIGH::TUS);
 
 		trans_ctx->tdata = tdata_tus_get_variable_generic {
 			.outVariable = resultVariable,
 		};
 
+		if (!register_transaction(trans_ctx, req_id))
+		{
+			trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+			return;
+		}
+
 		get_rpcn()->tus_try_and_set_variable(req_id, trans_ctx->communicationId, targetNpId, slotId, opeType, variable, option, vuser);
-		transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+		transaction_async_handler(trans_ctx, req_id, async);
 	}
 
 	void np_handler::reply_tus_try_and_set_variable(u32 req_id, rpcn::ErrorType error, vec_stream& reply)
@@ -1753,11 +1902,16 @@ namespace np
 
 	void np_handler::tus_delete_multislot_variable(shared_ptr<tus_transaction_ctx>& trans_ctx, const SceNpOnlineId& targetNpId, vm::cptr<SceNpTusSlotId> slotIdArray, s32 arrayNum, bool vuser, bool async)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
 		const u32 req_id = get_req_id(REQUEST_ID_HIGH::TUS);
 
+		if (!register_transaction(trans_ctx, req_id))
+		{
+			trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+			return;
+		}
+
 		get_rpcn()->tus_delete_multislot_variable(req_id, trans_ctx->communicationId, targetNpId, slotIdArray, arrayNum, vuser);
-		transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+		transaction_async_handler(trans_ctx, req_id, async);
 	}
 
 	void np_handler::reply_tus_delete_multislot_variable(u32 req_id, rpcn::ErrorType error)
@@ -1767,8 +1921,6 @@ namespace np
 
 	void np_handler::tus_set_data(shared_ptr<tus_transaction_ctx>& trans_ctx, const SceNpOnlineId& targetNpId, SceNpTusSlotId slotId, u32 totalSize, u32 sendSize, vm::cptr<void> data, vm::cptr<SceNpTusDataInfo> info, vm::ptr<SceNpTusSetDataOptParam> option, bool vuser, bool async)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
-
 		auto* tdata = std::get_if<tdata_tus_set_data>(&trans_ctx->tdata);
 		if (!tdata)
 		{
@@ -1783,14 +1935,19 @@ namespace np
 
 		if (tdata->tus_data.size() == tdata->tus_data_size)
 		{
-			trans_ctx->result = std::nullopt;
 			const u32 req_id = get_req_id(REQUEST_ID_HIGH::TUS);
+			if (!register_transaction(trans_ctx, req_id))
+			{
+				trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+				return;
+			}
+
 			get_rpcn()->tus_set_data(req_id, trans_ctx->communicationId, targetNpId, slotId, tdata->tus_data, info, option, vuser);
-			transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+			transaction_async_handler(trans_ctx, req_id, async);
 		}
 		else
 		{
-			trans_ctx->result = CELL_OK;
+			trans_ctx->complete_now(CELL_OK);
 		}
 	}
 
@@ -1801,24 +1958,37 @@ namespace np
 
 	void np_handler::tus_get_data(shared_ptr<tus_transaction_ctx>& trans_ctx, const SceNpOnlineId& targetNpId, SceNpTusSlotId slotId, vm::ptr<SceNpTusDataStatus> dataStatus, vm::ptr<void> data, u32 recvSize, bool vuser, bool async)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
-
 		auto* tdata = std::get_if<tdata_tus_get_data>(&trans_ctx->tdata);
 		if (!tdata)
 		{
 			trans_ctx->tdata = tdata_tus_get_data{.recvSize = recvSize, .dataStatus = dataStatus, .data = data};
 			const u32 req_id = get_req_id(REQUEST_ID_HIGH::TUS);
+			if (!register_transaction(trans_ctx, req_id))
+			{
+				trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+				return;
+			}
+
 			get_rpcn()->tus_get_data(req_id, trans_ctx->communicationId, targetNpId, slotId, vuser);
-			transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+			transaction_async_handler(trans_ctx, req_id, async);
 			return;
 		}
 
-		// Check if the transaction has actually completed, otherwise adjust tdata parameters
-		if (!trans_ctx->result)
+		// As in get_score_data: adjusted on the NP handler's thread
+		if (!trans_ctx->has_result())
 		{
-			tdata->recvSize = recvSize;
-			tdata->dataStatus = dataStatus;
-			tdata->data = data;
+			run_on_np_thread([trans_ctx = trans_ctx, recvSize, dataStatus, data]()
+			{
+				if (trans_ctx->state.load() != 0)
+					return; // finished meanwhile
+
+				if (auto* const pending = std::get_if<tdata_tus_get_data>(&trans_ctx->tdata))
+				{
+					pending->recvSize = recvSize;
+					pending->dataStatus = dataStatus;
+					pending->data = data;
+				}
+			});
 			return;
 		}
 
@@ -1826,28 +1996,33 @@ namespace np
 		usz to_copy = std::min(tdata->tus_data.size(), static_cast<usz>(recvSize));
 		std::memcpy(data.get_ptr(), tdata->tus_data.data(), to_copy);
 		tdata->tus_data.erase(tdata->tus_data.begin(), tdata->tus_data.begin() + to_copy);
-		trans_ctx->result = not_an_error(to_copy);
+		trans_ctx->complete_now(not_an_error(to_copy));
 	}
 
 	void np_handler::reply_tus_get_data(u32 req_id, rpcn::ErrorType error, vec_stream& reply)
 	{
-		std::lock_guard lock_trans(mutex_async_transactions);
-		if (!async_transactions.count(req_id))
+		const auto taken = take_transaction(req_id);
+		if (!taken)
 		{
 			rpcn_log.error("Couldn't find transaction(%d) in trans_id!", req_id);
 			return;
 		}
 
-		auto tus_trans = idm::get_unlocked<tus_transaction_ctx>(::at32(async_transactions, req_id)->idm_id);
+		auto tus_trans = idm::get_unlocked<tus_transaction_ctx>(taken->idm_id);
 		ensure(tus_trans);
-		std::lock_guard lock(tus_trans->mutex);
+
+		// Aborted or timed out meanwhile: nothing to do
+		if (!tus_trans->claim())
+		{
+			return;
+		}
 
 		switch (error)
 		{
 		case rpcn::ErrorType::NoError: break;
-		case rpcn::ErrorType::NotFound: return tus_trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_USER_NOT_ASSIGNED);
-		case rpcn::ErrorType::Unauthorized: return tus_trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_FORBIDDEN);
-		case rpcn::ErrorType::CondFail: return tus_trans->set_result_and_wake(SCE_NP_COMMUNITY_SERVER_ERROR_CONDITIONS_NOT_SATISFIED);
+		case rpcn::ErrorType::NotFound: return tus_trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_USER_NOT_ASSIGNED);
+		case rpcn::ErrorType::Unauthorized: return tus_trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_FORBIDDEN);
+		case rpcn::ErrorType::CondFail: return tus_trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_CONDITIONS_NOT_SATISFIED);
 		default: fmt::throw_exception("Unexpected error in reply to TusGetData: %s", error);
 		}
 
@@ -1886,19 +2061,16 @@ namespace np
 				tdata->tus_data.assign(pb_data->data().begin() + to_copy, pb_data->data().end());
 			}
 
-			tus_trans->result = not_an_error(to_copy);
+			tus_trans->finish(not_an_error(to_copy));
 		}
 		else
 		{
-			tus_trans->result = SCE_NP_COMMUNITY_SERVER_ERROR_USER_STORAGE_DATA_NOT_FOUND;
+			tus_trans->finish(SCE_NP_COMMUNITY_SERVER_ERROR_USER_STORAGE_DATA_NOT_FOUND);
 		}
-
-		tus_trans->wake_cond.notify_one();
 	}
 
 	void np_handler::tus_get_multislot_data_status(shared_ptr<tus_transaction_ctx>& trans_ctx, const SceNpOnlineId& targetNpId, vm::cptr<SceNpTusSlotId> slotIdArray, vm::ptr<SceNpTusDataStatus> statusArray, s32 arrayNum, bool vuser, bool async)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
 		const u32 req_id = get_req_id(REQUEST_ID_HIGH::TUS);
 
 		trans_ctx->tdata = tdata_tus_get_datastatus_generic {
@@ -1906,8 +2078,14 @@ namespace np
 			.arrayNum = arrayNum,
 		};
 
+		if (!register_transaction(trans_ctx, req_id))
+		{
+			trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+			return;
+		}
+
 		get_rpcn()->tus_get_multislot_data_status(req_id, trans_ctx->communicationId, targetNpId, slotIdArray, arrayNum, vuser);
-		transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+		transaction_async_handler(trans_ctx, req_id, async);
 	}
 
 	void np_handler::reply_tus_get_multislot_data_status(u32 req_id, rpcn::ErrorType error, vec_stream& reply)
@@ -1917,7 +2095,6 @@ namespace np
 
 	void np_handler::tus_get_multiuser_data_status(shared_ptr<tus_transaction_ctx>& trans_ctx, std::vector<SceNpOnlineId> targetNpIdArray, SceNpTusSlotId slotId, vm::ptr<SceNpTusDataStatus> statusArray, s32 arrayNum, bool vuser, bool async)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
 		const u32 req_id = get_req_id(REQUEST_ID_HIGH::TUS);
 
 		trans_ctx->tdata = tdata_tus_get_datastatus_generic {
@@ -1925,8 +2102,14 @@ namespace np
 			.arrayNum = arrayNum,
 		};
 
+		if (!register_transaction(trans_ctx, req_id))
+		{
+			trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+			return;
+		}
+
 		get_rpcn()->tus_get_multiuser_data_status(req_id, trans_ctx->communicationId, targetNpIdArray, slotId, arrayNum, vuser);
-		transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+		transaction_async_handler(trans_ctx, req_id, async);
 	}
 
 	void np_handler::reply_tus_get_multiuser_data_status(u32 req_id, rpcn::ErrorType error, vec_stream& reply)
@@ -1936,7 +2119,6 @@ namespace np
 
 	void np_handler::tus_get_friends_data_status(shared_ptr<tus_transaction_ctx>& trans_ctx, SceNpTusSlotId slotId, s32 includeSelf, s32 sortType, vm::ptr<SceNpTusDataStatus> statusArray, s32 arrayNum, bool async)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
 		const u32 req_id = get_req_id(REQUEST_ID_HIGH::TUS);
 
 		trans_ctx->tdata = tdata_tus_get_datastatus_generic {
@@ -1944,8 +2126,14 @@ namespace np
 			.arrayNum = arrayNum,
 		};
 
+		if (!register_transaction(trans_ctx, req_id))
+		{
+			trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+			return;
+		}
+
 		get_rpcn()->tus_get_friends_data_status(req_id, trans_ctx->communicationId, slotId, !!includeSelf, sortType, arrayNum);
-		transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+		transaction_async_handler(trans_ctx, req_id, async);
 	}
 
 	void np_handler::reply_tus_get_friends_data_status(u32 req_id, rpcn::ErrorType error, vec_stream& reply)
@@ -1955,11 +2143,16 @@ namespace np
 
 	void np_handler::tus_delete_multislot_data(shared_ptr<tus_transaction_ctx>& trans_ctx, const SceNpOnlineId& targetNpId, vm::cptr<SceNpTusSlotId> slotIdArray, s32 arrayNum, bool vuser, bool async)
 	{
-		std::unique_lock lock(trans_ctx->mutex);
 		const u32 req_id = get_req_id(REQUEST_ID_HIGH::TUS);
 
+		if (!register_transaction(trans_ctx, req_id))
+		{
+			trans_ctx->complete_now(SCE_NP_COMMUNITY_ERROR_TOO_MANY_OBJECTS);
+			return;
+		}
+
 		get_rpcn()->tus_delete_multislot_data(req_id, trans_ctx->communicationId, targetNpId, slotIdArray, arrayNum, vuser);
-		transaction_async_handler(std::move(lock), trans_ctx, req_id, async);
+		transaction_async_handler(trans_ctx, req_id, async);
 	}
 
 	void np_handler::reply_tus_delete_multislot_data(u32 req_id, rpcn::ErrorType error)

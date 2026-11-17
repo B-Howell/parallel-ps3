@@ -864,7 +864,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 242
+LOCK_GUARD_MAX := 215
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -1023,6 +1023,8 @@ check: all
 	@if grep -nE "sleep_for|thread_ctrl::wait_for" ../../Emu/NP/rpcn_client.cpp ../../Emu/NP/np_handler.cpp; then echo "RPCN / NP handler: a poll is back - they wait on rpcn_client::m_events"; exit 1; else echo "RPCN / NP handler: no poll"; fi
 	@# The RPCN client's queues take no lock: notifications, replies and presence updates are pushed as nodes (mpsc_stack) and taken whole, sync replies are slots claimed by compare-and-swap (rpcn_reply_slots.c)
 	@if grep -nE "mutex_notifs|mutex_replies|mutex_replies_sync|mutex_presence_updates" ../../Emu/NP/rpcn_client.cpp ../../Emu/NP/rpcn_client.h; then echo "RPCN: a queue lock is back"; exit 1; elif grep -nE "mutex_friends|mutex_messages|mutex_connected|mutex_authentified|sem_connected|sem_authentified|inst_mutex|mutex_rpcn" ../../Emu/NP/rpcn_client.cpp ../../Emu/NP/rpcn_client.h ../../Emu/NP/np_handler.cpp ../../Emu/NP/np_handler.h; then echo "RPCN: a friends, messages or connection lock is back - they are published states (retro_retire) and generation words"; exit 1; else echo "RPCN: queues, friends, messages and connection with no lock"; fi
+	@# Score and TUS transactions take no lock and start no thread: registered in slots before the request goes, finished once by whichever of the reply, an abort or the timeout claims them first
+	@if grep -nE "wake_cond|completion_cond|mutex_async_transactions|std::thread thread|trans_ctx->mutex|std::unique_lock<shared_mutex> lock, const shared_ptr" ../../Emu/NP/np_contexts.h ../../Emu/NP/np_contexts.cpp ../../Emu/NP/np_requests.cpp ../../Emu/NP/np_handler.h ../../Emu/NP/np_handler.cpp; then echo "NP transactions: a lock, a condition variable or a thread per request is back"; exit 1; else echo "NP transactions: no lock, no thread per request"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
