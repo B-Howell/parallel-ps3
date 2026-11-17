@@ -5,7 +5,6 @@
 
 #include "Emu/Memory/vm.h"
 #include "Emu/RSX/RSXThread.h"
-#include "Utilities/mutex.h"
 
 #include "util/asm.hpp"
 #include <unordered_map>
@@ -20,12 +19,12 @@ namespace vk
 	static constexpr usz s_dma_block_length = 0x00010000;
 	static constexpr u32 s_dma_block_mask   = 0xFFFF0000;
 
-	// The blocks, for those that map and unmap: one at a time, under the mutex.
-	// Looking a mapping up and copying through one do not come here; they read
-	// the table of views (Common/dma_views.h), which is brought up to date
-	// under the mutex after every change.
+	// The blocks, for those that map and unmap: the renderer's alone - only
+	// it enters the texture cache and invalidates ranges (guest threads hand
+	// their faults to it), so they take no lock. Looking a mapping up and
+	// copying through one do not come here; they read the table of views
+	// (Common/dma_views.h), brought up to date after every change.
 	std::unordered_map<u32, std::unique_ptr<dma_block>> g_dma_pool;
-	shared_mutex g_dma_mutex;
 
 	// Shows readers what the pool holds for the blocks first_block..last_block
 	static void publish_views(u32 first_block, u32 last_block)
@@ -389,8 +388,6 @@ namespace vk
 			return { local_address - view->base, static_cast<vk::buffer*>(view->buffer) };
 		}
 
-		std::lock_guard lock(g_dma_mutex);
-
 		const auto map_range = utils::address_range32::start_length(local_address, length);
 		auto first_block = (local_address & s_dma_block_mask);
 
@@ -467,7 +464,6 @@ namespace vk
 
 	void unmap_dma(u32 local_address, u32 length)
 	{
-		std::lock_guard lock(g_dma_mutex);
 
 		const u32 start = (local_address & s_dma_block_mask);
 		const u32 end = utils::align(local_address + length, static_cast<u32>(s_dma_block_length));

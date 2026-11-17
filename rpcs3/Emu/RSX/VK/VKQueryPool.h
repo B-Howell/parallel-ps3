@@ -1,8 +1,8 @@
 #pragma once
 #include "VulkanAPI.h"
-#include "Utilities/mutex.h"
 
 #include <queues/retro_deque.h>
+#include <queues/mpsc_stack.h>
 
 namespace vk
 {
@@ -45,8 +45,13 @@ namespace vk
 		query_slots_t m_available_slots{}; // made for every slot: never grows
 		u32 m_pool_lifetime_counter = 0;
 
+		// The pools to use again: the renderer's alone. A pool let go, on
+		// whichever thread lets it go, is pushed on m_released with no lock,
+		// and the renderer takes them in as it needs a pool
 		query_pools_t m_query_pool_cache{};
-		shared_mutex m_query_pool_cache_lock;
+		mpsc_stack_t m_released{};
+
+		void take_released();
 
 		VkQueryType query_type = VK_QUERY_TYPE_OCCLUSION;
 		VkQueryResultFlags result_flags = VK_QUERY_RESULT_PARTIAL_BIT;

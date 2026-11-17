@@ -60,6 +60,7 @@ namespace vk
 
 		ensure(query_slots_init(&m_available_slots, num_entries));
 		ensure(query_pools_init(&m_query_pool_cache, 8));
+		mpsc_stack_init(&m_released);
 
 		for (u32 i = 0; i < num_entries; ++i)
 		{
@@ -75,6 +76,8 @@ namespace vk
 			owner = nullptr;
 		}
 
+		take_released();
+
 		while (!query_pools_empty(&m_query_pool_cache))
 		{
 			delete *query_pools_front(&m_query_pool_cache);
@@ -85,11 +88,34 @@ namespace vk
 		query_slots_free(&m_available_slots);
 	}
 
+	// The pools let go since, into the cache in the order they were let go
+	// (a push stacks newest first: the chain is turned round)
+	void query_pool_manager::take_released()
+	{
+		mpsc_stack_node_t* node = mpsc_stack_drain(&m_released);
+		mpsc_stack_node_t* oldest_first = nullptr;
+
+		while (node)
+		{
+			mpsc_stack_node_t* const next = node->next;
+			node->next = oldest_first;
+			oldest_first = node;
+			node = next;
+		}
+
+		for (; oldest_first; oldest_first = oldest_first->next)
+		{
+			query_pool* const pool = reinterpret_cast<query_pool::released_node*>(oldest_first)->pool;
+			ensure(query_pools_push_back_growing(&m_query_pool_cache, &pool));
+		}
+	}
+
 	void query_pool_manager::allocate_new_pool(vk::command_buffer& cmd)
 	{
 		ensure(!m_current_query_pool);
 		{
-			std::lock_guard lock(m_query_pool_cache_lock); // If we're creating a new pool, we probably have items in the cache.
+			// If we're creating a new pool, we probably have items in the cache
+			take_released();
 
 			if (!query_pools_empty(&m_query_pool_cache))
 			{
@@ -257,9 +283,9 @@ namespace vk
 			return;
 		}
 
-		std::lock_guard lock(m_query_pool_cache_lock);
+		// Any thread: pushed with no lock, taken in by the renderer
 		query_pool* const cached = pool.release();
-		ensure(query_pools_push_back_growing(&m_query_pool_cache, &cached));
+		mpsc_stack_push(&m_released, &cached->released.link);
 	}
 
 	query_pool_manager::query_pool_ref::~query_pool_ref()

@@ -834,7 +834,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 292
+LOCK_GUARD_MAX := 288
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -958,6 +958,8 @@ check: all
 	@if [ -e ../../../Utilities/sema.h ] || grep -rnE "std::(binary|counting)_semaphore|include <semaphore>|sema\\.h|semaphore_base|\\bsem_(init|wait|post|t)\\b|\\bCreateSemaphore[AW]?\\(|dispatch_semaphore" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "host semaphores: one is back in the core - wait on a word (retro_waitaddr) instead"; exit 1; else echo "host semaphores: none in the core"; fi
 	@# No lock over the IDs: id_manager::g_mutex is gone - IDs are given out by a compare-and-swap on their keys, taken away by the thread holding the ID's deciding mark (idm::close, withdraw), selected with counted references
 	@if grep -rnE "id_manager::g_mutex|extern shared_mutex g_mutex|shared_mutex id_manager::g_mutex" --include=*.cpp --include=*.h --include=*.hpp ../../Emu ../../Input ../../Loader ../*.cpp ../*.h; then echo "idm: the lock over the IDs is back - IDs are claimed by compare-and-swap, removed under the ID's deciding mark"; exit 1; else echo "idm: no lock over the IDs"; fi
+	@# Vulkan's DMA blocks are the renderer's alone, and a query pool let go on any thread goes back to the renderer's cache through a stack with no lock (mpsc_stack)
+	@if grep -nE "shared_mutex|std::mutex|lock_guard|unique_lock|reader_lock" ../../Emu/RSX/VK/VKDMA.cpp ../../Emu/RSX/VK/VKQueryPool.cpp ../../Emu/RSX/VK/VKQueryPool.h; then echo "VK: a lock is back in the DMA blocks or the query pool cache"; exit 1; else echo "VK: DMA blocks and query pool cache with no lock"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
@@ -1142,8 +1144,8 @@ check: all
 	@if grep -n "m_eid_map\|reader_lock\|lock_guard\|shared_mutex\|std::function<void(void\*)>" ../../Emu/RSX/VK/VKResourceManager.h ../../Emu/RSX/VK/vkutils/garbage_collector.h; then echo "disposal: the lock on the Vulkan resource manager's disposal queue is back (CHANGELOG)"; exit 1; else echo "disposal: no lock"; fi
 	@# A memory map with no unmap waiting, and a fault with no report page locked, take no lock
 	@if grep -n "reader_lock" ../../Emu/RSX/RSXThread.cpp ../../Emu/RSX/RSXZCULL.cpp || grep -n "atomic_storage<u32>::load(m_invalidated_memory_range" ../../Emu/RSX/RSXThread.cpp || ! grep -q "if (!retro_atomic_load_acquire_int(&m_locked_page_count\[location\])) \[\[likely\]\]" ../../Emu/RSX/RSXZCULL.cpp || ! grep -q "if (waiting == no_invalidated_range) \[\[likely\]\]" ../../Emu/RSX/RSXThread.cpp; then echo "rsx notifications: a reader lock is back in RSXThread.cpp or RSXZCULL.cpp (CHANGELOG)"; exit 1; else echo "rsx notifications: no reader lock"; fi
-	@# Looking a DMA mapping up and copying through one take no lock
-	@if grep -n "reader_lock" ../../Emu/RSX/VK/VKDMA.cpp || ! awk '/dma_mapping_handle map_dma/{f=1} f&&/rsx_dma_views_find_range/{v=NR} f&&/std::lock_guard lock\(g_dma_mutex\)/{l=NR; exit} END{exit !(v&&l&&v<l)}' ../../Emu/RSX/VK/VKDMA.cpp; then echo "dma: finding or copying through a DMA mapping takes a lock again (CHANGELOG)"; exit 1; else echo "dma: readers take no lock"; fi
+	@# Looking a DMA mapping up and copying through one take no lock: map_dma looks in the views first
+	@if grep -n "reader_lock\|g_dma_mutex" ../../Emu/RSX/VK/VKDMA.cpp || ! awk '/dma_mapping_handle map_dma/{f=1} f&&/rsx_dma_views_find_range/{v=1; exit} END{exit !v}' ../../Emu/RSX/VK/VKDMA.cpp; then echo "dma: finding or copying through a DMA mapping takes a lock again (CHANGELOG)"; exit 1; else echo "dma: readers take no lock"; fi
 	@# Mutex syscalls find their mutex with no lock over all IDs
 	@if grep -n "idm::get<\|idm::check<\|id_manager::g_mutex" ../../Emu/Cell/lv2/sys_mutex.cpp; then echo "ids: sys_mutex.cpp looks a mutex up under the lock over all IDs again - idm::pin and idm::still_named (CHANGELOG)"; exit 1; else echo "ids: sys_mutex takes no ID lock"; fi
 	@# A guest write over a plain texture is handed to the renderer as a note, before the texture cache's lock is asked for
