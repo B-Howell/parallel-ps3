@@ -324,7 +324,7 @@ namespace rpcn
 	// Constructor, destructor & singleton manager
 
 	rpcn_client::rpcn_client(u32 binding_address)
-		: binding_address(binding_address), sem_connected(0), sem_authentified(0), sem_reader(0), sem_writer(0), sem_rpcn(0),
+		: binding_address(binding_address),
 		  thread_rpcn(std::thread(&rpcn_client::rpcn_thread, this)),
 		  thread_rpcn_reader(std::thread(&rpcn_client::rpcn_reader_thread, this)),
 		  thread_rpcn_writer(std::thread(&rpcn_client::rpcn_writer_thread, this))

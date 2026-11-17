@@ -99,7 +99,6 @@ target_sources(rpcs3_emu PRIVATE
     ../../Utilities/object_pack.c
     ../../Utilities/mutex.cpp
     ../../Utilities/rXml.cpp
-    ../../Utilities/sema.cpp
     ../../Utilities/stack_trace.cpp
     ../../Utilities/stereo_config.cpp
     ../../Utilities/StrFmt.cpp
@@ -474,6 +473,7 @@ target_sources(rpcs3_emu PRIVATE
     NP/clans_client.cpp
     NP/clans_config.cpp
     NP/rpcn_client.cpp
+    NP/rpcn_signal.c
     NP/rpcn_config.cpp
     NP/rpcn_countries.cpp
     NP/upnp_config.cpp

@@ -4,7 +4,7 @@
 #include <unordered_map>
 #include <chrono>
 #include <thread>
-#include <semaphore>
+#include "rpcn_signal.h"
 #include "Utilities/mutex.h"
 #include "Utilities/lockless.h"
 #include "Emu/localized_string_id.h"
@@ -223,10 +223,26 @@ namespace rpcn
 		atomic_t<bool> want_conn    = false;
 		atomic_t<bool> want_auth    = false;
 		u32 binding_address = 0;
-		std::binary_semaphore sem_connected, sem_authentified;
+		// A wake-up for a thread waiting on it, given once until taken
+		// (rpcn_signal.c): no semaphore, no spin
+		struct rpcn_signal
+		{
+			rpcn_signal_t s;
+
+			rpcn_signal() noexcept { rpcn_signal_init(&s); }
+			void release() noexcept { rpcn_signal_give(&s); }
+			void acquire() noexcept { rpcn_signal_take(&s); }
+
+			bool try_acquire_for(std::chrono::nanoseconds duration) noexcept
+			{
+				return rpcn_signal_take_for(&s, std::max<int64_t>(0, std::chrono::duration_cast<std::chrono::microseconds>(duration).count())) != 0;
+			}
+		};
+
+		rpcn_signal sem_connected, sem_authentified;
 		std::mutex mutex_connected, mutex_authentified;
 
-		std::binary_semaphore sem_reader, sem_writer, sem_rpcn;
+		rpcn_signal sem_reader, sem_writer, sem_rpcn;
 		// Set while the reader or the writer thread uses the connection:
 		// disconnect() clears connected, then waits for both to be clear
 		// before it frees the connection. No lock.
