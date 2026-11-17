@@ -329,9 +329,18 @@ namespace rpcn
 		  thread_rpcn_reader(std::thread(&rpcn_client::rpcn_reader_thread, this)),
 		  thread_rpcn_writer(std::thread(&rpcn_client::rpcn_writer_thread, this))
 	{
+		// Before the RPCN thread is let go (sem_rpcn): nothing reads them yet
+		init_states();
+
 		g_cfg_rpcn.load();
 
 		sem_rpcn.release();
+	}
+
+	void rpcn_client::init_states()
+	{
+		retro_atomic_store_release_ptr(&m_friends, new friends_state);
+		retro_atomic_store_release_ptr(&m_messages, new messages_state);
 	}
 
 	rpcn_client::~rpcn_client()
@@ -353,13 +362,19 @@ namespace rpcn
 
 		disconnect();
 
+		// Nothing reads them any more: the last states, and any retired
+		retro_retire_drain(&m_friends_retire, free_state<friends_state>);
+		retro_retire_drain(&m_messages_retire, free_state<messages_state>);
+		delete static_cast<friends_state*>(retro_atomic_exchange_ptr(&m_friends, nullptr));
+		delete static_cast<messages_state*>(retro_atomic_exchange_ptr(&m_messages, nullptr));
+
 		// What the NP handler did not take
 		get_notifications();
 		get_replies();
 		get_presence_updates();
 
-		sem_connected.release();
-		sem_authentified.release();
+		next_gen(conn_gen);
+		next_gen(auth_gen);
 	}
 
 	std::shared_ptr<rpcn_client> rpcn_client::get_instance(u32 binding_address, bool check_config)
@@ -478,11 +493,8 @@ namespace rpcn
 					if (want_conn)
 					{
 						want_conn = false;
-						{
-							std::lock_guard lock(mutex_connected);
-							connect(g_cfg_rpcn.get_host());
-						}
-						sem_connected.release();
+						connect(g_cfg_rpcn.get_host());
+						next_gen(conn_gen);
 					}
 
 					break;
@@ -493,11 +505,8 @@ namespace rpcn
 					if (want_auth)
 					{
 						bool result_login;
-						{
-							std::lock_guard lock(mutex_authentified);
-							result_login = login(g_cfg_rpcn.get_npid(), g_cfg_rpcn.get_password(), g_cfg_rpcn.get_token());
-						}
-						sem_authentified.release();
+						result_login = login(g_cfg_rpcn.get_npid(), g_cfg_rpcn.get_password(), g_cfg_rpcn.get_token());
+						next_gen(auth_gen);
 
 						if (!result_login)
 						{
@@ -1286,12 +1295,19 @@ namespace rpcn
 		};
 
 		{
-			std::lock_guard lock(mutex_friends);
+			// Read again from here if another change gets in first
+			const vec_stream from = reply;
 
-			get_usernames_and_status(reply, friend_infos.friends);
-			get_usernames(reply, friend_infos.requests_sent);
-			get_usernames(reply, friend_infos.requests_received);
-			get_usernames(reply, friend_infos.blocked);
+			retro_retire_enter(&m_friends_retire);
+			publish_state<friends_state>(m_friends, m_friends_retire, [&](friends_state& st)
+			{
+				vec_stream attempt = from;
+				get_usernames_and_status(attempt, st.infos.friends);
+				get_usernames(attempt, st.infos.requests_sent);
+				get_usernames(attempt, st.infos.requests_received);
+				get_usernames(attempt, st.infos.blocked);
+			});
+			retro_retire_leave(&m_friends_retire, free_state<friends_state>);
 		}
 
 		if (error != rpcn::ErrorType::NoError)
@@ -1638,8 +1654,6 @@ namespace rpcn
 
 	std::map<std::string, friend_online_data> rpcn_client::get_presence_states()
 	{
-		std::lock_guard lock(mutex_friends);
-
 		// The full states supersede the updates so far
 		for (presence_node* node = take_all<presence_node>(presence_updates); node;)
 		{
@@ -1648,7 +1662,7 @@ namespace rpcn
 			node = next;
 		}
 
-		return friend_infos.friends;
+		return read_state<friends_state>(m_friends, m_friends_retire, [](const friends_state& st) { return st.infos.friends; });
 	}
 
 	bool rpcn_client::take_sync_reply(u64 expected_id, std::vector<u8>& data)
@@ -1678,9 +1692,15 @@ namespace rpcn
 
 	std::vector<u64> rpcn_client::get_new_messages()
 	{
-		std::lock_guard lock(mutex_messages);
-		std::vector<u64> ret_new_messages = std::move(new_messages);
-		new_messages.clear();
+		std::vector<u64> ret_new_messages;
+
+		retro_retire_enter(&m_messages_retire);
+		publish_state<messages_state>(m_messages, m_messages_retire, [&](messages_state& st)
+		{
+			ret_new_messages = std::move(st.new_messages);
+			st.new_messages.clear();
+		});
+		retro_retire_leave(&m_messages_retire, free_state<messages_state>);
 		return ret_new_messages;
 	}
 
@@ -2962,97 +2982,106 @@ namespace rpcn
 
 	rpcn_state rpcn_client::wait_for_connection()
 	{
+		// Read before looking: a connection tried after it moves it
+		const u32 gen = conn_gen.load();
+
+		if (connected)
 		{
-			std::lock_guard lock(mutex_connected);
-			if (connected)
-			{
-				return rpcn_state::failure_no_failure;
-			}
-
-			if (state != rpcn_state::failure_no_failure)
-			{
-				return state;
-			}
-
-			want_conn = true;
-			sem_rpcn.release();
+			return rpcn_state::failure_no_failure;
 		}
 
-		sem_connected.acquire();
+		if (state != rpcn_state::failure_no_failure)
+		{
+			return state;
+		}
+
+		want_conn = true;
+		sem_rpcn.release();
+
+		wait_gen(conn_gen, gen);
 
 		return state;
 	}
 
 	rpcn_state rpcn_client::wait_for_authentified()
 	{
+		const u32 gen = auth_gen.load();
+
+		if (authentified)
 		{
-			std::lock_guard lock(mutex_authentified);
-
-			if (authentified)
-			{
-				return rpcn_state::failure_no_failure;
-			}
-
-			if (state != rpcn_state::failure_no_failure)
-			{
-				return state;
-			}
-
-			want_auth = true;
-			sem_rpcn.release();
+			return rpcn_state::failure_no_failure;
 		}
 
-		sem_authentified.acquire();
+		if (state != rpcn_state::failure_no_failure)
+		{
+			return state;
+		}
+
+		want_auth = true;
+		sem_rpcn.release();
+
+		wait_gen(auth_gen, gen);
 
 		return state;
 	}
 
 	void rpcn_client::get_friends(friend_data& friend_infos)
 	{
-		std::lock_guard lock(mutex_friends);
-		friend_infos = this->friend_infos;
+		friend_infos = read_state<friends_state>(m_friends, m_friends_retire, [](const friends_state& st) { return st.infos; });
 	}
 
 	void rpcn_client::get_friends_and_register_cb(friend_data& friend_infos, friend_cb_func cb_func, void* cb_param)
 	{
-		std::lock_guard lock(mutex_friends);
-
-		friend_infos = this->friend_infos;
-		friend_cbs.insert(std::make_pair(cb_func, cb_param));
+		// The list as the callback joins: every change after it reaches it
+		retro_retire_enter(&m_friends_retire);
+		publish_state<friends_state>(m_friends, m_friends_retire, [&](friends_state& st)
+		{
+			friend_infos = st.infos;
+			st.cbs.insert(std::make_pair(cb_func, cb_param));
+		});
+		retro_retire_leave(&m_friends_retire, free_state<friends_state>);
 	}
 
 	void rpcn_client::register_friend_cb(friend_cb_func cb_func, void* cb_param)
 	{
-		std::lock_guard lock(mutex_friends);
-		friend_cbs.insert(std::make_pair(cb_func, cb_param));
+		retro_retire_enter(&m_friends_retire);
+		publish_state<friends_state>(m_friends, m_friends_retire, [&](friends_state& st)
+		{
+			st.cbs.insert(std::make_pair(cb_func, cb_param));
+		});
+		retro_retire_leave(&m_friends_retire, free_state<friends_state>);
 	}
 
 	void rpcn_client::remove_friend_cb(friend_cb_func cb_func, void* cb_param)
 	{
-		std::lock_guard lock(mutex_friends);
-
-		for (const auto& friend_cb : friend_cbs)
+		retro_retire_enter(&m_friends_retire);
+		publish_state<friends_state>(m_friends, m_friends_retire, [&](friends_state& st)
 		{
-			if (friend_cb.first == cb_func && friend_cb.second == cb_param)
-			{
-				friend_cbs.erase(friend_cb);
-				break;
-			}
-		}
+			st.cbs.erase(std::make_pair(cb_func, cb_param));
+		});
+		retro_retire_leave(&m_friends_retire, free_state<friends_state>);
 	}
 
 	void rpcn_client::handle_friend_notification(rpcn::NotificationType ntype, std::vector<u8> data)
 	{
-		std::lock_guard lock(mutex_friends);
+		// The change made on a copy of the list and published; the presence
+		// updates and the callbacks told after, from the state published
+		std::vector<std::tuple<NotificationType, std::string, bool>> calls;
+		std::vector<std::pair<std::string, friend_online_data>> presence;
 
+		retro_retire_enter(&m_friends_retire);
+
+		friends_state* const published = publish_state<friends_state>(m_friends, m_friends_retire, [&](friends_state& st)
+		{
+		calls.clear();
+		presence.clear();
+
+		friend_data& friend_infos = st.infos;
 		vec_stream vdata(data);
 
 		const auto call_callbacks = [&](NotificationType ntype, const std::string& username, bool status)
 		{
-			for (auto& friend_cb : friend_cbs)
-			{
-				friend_cb.first(friend_cb.second, ntype, username, status);
-			}
+			calls.emplace_back(ntype, username, status);
 		};
 
 		switch (ntype)
@@ -3123,8 +3152,7 @@ namespace rpcn
 				// clear presence data on online/offline
 				u->second = friend_online_data(online, timestamp);
 
-				presence_node* const node = new presence_node(username, u->second);
-				mpsc_stack_push(&presence_updates, &node->link);
+				presence.emplace_back(username, u->second);
 
 				call_callbacks(ntype, username, online);
 			}
@@ -3157,8 +3185,7 @@ namespace rpcn
 				u->second.pr_comment = std::move(pr_comment);
 				u->second.pr_data = std::move(pr_data);
 
-				presence_node* const node = new presence_node(username, u->second);
-				mpsc_stack_push(&presence_updates, &node->link);
+				presence.emplace_back(username, u->second);
 			}
 
 			call_callbacks(ntype, username, false);
@@ -3170,6 +3197,23 @@ namespace rpcn
 			break;
 		}
 		}
+		});
+
+		for (auto& [npid, pr] : presence)
+		{
+			presence_node* const node = new presence_node(npid, pr);
+			mpsc_stack_push(&presence_updates, &node->link);
+		}
+
+		for (const auto& [type, username, status] : calls)
+		{
+			for (const auto& friend_cb : published->cbs)
+			{
+				friend_cb.first(friend_cb.second, type, username, status);
+			}
+		}
+
+		retro_retire_leave(&m_friends_retire, free_state<friends_state>);
 	}
 
 	void rpcn_client::handle_message(std::vector<u8> data)
@@ -3202,8 +3246,10 @@ namespace rpcn
 			return;
 		}
 
+		const u64 msg_id = message_counter++;
+
 		message_data mdata = {
-			.msgId = message_counter,
+			.msgId = msg_id,
 			.mainType = static_cast<u16>(main_type),
 			.subType = static_cast<u16>(sub_type),
 			.msgFeatures = pb_mdata->msgfeatures(),
@@ -3216,46 +3262,56 @@ namespace rpcn
 		rpcn_log.notice("Received message from %s:", sender);
 		mdata.print();
 
-		// Save the message and call callbacks
+		// Save the message, then call the callbacks of the state it went in
 		{
-			std::lock_guard lock(mutex_messages);
-			const u64 msg_id = message_counter++;
 			auto id_and_msg = stx::make_shared<std::pair<std::string, message_data>>(std::make_pair(std::move(sender), std::move(mdata)));
-			messages.emplace(msg_id, id_and_msg);
-			new_messages.push_back(msg_id);
-			active_messages.insert(msg_id);
+
+			retro_retire_enter(&m_messages_retire);
+
+			const messages_state* const published = publish_state<messages_state>(m_messages, m_messages_retire, [&](messages_state& st)
+			{
+				st.messages.emplace(msg_id, id_and_msg);
+				st.new_messages.push_back(msg_id);
+				st.active_messages.insert(msg_id);
+			});
 
 			const auto& msg = id_and_msg->second;
-			for (const auto& message_cb : message_cbs)
+			for (const auto& message_cb : published->cbs)
 			{
 				if (msg.mainType == message_cb.type_filter && (message_cb.inc_bootable || !(msg.msgFeatures & SCE_NP_BASIC_MESSAGE_FEATURES_BOOTABLE)))
 				{
 					message_cb.cb_func(message_cb.cb_param, id_and_msg, msg_id);
 				}
 			}
+
+			retro_retire_leave(&m_messages_retire, free_state<messages_state>);
 		}
 	}
 
 	std::optional<shared_ptr<std::pair<std::string, message_data>>> rpcn_client::get_message(u64 id) const
 	{
+		return read_state<messages_state>(m_messages, m_messages_retire, [&](const messages_state& st) -> std::optional<shared_ptr<std::pair<std::string, message_data>>>
 		{
-			std::lock_guard lock(mutex_messages);
-
-			if (!messages.contains(id))
+			if (!st.messages.contains(id))
 				return std::nullopt;
 
-			return ::at32(messages, id);
-		}
+			return ::at32(st.messages, id);
+		});
 	}
 
 	std::vector<std::pair<u64, shared_ptr<std::pair<std::string, message_data>>>> rpcn_client::get_messages_and_register_cb(SceNpBasicMessageMainType type_filter, bool include_bootable, message_cb_func cb_func, void* cb_param)
 	{
 		std::vector<std::pair<u64, shared_ptr<std::pair<std::string, message_data>>>> vec_messages;
+
+		// The messages as the callback joins: every one after reaches it
+		retro_retire_enter(&m_messages_retire);
+		publish_state<messages_state>(m_messages, m_messages_retire, [&](messages_state& st)
 		{
-			std::lock_guard lock(mutex_messages);
-			for (auto id : active_messages)
+			vec_messages.clear();
+
+			for (auto id : st.active_messages)
 			{
-				const auto& entry = ::at32(messages, id);
+				const auto& entry = ::at32(st.messages, id);
 				const auto& msg = entry->second;
 				if (msg.mainType == type_filter && (include_bootable || !(msg.msgFeatures & SCE_NP_BASIC_MESSAGE_FEATURES_BOOTABLE)))
 				{
@@ -3263,88 +3319,91 @@ namespace rpcn
 				}
 			}
 
-			message_cbs.insert(message_cb_t{
+			st.cbs.insert(message_cb_t{
 				.cb_func = cb_func,
 				.cb_param = cb_param,
 				.type_filter = type_filter,
 				.inc_bootable = include_bootable,
 			});
-		}
+		});
+		retro_retire_leave(&m_messages_retire, free_state<messages_state>);
 		return vec_messages;
 	}
 
 	void rpcn_client::remove_message_cb(message_cb_func cb_func, void* cb_param)
 	{
-		std::lock_guard lock(mutex_messages);
-
-		for (const auto& message_cb : message_cbs)
+		retro_retire_enter(&m_messages_retire);
+		publish_state<messages_state>(m_messages, m_messages_retire, [&](messages_state& st)
 		{
-			if (message_cb.cb_func == cb_func && message_cb.cb_param == cb_param)
+			for (const auto& message_cb : st.cbs)
 			{
-				message_cbs.erase(message_cb);
-				break;
+				if (message_cb.cb_func == cb_func && message_cb.cb_param == cb_param)
+				{
+					st.cbs.erase(message_cb);
+					break;
+				}
 			}
-		}
+		});
+		retro_retire_leave(&m_messages_retire, free_state<messages_state>);
 	}
 
 	void rpcn_client::mark_message_used(u64 id)
 	{
-		std::lock_guard lock(mutex_messages);
-
-		active_messages.erase(id);
+		retro_retire_enter(&m_messages_retire);
+		publish_state<messages_state>(m_messages, m_messages_retire, [&](messages_state& st)
+		{
+			st.active_messages.erase(id);
+		});
+		retro_retire_leave(&m_messages_retire, free_state<messages_state>);
 	}
 
 	u32 rpcn_client::get_num_friends() const
 	{
-		std::lock_guard lock(mutex_friends);
-
-		return ::size32(friend_infos.friends);
+		return read_state<friends_state>(m_friends, m_friends_retire, [](const friends_state& st) { return ::size32(st.infos.friends); });
 	}
 
 	u32 rpcn_client::get_num_blocks() const
 	{
-		std::lock_guard lock(mutex_friends);
-
-		return ::size32(friend_infos.blocked);
+		return read_state<friends_state>(m_friends, m_friends_retire, [](const friends_state& st) { return ::size32(st.infos.blocked); });
 	}
 
 	std::optional<std::string> rpcn_client::get_friend_by_index(u32 index) const
 	{
-		std::lock_guard lock(mutex_friends);
-
-		if (index >= friend_infos.friends.size())
+		return read_state<friends_state>(m_friends, m_friends_retire, [&](const friends_state& st) -> std::optional<std::string>
 		{
-			return {};
-		}
+			if (index >= st.infos.friends.size())
+			{
+				return {};
+			}
 
-		auto it = friend_infos.friends.begin();
-		for (usz i = 0; i < index; i++)
-		{
-			it++;
-		}
-
-		return it->first;
+			auto it = st.infos.friends.begin();
+			std::advance(it, index);
+			return it->first;
+		});
 	}
 
 	std::optional<std::pair<std::string, friend_online_data>> rpcn_client::get_friend_presence_by_index(u32 index) const
 	{
-		std::lock_guard lock(mutex_friends);
-
-		if (index >= friend_infos.friends.size())
+		return read_state<friends_state>(m_friends, m_friends_retire, [&](const friends_state& st) -> std::optional<std::pair<std::string, friend_online_data>>
 		{
-			return std::nullopt;
-		}
+			if (index >= st.infos.friends.size())
+			{
+				return std::nullopt;
+			}
 
-		auto it = friend_infos.friends.begin();
-		std::advance(it, index);
-		return std::optional(*it);
+			auto it = st.infos.friends.begin();
+			std::advance(it, index);
+			return std::optional(*it);
+		});
 	}
 
 	std::optional<std::pair<std::string, friend_online_data>> rpcn_client::get_friend_presence_by_npid(const std::string& npid) const
 	{
-		std::lock_guard lock(mutex_friends);
-		const auto it = friend_infos.friends.find(npid);
-		return it == friend_infos.friends.end() ? std::nullopt : std::optional(*it);
+		return read_state<friends_state>(m_friends, m_friends_retire, [&](const friends_state& st) -> std::optional<std::pair<std::string, friend_online_data>>
+		{
+			const auto it = st.infos.friends.find(npid);
+			return it == st.infos.friends.end() ? std::nullopt : std::optional(*it);
+		});
 	}
 
 	bool rpcn_client::is_connected() const

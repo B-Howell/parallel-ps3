@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- The RPCN client's friends, messages and connection take no lock:
+  - **Friends:** the friend list and its callbacks were under one `shared_mutex`, held even while the callbacks ran. They are now one published state, read by any thread with no lock and replaced whole by a change (copy, change, compare-and-swap). The old state is freed once no reader is in it (`retro_retire`, libretro-common). A callback registered with a read of the list still sees every change after it and none before. Notifications now call the callbacks after the change is published, so a callback that reads the list sees it.
+  - **Messages:** these were under a `shared_mutex` (the messages, the new and active lists, and the message callbacks), and are now one published state the same way. The message counter is atomic.
+  - **Connecting and logging in:** waiting for a connection or a login took a mutex the RPCN thread held for the whole attempt, then a semaphore given once. A second thread waiting at the same time could wait for good. Each is now a generation word moved by every attempt, and all its waiters are woken.
+  - `std::lock_guard` count 253. No CI test: it needs the RPCN server. A check fails if one of these locks comes back. Not yet run online. The client's instance lock (`inst_mutex`) and the NP handler's locks are next.
 - The RPCN client's queues take no lock. What the reader thread takes in for others was kept under four `shared_mutex`es:
   - **Notifications, replies and presence updates:** these go to the NP handler's thread, which takes each list whole. They are now pushed as nodes onto `mpsc_stack`s and taken oldest first. Presence updates still end with the last one for each user winning, as they did in the map. Taking the full presence states drops the updates so far, as before.
   - **Synchronous replies:** each goes to the one thread waiting for its id (login, friends, messages and the rest). They were a `std::map` under a lock. They are now 64 slots: the reader claims one with compare-and-swap and publishes it under the reply's id, and the waiting thread takes it the same way (`rpcn_reply_slots.c`, new, C89). The connection ending drops what no thread is waiting for any more, where the map kept it.

@@ -9,6 +9,7 @@
 #include <array>
 #include <retro_atomic.h>
 #include <queues/mpsc_stack.h>
+#include <queues/retro_retire.h>
 #include "Utilities/mutex.h"
 #include "Utilities/lockless.h"
 #include "Emu/localized_string_id.h"
@@ -243,8 +244,25 @@ namespace rpcn
 			}
 		};
 
-		rpcn_signal sem_connected, sem_authentified;
-		std::mutex mutex_connected, mutex_authentified;
+		// Moved, and their waiters woken, by each connection or login tried
+		// (and by the client going): what wait_for_connection and
+		// wait_for_authentified wait on - every thread waiting is woken,
+		// where a semaphore given once let one go. No lock
+		atomic_t<u32> conn_gen{0}, auth_gen{0};
+
+		static void next_gen(atomic_t<u32>& gen)
+		{
+			gen++;
+			gen.notify_all();
+		}
+
+		static void wait_gen(atomic_t<u32>& gen, u32 seen)
+		{
+			for (u32 now = gen.load(); now == seen; now = gen.load())
+			{
+				gen.wait(now);
+			}
+		}
 
 		rpcn_signal sem_reader, sem_writer, sem_rpcn;
 		// Set while the reader or the writer thread uses the connection:
@@ -263,10 +281,66 @@ namespace rpcn
 		// once by the writer, in order
 		lf_queue<std::vector<u8>> packets_to_send;
 
-		// Friends related
-		mutable shared_mutex mutex_friends;
-		std::set<std::pair<friend_cb_func, void*>> friend_cbs;
-		friend_data friend_infos;
+		// Friends related: the list and the callbacks told of its changes,
+		// one published state - read by any thread with no lock, replaced
+		// whole by a change (copy, change, compare-and-swap), the old one
+		// freed once no reader is in it (retro_retire). One state, so a
+		// callback registered with a read of the list sees every change
+		// after it, and none before, exactly once
+		struct friends_state
+		{
+			mpsc_stack_node_t node{}; // first: retired as it is
+			friend_data infos;
+			std::set<std::pair<friend_cb_func, void*>> cbs;
+		};
+
+		void init_states();
+
+		mutable retro_atomic_ptr_t m_friends{}; // friends_state*
+		mutable retro_retire_t m_friends_retire{};
+
+		template <typename State>
+		static void free_state(mpsc_stack_node_t* node)
+		{
+			delete node_of<State>(node);
+		}
+
+		// Between retro_retire_enter and leave: the state @change makes of the
+		// one published, published - made again from a newer one if another
+		// change got in first. The one published, alive until the leave
+		template <typename State, typename F>
+		static State* publish_state(retro_atomic_ptr_t& ptr, retro_retire_t& retire, F&& change)
+		{
+			for (;;)
+			{
+				State* const old = static_cast<State*>(retro_atomic_load_acquire_ptr(&ptr));
+				State* const now = new State(*old);
+				change(*now);
+
+				if (retro_atomic_cas_ptr(&ptr, old, now))
+				{
+					retro_retire(&retire, &old->node, free_state<State>);
+					return now;
+				}
+
+				delete now;
+			}
+		}
+
+		// @read(const State&) on the state published, with no lock
+		template <typename State, typename F>
+		static decltype(auto) read_state(retro_atomic_ptr_t& ptr, retro_retire_t& retire, F&& read)
+		{
+			struct leave_t
+			{
+				retro_retire_t& r;
+				~leave_t() { retro_retire_leave(&r, free_state<State>); }
+			};
+
+			retro_retire_enter(&retire);
+			const leave_t leave{retire};
+			return read(*static_cast<const State*>(retro_atomic_load_acquire_ptr(&ptr)));
+		}
 
 		void handle_friend_notification(rpcn::NotificationType ntype, std::vector<u8> data);
 
@@ -561,12 +635,20 @@ namespace rpcn
 				return (void_cb_func < void_other_cb_func) || ((!(void_other_cb_func < void_cb_func)) && (cb_param < other.cb_param));
 			}
 		};
-		mutable shared_mutex mutex_messages;
-		std::set<message_cb_t> message_cbs;
-		std::unordered_map<u64, shared_ptr<std::pair<std::string, message_data>>> messages; // msg id / (sender / message)
-		std::set<u64> active_messages;                                                           // msg id of messages that have not been discarded
-		std::vector<u64> new_messages;                                                           // list of msg_id used to inform np_handler of new messages
-		u64 message_counter = 3;                                                                 // id counter
+		// The messages and the callbacks told of new ones: one published
+		// state, as the friends' (no lock)
+		struct messages_state
+		{
+			mpsc_stack_node_t node{};
+			std::set<message_cb_t> cbs;
+			std::unordered_map<u64, shared_ptr<std::pair<std::string, message_data>>> messages; // msg id / (sender / message)
+			std::set<u64> active_messages;                                                           // msg id of messages that have not been discarded
+			std::vector<u64> new_messages;                                                           // list of msg_id used to inform np_handler of new messages
+		};
+
+		mutable retro_atomic_ptr_t m_messages{}; // messages_state*
+		mutable retro_retire_t m_messages_retire{};
+		atomic_t<u64> message_counter = 3; // id counter (the reader's)
 
 		std::string online_name{};
 		std::string avatar_url{};
