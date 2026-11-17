@@ -3176,8 +3176,14 @@ namespace rsx
 		if (rsx_guest_faults_post(&request, 0, RSX_GUEST_MEMORY_UNMAPPED))
 		{
 			m_eng_interrupt_mask |= rsx::backend_interrupt;
+			attend();
 			rsx_guest_fault_wait(&request);
 		}
+	}
+
+	void thread::attend() noexcept
+	{
+		rsx_wake_signal(&m_attention);
 	}
 
 	void thread::serve_guest_faults()
@@ -3588,6 +3594,7 @@ namespace rsx
 			async_flip_requested |= flip_request::emu_requested;
 
 			m_eng_interrupt_mask |= rsx::display_interrupt;
+			attend();
 
 			if (state & cpu_flag::exit)
 			{
@@ -3677,6 +3684,7 @@ namespace rsx
 				// Not yet signaled, handle it later
 				async_flip_requested |= flip_request::emu_requested;
 				async_flip_buffer = buffer;
+				attend();
 				return;
 			}
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <retro_atomic.h>
+#include "Common/rsx_wake.h"
 #include <deque>
 #include <queues/retro_deque.h>
 
@@ -476,6 +477,37 @@ namespace rsx
 		// on: their faults on memory the texture cache has locked, and
 		// unmapped memory to let go of (Common/guest_faults.h)
 		void serve_guest_faults();
+
+		// What the renderer waits on when it can do nothing but wait (the
+		// offloader to catch up): bumped by everything it has to answer
+		// then - the offloader done or faulting, faults posted, a flip asked
+		rsx_wake_t m_attention{};
+
+		// For any thread: the renderer woken, if it waits
+		void attend() noexcept;
+
+		// For the renderer: on_semaphore_acquire_wait until @done says so,
+		// woken only by attend - no spin
+		template <typename F>
+		void wait_attending(F&& done)
+		{
+			for (;;)
+			{
+				const int seen = rsx_wake_seen(&m_attention);
+
+				if (done())
+				{
+					return;
+				}
+
+				on_semaphore_acquire_wait();
+
+				if (!done())
+				{
+					rsx_wake_wait(&m_attention, seen);
+				}
+			}
+		}
 
 		// For any thread: has the renderer handle the
 		// invalidated memory range that is waiting, and returns when it has

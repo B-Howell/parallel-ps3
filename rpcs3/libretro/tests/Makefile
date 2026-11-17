@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_DYLIB -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_jit_cores test_rpcn_signal test_vk_loader
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_jit_cores test_rpcn_signal test_rsx_wake test_rsx_wake_tsan test_vk_loader
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -612,6 +612,15 @@ test_guest_faults: $(GUEST_FAULTS_DEPS)
 test_guest_faults_tsan: $(GUEST_FAULTS_DEPS)
 	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ test_guest_faults.c $(GUEST_FAULTS_SRC) $(LDFLAGS) $(LDLIBS) -lpthread
 
+RSX_WAKE_DEPS := test_rsx_wake.c test_common.h ../../Emu/RSX/Common/rsx_wake.c ../../Emu/RSX/Common/rsx_wake.h
+RSX_WAKE_SRC  := ../../Emu/RSX/Common/rsx_wake.c $(LRC)/rthreads/retro_waitaddr.c $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
+
+test_rsx_wake: $(RSX_WAKE_DEPS)
+	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS $(SANITIZE) -o $@ test_rsx_wake.c $(RSX_WAKE_SRC) $(LDFLAGS) $(LDLIBS) -lpthread
+
+test_rsx_wake_tsan: $(RSX_WAKE_DEPS)
+	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ test_rsx_wake.c $(RSX_WAKE_SRC) $(LDFLAGS) $(LDLIBS) -lpthread
+
 VK_INTERP_UPLOADS_DEPS := test_vk_interp_uploads.c test_common.h ../../Emu/RSX/VK/vk_interpreter_uploads.c ../../Emu/RSX/VK/vk_interpreter_uploads.h
 
 test_vk_interp_uploads: $(VK_INTERP_UPLOADS_DEPS)
@@ -929,6 +938,8 @@ check: all
 	./test_lv2_sched
 	./test_jit_cores
 	./test_rpcn_signal
+	./test_rsx_wake
+	./test_rsx_wake_tsan
 	./test_vk_loader
 	./test_eeprom_table
 	./test_eeprom_table_tsan
@@ -962,6 +973,8 @@ check: all
 	@if grep -nE "shared_mutex|std::mutex|lock_guard|unique_lock|reader_lock" ../../Emu/RSX/VK/VKDMA.cpp ../../Emu/RSX/VK/VKQueryPool.cpp ../../Emu/RSX/VK/VKQueryPool.h; then echo "VK: a lock is back in the DMA blocks or the query pool cache"; exit 1; else echo "VK: DMA blocks and query pool cache with no lock"; fi
 	@# The offloader faulting on the renderer's locked memory waits on the queue status word for the renderer to clear its deadlock, no spin
 	@if awk '/Wait for deadlock to clear/{f=1} f&&/utils::pause\(\)/{bad=1} f&&/clear_mem_fault_flag/{exit} END{exit !bad}' ../../Emu/RSX/VK/VKGSRender.cpp || ! grep -q "m_queue_status.notify_all();" ../../Emu/RSX/VK/VKGSRender.cpp; then echo "VK offloader: it spins for the renderer to clear its deadlock again"; exit 1; else echo "VK offloader: waits for its deadlock to clear, no spin"; fi
+	@# The RSX offloader's jobs go through a ring made once (retro_spsc): no allocation for a job, no idle spin - it waits on its wake word; the renderer waiting for it waits on its own (rsx_wake.c), woken by what it has to answer
+	@if grep -nE "lf_queue|lockless\.h|std::vector|std::this_thread::yield|utils::pause|busy_wait|\bnew " ../../Emu/RSX/RSXOffload.cpp ../../Emu/RSX/RSXOffload.h; then echo "RSX offloader: an allocation or a spin is back - jobs are packets in the ring, waits are on rsx_wake"; exit 1; elif grep -nE "yield|pause|sleep|mutex|lock" ../../Emu/RSX/Common/rsx_wake.c; then echo "rsx_wake: a spin, a sleep or a lock is in it"; exit 1; else echo "RSX offloader: no allocation per job, no spin"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

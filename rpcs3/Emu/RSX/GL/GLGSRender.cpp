@@ -1352,6 +1352,7 @@ bool GLGSRender::on_access_violation(u32 address, bool is_writing)
 		if (rsx_guest_faults_post(&fault, address, is_writing))
 		{
 			m_eng_interrupt_mask |= rsx::backend_interrupt;
+			attend();
 			vm::temporary_unlock();
 			return !!rsx_guest_fault_wait(&fault);
 		}

@@ -965,6 +965,7 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 			g_fxo->get<rsx::dma_manager>().set_mem_fault_flag();
 			m_queue_status |= flush_queue_state::deadlock;
 			m_eng_interrupt_mask |= rsx::backend_interrupt;
+			attend();
 
 			// Wait for deadlock to clear: woken as the renderer clears it
 			// (do_local_task), no spin
@@ -984,6 +985,7 @@ bool VKGSRender::on_access_violation(u32 address, bool is_writing)
 		if (rsx_guest_faults_post(&fault, address, is_writing))
 		{
 			m_eng_interrupt_mask |= rsx::backend_interrupt;
+			attend();
 			vm::temporary_unlock();
 			return !!rsx_guest_fault_wait(&fault);
 		}
