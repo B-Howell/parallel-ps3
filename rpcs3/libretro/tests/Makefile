@@ -831,7 +831,7 @@ HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellIme
 LOCK_GUARD_MAX := 303
 # turn_call (turn_calls.h) is a lock without a lock object - a queued caller
 # still waits - and is going too: the count may only fall
-TURN_CALL_MAX := 16
+TURN_CALL_MAX := 4
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -1004,8 +1004,8 @@ check: all
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|reader_lock|lock_unlock|[.>]mutex\b" ../../Emu/Cell/lv2/sys_event.cpp ../../Emu/Cell/lv2/sys_event.h | grep -v "id_manager::g_mutex"; then echo "sys_event: a lock is back - the events and waiters are lv2_evq.c's"; exit 1; elif grep -nE "queue(->|\.)mutex" ../../Emu/Cell/SPUThread.cpp ../../Emu/Cell/lv2/sys_rsx.cpp; then echo "sys_event: a queue's lock is taken again - the events and waiters are lv2_evq.c's"; exit 1; else echo "sys_event: no lock"; fi
 	@# The scheduler takes no lock: its queues change in its turn (lv2_obj::g_turns), with the scheduling thread's own lists handed to the turn
 	@if grep -nE "lv2_obj::g_mutex|static shared_mutex g_mutex|lock(_guard)?[ ({]+g_mutex" ../../Emu/Cell/lv2/lv2.cpp ../../Emu/Cell/lv2/sys_sync.h; then echo "lv2 scheduler: its lock is back - the queues change in the scheduler's turn (turn_call)"; exit 1; else echo "lv2 scheduler: no lock, the queues in its turn"; fi
-	@# SPU thread groups take no lock: what a group is changes in its turn (turn_calls.h), inside an event queue's where both change
-	@if grep -nE "group(->|\.)mutex|grp(->|\.)mutex" ../../Emu/Cell/lv2/sys_spu.cpp ../../Emu/Cell/lv2/sys_spu.h ../../Emu/Cell/SPUThread.cpp ../../Emu/CPU/CPUThread.cpp; then echo "SPU thread groups: a group's lock is back - it changes in its turn (turn_call)"; exit 1; else echo "SPU thread groups: no lock, each in its turn"; fi
+	@# SPU thread groups take no lock: their state changes with compare-and-swap, the threads' flags following it
+	@if grep -nE "group(->|\.)mutex|grp(->|\.)mutex" ../../Emu/Cell/lv2/sys_spu.cpp ../../Emu/Cell/lv2/sys_spu.h ../../Emu/Cell/SPUThread.cpp ../../Emu/CPU/CPUThread.cpp; then echo "SPU thread groups: a group's lock is back - its state changes with compare-and-swap"; exit 1; else echo "SPU thread groups: no lock"; fi
 	@# Vulkan: the async texture scheduler's command buffer is chosen, synced and submitted in turn; a sampler reload is asked for with a flag, not a lock against the renderer's texture load
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|Utilities/mutex.h" ../../Emu/RSX/VK/VKAsyncScheduler.cpp ../../Emu/RSX/VK/VKAsyncScheduler.h || grep -nE "m_sampler_mutex" ../../Emu/RSX/VK/*.cpp ../../Emu/RSX/VK/*.h; then echo "vk: a lock is back on the async scheduler or the samplers"; exit 1; else echo "vk: no lock on the async scheduler or the samplers"; fi
 	@# RSX: the invalidated memory range is one word, merged into by unmaps and taken off by the renderer with compare-and-swap
@@ -1044,6 +1044,8 @@ check: all
 	@if grep -nE "s_rpcn_mutex|s_sign_mutex" ../../Emu/Cell/lv2/sys_net/*.cpp ../../Emu/Cell/lv2/sys_net/*.h; then echo "p2p: a message queue lock is back - the messages go on mpsc_stacks"; exit 1; else echo "p2p: the message queues take no lock"; fi
 	@# lv2 timers: their state one 128-bit word changed with compare-and-swap (sys_timer_ctrl.c), the queue they send to put in place whole (atomic_ptr)
 	@if grep -nE "turn_call|turn_calls|lock_guard|shared_mutex|check_unlocked" ../../Emu/Cell/lv2/sys_timer.cpp ../../Emu/Cell/lv2/sys_timer.h; then echo "sys_timer: a turn or a lock is back - the timer's state is sys_timer_ctrl.c's word"; exit 1; else echo "sys_timer: no turn, no lock"; fi
+	@# SPU thread groups: no turn - the state one word changed with compare-and-swap (`terminating` marked in it), the threads' suspend flags settled after, the joiner subscribed with compare-and-swap; no spin waiting for exit statuses or terminators
+	@if grep -nE "turn_call|turn_calls|group->turns|set_terminate" ../../Emu/Cell/lv2/sys_spu.cpp ../../Emu/Cell/lv2/sys_spu.h ../../Emu/Cell/SPUThread.cpp ../../Emu/CPU/CPUThread.cpp; then echo "SPU thread groups: a group's turn is back - its state changes with compare-and-swap, the threads' flags settled after (settle_suspend)"; exit 1; elif grep -n "busy_wait(3000)" ../../Emu/Cell/lv2/sys_spu.cpp; then echo "SPU thread groups: the 3 ms spin in sys_spu_thread_group_terminate is back"; exit 1; else echo "SPU thread groups: no turn"; fi
 	@# SPU ports, queue bindings and group event ports: atomic pointers, connected with compare-and-swap; threads placed with claimed places; no group turn
 	@if grep -nE "shared_ptr<lv2_event_queue> spup\\[|std::pair<u32, shared_ptr<lv2_event_queue>>|shared_ptr<lv2_event_queue> ep_" ../../Emu/Cell/SPUThread.h ../../Emu/Cell/lv2/sys_spu.h; then echo "spu: a port, queue binding or group event port is a plain shared_ptr again - read by the SPU as it is connected, it is an atomic_ptr"; exit 1; else echo "spu: ports and bindings atomic, no turn"; fi
 	@# lv2 event queues: the events a ring, the waiters two words (lv2_evq.c); no turn, no spin, here or where SPUs and the RSX use them

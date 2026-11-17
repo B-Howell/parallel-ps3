@@ -288,15 +288,15 @@ struct lv2_spu_group
 	const bool has_scheduler_context;
 	u32 max_run;
 
-	// What the group is - its threads, their ports and queues, its state as
-	// it changes with them - changes in turn (turn_calls.h): no lock. Taken
-	// inside an event queue's turn by the SPU paths that need both, and takes
-	// the scheduler's (lv2_obj::awake) inside it
-	turn_calls_cpp turns;
-
 	retro_atomic_int_t init; // Initialization Counter (a u32)
 	atomic_t<typename spu_thread::spu_prio_t> prio{}; // SPU Thread Group Priority
-	retro_atomic_int_t run_state; // SPU Thread Group State (a spu_group_status)
+	// SPU Thread Group State: a spu_group_status, and `terminating` while a
+	// termination (sys_spu_thread_group_terminate, or a thread's
+	// sys_spu_thread_group_exit) is under way - each change one
+	// compare-and-swap, no lock and no turn. The threads' suspend flags follow
+	// the state (settle_suspend)
+	retro_atomic_int_t run_state;
+	static constexpr int terminating = 0x100;
 	retro_atomic_int_t exit_status; // SPU Thread Group Exit Status
 	retro_atomic_int_t join_state; // flags used to detect exit cause and signal (a u32)
 	retro_atomic_int_t running{}; // Number of running threads
@@ -304,8 +304,10 @@ struct lv2_spu_group
 	retro_atomic_int_t stop_count{}; // a u32, waited on with retro_waitaddr
 	retro_atomic_int_t wait_term_count{};
 	u32 waiter_spu_index = -1; // Index of SPU executing a waiting syscall
-	class ppu_thread* waiter = nullptr;
-	bool set_terminate = false;
+
+	// The PPU thread joining the group (sys_spu_thread_group_join),
+	// subscribed and taken with compare-and-swap
+	retro_atomic_ptr_t waiter{};
 
 	std::array<shared_ptr<named_thread<spu_thread>>, 8> threads; // SPU Threads
 	std::array<s8, 256> threads_map; // SPU Threads map based number
@@ -369,6 +371,29 @@ struct lv2_spu_group
 	}
 
 	static std::pair<named_thread<spu_thread>*, shared_ptr<lv2_spu_group>> get_thread(u32 id);
+
+	// The group's state, without `terminating`
+	static spu_group_status status_of(int value)
+	{
+		return static_cast<spu_group_status>(value & 0xff);
+	}
+
+	spu_group_status status()
+	{
+		return status_of(retro_atomic_load_acquire_int(&run_state));
+	}
+
+	// Whether the state, as it is, suspends the threads
+	static bool suspends(spu_group_status state)
+	{
+		return state == SPU_THREAD_GROUP_STATUS_SUSPENDED || state == SPU_THREAD_GROUP_STATUS_WAITING || state == SPU_THREAD_GROUP_STATUS_WAITING_AND_SUSPENDED;
+	}
+
+	// Every thread's suspend flag as the state has it, done again until the
+	// state stood still while it was done: whoever changes the state calls
+	// this after, and the last to finish leaves them as the state is.
+	// Threads let go are woken
+	void settle_suspend();
 };
 
 class ppu_thread;
