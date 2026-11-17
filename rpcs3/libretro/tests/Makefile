@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_DYLIB -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_turn_calls test_turn_calls_tsan test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_vk_loader
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_vk_loader
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -513,21 +513,6 @@ test_owner_calls_tsan: $(OWNER_CALLS_DEPS)
 	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/owner_calls_tsan.o ../../Emu/CPU/owner_calls.c
 	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ obj/test_owner_calls_tsan.o obj/owner_calls_tsan.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
 
-# Calls on one object taken in turn: the primitive and the test as C89
-TURN_CALLS_DEPS := test_turn_calls.c test_common.h ../../Emu/CPU/turn_calls.c ../../Emu/CPU/turn_calls.h
-
-test_turn_calls: $(TURN_CALLS_DEPS)
-	@mkdir -p obj
-	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -c -o obj/test_turn_calls.o test_turn_calls.c
-	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -DTURN_CALLS_TEST_WINDOW=sched_yield -include sched.h -c -o obj/turn_calls.o ../../Emu/CPU/turn_calls.c
-	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS $(SANITIZE) -o $@ obj/test_turn_calls.o obj/turn_calls.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
-
-test_turn_calls_tsan: $(TURN_CALLS_DEPS)
-	@mkdir -p obj
-	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -DCALLS=10000 -c -o obj/test_turn_calls_tsan.o test_turn_calls.c
-	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -DTURN_CALLS_TEST_WINDOW=sched_yield -include sched.h -c -o obj/turn_calls_tsan.o ../../Emu/CPU/turn_calls.c
-	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ obj/test_turn_calls_tsan.o obj/turn_calls_tsan.o $(OWNER_CALLS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
-
 # The HLE modules' thread: the module and the test as C89
 HLE_SERVICE_DEPS := test_hle_service.c test_common.h ../../Emu/Cell/Modules/hle_service.c ../../Emu/Cell/Modules/hle_service.h $(OWNER_CALLS_DEPS)
 
@@ -836,9 +821,6 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
 LOCK_GUARD_MAX := 303
-# turn_call (turn_calls.h) is a lock without a lock object - a queued caller
-# still waits - and is going too: the count may only fall
-TURN_CALL_MAX := 1
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -932,8 +914,6 @@ check: all
 	./test_lv2_evq
 	./test_lv2_sched
 	./test_vk_loader
-	./test_turn_calls
-	./test_turn_calls_tsan
 	./test_eeprom_table
 	./test_eeprom_table_tsan
 	./test_object_pack
@@ -952,12 +932,8 @@ check: all
 	if [ $$n -gt $(LOCK_GUARD_MAX) ]; then echo "std::lock_guard: $$n in the core, more than the $(LOCK_GUARD_MAX) left - the locks are going, not coming (AGENTS.md)"; exit 1; \
 	elif [ $$n -lt $(LOCK_GUARD_MAX) ]; then echo "std::lock_guard: $$n in the core, fewer than LOCK_GUARD_MAX ($(LOCK_GUARD_MAX)): lower it to $$n"; exit 1; \
 	else echo "std::lock_guard: $$n left in the core"; fi
-	@# turn_call is going too: a caller queued on a turn waits. Each patch
-	@# that takes some out lowers TURN_CALL_MAX with it
-	@n=$$(grep -rho "turn_call(" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities | wc -l); \
-	if [ $$n -gt $(TURN_CALL_MAX) ]; then echo "turn_call: $$n in the core, more than the $(TURN_CALL_MAX) left - nothing new waits in a turn (AGENTS.md)"; exit 1; \
-	elif [ $$n -lt $(TURN_CALL_MAX) ]; then echo "turn_call: $$n in the core, fewer than TURN_CALL_MAX ($(TURN_CALL_MAX)): lower it to $$n"; exit 1; \
-	else echo "turn_call: $$n left in the core"; fi
+	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
+	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
 	@if grep -nE "mutex|lock_guard|unique_lock|reader_lock" ../../Emu/Io/Skylander.cpp ../../Emu/Io/Skylander.h ../../Emu/Io/Infinity.cpp ../../Emu/Io/Infinity.h ../../Emu/Io/Dimensions.cpp ../../Emu/Io/Dimensions.h ../../Emu/Io/KamenRider.cpp ../../Emu/Io/KamenRider.h; then echo "portals: a lock is back - the portals are the USB thread's, sys_usbd runs their transfers there"; exit 1; else echo "portals: no lock, the USB thread's"; fi
 	@# cellAudio's periods go by the guest's clock: no sleep and no clock of the host's
@@ -1002,13 +978,13 @@ check: all
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|->mutex|\.mutex|turn_call|turn_calls|busy_wait" ../../Emu/Cell/lv2/sys_semaphore.cpp ../../Emu/Cell/lv2/sys_semaphore.h; then echo "sys_semaphore: a lock, a turn or a spin is back - the count or the waiters are one word (lv2_countq.c)"; exit 1; else echo "sys_semaphore: one word, no lock, no turn, no spin"; fi
 	@# Event flags take no lock: the pattern and the waiters are lv2_flagq.c's
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|->mutex|\.mutex|lock_unlock" ../../Emu/Cell/lv2/sys_event_flag.cpp ../../Emu/Cell/lv2/sys_event_flag.h; then echo "sys_event_flag: a lock is back - the bits and waiters are lv2_flagq.c's"; exit 1; else echo "sys_event_flag: no lock"; fi
-	@# Mutexes and conditions take no lock: what is not one compare-and-swap of the mutex's word, and the conditions' queues, change in the mutex's turn (turn_calls.h)
+	@# Mutexes and conditions take no lock: the mutex's owner and waiters are one word (lv2_ownq.c), a condition's waiters a waiter set
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|reader_lock|->mutex\.|\.mutex\.|lock\((cond\.|cond->)?mutex(->|\.)mutex\)" ../../Emu/Cell/lv2/sys_mutex.cpp ../../Emu/Cell/lv2/sys_mutex.h ../../Emu/Cell/lv2/sys_cond.cpp; then echo "sys_mutex/sys_cond: a lock is back - the queues change in the mutex's turn (turn_call)"; exit 1; else echo "sys_mutex/sys_cond: no lock"; fi
 	@# Reader-writer locks take no lock: the owners and waiters are lv2_rwq.c's
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|reader_lock|->mutex|\.mutex|lock_unlock" ../../Emu/Cell/lv2/sys_rwlock.cpp ../../Emu/Cell/lv2/sys_rwlock.h; then echo "sys_rwlock: a lock is back - the owners and waiters are lv2_rwq.c's"; exit 1; else echo "sys_rwlock: no lock"; fi
 	@# Lightweight mutexes and conditions take no lock: an lwmutex's sleepers are lv2_lwq.c's word, an lwcond's waiters a waiter set
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|scoped_lock|reader_lock|->mutex\b|\.mutex\b|lock_unlock" ../../Emu/Cell/lv2/sys_lwmutex.cpp ../../Emu/Cell/lv2/sys_lwmutex.h ../../Emu/Cell/lv2/sys_lwcond.cpp ../../Emu/Cell/lv2/sys_lwcond.h; then echo "sys_lwmutex/sys_lwcond: a lock is back - the sleepers are lv2_lwq.c's word, an lwcond's waiters a waiter set"; exit 1; else echo "sys_lwmutex/sys_lwcond: no lock"; fi
-	@# Event queues take no lock: their events and waiters change in the queue's turn (turn_calls.h), an SPU group's lock taken inside it
+	@# Event queues take no lock: their events are a ring and their waiters two words (lv2_evq.c)
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|reader_lock|lock_unlock|[.>]mutex\b" ../../Emu/Cell/lv2/sys_event.cpp ../../Emu/Cell/lv2/sys_event.h | grep -v "id_manager::g_mutex"; then echo "sys_event: a lock is back - the events and waiters are lv2_evq.c's"; exit 1; elif grep -nE "queue(->|\.)mutex" ../../Emu/Cell/SPUThread.cpp ../../Emu/Cell/lv2/sys_rsx.cpp; then echo "sys_event: a queue's lock is taken again - the events and waiters are lv2_evq.c's"; exit 1; else echo "sys_event: no lock"; fi
 	@# The scheduler takes no lock and no turn: what it knows is one snapshot (lv2_sched.c), each sleep, wake, yield and priority set one change put in place with compare-and-swap
 	@if grep -nE "lv2_obj::g_mutex|static shared_mutex g_mutex|lock(_guard)?[ ({]+g_mutex" ../../Emu/Cell/lv2/lv2.cpp ../../Emu/Cell/lv2/sys_sync.h; then echo "lv2 scheduler: its lock is back - what it knows is lv2_sched.c's snapshot"; exit 1; elif grep -nE "turn_call|turn_calls|g_turns|g_pending|ack_suspend|next_ppu" ../../Emu/Cell/lv2/lv2.cpp ../../Emu/Cell/lv2/sys_sync.h ../../Emu/Cell/PPUThread.h; then echo "lv2 scheduler: its turn or the linked run queue is back - what it knows is lv2_sched.c's snapshot"; exit 1; else echo "lv2 scheduler: no lock, no turn, one snapshot"; fi

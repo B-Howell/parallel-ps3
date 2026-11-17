@@ -513,7 +513,6 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/rpcs3/Emu/CPU/jit_host_symbols.c \
 	$(CORE_DIR)/rpcs3/Emu/CPU/cpu_slots.c \
 	$(CORE_DIR)/rpcs3/Emu/CPU/owner_calls.c \
-	$(CORE_DIR)/rpcs3/Emu/CPU/turn_calls.c \
 	$(CORE_DIR)/rpcs3/Emu/Cell/Modules/hle_service.c \
 	$(CORE_DIR)/rpcs3/Emu/RSX/Common/texture_cache.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/Common/texture_cache_types.cpp \
