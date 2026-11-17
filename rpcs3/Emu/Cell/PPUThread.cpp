@@ -1,6 +1,7 @@
 #include <queues/retro_deque.h>
 #include "stdafx.h"
 #include "jit_cores.h"
+#include "Emu/Cell/Modules/hle_service.h"
 #include "Emu/system_config.h"
 #include "Utilities/JIT.h"
 #include "Utilities/StrUtil.h"
@@ -4072,13 +4073,19 @@ namespace
 
 	struct jit_module_manager
 	{
+		// The maps are the HLE thread's: a module is added and removed there
+		// (hle_call), one at a time, so they take no lock. The entries are
+		// nodes, which stay where they are until removed
 		struct bucket_t
 		{
-			shared_mutex mutex;
 			std::unordered_map<std::string, jit_module> map;
 		};
 
 		std::array<bucket_t, 256> buckets;
+
+		jit_module_manager() = default;
+		jit_module_manager(const jit_module_manager&) = delete;
+		jit_module_manager& operator=(const jit_module_manager&) = delete;
 
 		bucket_t& get_bucket(std::string_view sv)
 		{
@@ -4105,38 +4112,40 @@ namespace
 		jit_module& get(const std::string& name)
 		{
 			bucket_t& bucket = get_bucket(name);
-			std::lock_guard lock(bucket.mutex);
-			return bucket.map.emplace(name, jit_module{}).first->second;
+			return *hle_call([&]() -> jit_module* { return &bucket.map.emplace(name, jit_module{}).first->second; });
 		}
 
 		void remove(const std::string& name) noexcept
 		{
 			bucket_t& bucket = get_bucket(name);
 
+			// Destroyed here, out of the HLE thread's way
 			jit_module to_destroy{};
 
-			std::lock_guard lock(bucket.mutex);
-			const auto found = bucket.map.find(name);
-
-			if (found == bucket.map.end()) [[unlikely]]
+			hle_call([&]()
 			{
-				ppu_log.error("Failed to remove module %s", name);
+				const auto found = bucket.map.find(name);
 
-				for (auto& buck : buckets)
+				if (found == bucket.map.end()) [[unlikely]]
 				{
-					for (auto& mod : buck.map)
+					ppu_log.error("Failed to remove module %s", name);
+
+					for (auto& buck : buckets)
 					{
-						ppu_log.notice("But there is module %s", mod.first);
+						for (auto& mod : buck.map)
+						{
+							ppu_log.notice("But there is module %s", mod.first);
+						}
 					}
+
+					return;
 				}
 
-				return;
-			}
+				to_destroy.pjit = std::move(found->second.pjit);
+				to_destroy.symbol_resolvers = std::move(found->second.symbol_resolvers);
 
-			to_destroy.pjit = std::move(found->second.pjit);
-			to_destroy.symbol_resolvers = std::move(found->second.symbol_resolvers);
-
-			bucket.map.erase(found);
+				bucket.map.erase(found);
+			});
 		}
 
 		jit_module_manager& operator=(thread_state s) noexcept

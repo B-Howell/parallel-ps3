@@ -73,9 +73,8 @@ struct avc2_settings
 
 	SAVESTATE_INIT_POS(52);
 
-	shared_mutex mutex_cb;
-	vm::ptr<CellSysutilAvc2Callback> avc2_cb{};
-	vm::ptr<void> avc2_cb_arg{};
+	// The callback and its argument, one word
+	sysutil_cb_word avc2_cb;
 
 	u32 streaming_mode = CELL_SYSUTIL_AVC2_STREAMING_MODE_NORMAL;
 	u8 mic_out_stream_sharing = 0;
@@ -108,7 +107,10 @@ struct avc2_settings
 	{
 		[[maybe_unused]] const s32 version = GET_OR_USE_SERIALIZATION_VERSION(ar.is_writing(), cellSysutil);
 
-		ar(avc2_cb, avc2_cb_arg, streaming_mode, mic_out_stream_sharing, video_stream_sharing, total_video_bitrate);
+		vm::ptr<CellSysutilAvc2Callback> cb = vm::cast(avc2_cb.get().first);
+		vm::ptr<void> cb_arg = vm::cast(avc2_cb.get().second);
+		ar(cb, cb_arg, streaming_mode, mic_out_stream_sharing, video_stream_sharing, total_video_bitrate);
+		avc2_cb.set(cb.addr(), cb_arg.addr());
 
 		if (ar.is_writing() || version >= 2)
 		{
@@ -121,14 +123,9 @@ struct avc2_settings
 		// This is equivalent to the dispatcher code
 		sysutil_register_cb_with_id<avc2_cb_handle_t>([=, this](ppu_thread& cb_ppu) -> s32
 			{
-				vm::ptr<CellSysutilAvc2Callback> avc2_cb{};
-				vm::ptr<void> avc2_cb_arg{};
-
-				{
-					std::lock_guard lock(this->mutex_cb);
-					avc2_cb = this->avc2_cb;
-					avc2_cb_arg = this->avc2_cb_arg;
-				}
+				const auto [cb_addr, arg_addr] = this->avc2_cb.get();
+				const vm::ptr<CellSysutilAvc2Callback> avc2_cb = vm::cast(cb_addr);
+				const vm::ptr<void> avc2_cb_arg = vm::cast(arg_addr);
 
 				if (avc2_cb)
 				{
@@ -140,10 +137,7 @@ struct avc2_settings
 						error_code < 2)
 					{
 						sysutil_unregister_cb_with_id<avc2_cb_handle_t>();
-
-						std::lock_guard lock(this->mutex_cb);
-						this->avc2_cb = vm::null;
-						this->avc2_cb_arg = vm::null;
+						this->avc2_cb.clear();
 					}
 				}
 
@@ -469,16 +463,13 @@ error_code cellSysutilAvc2Unload()
 
 	auto& settings = g_fxo->get<avc2_settings>();
 
-	std::lock_guard lock(settings.mutex_cb);
-
-	if (!settings.avc2_cb)
+	if (!settings.avc2_cb.cb())
 	{
 		return CELL_AVC2_ERROR_NOT_INITIALIZED;
 	}
 
 	sysutil_unregister_cb_with_id<avc2_cb_handle_t>();
-	settings.avc2_cb = vm::null;
-	settings.avc2_cb_arg = vm::null;
+	settings.avc2_cb.clear();
 
 	return CELL_OK;
 }
@@ -874,15 +865,10 @@ error_code cellSysutilAvc2Load_shared(SceNpMatching2ContextId /*ctx_id*/, u32 /*
 			return CELL_AVC2_ERROR_INVALID_ARGUMENT;
 		}
 
-		std::lock_guard lock(settings.mutex_cb);
-
-		if (settings.avc2_cb)
+		if (!settings.avc2_cb.install(callback_func.addr(), user_data.addr()))
 		{
 			return CELL_AVC2_ERROR_ALREADY_INITIALIZED;
 		}
-
-		settings.avc2_cb = callback_func;
-		settings.avc2_cb_arg = user_data;
 		break;
 	}
 	case CELL_SYSUTIL_AVC2_VIDEO_CHAT:
@@ -1036,17 +1022,14 @@ error_code cellSysutilAvc2Unload2(u32 mediaType)
 	{
 	case CELL_SYSUTIL_AVC2_VOICE_CHAT:
 	{
-		std::lock_guard lock(settings.mutex_cb);
-
-		if (!settings.avc2_cb)
+		if (!settings.avc2_cb.cb())
 		{
 			return CELL_AVC2_ERROR_NOT_INITIALIZED;
 		}
 
 		// TODO: return error if the video chat is still loaded (probably CELL_AVC2_ERROR_INVALID_STATUS)
 		sysutil_unregister_cb_with_id<avc2_cb_handle_t>();
-		settings.avc2_cb = vm::null;
-		settings.avc2_cb_arg = vm::null;
+		settings.avc2_cb.clear();
 		break;
 	}
 	case CELL_SYSUTIL_AVC2_VIDEO_CHAT:

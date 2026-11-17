@@ -2,6 +2,42 @@
 
 #include "Emu/Memory/vm_ptr.h"
 
+// A game's callback and its argument as one word, read and changed whole
+// with no lock: the callback's address in the high half
+struct sysutil_cb_word
+{
+	atomic_t<u64> word{0};
+
+	u32 cb() const { return static_cast<u32>(word.load() >> 32); }
+
+	std::pair<u32, u32> get() const
+	{
+		const u64 v = word.load();
+		return {static_cast<u32>(v >> 32), static_cast<u32>(v)};
+	}
+
+	void set(u32 cb, u32 arg) { word.release((u64{cb} << 32) | arg); }
+
+	// Installed unless a callback is there
+	bool install(u32 cb, u32 arg)
+	{
+		u64 old = word.load();
+
+		while (!(old >> 32))
+		{
+			if (word.compare_exchange(old, (u64{cb} << 32) | arg))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	// Taken off; whether a callback was there
+	bool clear() { return (word.exchange(0) >> 32) != 0; }
+};
+
 using CellSysutilUserId = u32;
 
 enum

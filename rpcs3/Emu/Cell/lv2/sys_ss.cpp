@@ -10,8 +10,7 @@
 #include "util/sysinfo.hpp"
 
 #include <charconv>
-#include <shared_mutex>
-#include <unordered_set>
+#include <retro_atomic.h>
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -49,17 +48,19 @@ struct lv2_update_manager
 	// (eeprom_table.h)
 	eeprom_table eeprom{};
 
-	std::unordered_set<u32> malloc_set;
-	mutable std::shared_mutex malloc_mutex;
+	// What allocate gave out: one bit per 64 KiB page of main memory (the
+	// 256 MiB below 0x10000000, where vm::alloc puts them, 64 KiB aligned),
+	// set as given and taken off as given back - no lock, nothing allocated
+	static constexpr u32 malloc_words = (0x10000000 >> 16) / 32;
+	retro_atomic_int_t malloc_pages[malloc_words]{};
 
 	// return address
 	u32 allocate(u32 size)
 	{
-		std::unique_lock unique_lock(malloc_mutex);
-
 		if (const auto addr = vm::alloc(size, vm::main); addr)
 		{
-			malloc_set.emplace(addr);
+			ensure(addr < 0x10000000 && !(addr & 0xffff));
+			retro_atomic_fetch_or_int(&malloc_pages[(addr >> 16) / 32], static_cast<int>(1u << ((addr >> 16) % 32)));
 			return addr;
 		}
 
@@ -69,11 +70,16 @@ struct lv2_update_manager
 	// return size
 	u32 deallocate(u32 addr)
 	{
-		std::unique_lock unique_lock(malloc_mutex);
-
-		if (malloc_set.count(addr))
+		if (addr >= 0x10000000 || (addr & 0xffff))
 		{
-			malloc_set.erase(addr);
+			return 0;
+		}
+
+		const int bit = static_cast<int>(1u << ((addr >> 16) % 32));
+
+		// Taken off by one caller only
+		if (retro_atomic_fetch_and_int(&malloc_pages[(addr >> 16) / 32], ~bit) & bit)
+		{
 			return vm::dealloc(addr, vm::main);
 		}
 

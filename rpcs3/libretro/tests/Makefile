@@ -873,7 +873,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 183
+LOCK_GUARD_MAX := 172
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -1046,6 +1046,8 @@ check: all
 	@if grep -nE "text_mtx|shared_mutex|std::mutex|lock_guard|unique_lock" ../../Emu/Cell/Modules/cellOskDialog.cpp ../../Emu/Cell/Modules/cellOskDialog.h; then echo "cellOskDialog: a lock is back"; exit 1; else echo "cellOskDialog: no lock"; fi
 	@# sys_usbd's event waiters are the USB thread's, the PPU linkage tables and PRX names the HLE thread's, the PNG encoder's limits one word: no lock in any
 	@if grep -nE "mutex_sq|shared_mutex|std::mutex|lock_guard|unique_lock|reader_lock" ../../Emu/Cell/lv2/sys_usbd.cpp ../../Emu/Cell/PPUModule.cpp ../../Emu/Cell/Modules/cellPngEnc.cpp; then echo "sys_usbd / PPU linkage / cellPngEnc: a lock is back"; exit 1; else echo "sys_usbd / PPU linkage / cellPngEnc: no lock"; fi
+	@# The PPU JIT modules are the HLE thread's, the shared memory area is published once, sys_ss's allocations are bits, the AV chat callbacks one word each: no lock in any
+	@if grep -nE "shared_mutex|std::mutex|lock_guard|unique_lock[^a-z_]|reader_lock" ../../Emu/Cell/Modules/sys_mmapper_.cpp ../../Emu/Cell/lv2/sys_ss.cpp ../../Emu/Cell/Modules/cellSysutilAvc.cpp ../../Emu/Cell/Modules/cellSysutilAvc2.cpp | grep -v hle_locks_t || awk '/struct jit_module_manager/{f=1} f&&/mutex|lock_guard/{bad=1} f&&/^\t};/{exit} END{exit !bad}' ../../Emu/Cell/PPUThread.cpp; then echo "PPU JIT modules / shared memory area / sys_ss / AV chat: a lock is back"; exit 1; else echo "PPU JIT modules / shared memory area / sys_ss / AV chat: no lock"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

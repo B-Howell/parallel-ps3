@@ -43,9 +43,8 @@ struct avc_settings
 
 	SAVESTATE_INIT_POS(53);
 
-	shared_mutex mutex_cb;
-	vm::ptr<CellSysutilAvcCallback> avc_cb{};
-	vm::ptr<void> avc_cb_arg{};
+	// The callback and its argument, one word
+	sysutil_cb_word avc_cb;
 
 	atomic_t<u32> req_id_cnt = 0;
 
@@ -69,7 +68,10 @@ struct avc_settings
 	void save(utils::serial& ar)
 	{
 		[[maybe_unused]] const s32 version = GET_OR_USE_SERIALIZATION_VERSION(ar.is_writing(), cellSysutil);
-		ar(avc_cb, avc_cb_arg);
+		vm::ptr<CellSysutilAvcCallback> cb = vm::cast(avc_cb.get().first);
+		vm::ptr<void> cb_arg = vm::cast(avc_cb.get().second);
+		ar(cb, cb_arg);
+		avc_cb.set(cb.addr(), cb_arg.addr());
 	}
 
 	void register_cb_call(CellSysutilAvcRequestId req_id, CellSysutilAvcEvent event_id, CellSysUtilAvcEventParam param)
@@ -77,23 +79,16 @@ struct avc_settings
 		// This is equivalent to the dispatcher code
 		sysutil_register_cb_with_id<avc_cb_handle_t>([=, this](ppu_thread& cb_ppu) -> s32
 			{
-				vm::ptr<CellSysutilAvcCallback> avc_cb{};
-				vm::ptr<void> avc_cb_arg{};
-
-				{
-					std::lock_guard lock(this->mutex_cb);
-					avc_cb = this->avc_cb;
-					avc_cb_arg = this->avc_cb_arg;
-				}
+				const auto [cb_addr, arg_addr] = this->avc_cb.get();
+				const vm::ptr<CellSysutilAvcCallback> avc_cb = vm::cast(cb_addr);
+				const vm::ptr<void> avc_cb_arg = vm::cast(arg_addr);
 
 				if (avc_cb)
 				{
 					// TODO: lots of checks before calling the cb
 					if (event_id == CELL_AVC_EVENT_UNLOAD_SUCCEEDED)
 					{
-						std::lock_guard lock(this->mutex_cb);
-						this->avc_cb = {};
-						this->avc_cb_arg = {};
+						this->avc_cb.clear();
 					}
 
 					avc_cb(cb_ppu, req_id, event_id, param, avc_cb_arg);
@@ -269,13 +264,8 @@ error_code cellSysutilAvcLoadAsync(vm::ptr<CellSysutilAvcCallback> func, vm::ptr
 	auto& settings = g_fxo->get<avc_settings>();
 
 	{
-		std::lock_guard lock(settings.mutex_cb);
-
-		if (settings.avc_cb)
+		if (!settings.avc_cb.install(func.addr(), userdata.addr()))
 			return CELL_AVC_ERROR_ALREADY_INITIALIZED;
-
-		settings.avc_cb = func;
-		settings.avc_cb_arg = userdata;
 	}
 
 	const CellSysutilAvcRequestId req_id = settings.req_id_cnt.fetch_add(1);

@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- Four more places take no lock:
+  - **The PPU JIT's modules:** 256 maps, each under a mutex, now belong to the HLE thread, and a module is added and removed there (`hle_call`). The entries stay in place, so a caller keeps its own entry. A removed module is still destroyed on the caller's thread.
+  - **The shared memory area (`sys_mmapper_get_shared_memory_area`):** it was made once, under a mutex. Now the first caller to finish publishes it with a compare-and-swap. A caller that loses gives its own area back and uses the winner's.
+  - **sys_ss's allocations:** these were an `unordered_set` under a mutex, which allocated as it grew. Now they are one bit per 64 KiB page of main memory, set when given out and cleared when given back. Only one caller can clear a bit, and nothing is allocated.
+  - **The AV chat callbacks (cellSysutilAvc, cellSysutilAvc2):** each callback and its argument were two fields under a mutex. They are now one 64-bit word, set if none is there by compare-and-swap. Save states keep the format they had.
+  - `std::lock_guard` count 172. A check fails if a lock comes back in any of these. No new test: each is one word or the HLE thread's hand-over, which `test_hle_service` covers, and only a game drives them. Not yet run on a game.
 - Three more places take no lock:
   - **sys_usbd's event waiters:** the events already belonged to the USB thread, but the threads waiting for one were a list under a mutex. Now that list belongs to the USB thread too, and taking an event or joining the waiters is done there (`on_thread`).
     - A waiter given its event before it has gone to sleep has that sleep cancelled, as `sys_event_queue_receive` does.
