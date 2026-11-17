@@ -31,6 +31,7 @@
 #include <stdint.h>
 
 #include <retro_atomic.h>
+#include <retro_inline.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -51,7 +52,7 @@ typedef struct lv2_sched_buf
    retro_atomic_int_t head;      /* count, pending */
    retro_atomic_int_t others;    /* threads but PPU ones still to call their first sleep */
    retro_atomic_int_t list[LV2_SCHED_LIST_WORDS];
-   retro_atomic_int_t thread[LV2_SCHED_THREADS];
+   retro_atomic_64_t  thread[LV2_SCHED_THREADS];
 } lv2_sched_buf_t;
 
 typedef struct lv2_sched
@@ -61,6 +62,8 @@ typedef struct lv2_sched
    retro_atomic_64_t  free[(LV2_SCHED_BUFFERS + 63u) / 64u];
    /* Each thread's edges put to it: count << 1 | 1 while one is being put */
    retro_atomic_int_t applied[LV2_SCHED_THREADS];
+   /* A thread waiting for its edges to be put (lv2_sched_settle) */
+   retro_atomic_int_t settling[LV2_SCHED_THREADS];
    unsigned           run_slots;
    lv2_sched_buf_t    buf[LV2_SCHED_BUFFERS];
 } lv2_sched_t;
@@ -72,15 +75,28 @@ typedef struct lv2_sched_view
    unsigned      pending; /* told to stop, not yet stopped */
    unsigned      others;
    unsigned char list[LV2_SCHED_THREADS];
-   uint32_t      thread[LV2_SCHED_THREADS];
+   uint64_t      thread[LV2_SCHED_THREADS];
 } lv2_sched_view_t;
 
 /* A thread's word in a view */
-#define LV2_SCHED_PRIO(w)     ((int)((w) & 0xfffu))
+static INLINE int lv2_sched_word_prio(uint64_t w)
+{
+   const unsigned p = w & 0xfffu;
+   return p;
+}
+
+static INLINE unsigned lv2_sched_word_edges(uint64_t w)
+{
+   const unsigned e = (w >> 16) & 0xffffu;
+   return e;
+}
+
+#define LV2_SCHED_PRIO(w)     lv2_sched_word_prio(w)
 #define LV2_SCHED_QUEUED(w)   (((w) >> 12) & 1u)  /* runnable */
 #define LV2_SCHED_TOLD(w)     (((w) >> 13) & 1u)  /* told to stop, not yet stopped */
 #define LV2_SCHED_FIRST(w)    (((w) >> 14) & 1u)  /* still to call its first sleep */
-#define LV2_SCHED_EDGES(w)    ((unsigned)((w) >> 16))
+#define LV2_SCHED_CANCEL(w)   (((w) >> 15) & 1u)  /* woken in a wait that may be cut short */
+#define LV2_SCHED_EDGES(w)    lv2_sched_word_edges(w)
 #define LV2_SCHED_LET_RUN(w)  (LV2_SCHED_EDGES(w) & 1u)
 
 void lv2_sched_init(lv2_sched_t *s, unsigned run_slots);
@@ -101,6 +117,10 @@ typedef void (*lv2_sched_edge_t)(void *ctx, unsigned slot, int edge);
 #define LV2_SCHED_YIELD   -1
 #define LV2_SCHED_ENQUEUE -2
 
+/* A thread's open wait that a wake may cut short (its window, counted as
+ * it opens one), or -1 */
+typedef int64_t (*lv2_sched_cancel_t)(void *ctx, unsigned slot);
+
 /* A change's ask and what came of it */
 typedef struct lv2_sched_op
 {
@@ -108,6 +128,11 @@ typedef struct lv2_sched_op
    int sleeper;
    /* sleep: the sleeper was signaled already: it is not to sleep */
    int signaled;
+   /* sleep: the sleeper's open wait that a wake may cut short, or -1 */
+   int64_t sleeper_window;
+   /* awake: a found thread's open wait, asked of it (NULL: none) */
+   lv2_sched_cancel_t cancel_of;
+   void *cancel_ctx;
 
    /* awake: the slot, or -1 for the threads in @to_awake */
    int target;
@@ -121,6 +146,8 @@ typedef struct lv2_sched_op
    int caller;
    /* Whether threads may be let run yet (the scheduler made ready) */
    int ready;
+   /* The run slots, or 0 for those given at init */
+   unsigned run_slots;
    /* The caller saw its stop (its check of its state): told to stop, it
     * is taken as stopping. Else only once its stop is put to it */
    int stopped;
@@ -133,6 +160,7 @@ typedef struct lv2_sched_op
    int switched;            /* a yield went past the run slots */
    int prio_order;          /* a priority set: 1 to order it last, -1 first, 0 as it was */
    int last_first_sleep;    /* the last thread to call its first sleep did */
+   int cancelled;           /* sleep: woken in its open wait before it slept */
    uint32_t emplaced[4];    /* put in the run queue: their timeouts to drop */
    uint32_t found[4];       /* to be put in it, and in it already */
 } lv2_sched_op_t;
@@ -164,9 +192,20 @@ unsigned lv2_sched_first_sleeps(lv2_sched_t *s);
 /* @slot's place in the run queue, or -1 */
 int lv2_sched_place(lv2_sched_t *s, unsigned slot);
 
+/* @slot's word in the snapshot in place */
+uint64_t lv2_sched_thread(lv2_sched_t *s, unsigned slot);
+
 /* Runnable threads, and the slot @index places in */
 unsigned lv2_sched_count(lv2_sched_t *s);
 int lv2_sched_at(lv2_sched_t *s, unsigned index);
+
+/* A new thread in @slot, with @prio: out of the queue, told nothing */
+void lv2_sched_register(lv2_sched_t *s, unsigned slot, int prio);
+
+/* Whether every edge of @slot's is put; and waited for (a thread leaving
+ * for good, so that none is put to it after) */
+int lv2_sched_settled(lv2_sched_t *s, unsigned slot);
+void lv2_sched_settle(lv2_sched_t *s, unsigned slot);
 
 /* Any edge of @slot's not yet put, put (a change that saw another putting
  * one leaves the rest to it; this is for tests and dumps) */

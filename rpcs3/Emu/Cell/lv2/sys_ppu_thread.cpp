@@ -132,8 +132,10 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 		// Get writers mask (wait for all current writers to quit)
 		writer_mask = vm::g_range_lock_bits[1];
 
-		// Unqueue
+		// Unqueue, and every edge put to it before it goes: none comes to it
+		// after (lv2_sched_settle waits for one being put, not for a turn)
 		lv2_obj::sleep(ppu);
+		lv2_obj::sched_settle(ppu);
 		notify.cleanup();
 
 		// Remove suspend state (TODO)

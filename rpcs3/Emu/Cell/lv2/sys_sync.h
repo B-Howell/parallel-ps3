@@ -5,7 +5,6 @@
 #include "Utilities/mutex.h"
 
 #include "Emu/CPU/CPUThread.h"
-#include "Emu/CPU/turn_calls.h"
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/IdManager.h"
 #include "Emu/IPC.h"
@@ -252,10 +251,11 @@ public:
 	}
 
 private:
-	// Remove the current thread from the scheduling queue, register timeout
+	// Remove the current thread from the scheduling queue, register timeout;
+	// the threads to wake with it, and the waking: one change (lv2_sched.c)
 	static bool sleep_unlocked(cpu_thread&, u64 timeout, u64 current_time);
 
-	// Schedule the thread
+	// Schedule the thread, and the waking: one change
 	static bool awake_unlocked(cpu_thread*, s32 prio = enqueue_cmd);
 
 public:
@@ -288,6 +288,12 @@ public:
 	{
 		g_to_awake.emplace_back(thread);
 	}
+
+	// A PPU thread new in its slot (its constructors); one leaving for good,
+	// once every edge is put to it (its exit); whether it is told to stop
+	static void sched_register(ppu_thread& ppu);
+	static void sched_settle(ppu_thread& ppu);
+	static bool sched_told(const ppu_thread& ppu);
 
 	// Serialization related
 	static void set_future_sleep(cpu_thread* cpu);
@@ -507,20 +513,6 @@ public:
 		}
 	};
 
-	// The scheduler's queues change in turn (turn_calls.h): no lock. A turn
-	// may run on another thread than the one whose scheduling it does, so
-	// what the scheduling asks of that thread - which it is, its threads to
-	// wake, its notification slots - is handed to the turn (g_caller) and
-	// read there in place of the running thread's own
-	static turn_calls_cpp g_turns;
-
-	struct sched_caller
-	{
-		cpu_thread* current;
-		std::vector<class cpu_thread*>* to_awake;
-		std::add_pointer_t<const void>* to_notify; // g_to_notify's slots
-	};
-
 	// Proirity tags
 	static retro_atomic_64_t g_priority_order_tag;
 
@@ -528,23 +520,9 @@ private:
 	// Pending list of threads to run
 	static thread_local std::vector<class cpu_thread*> g_to_awake;
 
-	// Scheduler queue for active PPU threads
-	static class ppu_thread* g_ppu;
-
-	// Waiting for the response from
-	static u32 g_pending;
-
 	// Pending list of threads to notify (cpu_thread::state ptr)
 	static thread_local std::add_pointer_t<const void> g_to_notify[4];
 
 	// If a notify_all_t object exists locally, postpone notifications to the destructor of it (not recursive, notifies on the first destructor for safety)
 	static thread_local bool g_postpone_notify_barrier;
-
-	// Whose scheduling the turn is doing: set and read in the turn alone
-	static const sched_caller* g_caller;
-
-	// This thread, as the turn is to see it
-	static sched_caller this_caller() noexcept;
-
-	static void schedule_all(u64 current_time = 0);
 };

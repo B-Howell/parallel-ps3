@@ -52,10 +52,10 @@
 #include "sys_uart.h"
 #include "sys_crypto_engine.h"
 #include "sys_bluetooth.h"
+#include "lv2_sched.h"
 
 #include <algorithm>
 #include <optional>
-#include <queues/retro_deque.h>
 #include <thread>
 #include "util/tsc.hpp"
 #include "util/sysinfo.hpp"
@@ -1283,69 +1283,403 @@ std::string ppu_get_syscall_name(u64 code)
 	return fmt::format("syscall_%u", code);
 }
 
-DECLARE(lv2_obj::g_turns);
-DECLARE(lv2_obj::g_caller){};
-DECLARE(lv2_obj::g_ppu){};
-DECLARE(lv2_obj::g_pending){};
 DECLARE(lv2_obj::g_priority_order_tag){};
 
 thread_local DECLARE(lv2_obj::g_to_notify){};
 thread_local DECLARE(lv2_obj::g_postpone_notify_barrier){};
 thread_local DECLARE(lv2_obj::g_to_awake);
 
-// A thread is in each of the two lists below once at most, so neither is
-// ever longer than there can be threads: each is a retro_deque that holds
-// that many, set aside when the core is loaded. Nothing is allocated when a
-// thread goes to sleep with a timeout or wakes from one. They were
-// std::deque, which takes a block from the heap and gives one back as its
-// contents move along - every few dozen sleeps, all through play, under the
-// scheduler's lock.
-static constexpr usz g_max_cpu_threads = ppu_thread::id_count + spu_thread::id_count;
+// The scheduler takes no turn. What it knows - the runnable PPU threads in
+// order, their priorities, the ones told to give up their hardware thread
+// and not yet stopped, the threads still to call their first sleep - is one
+// snapshot (lv2_sched.c), each sleep, wake, yield and priority set one
+// change to it put in place with a compare-and-swap. A change decides who
+// runs as the turn did; it lets a thread in (cpu_flag::signal, suspend
+// gone) or tells it to stop (cpu_flag::suspend) by an edge, put to the
+// thread once and in order by whichever change gets to it first.
+//
+// A PPU thread's slot is its ID's index. Its timeout is a deadline in its
+// slot; the earliest is kept beside them, so a change looks at the clock
+// only when one may have passed.
+static_assert(ppu_thread::id_count <= LV2_SCHED_THREADS, "a PPU thread's slot in the scheduler is its ID's index");
 
-struct lv2_deadline
-{
-	u64 first;          // wait until
-	cpu_thread* second; // who
-};
+static lv2_sched_t g_sched;
+static const bool g_sched_made = (lv2_sched_init(&g_sched, 1), true);
 
-RETRO_DEQUE_DEFINE(lv2_deadlines, lv2_deadline);
-RETRO_DEQUE_DEFINE(lv2_threads, cpu_thread*);
+// The thread in each slot, for the edges put to it
+static retro_atomic_ptr_t g_slot_ppu[LV2_SCHED_THREADS];
 
-// Scheduler queue for timeouts (wait until -> thread), the earliest first
-static lv2_deadlines_t g_waiting;
+// Each slot's timeout: lo the guest time it runs out, 0 for none; hi a count
+// of the timeouts set, so a stale one is never taken for a newer
+static retro_atomic_128_t g_deadline[LV2_SCHED_THREADS];
+static retro_atomic_int_t g_deadlines_set[LV2_SCHED_THREADS];
 
-// Threads which must call lv2_obj::sleep before the scheduler starts
-static lv2_threads_t g_to_sleep;
-
-// How many threads g_to_sleep holds, kept beside it for is_scheduler_ready,
-// which asks with no lock
-static retro_atomic_int_t g_to_sleep_count;
-
-static const bool g_lists_made = lv2_deadlines_init(&g_waiting, g_max_cpu_threads) && lv2_threads_init(&g_to_sleep, g_max_cpu_threads);
-
-// Where @cpu is in g_to_sleep, or its count
-static usz to_sleep_index(const cpu_thread* cpu)
-{
-	const usz count = lv2_threads_count(&g_to_sleep);
-
-	for (usz i = 0; i < count; i++)
-	{
-		if (*lv2_threads_at(&g_to_sleep, i) == cpu)
-			return i;
-	}
-
-	return count;
-}
+// lo the earliest deadline set, 0 for none (it may be one gone already: a
+// look finds the next); hi a count of its changes
+static retro_atomic_128_t g_next_deadline;
 
 static retro_atomic_int_t g_scheduler_ready{};
 static retro_atomic_64_t s_yield_frequency{0};
 static retro_atomic_64_t s_max_allowed_yield_tsc{0};
-static u64 s_last_yield_tsc = 0;
+static retro_atomic_64_t s_last_yield_tsc{0};
 retro_atomic_int_t g_lv2_preempts_taken{};
+
+// A priority in the snapshot (12 bits, unsigned): lv2's are -512 and up
+static constexpr s32 g_prio_bias = 512;
 
 namespace cpu_counter
 {
 	void remove(cpu_thread*) noexcept;
+}
+
+static u32 sched_slot(u32 id)
+{
+	using traits = id_manager::id_traits<named_thread<ppu_thread>>;
+	return id_manager::get_index(id, traits::base, traits::step, traits::count, traits::invl_range);
+}
+
+static ppu_thread* slot_ppu(unsigned slot)
+{
+	return static_cast<ppu_thread*>(retro_atomic_load_acquire_ptr(&g_slot_ppu[slot]));
+}
+
+// @ppu's slot, with the thread in it known for the edges put to it
+static int sched_slot_of(ppu_thread* ppu)
+{
+	const u32 slot = sched_slot(ppu->id);
+
+	if (slot >= LV2_SCHED_THREADS)
+	{
+		return -1;
+	}
+
+	if (slot_ppu(slot) != ppu)
+	{
+		retro_atomic_store_release_ptr(&g_slot_ppu[slot], ppu);
+	}
+
+	return static_cast<int>(slot);
+}
+
+static unsigned run_slots()
+{
+	return g_cfg.core.ppu_threads + 0u;
+}
+
+// A found thread's wait that a wake may cut short
+static int64_t sched_cancel_of(void*, unsigned slot)
+{
+	const auto ppu = slot_ppu(slot);
+	return ppu ? ppu->cancel_sleep.window() : -1;
+}
+
+// What a change's edges need of the thread making it: its notification slots
+struct sched_notes
+{
+	std::add_pointer_t<const void>* to_notify;
+	usz count;
+};
+
+static void sched_notify(sched_notes* notes, ppu_thread* target)
+{
+	const auto end = notes->to_notify + notes->count;
+	const auto it = std::find(notes->to_notify, end, std::add_pointer_t<const void>{});
+
+	if (it == end)
+	{
+		// Out of notification slots, notify locally (resizable container is not worth it)
+		target->state.notify_one();
+		return;
+	}
+
+	*it = &target->state;
+
+	if (it + 1 < end)
+	{
+		// Null-terminate the list if it ends before last slot
+		it[1] = nullptr;
+	}
+}
+
+// An edge, put to its thread: let in (schedule_all's wake), or told to stop
+// (awake_unlocked's suspend, or the thread's own sleep, which set it already)
+static void sched_edge(void* ctx, unsigned slot, int edge)
+{
+	ppu_thread* const target = slot_ppu(slot);
+
+	if (!target)
+	{
+		return;
+	}
+
+	if (edge == LV2_SCHED_STOP)
+	{
+		ppu_log.trace("suspend(): %s", target->id);
+
+		if (!target->state.test_and_set(cpu_flag::suspend) && is_paused(target->state - cpu_flag::suspend))
+		{
+			target->state.notify_one();
+		}
+
+		return;
+	}
+
+	ppu_log.trace("schedule(): %s", target->id);
+
+	// Remove yield if it was sleeping until now
+	const bs_t<cpu_flag> remove_yield = target->start_time == 0 ? +cpu_flag::suspend : (cpu_flag::yield + cpu_flag::preempt);
+
+	target->start_time = 0;
+
+	if ((target->state.fetch_op(AOFN(x += cpu_flag::signal, x -= cpu_flag::suspend, x-= remove_yield, void())) & (cpu_flag::wait + cpu_flag::signal)) != cpu_flag::wait)
+	{
+		return;
+	}
+
+	sched_notify(static_cast<sched_notes*>(ctx), target);
+}
+
+// A slot's timeout dropped, if it is the one seen (@lo, @hi)
+static void drop_deadline(unsigned slot, retro_u128_t seen)
+{
+	retro_u128_t none;
+	none.lo = 0;
+	none.hi = seen.hi;
+	retro_atomic_cas_128(&g_deadline[slot], seen, none);
+}
+
+// A slot's timeout, dropped when its thread is in the run queue: woken
+static void drop_deadline_if_queued(unsigned slot)
+{
+	const retro_u128_t d = retro_atomic_load_acquire_128(&g_deadline[slot]);
+
+	if (d.lo && LV2_SCHED_QUEUED(lv2_sched_thread(&g_sched, slot)))
+	{
+		drop_deadline(slot, d);
+	}
+}
+
+static void set_deadline(unsigned slot, u64 wait_until)
+{
+	retro_u128_t d;
+	d.lo = wait_until;
+	d.hi = static_cast<u64>(retro_atomic_fetch_add_int(&g_deadlines_set[slot], 1)) + 1;
+	retro_atomic_store_release_128(&g_deadline[slot], d);
+
+	// The earliest kept, for a change to know when to look
+	for (;;)
+	{
+		const retro_u128_t n = retro_atomic_load_acquire_128(&g_next_deadline);
+		retro_u128_t next;
+
+		if (n.lo && n.lo <= wait_until)
+		{
+			break;
+		}
+
+		next.lo = wait_until;
+		next.hi = n.hi + 1;
+
+		if (retro_atomic_cas_128(&g_next_deadline, n, next))
+		{
+			break;
+		}
+	}
+
+	// Woken since it slept: the timeout was dropped before it was set, or is now
+	drop_deadline_if_queued(slot);
+}
+
+// schedule_all's tail: the timeouts run out, and the preemption the RSX asks
+// for. @current_time 0: read when a timeout may have run out
+static void sched_tail(sched_notes& notes, u64 current_time)
+{
+	cpu_thread* const current = cpu_thread::get_current();
+
+	// Check registered timeouts
+	for (;;)
+	{
+		const retro_u128_t n = retro_atomic_load_acquire_128(&g_next_deadline);
+
+		if (!n.lo)
+		{
+			break;
+		}
+
+		if (!current_time)
+		{
+			current_time = get_guest_system_time();
+		}
+
+		if (n.lo > current_time)
+		{
+			break;
+		}
+
+		u64 next = 0;
+
+		for (unsigned slot = 0; slot < LV2_SCHED_THREADS; slot++)
+		{
+			const retro_u128_t d = retro_atomic_load_acquire_128(&g_deadline[slot]);
+
+			if (!d.lo)
+			{
+				continue;
+			}
+
+			if (d.lo > current_time)
+			{
+				next = next && next < d.lo ? next : d.lo;
+				continue;
+			}
+
+			retro_u128_t none;
+			none.lo = 0;
+			none.hi = d.hi;
+
+			if (!retro_atomic_cas_128(&g_deadline[slot], d, none))
+			{
+				continue;
+			}
+
+			const auto target = slot_ppu(slot);
+
+			// Woken first: the wake dropped it (as it does once it sees it)
+			if (!target || LV2_SCHED_QUEUED(lv2_sched_thread(&g_sched, slot)) || target == current)
+			{
+				continue;
+			}
+
+			// Change cpu_thread::state for the lightweight notification to work
+			ensure(!target->state.test_and_set(cpu_flag::notify));
+
+			// Otherwise notify it to wake itself
+			sched_notify(&notes, target);
+		}
+
+		retro_u128_t later;
+		later.lo = next;
+		later.hi = n.hi + 1;
+
+		// Another set one meanwhile: looked at again
+		if (retro_atomic_cas_128(&g_next_deadline, n, later))
+		{
+			break;
+		}
+	}
+
+	if (const u64 freq = retro_atomic_load_acquire_64(&s_yield_frequency))
+	{
+		const u64 tsc = utils::get_tsc();
+		const u64 last_tsc = retro_atomic_load_acquire_64(&s_last_yield_tsc);
+
+		if (tsc >= last_tsc && tsc <= static_cast<u64>(retro_atomic_load_acquire_64(&s_max_allowed_yield_tsc)) && tsc - last_tsc >= freq)
+		{
+			lv2_sched_view_t v;
+			lv2_sched_read(&g_sched, &v);
+
+			cpu_thread* cpu = nullptr;
+
+			for (usz x = 0;; x++)
+			{
+				if (x >= v.count || x >= run_slots())
+				{
+					const auto first = v.count ? slot_ppu(v.list[0]) : nullptr;
+
+					if (first && cpu_flag::preempt - first->state)
+					{
+						// Don't be picky, pick up any running PPU thread even it has a wait flag
+						cpu = first;
+					}
+					// TODO: If this case is common enough it may be valuable to iterate over all CPU threads to find a perfect candidate (one without a wait or suspend flag)
+					else if (current && cpu_flag::suspend - current->state)
+					{
+						// May be an SPU or RSX thread, use them as a last resort
+						cpu = current;
+					}
+
+					break;
+				}
+
+				if (const auto target = slot_ppu(v.list[x]); target && target->state.none_of(cpu_flag::preempt + cpu_flag::wait))
+				{
+					cpu = target;
+					break;
+				}
+			}
+
+			// The period claimed, then the thread told: one preemption a period
+			if (cpu && cpu_flag::preempt - cpu->state && retro_atomic_cas_64(&s_last_yield_tsc, last_tsc, tsc))
+			{
+				if (!cpu->state.test_and_set(cpu_flag::preempt))
+				{
+					retro_atomic_store_release_int(&g_lv2_preempts_taken, retro_atomic_load_acquire_int(&g_lv2_preempts_taken) + 1); // Has a minor race but performance is more important
+					rsx::set_rsx_yield_flag();
+				}
+				else
+				{
+					retro_atomic_cas_64(&s_last_yield_tsc, tsc, last_tsc);
+				}
+			}
+		}
+	}
+}
+
+// A change's threads to wake (g_to_awake) as slots
+static unsigned to_awake_slots(const std::vector<cpu_thread*>& list, unsigned char (&out)[256])
+{
+	unsigned n = 0;
+
+	for (const auto cpu : list)
+	{
+		if (const auto ppu = cpu ? cpu->try_get<ppu_thread>() : nullptr)
+		{
+			if (const int slot = sched_slot_of(ppu); slot >= 0)
+			{
+				ensure(n < std::size(out));
+				out[n++] = static_cast<unsigned char>(slot);
+			}
+		}
+	}
+
+	return n;
+}
+
+// The threads a change put in the run queue: their timeouts dropped
+static void drop_emplaced_deadlines(const lv2_sched_op_t& op)
+{
+	for (unsigned slot = 0; slot < LV2_SCHED_THREADS; slot++)
+	{
+		if ((op.emplaced[slot / 32] >> (slot % 32)) & 1u)
+		{
+			drop_deadline_if_queued(slot);
+		}
+	}
+}
+
+static void on_to_sleep_update(bool last)
+{
+	if (const unsigned left = lv2_sched_first_sleeps(&g_sched))
+	{
+		ppu_log.warning("Threads (%d)", left);
+		return;
+	}
+
+	if (!last)
+	{
+		return;
+	}
+
+	ppu_log.warning("Final Thread");
+
+	// All threads are ready, wake threads
+	Emu.CallFromMainThread([]
+	{
+		if (Emu.IsStarting())
+		{
+			Emu.FinalizeRunRequest();
+		}
+	});
 }
 
 std::string lv2_obj::name64(u64 name_u64)
@@ -1358,11 +1692,6 @@ std::string lv2_obj::name64(u64 name_u64)
 	str.erase(std::remove_if(str.begin(), str.end(), [](uchar c){ return !utils::isprint(c); }), str.end());
 
 	return str;
-}
-
-lv2_obj::sched_caller lv2_obj::this_caller() noexcept
-{
-	return {cpu_thread::get_current(), &g_to_awake, g_to_notify};
 }
 
 bool lv2_obj::sleep(cpu_thread& cpu, const u64 timeout)
@@ -1400,26 +1729,8 @@ bool lv2_obj::sleep(cpu_thread& cpu, const u64 timeout)
 		}
 	}
 
-	bool result = false;
 	const u64 current_time = get_guest_system_time();
-	{
-		const sched_caller me = this_caller();
-
-		turn_call(&g_turns, [&]
-		{
-			g_caller = &me;
-			result = sleep_unlocked(cpu, timeout, current_time);
-
-			if (!me.to_awake->empty())
-			{
-				// Schedule pending entries
-				awake_unlocked({});
-			}
-
-			schedule_all(current_time);
-			g_caller = nullptr;
-		});
-	}
+	const bool result = sleep_unlocked(cpu, timeout, current_time);
 
 	if (!g_postpone_notify_barrier)
 	{
@@ -1457,18 +1768,7 @@ bool lv2_obj::awake(cpu_thread* thread, s32 prio)
 		}
 	}
 
-	bool result = false;
-	{
-		const sched_caller me = this_caller();
-
-		turn_call(&g_turns, [&]
-		{
-			g_caller = &me;
-			result = awake_unlocked(thread, prio);
-			schedule_all();
-			g_caller = nullptr;
-		});
-	}
+	const bool result = awake_unlocked(thread, prio);
 
 	if (result)
 	{
@@ -1492,9 +1792,20 @@ bool lv2_obj::yield(cpu_thread& thread)
 	{
 		ppu->raddr = 0; // Clear reservation
 
-		if (!atomic_storage<ppu_thread*>::load(ppu->next_ppu))
+		lv2_sched_view_t v;
+		lv2_sched_read(&g_sched, &v);
+
+		const u32 slot = sched_slot(ppu->id);
+		usz at = 0;
+
+		while (at < v.count && v.list[at] != slot)
 		{
-			// Nothing to do
+			at++;
+		}
+
+		if (at + 1 >= v.count)
+		{
+			// Nothing to do: not queued, or last
 			return false;
 		}
 	}
@@ -1502,63 +1813,26 @@ bool lv2_obj::yield(cpu_thread& thread)
 	return awake(&thread, yield_cmd);
 }
 
+// The sleep, the threads to wake with it, and the waking - one change
 bool lv2_obj::sleep_unlocked(cpu_thread& thread, u64 timeout, u64 current_time)
 {
 	const u64 start_time = current_time;
-
-	auto on_to_sleep_update = [&]()
-	{
-		if (lv2_threads_count(&g_to_sleep) > 5u)
-		{
-			ppu_log.warning("Threads (%d)", lv2_threads_count(&g_to_sleep));
-		}
-		else if (!lv2_threads_empty(&g_to_sleep))
-		{
-			// In case there is a deadlock (PPU threads not sleeping)
-			// Print-out their IDs for further inspection (focus at 5 at max for now to avoid log spam)
-			std::string out = fmt::format("Threads (%d):", lv2_threads_count(&g_to_sleep));
-			for (usz i = 0; i < lv2_threads_count(&g_to_sleep); i++)
-			{
-				fmt::append(out, " 0x%x,", (*lv2_threads_at(&g_to_sleep, i))->id);
-			}
-
-			out.resize(out.size() - 1);
-
-			ppu_log.warning("%s", out);
-		}
-		else
-		{
-			ppu_log.warning("Final Thread");
-
-			// All threads are ready, wake threads
-			Emu.CallFromMainThread([]
-			{
-				if (Emu.IsStarting())
-				{
-					// It uses the scheduler's turn, run it on main thread
-					Emu.FinalizeRunRequest();
-				}
-			});
-		}
-	};
-
-	bool return_val = true;
+	sched_notes notes{g_to_notify, std::size(g_to_notify)};
+	unsigned char wake[256];
 
 	if (auto ppu = thread.try_get<ppu_thread>())
 	{
-		ppu_log.trace("sleep() - waiting (%zu)", g_pending);
+		const int slot = sched_slot_of(ppu);
+		ensure(slot >= 0);
 
-		if (ppu->ack_suspend)
-		{
-			ppu->ack_suspend = false;
-			g_pending--;
-		}
+		ppu_log.trace("sleep() - waiting");
 
-		if (std::exchange(ppu->cancel_sleep, 0) == 2)
-		{
-			// Signal that the underlying LV2 operation has been cancelled and replaced with a short yield
-			return_val = false;
-		}
+		lv2_sched_op_t op;
+		lv2_sched_op_init(&op, slot, retro_atomic_load_acquire_int(&g_scheduler_ready));
+		op.run_slots      = run_slots();
+		op.sleeper        = slot;
+		op.sleeper_window = ppu->cancel_sleep.window();
+		op.cancel_of      = sched_cancel_of;
 
 		const auto [_, ok] = ppu->state.fetch_op([&](bs_t<cpu_flag>& val)
 		{
@@ -1574,279 +1848,167 @@ bool lv2_obj::sleep_unlocked(cpu_thread& thread, u64 timeout, u64 current_time)
 			return false;
 		});
 
-		if (!ok)
+		op.signaled = !ok;
+
+		if (!g_to_awake.empty())
+		{
+			op.to_awake       = wake;
+			op.to_awake_count = to_awake_slots(g_to_awake, wake);
+		}
+
+		lv2_sched_change(&g_sched, &op, sched_edge, &notes);
+
+		// Its wait closes with the sleep
+		ppu->cancel_sleep = 0;
+
+		drop_emplaced_deadlines(op);
+
+		bool result = !op.cancelled;
+
+		switch (op.result)
+		{
+		case LV2_SCHED_NOT_SLEPT:
 		{
 			ppu_log.fatal("sleep() failed (signaled) (%s)", ppu->current_function);
-			return false;
+			result = false;
+			break;
 		}
-
-		// Find and remove the thread
-		if (!unqueue(g_ppu, ppu, &ppu_thread::next_ppu))
+		case LV2_SCHED_FIRST_SLEEP:
 		{
-			if (const usz at = to_sleep_index(ppu); at != lv2_threads_count(&g_to_sleep))
-			{
-				lv2_threads_erase(&g_to_sleep, at);
-				retro_atomic_store_release_int(&g_to_sleep_count, static_cast<int>(lv2_threads_count(&g_to_sleep)));
-				ppu->start_time = start_time;
-				on_to_sleep_update();
-				return true;
-			}
-
+			ppu->start_time = start_time;
+			on_to_sleep_update(op.last_first_sleep);
+			result = true;
+			break;
+		}
+		case LV2_SCHED_NOT_QUEUED:
+		{
 			// Already sleeping
 			ppu_log.trace("sleep(): called on already sleeping thread.");
-			return false;
+			result = false;
+			break;
 		}
-
-		ppu->raddr = 0; // Clear reservation
-		ppu->start_time = start_time;
-		ppu->end_time = timeout ? start_time + std::min<u64>(timeout, ~start_time) : u64{umax};
-	}
-	else if (auto spu = thread.try_get<spu_thread>())
-	{
-		if (const usz at = to_sleep_index(spu); at != lv2_threads_count(&g_to_sleep))
+		default:
 		{
-			lv2_threads_erase(&g_to_sleep, at);
-			retro_atomic_store_release_int(&g_to_sleep_count, static_cast<int>(lv2_threads_count(&g_to_sleep)));
-			on_to_sleep_update();
-			return true;
+			ppu->raddr = 0; // Clear reservation
+			ppu->start_time = start_time;
+			ppu->end_time = timeout ? start_time + std::min<u64>(timeout, ~start_time) : u64{umax};
+
+			if (timeout)
+			{
+				set_deadline(static_cast<unsigned>(slot), start_time + std::min<u64>(timeout, ~start_time));
+			}
+
+			break;
+		}
 		}
 
-		return false;
+		sched_tail(notes, current_time);
+		return result;
 	}
 
-	if (timeout)
+	bool result = false;
+
+	if (auto spu = thread.try_get<spu_thread>())
 	{
-		const u64 wait_until = start_time + std::min<u64>(timeout, ~start_time);
-
-		// Register timeout if necessary: before the first later deadline,
-		// after any that is the same
-		const usz waiting = lv2_deadlines_count(&g_waiting);
-		usz at = 0;
-
-		while (at < waiting && lv2_deadlines_at(&g_waiting, at)->first <= wait_until)
+		// Its first sleep, before the scheduler starts
+		if (retro_atomic_exchange_int(&spu->lv2_first_sleep, 0))
 		{
-			at++;
+			on_to_sleep_update(lv2_sched_other_slept(&g_sched));
+			result = true;
 		}
-
-		const lv2_deadline deadline{wait_until, &thread};
-		ensure(lv2_deadlines_insert(&g_waiting, at, &deadline));
 	}
 
-	return return_val;
+	// The threads it wakes, and the waking (with none, nothing to change:
+	// every change lets in what it can)
+	if (!g_to_awake.empty())
+	{
+		lv2_sched_op_t op;
+		lv2_sched_op_init(&op, -1, retro_atomic_load_acquire_int(&g_scheduler_ready));
+		op.run_slots      = run_slots();
+		op.cancel_of      = sched_cancel_of;
+		op.prio           = LV2_SCHED_ENQUEUE;
+		op.to_awake       = wake;
+		op.to_awake_count = to_awake_slots(g_to_awake, wake);
+
+		lv2_sched_change(&g_sched, &op, sched_edge, &notes);
+		drop_emplaced_deadlines(op);
+	}
+
+	sched_tail(notes, current_time);
+	return result;
 }
 
+// The wake, the threads past the run slots told to stop, and the waking -
+// one change
 bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 {
 	// Check thread type
 	AUDIT(!cpu || cpu->get_class() == thread_class::ppu);
 
-	bool push_first = false;
+	sched_notes notes{g_to_notify, std::size(g_to_notify)};
+	unsigned char wake[256];
 
-	switch (prio)
+	const auto current = cpu_thread::get_current();
+	const auto current_ppu = current ? current->try_get<ppu_thread>() : nullptr;
+	ppu_thread* const target = cpu ? static_cast<ppu_thread*>(cpu) : nullptr;
+
+	lv2_sched_op_t op;
+	lv2_sched_op_init(&op, current_ppu ? sched_slot_of(current_ppu) : -1, retro_atomic_load_acquire_int(&g_scheduler_ready));
+	op.run_slots = run_slots();
+	op.cancel_of = sched_cancel_of;
+	op.target    = target ? sched_slot_of(target) : -1;
+	op.prio      = prio == yield_cmd ? LV2_SCHED_YIELD : prio == enqueue_cmd ? LV2_SCHED_ENQUEUE : prio + g_prio_bias;
+
+	// The caller saw it was told to stop (its suspend flag put): it stops
+	op.stopped = current_ppu && !!(current_ppu->state & cpu_flag::suspend);
+
+	if (!target || prio == yield_cmd)
 	{
-	default:
+		op.to_awake       = wake;
+		op.to_awake_count = to_awake_slots(g_to_awake, wake);
+	}
+
+	lv2_sched_change(&g_sched, &op, sched_edge, &notes);
+
+	drop_emplaced_deadlines(op);
+
+	if (op.switched)
 	{
-		// Priority set
-		auto set_prio = [](atomic_t<ppu_thread::ppu_prio_t>& prio, s32 value, bool increment_order_last, bool increment_order_first)
+		target->start_time = get_guest_system_time();
+	}
+
+	if (prio != yield_cmd && prio != enqueue_cmd)
+	{
+		// Priority set, as the snapshot has it - again while a newer set
+		// changed it since
+		for (int order = op.prio_order;; order = 0)
 		{
+			const s32 value = LV2_SCHED_PRIO(lv2_sched_thread(&g_sched, op.target)) - g_prio_bias;
 			s64 tag = 0;
 
-			if (increment_order_first || increment_order_last)
+			if (order)
 			{
 				tag = retro_atomic_fetch_add_64(&g_priority_order_tag, 1) + 1;
 			}
 
-			prio.atomic_op([&](ppu_thread::ppu_prio_t& prio)
+			target->prio.atomic_op([&](ppu_thread::ppu_prio_t& p)
 			{
-				prio.prio = value;
+				p.prio = value;
 
-				if (increment_order_first)
+				if (order < 0)
 				{
-					prio.order = ~tag;
+					p.order = ~tag;
 				}
-				else if (increment_order_last)
+				else if (order > 0)
 				{
-					prio.order = tag;
+					p.order = tag;
 				}
 			});
-		};
 
-		const s64 old_prio = static_cast<ppu_thread*>(cpu)->prio.load().prio;
-
-		// If priority is the same, push ONPROC/RUNNABLE thread to the back of the priority list if it is not the current thread
-		if (old_prio == prio && cpu == g_caller->current)
-		{
-			set_prio(static_cast<ppu_thread*>(cpu)->prio, prio, false, false);
-			return true;
-		}
-
-		if (!unqueue(g_ppu, static_cast<ppu_thread*>(cpu), &ppu_thread::next_ppu))
-		{
-			set_prio(static_cast<ppu_thread*>(cpu)->prio, prio, old_prio > prio, old_prio < prio);
-			return true;
-		}
-
-		set_prio(static_cast<ppu_thread*>(cpu)->prio, prio, false, false);
-		break;
-	}
-	case yield_cmd:
-	{
-		usz i = 0;
-
-		// Yield command
-		for (auto ppu_next = &g_ppu;; i++)
-		{
-			const auto ppu = +*ppu_next;
-
-			if (!ppu)
+			if (LV2_SCHED_PRIO(lv2_sched_thread(&g_sched, op.target)) - g_prio_bias == value)
 			{
-				return false;
-			}
-
-			if (ppu == cpu)
-			{
-				auto ppu2 = ppu->next_ppu;
-
-				if (!ppu2 || ppu2->prio.load().prio != ppu->prio.load().prio)
-				{
-					// Empty 'same prio' threads list
-					return false;
-				}
-
-				for (i++;; i++)
-				{
-					const auto next = ppu2->next_ppu;
-
-					if (!next || next->prio.load().prio != ppu->prio.load().prio)
-					{
-						break;
-					}
-
-					ppu2 = next;
-				}
-
-				// Rotate current thread to the last position of the 'same prio' threads list
-				// Exchange forward pointers
-				*ppu_next = std::exchange(ppu->next_ppu, std::exchange(ppu2->next_ppu, ppu));
-
-				if (i < g_cfg.core.ppu_threads + 0u)
-				{
-					// Threads were rotated, but no context switch was made
-					return false;
-				}
-
-				ppu->start_time = get_guest_system_time();
 				break;
 			}
-
-			ppu_next = &ppu->next_ppu;
-		}
-
-		break;
-	}
-	case enqueue_cmd:
-	{
-		break;
-	}
-	}
-
-	const auto emplace_thread = [push_first](cpu_thread* const cpu)
-	{
-		for (auto it = &g_ppu;;)
-		{
-			const auto next = +*it;
-
-			if (next == cpu)
-			{
-				ppu_log.trace("sleep() - suspended (p=%zu)", g_pending);
-
-				if (static_cast<ppu_thread*>(cpu)->cancel_sleep == 1)
-				{
-					// The next sleep call of the thread is cancelled
-					static_cast<ppu_thread*>(cpu)->cancel_sleep = 2;
-				}
-
-				return false;
-			}
-
-			// Use priority, also preserve FIFO order
-			if (!next || (push_first ? next->prio.load().prio >= static_cast<ppu_thread*>(cpu)->prio.load().prio : next->prio.load().prio > static_cast<ppu_thread*>(cpu)->prio.load().prio))
-			{
-				atomic_storage<ppu_thread*>::release(static_cast<ppu_thread*>(cpu)->next_ppu, next);
-				atomic_storage<ppu_thread*>::release(*it, static_cast<ppu_thread*>(cpu));
-				break;
-			}
-
-			it = &next->next_ppu;
-		}
-
-		// Unregister timeout if necessary
-		for (usz i = 0, waiting = lv2_deadlines_count(&g_waiting); i < waiting; i++)
-		{
-			if (lv2_deadlines_at(&g_waiting, i)->second == cpu)
-			{
-				lv2_deadlines_erase(&g_waiting, i);
-				break;
-			}
-		}
-
-		ppu_log.trace("awake(): %s", cpu->id);
-		return true;
-	};
-
-	// Yield changed the queue before
-	bool changed_queue = prio == yield_cmd;
-
-	s32 lowest_new_priority = smax;
-	const bool has_free_hw_thread_space = count_non_sleeping_threads().onproc_count < g_cfg.core.ppu_threads + 0u;
-
-	if (cpu && prio != yield_cmd)
-	{
-		// Emplace current thread
-		if (emplace_thread(cpu))
-		{
-			changed_queue = true;
-			lowest_new_priority = std::min<s32>(static_cast<ppu_thread*>(cpu)->prio.load().prio, lowest_new_priority);
-		}
-	}
-	else for (const auto _cpu : *g_caller->to_awake)
-	{
-		// Emplace threads from list
-		if (emplace_thread(_cpu))
-		{
-			changed_queue = true;
-			lowest_new_priority = std::min<s32>(static_cast<ppu_thread*>(_cpu)->prio.load().prio, lowest_new_priority);
-		}
-	}
-
-	auto target = +g_ppu;
-	usz i = 0;
-
-	// Suspend threads if necessary
-	for (usz thread_count = g_cfg.core.ppu_threads; target; target = target->next_ppu, i++)
-	{
-		if (i >= thread_count && cpu_flag::suspend - target->state)
-		{
-			ppu_log.trace("suspend(): %s", target->id);
-			target->ack_suspend = true;
-			g_pending++;
-			ensure(!target->state.test_and_set(cpu_flag::suspend));
-
-			if (is_paused(target->state - cpu_flag::suspend))
-			{
-				target->state.notify_one();
-			}
-		}
-	}
-
-	const auto current_ppu = g_caller->current ? g_caller->current->try_get<ppu_thread>() : nullptr;
-
-	// Remove pending if necessary
-	if (current_ppu)
-	{
-		if (std::exchange(current_ppu->ack_suspend, false))
-		{
-			ensure(g_pending)--;
 		}
 	}
 
@@ -1856,9 +2018,9 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 	// While signaling to the other hardware thread to execute the caller's code.
 	// Resulting in a delay to the caller after such thread is signaled
 
-	if (current_ppu && cpu != current_ppu && changed_queue && has_free_hw_thread_space)
+	if (current_ppu && cpu != current_ppu && op.changed && op.had_free_slot)
 	{
-		if (current_ppu->prio.load().prio > lowest_new_priority)
+		if (current_ppu->prio.load().prio > op.lowest_new_prio - g_prio_bias)
 		{
 			const bool is_create_thread = current_ppu->current_function && current_ppu->gpr[11] == 0x35;
 
@@ -1881,150 +2043,51 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 		}
 	}
 
-	return changed_queue;
+	sched_tail(notes, 0);
+	return op.result != 0;
 }
 
 void lv2_obj::cleanup()
 {
-	g_ppu = nullptr;
+	lv2_sched_reset(&g_sched);
 	retro_atomic_store_release_int(&g_scheduler_ready, 0);
-	lv2_threads_clear(&g_to_sleep);
-	retro_atomic_store_release_int(&g_to_sleep_count, 0);
-	lv2_deadlines_clear(&g_waiting);
-	g_pending = 0;
+
+	retro_u128_t none{};
+
+	for (unsigned slot = 0; slot < LV2_SCHED_THREADS; slot++)
+	{
+		retro_atomic_store_release_ptr(&g_slot_ppu[slot], nullptr);
+		retro_atomic_store_release_128(&g_deadline[slot], none);
+	}
+
+	retro_atomic_store_release_128(&g_next_deadline, none);
 	retro_atomic_store_release_64(&s_yield_frequency, 0);
+	retro_atomic_store_release_64(&s_last_yield_tsc, 0);
 }
 
-void lv2_obj::schedule_all(u64 current_time)
+void lv2_obj::sched_register(ppu_thread& ppu)
 {
-	// The caller's notification slots, not this thread's
-	const auto to_notify = g_caller->to_notify;
-	const auto to_notify_end = to_notify + std::size(g_to_notify);
-	auto it = std::find(to_notify, to_notify_end, std::add_pointer_t<const void>{});
+	const u32 slot = sched_slot(ppu.id);
 
-	if (!g_pending && retro_atomic_load_acquire_int(&g_scheduler_ready))
+	if (slot >= LV2_SCHED_THREADS)
 	{
-		auto target = +g_ppu;
-
-		// Wake up threads
-		for (usz x = g_cfg.core.ppu_threads; target && x; target = target->next_ppu, x--)
-		{
-			if (target->state & cpu_flag::suspend)
-			{
-				ppu_log.trace("schedule(): %s", target->id);
-
-				// Remove yield if it was sleeping until now
-				const bs_t<cpu_flag> remove_yield = target->start_time == 0 ? +cpu_flag::suspend : (cpu_flag::yield + cpu_flag::preempt);
-
-				target->start_time = 0;
-
-				if ((target->state.fetch_op(AOFN(x += cpu_flag::signal, x -= cpu_flag::suspend, x-= remove_yield, void())) & (cpu_flag::wait + cpu_flag::signal)) != cpu_flag::wait)
-				{
-					continue;
-				}
-
-				if (it == to_notify_end)
-				{
-					// Out of notification slots, notify locally (resizable container is not worth it)
-					target->state.notify_one();
-				}
-				else
-				{
-					*it++ = &target->state;
-				}
-			}
-		}
+		return;
 	}
 
-	// Check registered timeouts
-	while (!lv2_deadlines_empty(&g_waiting))
-	{
-		const auto pair = lv2_deadlines_front(&g_waiting);
+	// The slot's last thread left for good (settled): this one starts afresh
+	retro_atomic_store_release_ptr(&g_slot_ppu[slot], &ppu);
+	drop_deadline(slot, retro_atomic_load_acquire_128(&g_deadline[slot]));
+	lv2_sched_register(&g_sched, slot, static_cast<int>(ppu.prio.load().prio) + g_prio_bias);
+}
 
-		if (!current_time)
-		{
-			current_time = get_guest_system_time();
-		}
+void lv2_obj::sched_settle(ppu_thread& ppu)
+{
+	lv2_sched_settle(&g_sched, sched_slot(ppu.id));
+}
 
-		if (pair->first <= current_time)
-		{
-			const auto target = pair->second;
-			lv2_deadlines_pop_front(&g_waiting);
-
-			if (target != g_caller->current)
-			{
-				// Change cpu_thread::state for the lightweight notification to work
-				ensure(!target->state.test_and_set(cpu_flag::notify));
-
-				// Otherwise notify it to wake itself
-				if (it == to_notify_end)
-				{
-					// Out of notification slots, notify locally (resizable container is not worth it)
-					target->state.notify_one();
-				}
-				else
-				{
-					*it++ = &target->state;
-				}
-			}
-		}
-		else
-		{
-			// The list is sorted so assume no more timeouts
-			break;
-		}
-	}
-
-	if (it < to_notify_end)
-	{
-		// Null-terminate the list if it ends before last slot
-		*it = nullptr;
-	}
-
-	if (const u64 freq = retro_atomic_load_acquire_64(&s_yield_frequency))
-	{
-		const u64 tsc = utils::get_tsc();
-		const u64 last_tsc = s_last_yield_tsc;
-
-		if (tsc >= last_tsc && tsc <= static_cast<u64>(retro_atomic_load_acquire_64(&s_max_allowed_yield_tsc)) && tsc - last_tsc >= freq)
-		{
-			auto target = +g_ppu;
-			cpu_thread* cpu = nullptr;
-
-			for (usz x = g_cfg.core.ppu_threads;; target = target->next_ppu, x--)
-			{
-				if (!target || !x)
-				{
-					if (g_ppu && cpu_flag::preempt - g_ppu->state)
-					{
-						// Don't be picky, pick up any running PPU thread even it has a wait flag
-						cpu = g_ppu;
-					}
-					// TODO: If this case is common enough it may be valuable to iterate over all CPU threads to find a perfect candidate (one without a wait or suspend flag)
-					else if (auto current = g_caller->current; current && cpu_flag::suspend - current->state)
-					{
-						// May be an SPU or RSX thread, use them as a last resort
-						cpu = current;
-					}
-
-					break;
-				}
-
-				if (target->state.none_of(cpu_flag::preempt + cpu_flag::wait))
-				{
-					cpu = target;
-					break;
-				}
-			}
-
-			if (cpu && cpu_flag::preempt - cpu->state && !cpu->state.test_and_set(cpu_flag::preempt))
-			{
-				s_last_yield_tsc = tsc;
-				retro_atomic_store_release_int(&g_lv2_preempts_taken, retro_atomic_load_acquire_int(&g_lv2_preempts_taken) + 1); // Has a minor race but performance is more important
-				rsx::set_rsx_yield_flag();
-			}
-		}
-	}
+bool lv2_obj::sched_told(const ppu_thread& ppu)
+{
+	return LV2_SCHED_TOLD(lv2_sched_thread(&g_sched, sched_slot(ppu.id))) != 0;
 }
 
 void lv2_obj::make_scheduler_ready()
@@ -2033,7 +2096,7 @@ void lv2_obj::make_scheduler_ready()
 	lv2_obj::awake_all();
 }
 
-std::pair<ppu_thread_status, u32> lv2_obj::ppu_state(ppu_thread* ppu, bool lock_idm, bool lock_lv2)
+std::pair<ppu_thread_status, u32> lv2_obj::ppu_state(ppu_thread* ppu, bool lock_idm, bool /*lock_lv2*/)
 {
 	std::optional<reader_lock> opt_lock;
 
@@ -2054,23 +2117,9 @@ std::pair<ppu_thread_status, u32> lv2_obj::ppu_state(ppu_thread* ppu, bool lock_
 	default: break;
 	}
 
-	// Its place in the queue, in the scheduler's turn where asked
-	const auto find = [&]
-	{
-		u32 i = 0;
-
-		for (auto target = +g_ppu; target; target = target->next_ppu, i++)
-		{
-			if (target == ppu)
-			{
-				return i;
-			}
-		}
-
-		return u32{umax};
-	};
-
-	const u32 pos = lock_lv2 ? turn_call(&g_turns, find) : find();
+	// Its place in the queue, as the snapshot in place has it
+	const int at = lv2_sched_place(&g_sched, sched_slot(ppu->id));
+	const u32 pos = at < 0 ? u32{umax} : static_cast<u32>(at);
 
 	if (pos == umax)
 	{
@@ -2092,33 +2141,33 @@ std::pair<ppu_thread_status, u32> lv2_obj::ppu_state(ppu_thread* ppu, bool lock_
 
 void lv2_obj::set_future_sleep(cpu_thread* cpu)
 {
-	ensure(lv2_threads_push_back(&g_to_sleep, &cpu));
-	retro_atomic_store_release_int(&g_to_sleep_count, static_cast<int>(lv2_threads_count(&g_to_sleep)));
+	if (auto ppu = cpu->try_get<ppu_thread>())
+	{
+		lv2_sched_first_sleep(&g_sched, sched_slot_of(ppu));
+		return;
+	}
+
+	if (auto spu = cpu->try_get<spu_thread>())
+	{
+		retro_atomic_store_release_int(&spu->lv2_first_sleep, 1);
+		lv2_sched_first_sleep(&g_sched, -1);
+	}
 }
 
 bool lv2_obj::is_scheduler_ready()
 {
-	// One load: the list itself is only touched under the scheduler's lock
-	return !retro_atomic_load_acquire_int(&g_to_sleep_count);
+	return !lv2_sched_first_sleeps(&g_sched);
 }
 
 ppu_non_sleeping_count_t lv2_obj::count_non_sleeping_threads()
 {
 	ppu_non_sleeping_count_t total{};
 
-	auto target = atomic_storage<ppu_thread*>::load(g_ppu);
+	const unsigned count = lv2_sched_count(&g_sched);
+	const unsigned thread_count = run_slots();
 
-	for (usz thread_count = g_cfg.core.ppu_threads; target; target = atomic_storage<ppu_thread*>::load(target->next_ppu))
-	{
-		if (total.onproc_count == thread_count)
-		{
-			total.has_running = true;
-			break;
-		}
-
-		total.onproc_count++;
-	}
-
+	total.onproc_count = std::min(count, thread_count);
+	total.has_running = count > thread_count;
 	return total;
 }
 
@@ -2305,24 +2354,13 @@ void lv2_obj::prepare_for_sleep(cpu_thread& cpu)
 
 ppu_thread* lv2_obj::get_running_ppu(u32 index)
 {
-	usz thread_count = g_cfg.core.ppu_threads;
-
-	if (index >= thread_count)
+	if (index >= run_slots())
 	{
 		return nullptr;
 	}
 
-	auto target = atomic_storage<ppu_thread*>::load(g_ppu);
-
-	for (usz cur = 0; target; target = atomic_storage<ppu_thread*>::load(target->next_ppu), cur++)
-	{
-		if (cur == index)
-		{
-			return target;
-		}
-	}
-
-	return nullptr;
+	const int slot = lv2_sched_at(&g_sched, index);
+	return slot < 0 ? nullptr : slot_ppu(static_cast<unsigned>(slot));
 }
 
 void lv2_obj::notify_all() noexcept

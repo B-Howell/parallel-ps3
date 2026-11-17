@@ -2428,7 +2428,7 @@ void ppu_thread::dump_misc(std::string& ret, std::any& custom_data) const
 {
 	cpu_thread::dump_misc(ret, custom_data);
 
-	if (ack_suspend)
+	if (lv2_obj::sched_told(*this))
 	{
 		if (ret.ends_with("\n"))
 		{
@@ -2863,6 +2863,9 @@ ppu_thread::ppu_thread(const ppu_thread_params& param, std::string_view name, u3
 	syscall_history.data.resize(g_cfg.core.ppu_call_history ? syscall_history_max_size : 1);
 	syscall_history.count_debug_arguments = static_cast<u32>(g_cfg.core.ppu_call_history ? std::size(syscall_history.data[0].args) : 0);
 
+	// New in its slot in the scheduler, with its priority
+	lv2_obj::sched_register(*this);
+
 #ifdef ARCH_ARM64
 	// Flush all cache lines after potentially writing executable code
 	asm("ISB");
@@ -2957,6 +2960,7 @@ ppu_thread::ppu_thread(utils::serial& ar)
 	}
 
 	serialize_common(ar);
+	lv2_obj::sched_register(*this);
 
 	// Restore jm_mask
 	jm_mask = nj ? 0x7F800000 : 0x7fff'ffff;

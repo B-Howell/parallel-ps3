@@ -2,7 +2,6 @@
 
 #include <retro_atomic.h>
 #include "Emu/CPU/CPUThread.h"
-#include "Emu/CPU/turn_calls.h"
 #include "Emu/CPU/Hypervisor.h"
 #include "Emu/Cell/SPUInterpreter.h"
 #include "Emu/Memory/vm.h"
@@ -962,6 +961,7 @@ public:
 
 	const char* current_func{}; // Current STOP or RDCH blocking function
 	u64 start_time{}; // Starting time of STOP or RDCH bloking function
+	retro_atomic_int_t lv2_first_sleep{}; // Still to call its first lv2 sleep (lv2_obj::set_future_sleep)
 	bool unsavable = false; // Flag indicating whether saving the spu thread state is currently unsafe
 
 	atomic_t<spu_debugger_mode> debugger_mode{};

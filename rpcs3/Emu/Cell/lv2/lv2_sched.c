@@ -3,13 +3,18 @@
 
 #include <string.h>
 
+#include <rthreads/retro_waitaddr.h>
+
 #include "lv2_sched.h"
 
-#define SC_PRIO_MASK  0xfffu
-#define SC_QUEUED     ((uint32_t)1 << 12)
-#define SC_TOLD       ((uint32_t)1 << 13)
-#define SC_FIRST      ((uint32_t)1 << 14)
-#define SC_EDGE       ((uint32_t)1 << 16)
+#define SC_PRIO_MASK  ((uint64_t)0xfff)
+#define SC_QUEUED     ((uint64_t)1 << 12)
+#define SC_TOLD       ((uint64_t)1 << 13)
+#define SC_FIRST      ((uint64_t)1 << 14)
+#define SC_CANCEL     ((uint64_t)1 << 15)
+#define SC_EDGE       ((uint64_t)1 << 16)
+#define SC_EDGES_MASK ((uint64_t)0xffff << 16)
+#define SC_WINDOW_SHIFT 32u
 #define SC_BUF_MASK   0xffu
 #define SC_FREE_WORDS ((LV2_SCHED_BUFFERS + 63u) / 64u)
 #define SC_NO_PRIO    0x7fffffff
@@ -40,7 +45,7 @@ static void sc_write(lv2_sched_buf_t *b, const lv2_sched_view_t *v)
       retro_atomic_store_release_int(&b->list[i], (int)w);
    }
    for (i = 0; i < LV2_SCHED_THREADS; i++)
-      retro_atomic_store_release_int(&b->thread[i], (int)v->thread[i]);
+      retro_atomic_store_release_64(&b->thread[i], (int64_t)v->thread[i]);
 }
 
 static void sc_copy(lv2_sched_buf_t *b, lv2_sched_view_t *v)
@@ -59,7 +64,7 @@ static void sc_copy(lv2_sched_buf_t *b, lv2_sched_view_t *v)
          v->list[i * 4u + j] = (unsigned char)(w >> (j * 8u));
    }
    for (i = 0; i < LV2_SCHED_THREADS; i++)
-      v->thread[i] = (uint32_t)retro_atomic_load_acquire_int(&b->thread[i]);
+      v->thread[i] = (uint64_t)retro_atomic_load_acquire_64(&b->thread[i]);
 }
 
 /* The snapshot in place into @v, and the word naming it. A buffer is only
@@ -79,12 +84,12 @@ static uint64_t sc_read(lv2_sched_t *s, lv2_sched_view_t *v)
 /* One thread's word from the snapshot in place. The word is read with a
  * read-modify-write: the latest there is, after what came before (an
  * edge's putting told) */
-static uint32_t sc_read_thread(lv2_sched_t *s, unsigned slot)
+static uint64_t sc_read_thread(lv2_sched_t *s, unsigned slot)
 {
    for (;;)
    {
       const uint64_t c = (uint64_t)retro_atomic_fetch_add_64(&s->cur, 0);
-      const uint32_t w = (uint32_t)retro_atomic_load_acquire_int(&s->buf[c & SC_BUF_MASK].thread[slot]);
+      const uint64_t w = (uint64_t)retro_atomic_load_acquire_64(&s->buf[c & SC_BUF_MASK].thread[slot]);
       if ((uint64_t)retro_atomic_load_relaxed_64(&s->cur) == c)
          return w;
    }
@@ -132,7 +137,10 @@ static void sc_fresh(lv2_sched_t *s, unsigned run_slots)
       retro_atomic_64_init(&s->free[i], (int64_t)f);
    }
    for (i = 0; i < LV2_SCHED_THREADS; i++)
+   {
       retro_atomic_int_init(&s->applied[i], 0);
+      retro_atomic_int_init(&s->settling[i], 0);
+   }
    /* Buffer 0 in place */
    retro_atomic_64_init(&s->free[0], (int64_t)((uint64_t)retro_atomic_load_relaxed_64(&s->free[0]) & ~(uint64_t)1));
    sc_write(&s->buf[0], &v);
@@ -163,6 +171,7 @@ void lv2_sched_op_init(lv2_sched_op_t *op, int caller, int ready)
    op->caller          = caller;
    op->ready           = ready;
    op->lowest_new_prio = SC_NO_PRIO;
+   op->sleeper_window  = -1;
 }
 
 /* The work out of a change, on plain memory */
@@ -191,7 +200,7 @@ static int sc_prio(const lv2_sched_view_t *v, unsigned slot)
 
 static void sc_set_prio(lv2_sched_view_t *v, unsigned slot, int prio)
 {
-   v->thread[slot] = (v->thread[slot] & ~(uint32_t)SC_PRIO_MASK) | ((uint32_t)prio & SC_PRIO_MASK);
+   v->thread[slot] = (v->thread[slot] & ~SC_PRIO_MASK) | ((uint64_t)(unsigned)prio & SC_PRIO_MASK);
 }
 
 /* Its next edge, and the change marks the thread for it to be put */
@@ -208,7 +217,13 @@ static int sc_emplace(lv2_sched_view_t *v, unsigned slot, lv2_sched_op_t *op)
 
    if (v->thread[slot] & SC_QUEUED)
    {
+      /* Woken before it sleeps, in a wait that may be cut short: its
+       * sleep in that wait is (the window it opened, kept with it) */
+      const int64_t window = op->cancel_of ? op->cancel_of(op->cancel_ctx, slot) : -1;
       sc_set_bit(op->found, slot);
+      if (window >= 0)
+         v->thread[slot] = (v->thread[slot] & ~((uint64_t)0xffffffffu << SC_WINDOW_SHIFT))
+               | SC_CANCEL | ((uint64_t)window << SC_WINDOW_SHIFT);
       return 0;
    }
 
@@ -225,7 +240,7 @@ static int sc_emplace(lv2_sched_view_t *v, unsigned slot, lv2_sched_op_t *op)
 /* awake_unlocked */
 /* Every edge of @slot's up to its @edges put: its stop put to it, for one
  * told to stop to be taken as stopping */
-static int sc_put(lv2_sched_t *s, unsigned slot, uint32_t word)
+static int sc_put(lv2_sched_t *s, unsigned slot, uint64_t word)
 {
    const int a = retro_atomic_load_acquire_int(&s->applied[slot]);
    return !(a & 1) && (((unsigned)a >> 1) & 0xffffu) == LV2_SCHED_EDGES(word);
@@ -355,6 +370,14 @@ static int sc_sleep(lv2_sched_view_t *v, lv2_sched_op_t *op, uint32_t edged[4])
       v->pending--;
    }
 
+   /* Its sleep cut short: woken in the window it has open */
+   if (v->thread[t] & SC_CANCEL)
+   {
+      op->cancelled = op->sleeper_window >= 0
+            && (uint32_t)(v->thread[t] >> SC_WINDOW_SHIFT) == (uint32_t)op->sleeper_window;
+      v->thread[t] &= ~SC_CANCEL;
+   }
+
    if (op->signaled)
       return LV2_SCHED_NOT_SLEPT;
 
@@ -420,6 +443,8 @@ static void sc_apply(lv2_sched_t *s, unsigned slot, lv2_sched_edge_t edge, void 
       /* Put; then the snapshot looked at again (seq_cst both: a change
        * that saw this one putting sees it put, or it sees that change) */
       retro_atomic_exchange_int(&s->applied[slot], (int)(next << 1));
+      if (retro_atomic_load_seq_cst_int(&s->settling[slot]))
+         retro_waitaddr_notify_all((const void*)&s->applied[slot]);
    }
 }
 
@@ -433,6 +458,7 @@ void lv2_sched_apply(lv2_sched_t *s, unsigned slot, lv2_sched_edge_t edge, void 
 static void sc_commit(lv2_sched_t *s, lv2_sched_op_t *op, lv2_sched_edge_t edge, void *ctx, int kind)
 {
    const lv2_sched_op_t asked = *op;
+   const unsigned slots = op->run_slots ? op->run_slots : s->run_slots;
    const unsigned mine = sc_claim(s);
    lv2_sched_view_t v;
    uint32_t edged[4];
@@ -456,14 +482,14 @@ static void sc_commit(lv2_sched_t *s, lv2_sched_op_t *op, lv2_sched_edge_t edge,
                lv2_sched_op_t inner = *op;
                inner.target = -1;
                inner.prio   = LV2_SCHED_ENQUEUE;
-               sc_awake(s, &v, s->run_slots, &inner, edged);
+               sc_awake(s, &v, slots, &inner, edged);
                memcpy(op->emplaced, inner.emplaced, sizeof(op->emplaced));
                memcpy(op->found, inner.found, sizeof(op->found));
             }
          }
          else if (op->prio != LV2_SCHED_NONE && (op->target < 0 ? op->prio < 0 : (unsigned)op->target < LV2_SCHED_THREADS))
-            op->changed = op->result = sc_awake(s, &v, s->run_slots, op, edged);
-         sc_schedule(&v, s->run_slots, op, edged);
+            op->changed = op->result = sc_awake(s, &v, slots, op, edged);
+         sc_schedule(&v, slots, op, edged);
          break;
       case 1: /* a first sleep to come */
          if (op->target >= 0)
@@ -479,8 +505,20 @@ static void sc_commit(lv2_sched_t *s, lv2_sched_op_t *op, lv2_sched_edge_t edge,
          }
          v.thread[op->caller] &= ~SC_TOLD;
          v.pending--;
-         sc_schedule(&v, s->run_slots, op, edged);
+         sc_schedule(&v, slots, op, edged);
          break;
+      case 4: /* a new thread in the slot: its priority, nothing else */
+      {
+         const unsigned t = (unsigned)op->target;
+         const int at     = sc_find(&v, t);
+         if (at >= 0)
+            sc_remove_at(&v, (unsigned)at);
+         if (v.thread[t] & SC_TOLD)
+            v.pending--;
+         v.thread[t] &= SC_EDGES_MASK;
+         sc_set_prio(&v, t, op->prio);
+         break;
+      }
       case 2: /* another thread's first sleep */
          if (v.others)
          {
@@ -516,11 +554,12 @@ static void sc_commit(lv2_sched_t *s, lv2_sched_op_t *op, lv2_sched_edge_t edge,
     * it is taken as stopping, as the turn took it */
    if (kind == 0 && asked.caller >= 0 && (unsigned)asked.caller < LV2_SCHED_THREADS)
    {
-      const uint32_t w = sc_read_thread(s, (unsigned)asked.caller);
+      const uint64_t w = sc_read_thread(s, (unsigned)asked.caller);
       if ((w & SC_TOLD) && sc_put(s, (unsigned)asked.caller, w))
       {
          lv2_sched_op_t ack;
          lv2_sched_op_init(&ack, asked.caller, asked.ready);
+         ack.run_slots = asked.run_slots;
          sc_commit(s, &ack, edge, ctx, 3);
       }
    }
@@ -577,4 +616,44 @@ int lv2_sched_at(lv2_sched_t *s, unsigned index)
    lv2_sched_view_t v;
    sc_read(s, &v);
    return index < v.count ? (int)v.list[index] : -1;
+}
+
+void lv2_sched_register(lv2_sched_t *s, unsigned slot, int prio)
+{
+   lv2_sched_op_t op;
+   if (slot >= LV2_SCHED_THREADS)
+      return;
+   lv2_sched_op_init(&op, -1, 0);
+   op.target = (int)slot;
+   op.prio   = prio;
+   sc_commit(s, &op, NULL, NULL, 4);
+}
+
+int lv2_sched_settled(lv2_sched_t *s, unsigned slot)
+{
+   return slot >= LV2_SCHED_THREADS || sc_put(s, slot, sc_read_thread(s, slot));
+}
+
+void lv2_sched_settle(lv2_sched_t *s, unsigned slot)
+{
+   if (slot >= LV2_SCHED_THREADS)
+      return;
+   /* Told first, then looked at: the one putting stores, then looks */
+   retro_atomic_exchange_int(&s->settling[slot], 1);
+   for (;;)
+   {
+      const int a = retro_atomic_load_seq_cst_int(&s->applied[slot]);
+      retro_waitaddr_t w;
+      if (!(a & 1) && (((unsigned)a >> 1) & 0xffffu) == LV2_SCHED_EDGES(sc_read_thread(s, slot)))
+         break;
+      w.addr = (const void*)&s->applied[slot];
+      w.old  = (uint32_t)a;
+      retro_waitaddr_wait(&w, 1, -1);
+   }
+   retro_atomic_store_release_int(&s->settling[slot], 0);
+}
+
+uint64_t lv2_sched_thread(lv2_sched_t *s, unsigned slot)
+{
+   return slot < LV2_SCHED_THREADS ? sc_read_thread(s, slot) : 0;
 }

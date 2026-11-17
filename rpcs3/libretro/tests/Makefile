@@ -838,7 +838,7 @@ HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellIme
 LOCK_GUARD_MAX := 303
 # turn_call (turn_calls.h) is a lock without a lock object - a queued caller
 # still waits - and is going too: the count may only fall
-TURN_CALL_MAX := 4
+TURN_CALL_MAX := 1
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -1010,8 +1010,8 @@ check: all
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|scoped_lock|reader_lock|->mutex\b|\.mutex\b|lock_unlock" ../../Emu/Cell/lv2/sys_lwmutex.cpp ../../Emu/Cell/lv2/sys_lwmutex.h ../../Emu/Cell/lv2/sys_lwcond.cpp ../../Emu/Cell/lv2/sys_lwcond.h; then echo "sys_lwmutex/sys_lwcond: a lock is back - the sleepers are lv2_lwq.c's word, an lwcond's waiters a waiter set"; exit 1; else echo "sys_lwmutex/sys_lwcond: no lock"; fi
 	@# Event queues take no lock: their events and waiters change in the queue's turn (turn_calls.h), an SPU group's lock taken inside it
 	@if grep -nE "shared_mutex|lock_guard|unique_lock|reader_lock|lock_unlock|[.>]mutex\b" ../../Emu/Cell/lv2/sys_event.cpp ../../Emu/Cell/lv2/sys_event.h | grep -v "id_manager::g_mutex"; then echo "sys_event: a lock is back - the events and waiters are lv2_evq.c's"; exit 1; elif grep -nE "queue(->|\.)mutex" ../../Emu/Cell/SPUThread.cpp ../../Emu/Cell/lv2/sys_rsx.cpp; then echo "sys_event: a queue's lock is taken again - the events and waiters are lv2_evq.c's"; exit 1; else echo "sys_event: no lock"; fi
-	@# The scheduler takes no lock: its queues change in its turn (lv2_obj::g_turns), with the scheduling thread's own lists handed to the turn
-	@if grep -nE "lv2_obj::g_mutex|static shared_mutex g_mutex|lock(_guard)?[ ({]+g_mutex" ../../Emu/Cell/lv2/lv2.cpp ../../Emu/Cell/lv2/sys_sync.h; then echo "lv2 scheduler: its lock is back - the queues change in the scheduler's turn (turn_call)"; exit 1; else echo "lv2 scheduler: no lock, the queues in its turn"; fi
+	@# The scheduler takes no lock and no turn: what it knows is one snapshot (lv2_sched.c), each sleep, wake, yield and priority set one change put in place with compare-and-swap
+	@if grep -nE "lv2_obj::g_mutex|static shared_mutex g_mutex|lock(_guard)?[ ({]+g_mutex" ../../Emu/Cell/lv2/lv2.cpp ../../Emu/Cell/lv2/sys_sync.h; then echo "lv2 scheduler: its lock is back - what it knows is lv2_sched.c's snapshot"; exit 1; elif grep -nE "turn_call|turn_calls|g_turns|g_pending|ack_suspend|next_ppu" ../../Emu/Cell/lv2/lv2.cpp ../../Emu/Cell/lv2/sys_sync.h ../../Emu/Cell/PPUThread.h; then echo "lv2 scheduler: its turn or the linked run queue is back - what it knows is lv2_sched.c's snapshot"; exit 1; else echo "lv2 scheduler: no lock, no turn, one snapshot"; fi
 	@# SPU thread groups take no lock: their state changes with compare-and-swap, the threads' flags following it
 	@if grep -nE "group(->|\.)mutex|grp(->|\.)mutex" ../../Emu/Cell/lv2/sys_spu.cpp ../../Emu/Cell/lv2/sys_spu.h ../../Emu/Cell/SPUThread.cpp ../../Emu/CPU/CPUThread.cpp; then echo "SPU thread groups: a group's lock is back - its state changes with compare-and-swap"; exit 1; else echo "SPU thread groups: no lock"; fi
 	@# Vulkan: the async texture scheduler's command buffer is chosen, synced and submitted in turn; a sampler reload is asked for with a flag, not a lock against the renderer's texture load
@@ -1058,8 +1058,8 @@ check: all
 	@if grep -nE "shared_ptr<lv2_event_queue> spup\\[|std::pair<u32, shared_ptr<lv2_event_queue>>|shared_ptr<lv2_event_queue> ep_" ../../Emu/Cell/SPUThread.h ../../Emu/Cell/lv2/sys_spu.h; then echo "spu: a port, queue binding or group event port is a plain shared_ptr again - read by the SPU as it is connected, it is an atomic_ptr"; exit 1; else echo "spu: ports and bindings atomic, no turn"; fi
 	@# lv2 event queues: the events a ring, the waiters two words (lv2_evq.c); no turn, no spin, here or where SPUs and the RSX use them
 	@if grep -nE "turn_call|turn_calls|busy_wait|lv2_events_|->pq\\b|->sq\\b" ../../Emu/Cell/lv2/sys_event.cpp ../../Emu/Cell/lv2/sys_event.h; then echo "sys_event: a turn, a spin or the linked queues are back - the events and waiters are lv2_evq.c's"; exit 1; elif grep -nE "queue->turns|held->turns|lv2_events_|turn_calls_busy" ../../Emu/Cell/SPUThread.cpp ../../Emu/Cell/lv2/sys_rsx.cpp || grep -n "busy_wait" ../../Emu/Cell/lv2/sys_rsx.cpp; then echo "sys_event: a queue's turn or a spin on it is back in the SPU or RSX code"; exit 1; else echo "sys_event: no turn, no spin"; fi
-	@# The lv2 scheduler's run queue (lv2_sched.c): a snapshot put in place with one compare-and-swap; no lock, no turn, no sleep, no spin
-	@if grep -nE "turn_call|turn_calls|busy_wait|sched_yield|mutex|\bsleep\(|_wait\(" ../../Emu/Cell/lv2/lv2_sched.c ../../Emu/Cell/lv2/lv2_sched.h; then echo "lv2_sched: a lock, a turn, a wait or a spin is in it"; exit 1; else echo "lv2_sched: no lock, no turn, no wait, no spin"; fi
+	@# The lv2 scheduler's run queue (lv2_sched.c): a snapshot put in place with one compare-and-swap; no lock, no turn, no sleep, no spin - the one wait a thread leaving for good makes for an edge being put to it (lv2_sched_settle)
+	@if grep -nE "turn_call|turn_calls|busy_wait|sched_yield|mutex|\bsleep\(|usleep|thread_wait|cond_wait" ../../Emu/Cell/lv2/lv2_sched.c ../../Emu/Cell/lv2/lv2_sched.h; then echo "lv2_sched: a lock, a turn, a sleep or a spin is in it"; exit 1; elif [ $$(grep -c "retro_waitaddr_wait" ../../Emu/Cell/lv2/lv2_sched.c) -ne 1 ]; then echo "lv2_sched: a wait other than lv2_sched_settle's"; exit 1; else echo "lv2_sched: no lock, no turn, no spin; one wait, a thread's at its exit"; fi
 	@# sys_rsx: the RSX context's state changed with no turn, the context and the device's address claimed with compare-and-swap, no sleep for the RSX thread
 	@if grep -nE "sys_rsx_turns|wait_for\\(1000\\)|utils::pause" ../../Emu/Cell/lv2/sys_rsx.cpp ../../Emu/RSX/Core/RSXContext.h; then echo "sys_rsx: the context's turn, a sleep or a spin is back - claimed with compare-and-swap, the RSX thread waited for on its words"; exit 1; else echo "sys_rsx: no turn, no sleep, no spin"; fi
 	@# cellGcmSys's IO map: no turn

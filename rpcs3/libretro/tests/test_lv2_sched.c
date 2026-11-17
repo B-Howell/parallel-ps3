@@ -123,6 +123,88 @@ static void told_changes(unsigned slot, int edge)
    TEST_CHECK(edges_n[3] == 0);
 }
 
+/* A woken thread's open wait, for the cancel test */
+static int64_t open_window = -1;
+
+static int64_t window_of(void *ctx, unsigned slot)
+{
+   (void)ctx;
+   return slot == 4 ? open_window : -1;
+}
+
+static int sleep_in(int t, int64_t window)
+{
+   lv2_sched_op_t op;
+   lv2_sched_op_init(&op, t, 1);
+   op.sleeper        = t;
+   op.sleeper_window = window;
+   lv2_sched_change(&s, &op, record, NULL);
+   TEST_CHECK(op.result == LV2_SCHED_SLEPT || op.result == LV2_SCHED_NOT_QUEUED);
+   return op.cancelled;
+}
+
+static void woken(int t)
+{
+   lv2_sched_op_t op;
+   lv2_sched_op_init(&op, -1, 1);
+   op.target    = t;
+   op.prio      = LV2_SCHED_ENQUEUE;
+   op.cancel_of = window_of;
+   lv2_sched_change(&s, &op, record, NULL);
+}
+
+static void cancels_and_slots(void)
+{
+   lv2_sched_view_t v;
+
+   lv2_sched_init(&s, 2);
+   memset(edges_n, 0, sizeof(edges_n));
+
+   /* Woken in its open wait before it slept: that sleep is cut short */
+   woken(4);
+   open_window = 7;
+   woken(4);
+   TEST_CHECK(sleep_in(4, 7));
+   /* Not again: the wake was used */
+   woken(4);
+   TEST_CHECK(!sleep_in(4, 7));
+
+   /* Woken in a wait it left without sleeping: a later wait's sleep is
+    * not cut short by it */
+   woken(4);
+   open_window = 8;
+   woken(4);
+   TEST_CHECK(!sleep_in(4, 9));
+   woken(4);
+   TEST_CHECK(!sleep_in(4, 8));
+   /* No wait open: nothing cut short */
+   open_window = -1;
+   woken(4);
+   woken(4);
+   TEST_CHECK(!sleep_in(4, -1));
+
+   /* A new thread in a slot an old one was queued and told in */
+   lv2_sched_init(&s, 1);
+   awake(1, LV2_SCHED_ENQUEUE, -1);
+   awake(2, LV2_SCHED_ENQUEUE, -1);
+   awake(3, 0, -1);
+   awake(1, 5, -1);
+   lv2_sched_read(&s, &v);
+   TEST_CHECK(v.pending == 1 && LV2_SCHED_TOLD(v.thread[1]));
+   lv2_sched_register(&s, 1, 9);
+   lv2_sched_read(&s, &v);
+   TEST_CHECK(v.pending == 0 && !LV2_SCHED_QUEUED(v.thread[1]) && LV2_SCHED_PRIO(v.thread[1]) == 9);
+   TEST_CHECK(LV2_SCHED_EDGES(v.thread[1]) % 2 == 0 && order_is("2") && lv2_sched_settled(&s, 1));
+   lv2_sched_settle(&s, 1);
+}
+
+/* Not every edge put as one is being put */
+static void unsettled(unsigned slot, int edge)
+{
+   (void)edge;
+   TEST_CHECK(!lv2_sched_settled(&s, slot));
+}
+
 static void puts_one_at_a_time(void)
 {
    lv2_sched_op_t op;
@@ -597,7 +679,7 @@ static void threads(void)
          fprintf(stderr, " %u", v.list[i]);
       fprintf(stderr, "\n");
       for (i = 0; i < THREADS; i++)
-         fprintf(stderr, " %u: w %08x let_in %d asleep %d applied %d\n", i, v.thread[i],
+         fprintf(stderr, " %u: w %08lx let_in %d asleep %d applied %d\n", i, (unsigned long)v.thread[i],
                retro_atomic_load_acquire_int(&let_in[i]),
                retro_atomic_load_acquire_int(&asleep[i]), retro_atomic_load_acquire_int(&s.applied[i]));
    }
@@ -616,6 +698,11 @@ int main(void)
 {
    basics();
    puts_one_at_a_time();
+   cancels_and_slots();
+   in_put_hook = unsettled;
+   lv2_sched_init(&s, 1);
+   awake(5, LV2_SCHED_ENQUEUE, -1);
+   TEST_CHECK(in_put_hook == NULL && lv2_sched_settled(&s, 5));
    threads();
    if (test_failures)
    {

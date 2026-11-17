@@ -309,7 +309,35 @@ public:
 	alignas(64) const ppu_func_opd_t entry_func;
 	u64 start_time{0}; // Sleep start timepoint
 	u64 end_time{umax}; // Sleep end timepoint
-	s32 cancel_sleep{0}; // Flag to cancel the next lv2_obj::sleep call (when equals 2)
+	// A wait the next lv2_obj::sleep call is in, which a wake before it may
+	// cut short (1: open; 2: cut short; 0: none). Only the thread sets it;
+	// above the state, a count of the waits it opened, which the scheduler
+	// keeps with a wake that finds it still running, so that a wake in one
+	// wait never cuts short the sleep of a later one
+	struct cancel_sleep_t
+	{
+		retro_atomic_int_t word{};
+
+		cancel_sleep_t& operator=(s32 v) noexcept
+		{
+			const u32 w = static_cast<u32>(retro_atomic_load_acquire_int(&word));
+			const u32 opened = v == 1 ? (w >> 2) + 1 : (w >> 2);
+			retro_atomic_store_release_int(&word, static_cast<int>((opened << 2) | (static_cast<u32>(v) & 3)));
+			return *this;
+		}
+
+		operator s32() const noexcept
+		{
+			return retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&word)) & 3;
+		}
+
+		// The open wait's count, or -1
+		s64 window() const noexcept
+		{
+			const u32 w = static_cast<u32>(retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&word)));
+			return (w & 3) == 1 ? static_cast<s64>(w >> 2) : -1;
+		}
+	} cancel_sleep;
 	u64 syscall_args[8]{0}; // Last syscall arguments stored
 	const char* current_function{}; // Current function name for diagnosis, optimized for speed.
 	const char* last_function{}; // Sticky copy of current_function, is not cleared on function return
@@ -384,8 +412,6 @@ public:
 	bool interrupt_thread_executing = false;
 
 	ppu_thread* next_cpu{}; // LV2 sleep queues' node link
-	ppu_thread* next_ppu{}; // LV2 PPU running queue's node link
-	bool ack_suspend = false;
 
 	be_t<u64>* get_stack_arg(s32 i, u64 align = alignof(u64));
 	void exec_task();
