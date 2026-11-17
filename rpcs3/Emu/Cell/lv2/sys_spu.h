@@ -309,12 +309,22 @@ struct lv2_spu_group
 
 	std::array<shared_ptr<named_thread<spu_thread>>, 8> threads; // SPU Threads
 	std::array<s8, 256> threads_map; // SPU Threads map based number
+
+	// sys_spu_thread_initialize places threads with no turn: a number's bit
+	// (spu_num) and a place (next_place) each claimed with compare-and-swap,
+	// the place filled, then marked placed (1); and whoever moves a placed
+	// thread on (2) - its group's destroy, or the initializer that finds the
+	// group destroyed after placing it - takes it down, once
+	retro_atomic_64_t nums_claimed[4]{};
+	retro_atomic_int_t next_place{};
+	retro_atomic_int_t placed[8]{};
 	std::array<std::pair<u32, std::vector<sys_spu_segment>>, 8> imgs; // Entry points, SPU image segments
 	std::array<std::array<u64, 4>, 8> args; // SPU Thread Arguments
 
-	shared_ptr<lv2_event_queue> ep_run; // port for SYS_SPU_THREAD_GROUP_EVENT_RUN events
-	shared_ptr<lv2_event_queue> ep_exception; // TODO: SYS_SPU_THREAD_GROUP_EVENT_EXCEPTION
-	shared_ptr<lv2_event_queue> ep_sysmodule; // TODO: SYS_SPU_THREAD_GROUP_EVENT_SYSTEM_MODULE
+	// Connected and disconnected with compare-and-swap
+	atomic_ptr<lv2_event_queue> ep_run; // port for SYS_SPU_THREAD_GROUP_EVENT_RUN events
+	atomic_ptr<lv2_event_queue> ep_exception; // TODO: SYS_SPU_THREAD_GROUP_EVENT_EXCEPTION
+	atomic_ptr<lv2_event_queue> ep_sysmodule; // TODO: SYS_SPU_THREAD_GROUP_EVENT_SYSTEM_MODULE
 
 	lv2_spu_group(std::string name, u32 num, s32 _prio, s32 type, lv2_memory_container* ct, bool uses_scheduler, u32 mem_size) noexcept
 		: name(std::move(name))
@@ -342,17 +352,20 @@ struct lv2_spu_group
 
 	CellError send_run_event(u64 data1, u64 data2, u64 data3) const
 	{
-		return ep_run ? ep_run->send(SYS_SPU_THREAD_GROUP_EVENT_RUN_KEY, data1, data2, data3) : CELL_ENOTCONN;
+		const auto queue = ep_run.load();
+		return queue ? queue->send(SYS_SPU_THREAD_GROUP_EVENT_RUN_KEY, data1, data2, data3) : CELL_ENOTCONN;
 	}
 
 	CellError send_exception_event(u64 data1, u64 data2, u64 data3) const
 	{
-		return ep_exception ? ep_exception->send(SYS_SPU_THREAD_GROUP_EVENT_EXCEPTION_KEY, data1, data2, data3) : CELL_ENOTCONN;
+		const auto queue = ep_exception.load();
+		return queue ? queue->send(SYS_SPU_THREAD_GROUP_EVENT_EXCEPTION_KEY, data1, data2, data3) : CELL_ENOTCONN;
 	}
 
 	CellError send_sysmodule_event(u64 data1, u64 data2, u64 data3) const
 	{
-		return ep_sysmodule ? ep_sysmodule->send(SYS_SPU_THREAD_GROUP_EVENT_SYSTEM_MODULE_KEY, data1, data2, data3) : CELL_ENOTCONN;
+		const auto queue = ep_sysmodule.load();
+		return queue ? queue->send(SYS_SPU_THREAD_GROUP_EVENT_SYSTEM_MODULE_KEY, data1, data2, data3) : CELL_ENOTCONN;
 	}
 
 	static std::pair<named_thread<spu_thread>*, shared_ptr<lv2_spu_group>> get_thread(u32 id);

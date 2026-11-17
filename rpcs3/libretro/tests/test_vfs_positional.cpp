@@ -1872,6 +1872,39 @@ int main()
 			std::printf("  spu: the MFC proxy command written by 5 threads at once 2000 times, every register kept\n");
 		}
 
+		// An SPU's inbound mailbox, reserved when empty as
+		// sys_spu_thread_send_event does: one compare-and-swap, with no
+		// turn. Four threads at once, 2000 times: one has it each time
+		{
+			spu_channel_4_t ch{};
+			int wrong = 0;
+
+			for (int round = 0; round < 2000; round++)
+			{
+				ch.clear();
+				retro_atomic_int_t won{};
+				std::thread racers[4];
+
+				for (u32 r = 0; r < 4; r++)
+				{
+					racers[r] = std::thread([&ch, &won, r]
+					{
+						if (ch.try_set_if_empty(100 + r))
+							retro_atomic_fetch_add_int(&won, 1);
+					});
+				}
+
+				for (auto& t : racers)
+					t.join();
+
+				u32 out[4]{};
+				wrong += retro_atomic_load_acquire_int(&won) != 1 || ch.try_read(out) != 1 || out[0] < 100 || out[0] > 103;
+			}
+
+			CHECK(wrong == 0);
+			std::printf("  spu: an inbound mailbox reserved by 4 threads at once 2000 times, %d wrong\n", wrong);
+		}
+
 		// What a lookup costs one thread: the reader lock, and the pin
 		{
 			const u32 id = make_mutex();

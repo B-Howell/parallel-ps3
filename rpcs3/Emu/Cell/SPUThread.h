@@ -452,6 +452,22 @@ struct spu_channel_4_t
 		return atomic_storage<u8>::load(std::as_const(values).raw().count);
 	}
 
+	// One value put in when the mailbox is empty (a reply the SPU reserves
+	// before its syscall's answer): false when it is not
+	bool try_set_if_empty(u32 value0)
+	{
+		return values.atomic_op([&](sync_var_t& data)
+		{
+			if (data.count)
+			{
+				return false;
+			}
+
+			data = {0, 1, data.value3_inval, value0, 0, 0};
+			return true;
+		});
+	}
+
 	void set_values(u32 count, u32 value0, u32 value1 = 0, u32 value2 = 0, u32 value3 = 0)
 	{
 		this->values.raw() = { 0, static_cast<u8>(count), {}, value0, value1, value2 };
@@ -844,8 +860,31 @@ public:
 	atomic_t<status_npc_sync_var> status_npc{};
 	std::array<spu_int_ctrl_t, 3> int_ctrl{}; // SPU Class 0, 1, 2 Interrupt Management
 
-	std::array<std::pair<u32, shared_ptr<lv2_event_queue>>, 32> spuq{}; // Event Queue Keys for SPU Thread
-	shared_ptr<lv2_event_queue> spup[64]; // SPU Ports
+	// Event Queue Keys for SPU Thread: an entry is claimed (binding or
+	// unbinding: 1) and published (bound: 2) with compare-and-swap, its key
+	// and queue written between, so the SPU reads a bound entry whole with
+	// no lock and no turn
+	struct spuq_entry
+	{
+		retro_atomic_int_t state{};
+		retro_atomic_int_t key{};
+		atomic_ptr<lv2_event_queue> queue;
+	};
+
+	enum : int
+	{
+		spuq_free = 0,
+		spuq_changing = 1,
+		spuq_bound = 2,
+	};
+
+	std::array<spuq_entry, 32> spuq{};
+
+	// The queue bound to @key, if it still exists
+	shared_ptr<lv2_event_queue> get_spuq(u32 key);
+
+	// SPU Ports: connected and disconnected with compare-and-swap
+	atomic_ptr<lv2_event_queue> spup[64];
 	spu_channel exit_status{}; // Threaded SPU exit status (not a channel, but the interface fits)
 	atomic_t<u32> last_exit_status; // Value to be written in exit_status after checking group termination
 	lv2_spu_group* const group; // SPU Thread Group (access by the spu threads in the group only! From other threads obtain a shared pointer to group using group ID)

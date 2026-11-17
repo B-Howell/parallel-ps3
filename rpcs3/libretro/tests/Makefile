@@ -831,7 +831,7 @@ HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellIme
 LOCK_GUARD_MAX := 303
 # turn_call (turn_calls.h) is a lock without a lock object - a queued caller
 # still waits - and is going too: the count may only fall
-TURN_CALL_MAX := 34
+TURN_CALL_MAX := 16
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -1044,6 +1044,8 @@ check: all
 	@if grep -nE "s_rpcn_mutex|s_sign_mutex" ../../Emu/Cell/lv2/sys_net/*.cpp ../../Emu/Cell/lv2/sys_net/*.h; then echo "p2p: a message queue lock is back - the messages go on mpsc_stacks"; exit 1; else echo "p2p: the message queues take no lock"; fi
 	@# lv2 timers: their state one 128-bit word changed with compare-and-swap (sys_timer_ctrl.c), the queue they send to put in place whole (atomic_ptr)
 	@if grep -nE "turn_call|turn_calls|lock_guard|shared_mutex|check_unlocked" ../../Emu/Cell/lv2/sys_timer.cpp ../../Emu/Cell/lv2/sys_timer.h; then echo "sys_timer: a turn or a lock is back - the timer's state is sys_timer_ctrl.c's word"; exit 1; else echo "sys_timer: no turn, no lock"; fi
+	@# SPU ports, queue bindings and group event ports: atomic pointers, connected with compare-and-swap; threads placed with claimed places; no group turn
+	@if grep -nE "shared_ptr<lv2_event_queue> spup\\[|std::pair<u32, shared_ptr<lv2_event_queue>>|shared_ptr<lv2_event_queue> ep_" ../../Emu/Cell/SPUThread.h ../../Emu/Cell/lv2/sys_spu.h; then echo "spu: a port, queue binding or group event port is a plain shared_ptr again - read by the SPU as it is connected, it is an atomic_ptr"; exit 1; else echo "spu: ports and bindings atomic, no turn"; fi
 	@# lv2 event queues: the events a ring, the waiters two words (lv2_evq.c); no turn, no spin, here or where SPUs and the RSX use them
 	@if grep -nE "turn_call|turn_calls|busy_wait|lv2_events_|->pq\\b|->sq\\b" ../../Emu/Cell/lv2/sys_event.cpp ../../Emu/Cell/lv2/sys_event.h; then echo "sys_event: a turn, a spin or the linked queues are back - the events and waiters are lv2_evq.c's"; exit 1; elif grep -nE "queue->turns|held->turns|lv2_events_|turn_calls_busy" ../../Emu/Cell/SPUThread.cpp ../../Emu/Cell/lv2/sys_rsx.cpp || grep -n "busy_wait" ../../Emu/Cell/lv2/sys_rsx.cpp; then echo "sys_event: a queue's turn or a spin on it is back in the SPU or RSX code"; exit 1; else echo "sys_event: no turn, no spin"; fi
 	@# sys_rsx: the RSX context's state changed with no turn, the context and the device's address claimed with compare-and-swap, no sleep for the RSX thread

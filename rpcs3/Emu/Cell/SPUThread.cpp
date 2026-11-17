@@ -1960,15 +1960,17 @@ spu_thread::spu_thread(utils::serial& ar, lv2_spu_group* group)
 
 	if (get_type() == spu_type::threaded)
 	{
-		for (auto& pair : spuq)
+		for (auto& entry : spuq)
 		{
-			ar(pair.first);
-			pair.second = idm::get_unlocked<lv2_obj, lv2_event_queue>(ar.pop<u32>());
+			retro_atomic_store_release_int(&entry.key, static_cast<int>(ar.pop<u32>()));
+			auto queue = idm::get_unlocked<lv2_obj, lv2_event_queue>(ar.pop<u32>());
+			retro_atomic_store_release_int(&entry.state, queue ? spuq_bound : spuq_free);
+			entry.queue.store(std::move(queue));
 		}
 
 		for (auto& q : spup)
 		{
-			q = idm::get_unlocked<lv2_obj, lv2_event_queue>(ar.pop<u32>());
+			q.store(idm::get_unlocked<lv2_obj, lv2_event_queue>(ar.pop<u32>()));
 		}
 	}
 	else
@@ -2012,15 +2014,18 @@ void spu_thread::save(utils::serial& ar)
 
 	if (get_type() == spu_type::threaded)
 	{
-		for (const auto& [key, q] : spuq)
+		for (auto& entry : spuq)
 		{
-			ar(key);
+			const bool bound = retro_atomic_load_acquire_int(&entry.state) == spuq_bound;
+			const auto q = bound ? entry.queue.load() : shared_ptr<lv2_event_queue>{};
+			ar(bound ? static_cast<u32>(retro_atomic_load_acquire_int(&entry.key)) : 0u);
 			ar(lv2_obj::check(q) ? q->id : 0);
 		}
 
 		for (auto& p : spup)
 		{
-			ar(lv2_obj::check(p) ? p->id : 0);
+			const auto q = p.load();
+			ar(lv2_obj::check(q) ? q->id : 0);
 		}
 	}
 	else
@@ -6096,27 +6101,17 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 
 				spu_function_logger logger(*this, "sys_spu_thread_send_event");
 
-				shared_ptr<lv2_event_queue> queue;
-
-				// In the group's turn; false for a mailbox not empty
-				if (!turn_call(&group->turns, [&]
+				// A place reserved in the inbound mailbox when it is empty, in one
+				// compare-and-swap of it: no turn
+				if (!ch_in_mbox.try_set_if_empty(CELL_OK))
 				{
-					if (ch_in_mbox.get_count())
-					{
-						// TODO: Check this
-						spu_log.error("sys_spu_thread_send_event(spup=%d, data0=0x%x, data1=0x%x): In_MBox is not empty (%d)", spup, (value & 0x00ffffff), data, ch_in_mbox.get_count());
-						ch_in_mbox.set_values(1, CELL_EBUSY);
-						return false;
-					}
-
-					// Reserve a place in the inbound mailbox
-					ch_in_mbox.set_values(1, CELL_OK);
-					queue = this->spup[spup];
-					return true;
-				}))
-				{
+					// TODO: Check this
+					spu_log.error("sys_spu_thread_send_event(spup=%d, data0=0x%x, data1=0x%x): In_MBox is not empty (%d)", spup, (value & 0x00ffffff), data, ch_in_mbox.get_count());
+					ch_in_mbox.set_values(1, CELL_EBUSY);
 					return true;
 				}
+
+				const shared_ptr<lv2_event_queue> queue = this->spup[spup].load();
 
 				const auto res = !queue ? CELL_ENOTCONN :
 					queue->send(SYS_SPU_THREAD_EVENT_USER_KEY, lv2_id, (u64{spup} << 32) | (value & 0x00ffffff), data);
@@ -6153,7 +6148,7 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 
 				spu_function_logger logger(*this, "sys_spu_thread_throw_event");
 
-				const shared_ptr<lv2_event_queue> queue = turn_call(&group->turns, [&] { return this->spup[spup]; });
+				const shared_ptr<lv2_event_queue> queue = this->spup[spup].load();
 
 				// TODO: check passing spup value
 				if (auto res = queue ? queue->send(SYS_SPU_THREAD_EVENT_USER_KEY, lv2_id, (u64{spup} << 32) | (value & 0x00ffffff), data) : CELL_ENOTCONN)
@@ -6476,6 +6471,22 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 	fmt::throw_exception("Unknown/illegal channel in WRCH (ch=%d [%s], value=0x%x)", ch, ch < 128 ? spu_ch_name[ch] : "???", value);
 }
 
+shared_ptr<lv2_event_queue> spu_thread::get_spuq(u32 key)
+{
+	for (auto& v : spuq)
+	{
+		if (retro_atomic_load_acquire_int(&v.state) == spuq_bound && static_cast<u32>(retro_atomic_load_acquire_int(&v.key)) == key)
+		{
+			if (auto queue = v.queue.load(); lv2_obj::check(queue))
+			{
+				return queue;
+			}
+		}
+	}
+
+	return {};
+}
+
 extern void resume_spu_thread_group_from_waiting(spu_thread& spu, std::array<shared_ptr<named_thread<spu_thread>>, 8>& notify_spus)
 {
 	const auto group = spu.group;
@@ -6545,21 +6556,9 @@ bool spu_thread::stop_and_signal(u32 code)
 		return true;
 	}
 
-	auto get_queue = [this](u32 spuq) -> const shared_ptr<lv2_event_queue>&
+	auto get_queue = [this](u32 spuq)
 	{
-		for (auto& v : this->spuq)
-		{
-			if (spuq == v.first)
-			{
-				if (lv2_obj::check(v.second))
-				{
-					return v.second;
-				}
-			}
-		}
-
-		static const shared_ptr<lv2_event_queue> empty;
-		return empty;
+		return get_spuq(spuq);
 	};
 
 	switch (code)
@@ -6645,7 +6644,7 @@ bool spu_thread::stop_and_signal(u32 code)
 				thread_ctrl::wait_on(state, old);
 			}
 
-			queue = turn_call(&group->turns, [&]() -> shared_ptr<lv2_event_queue> { return get_queue(spuq); });
+			queue = get_queue(spuq);
 
 			if (!queue)
 			{
@@ -6812,7 +6811,7 @@ bool spu_thread::stop_and_signal(u32 code)
 
 		shared_ptr<lv2_event_queue> queue;
 
-		queue = turn_call(&group->turns, [&]() -> shared_ptr<lv2_event_queue> { return get_queue(spuq); });
+		queue = get_queue(spuq);
 
 		if (!queue || !retro_atomic_load_acquire_int(&queue->exists))
 		{
