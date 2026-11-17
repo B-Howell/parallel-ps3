@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- Three more places take no lock:
+  - **sys_usbd's event waiters:** the events already belonged to the USB thread, but the threads waiting for one were a list under a mutex. Now that list belongs to the USB thread too, and taking an event or joining the waiters is done there (`on_thread`).
+    - A waiter given its event before it has gone to sleep has that sleep cancelled, as `sys_event_queue_receive` does.
+    - A thread stopping asks the USB thread whether it is still waiting.
+  - **The PPU linkage tables:** these are the exports and imports made as a module loads or unloads, plus the library locks and the PRX names. They took two mutexes and a third for the names. They now belong to the HLE thread, and every change to them is made there (`hle_call`). Looking an export up already took no lock.
+  - **The PNG encoder:** it kept a copy of its config and resources under a mutex, to check a picture against three limits. The limits are now one 64-bit word; the resources it never read are gone.
+  - `std::lock_guard` count 183. A check fails if a lock comes back in any of these. No new test: they use the USB and HLE threads' hand-over (`owner_calls`), which `test_owner_calls` and `test_hle_service` already cover, and only a game drives the paths here. Not yet run on a game.
 - **The on-screen keyboard's text takes no lock.** The text cellOskDialog serves to the game was a buffer under a `shared_mutex`, taken by eight calls; three of them did not touch the text at all, and one held it while waiting for the game's force-finish callback.
   - The text now lives in a new C89 module, `osk_text.c`. Each set writes a whole text into a node from a fixed pool of eight and publishes it by swapping a pointer.
   - The node it replaces goes back to the pool once no reader is in (`retro_retire`). Getting the text copies it from the published node straight into the game's buffer, so a reader never sees half of one text and half of another.

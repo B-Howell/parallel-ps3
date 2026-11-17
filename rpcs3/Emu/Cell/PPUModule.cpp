@@ -5,6 +5,7 @@
 #include "Utilities/StrUtil.h"
 #include "Utilities/address_range.h"
 #include "Utilities/lf_u64_map.h"
+#include "Emu/Cell/Modules/hle_service.h"
 #include "util/serialization.hpp"
 #include <lrc_hash.h>
 #include "Crypto/unself.h"
@@ -29,7 +30,6 @@
 #include <map>
 #include <span>
 #include <set>
-#include <shared_mutex>
 #include <algorithm>
 #include "util/asm.hpp"
 
@@ -208,9 +208,10 @@ struct ppu_linkage_info
 
 	// Module map
 	std::map<std::string, module_data> modules{};
+	// The tables, and the libraries' locks, are the HLE thread's: every
+	// change to them is made there (hle_call), one at a time, so they take
+	// no lock
 	std::map<std::string, atomic_t<bool>, std::less<>> lib_lock;
-	shared_mutex lib_lock_mutex;
-	shared_mutex mutex;
 
 	// A function's link entry by its module and FNID, for those who only
 	// look an export up and should not wait on the lock the tables are built
@@ -220,7 +221,7 @@ struct ppu_linkage_info
 	lf_u64_map exports{};
 
 	// The module's link entry for a function, made if it is not there, and
-	// published. Under the mutex, as every change to the tables is.
+	// published. On the HLE thread, as every change to the tables is.
 	module_data::info& function_link(module_data& data, std::string_view module_name, u32 fnid)
 	{
 		module_data::info& flink = data.functions[fnid];
@@ -762,35 +763,33 @@ extern bool ppu_register_library_lock(std::string_view libname, bool lock_lib)
 		return false;
 	}
 
-	reader_lock lock(link->lib_lock_mutex);
-
-	if (auto it = link->lib_lock.find(libname); it != link->lib_lock.cend())
+	return hle_call([&]() -> bool
 	{
-		return lock_lib ? !it->second.test_and_set() : it->second.test_and_reset();
-	}
+		if (auto it = link->lib_lock.find(libname); it != link->lib_lock.cend())
+		{
+			return lock_lib ? !it->second.test_and_set() : it->second.test_and_reset();
+		}
 
-	if (!lock_lib)
-	{
-		// If lock hasn't been installed it wasn't locked in the first place
-		return false;
-	}
+		if (!lock_lib)
+		{
+			// If lock hasn't been installed it wasn't locked in the first place
+			return false;
+		}
 
-	lock.upgrade();
+		auto& lib_lock = link->lib_lock.emplace(std::string{libname}, false).first->second;
 
-	auto& lib_lock = link->lib_lock.emplace(std::string{libname}, false).first->second;
-
-	return !lib_lock.test_and_set();
+		return !lib_lock.test_and_set();
+	});
 }
 
 // Load and register exports; return special exports found (nameless module)
-static auto ppu_load_exports(const ppu_module<lv2_obj>& _module, ppu_linkage_info* link, u32 exports_start, u32 exports_end, bool for_observing_callbacks = false, std::vector<u32>* funcs = nullptr, std::basic_string<char>* loaded_flags = nullptr)
+// On the HLE thread, which the linkage tables are (ppu_load_exports)
+static std::unordered_map<u32, u32> ppu_load_exports_owned(const ppu_module<lv2_obj>& _module, ppu_linkage_info* link, u32 exports_start, u32 exports_end, bool for_observing_callbacks, std::vector<u32>* funcs, std::basic_string<char>* loaded_flags)
 {
 	std::unordered_map<u32, u32> result;
 
 	// Flags were already provided meaning it's an unload operation
 	const bool unload_exports = loaded_flags && !loaded_flags->empty();
-
-	std::lock_guard lock(link->mutex);
 
 	usz unload_index = 0;
 	ppu_prx_module_info lib{};
@@ -1020,12 +1019,19 @@ static auto ppu_load_exports(const ppu_module<lv2_obj>& _module, ppu_linkage_inf
 
 using import_result_t = std::pair<std::unordered_map<u32, void*>, std::unordered_map<u32, u32>>;
 
-static import_result_t ppu_load_imports(const ppu_module<lv2_obj>& _module, std::vector<ppu_reloc>& relocs, ppu_linkage_info* link, u32 imports_start, u32 imports_end)
+static std::unordered_map<u32, u32> ppu_load_exports(const ppu_module<lv2_obj>& _module, ppu_linkage_info* link, u32 exports_start, u32 exports_end, bool for_observing_callbacks = false, std::vector<u32>* funcs = nullptr, std::basic_string<char>* loaded_flags = nullptr)
+{
+	return hle_call([&]()
+	{
+		return ppu_load_exports_owned(_module, link, exports_start, exports_end, for_observing_callbacks, funcs, loaded_flags);
+	});
+}
+
+// On the HLE thread, which the linkage tables are (ppu_load_imports)
+static import_result_t ppu_load_imports_owned(const ppu_module<lv2_obj>& _module, std::vector<ppu_reloc>& relocs, ppu_linkage_info* link, u32 imports_start, u32 imports_end)
 {
 	import_result_t result;
 	auto& [import_table, nid_to_use_addr] = result;
-
-	std::lock_guard lock(link->mutex);
 
 	for (u32 addr = imports_start; addr < imports_end;)
 	{
@@ -1113,6 +1119,14 @@ static import_result_t ppu_load_imports(const ppu_module<lv2_obj>& _module, std:
 	}
 
 	return result;
+}
+
+static import_result_t ppu_load_imports(const ppu_module<lv2_obj>& _module, std::vector<ppu_reloc>& relocs, ppu_linkage_info* link, u32 imports_start, u32 imports_end)
+{
+	return hle_call([&]()
+	{
+		return ppu_load_imports_owned(_module, relocs, link, imports_start, imports_end);
+	});
 }
 
 // For _sys_prx_register_module
@@ -1566,7 +1580,8 @@ void try_spawn_ppu_if_exclusive_program(const ppu_module<lv2_obj>& m)
 
 struct prx_names_table
 {
-	shared_mutex mutex;
+	// The HLE thread's: names are added there (hle_call), so with no lock;
+	// the table of where they are is read with none
 	std::set<std::string, std::less<>> registered;
 	atomic_t<const char*> lut[0x1000'0000 / 0x1'0000]{};
 
@@ -1592,9 +1607,7 @@ struct prx_names_table
 			name = name.substr(0, name.size() - (".sprx"sv).size());
 		}
 
-		std::lock_guard lock(mutex);
-
-		const auto ptr = registered.emplace(name).first->c_str();
+		const auto ptr = hle_call([&]() { return registered.emplace(name).first->c_str(); });
 
 		for (auto& seg : prx.segs)
 		{
@@ -2089,19 +2102,18 @@ void ppu_unload_prx(const lv2_prx& prx)
 		return;
 	}
 
-	std::unique_lock lock(g_fxo->get<ppu_linkage_info>().mutex, std::defer_lock);
-
-	// Clean linkage info
-	for (auto& imp : prx.imports)
+	// Clean linkage info, on the HLE thread the tables are
+	if (!prx.imports.empty())
 	{
-		if (!lock)
+		hle_call([&]()
 		{
-			lock.lock();
-		}
-
-		auto pinfo = static_cast<ppu_linkage_info::module_data::info*>(imp.second);
-		pinfo->frefss.erase(imp.first);
-		pinfo->imports.erase(imp.first);
+			for (auto& imp : prx.imports)
+			{
+				auto pinfo = static_cast<ppu_linkage_info::module_data::info*>(imp.second);
+				pinfo->frefss.erase(imp.first);
+				pinfo->imports.erase(imp.first);
+			}
+		});
 	}
 
 	//for (auto& exp : prx.exports)
@@ -2120,11 +2132,6 @@ void ppu_unload_prx(const lv2_prx& prx)
 	//		pinfo->export_addr = 0;
 	//	}
 	//}
-
-	if (lock)
-	{
-		lock.unlock();
-	}
 
 	if (prx.path.ends_with("sys/external/liblv2.sprx"sv))
 	{

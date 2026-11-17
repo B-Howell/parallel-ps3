@@ -175,8 +175,8 @@ public:
 
 	retro_atomic_int_t is_init{};
 
-	// sys_usbd_receive_event PPU Threads
-	shared_mutex mutex_sq;
+	// sys_usbd_receive_event PPU Threads: the USB thread's, as the events
+	// are (on_thread)
 	ppu_thread* sq{};
 
 	retro_atomic_64_t usb_hotplug_timeout{-1};
@@ -988,22 +988,24 @@ bool usb_handler_thread::get_event(vm::ptr<u64>& arg1, vm::ptr<u64>& arg2, vm::p
 void usb_handler_thread::add_event(u64 arg1, u64 arg2, u64 arg3)
 {
 	// sys_usbd events use an internal event queue with SYS_SYNC_PRIORITY protocol
-	std::lock_guard lock_sq(mutex_sq);
-
-	if (const auto cpu = lv2_obj::schedule<ppu_thread>(sq, SYS_SYNC_PRIORITY))
+	// The queue and its waiters are the USB thread's: from it, at once
+	on_thread([&]()
 	{
-		sys_usbd.trace("Sending event(queue): arg1=0x%x arg2=0x%x arg3=0x%x", arg1, arg2, arg3);
-		cpu->gpr[4] = arg1;
-		cpu->gpr[5] = arg2;
-		cpu->gpr[6] = arg3;
-		lv2_obj::awake(cpu);
-	}
-	else
-	{
-		sys_usbd.trace("Sending event: arg1=0x%x arg2=0x%x arg3=0x%x", arg1, arg2, arg3);
-		const usbd_event usb_event{arg1, arg2, arg3};
-		ensure(usbd_events_push_back_growing(&usbd_events, &usb_event));
-	}
+		if (const auto cpu = lv2_obj::schedule<ppu_thread>(sq, SYS_SYNC_PRIORITY))
+		{
+			sys_usbd.trace("Sending event(queue): arg1=0x%x arg2=0x%x arg3=0x%x", arg1, arg2, arg3);
+			cpu->gpr[4] = arg1;
+			cpu->gpr[5] = arg2;
+			cpu->gpr[6] = arg3;
+			lv2_obj::awake(cpu);
+		}
+		else
+		{
+			sys_usbd.trace("Sending event: arg1=0x%x arg2=0x%x arg3=0x%x", arg1, arg2, arg3);
+			const usbd_event usb_event{arg1, arg2, arg3};
+			ensure(usbd_events_push_back_growing(&usbd_events, &usb_event));
+		}
+	});
 }
 
 u32 usb_handler_thread::get_free_transfer_id()
@@ -1588,27 +1590,44 @@ error_code sys_usbd_receive_event(ppu_thread& ppu, u32 handle, vm::ptr<u64> arg1
 
 	auto& usbh = g_fxo->get<named_thread<usb_handler_thread>>();
 
-	{
-		std::lock_guard lock_sq(usbh.mutex_sq);
+	// The events and their waiters are the USB thread's: an event taken, or
+	// this thread one of the waiters, there (on_thread) - no lock. A waiter
+	// may be given an event before it has gone to sleep: that sleep is then
+	// cancelled (lv2_obj::sleep gives false), as sys_event_queue_receive has it
+	lv2_obj::prepare_for_sleep(ppu);
+	ppu.cancel_sleep = 1;
 
+	const int got = usbh.on_thread([&]() -> int
+	{
 		if (!retro_atomic_load_acquire_int(&usbh.is_init))
-			return CELL_EINVAL;
+			return -1;
 
 		if (usbh.get_event(arg1, arg2, arg3))
-		{
-			// hack for Guitar Hero Live
-			// Attaching the device too fast seems to result in a nullptr along the way
-			if (*arg1 == SYS_USBD_ATTACH)
-				lv2_obj::sleep(ppu), lv2_obj::wait_timeout(5000);
+			return 1;
 
-			return CELL_OK;
-		}
-
-		lv2_obj::sleep(ppu);
 		lv2_obj::emplace(usbh.sq, &ppu);
+		return 0;
+	});
+
+	if (got)
+	{
+		ppu.cancel_sleep = 0;
+
+		if (got < 0)
+			return CELL_EINVAL;
+
+		// hack for Guitar Hero Live
+		// Attaching the device too fast seems to result in a nullptr along the way
+		if (*arg1 == SYS_USBD_ATTACH)
+			lv2_obj::sleep(ppu), lv2_obj::wait_timeout(5000);
+
+		return CELL_OK;
 	}
 
-	while (auto state = +ppu.state)
+	const bool slept = lv2_obj::sleep(ppu);
+	ppu.cancel_sleep = 0;
+
+	while (auto state = slept ? +ppu.state : bs_t<cpu_flag>{})
 	{
 		if (state & cpu_flag::signal && ppu.state.test_and_reset(cpu_flag::signal))
 		{
@@ -1618,16 +1637,22 @@ error_code sys_usbd_receive_event(ppu_thread& ppu, u32 handle, vm::ptr<u64> arg1
 
 		if (is_stopped(state))
 		{
-			std::lock_guard lock(usbh.mutex_sq);
-
-			for (auto cpu = +usbh.sq; cpu; cpu = cpu->next_cpu)
+			const bool waiting = usbh.on_thread([&]()
 			{
-				if (cpu == &ppu)
+				for (auto cpu = +usbh.sq; cpu; cpu = cpu->next_cpu)
 				{
-					ppu.state += cpu_flag::again;
-					sys_usbd.trace("sys_usbd_receive_event: aborting");
-					return {};
+					if (cpu == &ppu)
+						return true;
 				}
+
+				return false;
+			});
+
+			if (waiting)
+			{
+				ppu.state += cpu_flag::again;
+				sys_usbd.trace("sys_usbd_receive_event: aborting");
+				return {};
 			}
 
 			break;

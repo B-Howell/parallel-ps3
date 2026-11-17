@@ -3,6 +3,8 @@
 #include "Emu/IdManager.h"
 #include "cellPngEnc.h"
 
+#include <retro_atomic.h>
+
 LOG_CHANNEL(cellPngEnc);
 
 template <>
@@ -28,12 +30,18 @@ void fmt_class_string<CellPngEncError>::format(std::string& out, u64 arg)
 	});
 }
 
+// All an encoder keeps is its config's limits, which the picture is
+// checked against: one word, written and read whole with no lock - the
+// width and height in 24 bits each (at most 1000000, check_config), the
+// bit depth in the top 16
 struct png_encoder
 {
-	shared_mutex mutex;
-	CellPngEncConfig config{};
-	CellPngEncResource resource{};
-	CellPngEncResourceEx resourceEx{};
+	retro_atomic_64_t limits{0};
+
+	void set(const CellPngEncConfig& config)
+	{
+		retro_atomic_store_release_64(&limits, static_cast<s64>(u64{config.maxWidth} | (u64{config.maxHeight} << 24) | (u64{config.maxBitDepth} << 48)));
+	}
 };
 
 bool check_config(vm::cptr<CellPngEncConfig> config)
@@ -96,12 +104,7 @@ error_code cellPngEncOpen(vm::cptr<CellPngEncConfig> config, vm::cptr<CellPngEnc
 		return CELL_PNGENC_ERROR_ARG;
 	}
 
-	auto& encoder = g_fxo->get<png_encoder>();
-	{
-		std::lock_guard lock(encoder.mutex);
-		encoder.config = *config;
-		encoder.resource = *resource;
-	}
+	g_fxo->get<png_encoder>().set(*config);
 
 	return CELL_OK;
 }
@@ -128,12 +131,7 @@ error_code cellPngEncOpenEx(vm::cptr<CellPngEncConfig> config, vm::cptr<CellPngE
 		return CELL_PNGENC_ERROR_ARG;
 	}
 
-	auto& encoder = g_fxo->get<png_encoder>();
-	{
-		std::lock_guard lock(encoder.mutex);
-		encoder.config = *config;
-		encoder.resourceEx = *resource;
-	}
+	g_fxo->get<png_encoder>().set(*config);
 
 	return CELL_OK;
 }
@@ -173,16 +171,13 @@ error_code cellPngEncEncodePicture(u32 handle, vm::cptr<CellPngEncPicture> pictu
 		return CELL_PNGENC_ERROR_ARG;
 	}
 
-	auto& encoder = g_fxo->get<png_encoder>();
-	{
-		std::lock_guard lock(encoder.mutex);
+	const u64 limits = static_cast<u64>(retro_atomic_load_acquire_64(&g_fxo->get<png_encoder>().limits));
 
-		if (picture->width > encoder.config.maxWidth ||
-			picture->height > encoder.config.maxHeight ||
-			picture->bitDepth > encoder.config.maxBitDepth)
-		{
-			return CELL_PNGENC_ERROR_ARG;
-		}
+	if (picture->width > (limits & 0xffffff) ||
+		picture->height > ((limits >> 24) & 0xffffff) ||
+		picture->bitDepth > (limits >> 48))
+	{
+		return CELL_PNGENC_ERROR_ARG;
 	}
 
 	return CELL_OK;
