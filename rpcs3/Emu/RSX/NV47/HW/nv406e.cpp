@@ -87,7 +87,7 @@ namespace rsx
 					}
 				}
 
-				if (RSX(ctx)->external_interrupt_lock ||
+				if (RSX(ctx)->pause_asked() ||
 					(RSX(ctx)->state & (cpu_flag::dbg_global_pause + cpu_flag::exit)) == cpu_flag::dbg_global_pause)
 				{
 					RSX(ctx)->cpu_wait({});

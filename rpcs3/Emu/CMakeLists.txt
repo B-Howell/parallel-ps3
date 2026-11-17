@@ -499,6 +499,7 @@ target_sources(rpcs3_emu PRIVATE
     RSX/Common/guest_page_locks.c
     RSX/Common/guest_faults.c
     RSX/Common/rsx_wake.c
+    RSX/Common/rsx_hold.c
     RSX/Common/texture_cache.cpp
     RSX/Common/texture_cache_types.cpp
     RSX/Core/RSXContext.cpp

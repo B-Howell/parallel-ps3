@@ -512,6 +512,7 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/rpcs3/Emu/RSX/Common/guest_page_locks.c \
 	$(CORE_DIR)/rpcs3/Emu/RSX/Common/guest_faults.c \
 	$(CORE_DIR)/rpcs3/Emu/RSX/Common/rsx_wake.c \
+	$(CORE_DIR)/rpcs3/Emu/RSX/Common/rsx_hold.c \
 	$(CORE_DIR)/rpcs3/Emu/CPU/jit_host_symbols.c \
 	$(CORE_DIR)/rpcs3/Emu/CPU/cpu_slots.c \
 	$(CORE_DIR)/rpcs3/Emu/CPU/owner_calls.c \

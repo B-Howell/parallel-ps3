@@ -1036,7 +1036,7 @@ namespace rsx
 
 	void thread::cpu_wait(bs_t<cpu_flag> old)
 	{
-		if (external_interrupt_lock)
+		if (pause_asked())
 		{
 			wait_pause();
 		}
@@ -1239,7 +1239,7 @@ namespace rsx
 		while (!test_stopped())
 		{
 			// Wait for external pause events
-			if (external_interrupt_lock)
+			if (pause_asked())
 			{
 				wait_pause();
 
@@ -1302,6 +1302,9 @@ namespace rsx
 		g_fxo->get<rsx::dma_manager>().join();
 		g_fxo->get<vblank_thread>() = thread_state::finished;
 		state += cpu_flag::exit;
+
+		// Gone: a thread in pause, or one coming, is not held up
+		rsx_hold_gone(&m_hold);
 	}
 
 	u64 thread::timestamp()
@@ -3365,18 +3368,15 @@ namespace rsx
 	//Pause/cont wrappers for FIFO ctrl. Never call this from rsx thread itself!
 	void thread::pause()
 	{
-		external_interrupt_lock++;
-
-		while (!external_interrupt_ack && !is_stopped())
-		{
-			utils::pause();
-		}
+		// Woken as the renderer holds (wait_pause) or is gone (on_exit), no
+		// spin
+		rsx_hold_ask(&m_hold);
 	}
 
 	void thread::unpause()
 	{
-		// TODO: Clean this shit up
-		external_interrupt_lock--;
+		// The renderer held looks again (wait_pause)
+		rsx_hold_release(&m_hold, &m_attention);
 	}
 
 	void thread::wait_pause()
@@ -3388,24 +3388,16 @@ namespace rsx
 				g_fxo->get<rsx::dma_manager>().sync();
 			}
 
-			external_interrupt_ack.store(true);
-
-			while (external_interrupt_lock && (cpu_flag::ret - state))
-			{
-				// The thread that asked for the pause, or any other, may be
-				// waiting on this one for a fault of its own
-				if (rsx_guest_faults_pending())
-				{
-					serve_guest_faults();
-				}
-
-				// TODO: Investigate non busy-spinning method
-				utils::pause();
-			}
-
-			external_interrupt_ack.store(false);
+			// Held until the last unpause, or the context freed (cpu_flag::ret,
+			// with attend): woken by either, and by a fault posted - which
+			// the thread that asked for the pause, or any other, may be
+			// waiting on this one for - no spin
+			rsx_hold_park(&m_hold, &m_attention,
+				[](void* ctx) -> int { return !!(cpu_flag::ret - static_cast<thread*>(ctx)->state); },
+				[](void* ctx) { static_cast<thread*>(ctx)->serve_guest_faults(); },
+				this);
 		}
-		while (external_interrupt_lock && (cpu_flag::ret - state));
+		while (pause_asked() && (cpu_flag::ret - state));
 	}
 
 	u32 thread::get_load()

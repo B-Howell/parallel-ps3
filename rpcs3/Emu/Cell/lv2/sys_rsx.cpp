@@ -611,6 +611,9 @@ error_code sys_rsx_context_free(ppu_thread& ppu, u32 context_id)
 
 	render->state += cpu_flag::ret;
 
+	// Held by this thread's pause, the renderer looks again (wait_pause)
+	render->attend();
+
 	// The RSX thread clears it once its task is done, and wakes this one
 	for (auto state = +render->state; state & cpu_flag::ret; state = +render->state)
 	{

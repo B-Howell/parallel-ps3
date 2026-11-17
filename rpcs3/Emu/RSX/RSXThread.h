@@ -2,6 +2,7 @@
 
 #include <retro_atomic.h>
 #include "Common/rsx_wake.h"
+#include "Common/rsx_hold.h"
 #include <deque>
 #include <queues/retro_deque.h>
 
@@ -211,8 +212,9 @@ namespace rsx
 		u32 last_code_jump = 0;
 		u32 last_sema_cmd = 0;
 		u32 last_sema_addr = 0;
-		atomic_t<u32> external_interrupt_lock{ 0 };
-		atomic_t<bool> external_interrupt_ack{ false };
+		// Other threads holding the renderer still (rsx::eng_lock): what
+		// pause asks and waits on, and wait_pause answers
+		rsx_hold_t m_hold{};
 		atomic_t<u32> is_initialized{0};
 
 		bool is_fifo_idle() const;
@@ -537,6 +539,7 @@ namespace rsx
 		void pause();
 		void unpause();
 		void wait_pause();
+		bool pause_asked() { return !!rsx_hold_asked(&m_hold); }
 
 		// Get RSX approximate load in %
 		u32 get_load();
