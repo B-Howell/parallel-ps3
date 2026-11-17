@@ -157,8 +157,6 @@ static void together(void)
       /* (A reader may have been put off the processor while it holds
        * the old one: waited for, woken by its drop - no spin) */
       lf_hazard_await(old);
-      if (lf_hazard_any(old))
-         retro_atomic_inc_int(&bad);
 
       retro_atomic_store_release_int(&old->value, POISON);
    }
