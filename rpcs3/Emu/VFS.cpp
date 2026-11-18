@@ -1201,11 +1201,13 @@ bool vfs::host::rename(const std::string& from, const std::string& to, const lv2
 
 	bool res = false;
 
-	const auto retry_start = std::chrono::steady_clock::now();
-	auto retry_report = retry_start;
 	u64 retry_count = 0;
 
-	for (;; std::this_thread::yield())
+	// Tried again once a frame of retro_run's while the host refuses it (a
+	// file another program holds open), not in a yield loop on the host's
+	// clock; never on retro_run's own thread (the game's threads and
+	// sys_fs's call it, and a stop's teardown, which gives up at once)
+	for (;; )
 	{
 		if (fs::rename(from, to, overwrite))
 		{
@@ -1222,11 +1224,15 @@ bool vfs::host::rename(const std::string& from, const std::string& to, const lv2
 		retry_count++;
 
 		// Report a retry loop which is taking long, it may never end if the error is persistent
-		if (const auto now = std::chrono::steady_clock::now(); now - retry_report >= std::chrono::seconds(1))
+		if (retry_count % 60 == 0)
 		{
-			retry_report = now;
-			vfs_log.warning("vfs::host::rename(): Still retrying after %u attempts and %u ms (from='%s', to='%s', error=%s)", retry_count,
-				static_cast<u64>(std::chrono::duration_cast<std::chrono::milliseconds>(now - retry_start).count()), from, to, fs::g_tls_error);
+			vfs_log.warning("vfs::host::rename(): Still retrying after %u frames (from='%s', to='%s', error=%s)", retry_count, from, to, fs::g_tls_error);
+		}
+
+		if (!libretro_wait_frames(1))
+		{
+			res = false;
+			break;
 		}
 	}
 

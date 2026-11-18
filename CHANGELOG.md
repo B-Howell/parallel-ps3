@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Two waits on the host's clock go by retro_run's frames instead.** Not yet run on a game.
+  - **The RSX FIFO's recovery:** after a dead FIFO is reset, the RSX thread waited 2 ms of the host's time before starting again. It now waits a frame.
+  - **A rename the host refuses:** a rename the host refused (a file another program holds open, which Windows refuses) was tried again in a yield loop, with the host's clock timing its report. It is now tried once a frame, and reported every 60 frames. It is never called on retro_run's own thread: the game's threads and sys_fs's call it, and a stop's teardown gives up at once, as before.
+  - **Tests:** neither has a test of its own. The FIFO's recovery needs a game whose FIFO dies. A refused rename needs a host that refuses one, and this one runs as root, so Linux's permission errors never refuse it. A check fails if the host's clock or the yield loop comes back.
+
 - **The SPU LLVM compile thread no longer runs a sampling thread.** Not yet run on a game.
   - **Before:** while blocks waited to be compiled, a "profiler" thread looked at every SPU's current block every 20 µs of the host's time, behind a lock of its own (`stx::init_mutex`), so the compile thread could hand out the busiest block first.
   - **Why it went:** the compile thread hands every waiting block to the workers as soon as it comes. Between a batch's arrival and its blocks being handed out, the sampler had next to nothing to tell, and it spun on the host's clock while it ran.
