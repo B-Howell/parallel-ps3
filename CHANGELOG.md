@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Socket data is sent and received in place.**
+  - **Receiving:** `recvfrom` allocated a vector the size the game asked for, received into it, returned it by value, and then copied it into the game's buffer. Now it receives straight into the game's buffer: the native socket's `recvfrom`, the DNS hook, and the P2P and P2P stream queues all write there.
+  - **Sending:** `sendto` copied the game's data into a vector first. Now it sends from the game's memory, which stays as it is while the game is in the call.
+  - **P2P sends:** these copied the data again to put the vport header in front. Now the system gathers the header and the data into one datagram: `sendmsg` with two `iovec`s, or `WSASendTo` with two `WSABUF`s, in a new overload of `np::sendto_possibly_ipv6`.
+  - **P2P stream packets coming in:** each was copied into a vector to be checked. It is now checked, with its checksum zeroed, in the port's own receive buffer.
+  - **Bad buffers:** a buffer that is not all there gets `EFAULT` at the start, not partway through.
+  - **No more spinning:** the P2P stream's send no longer spins on `EAGAIN`. A packet that wants an ack is sent again by the retransmitter when due; one that does not is dropped, as a datagram may be.
+  - **Lock parameters gone:** the socket calls drop their `is_lock` parameter, which nothing locks any more.
+  - A check fails if a vector in between, or the spin, comes back. No test drives the calls: only a game online does. Not yet run online.
 - **sys_net takes no lock.** Before, each socket had its own mutex, the P2P port list and each port's vports had theirs, the threads to wake had one, and each network thread had one for its loop. That came to 61 `std::lock_guard`s and the rest.
   - **One owner:** all of it now belongs to the network thread, and it alone touches any of it. A syscall, the RPCN and signaling threads, and the P2P stream retransmitter hand what they need done over to it (`net_call`, on `owner_calls`) and wait.
   - **Waking the network thread:** handing a call over pokes its wake-up socket. To make that possible, `owner_calls` gains a waker (`owner_calls_set_waker`), called with every wake, for an owner that waits on something other than its wake word.

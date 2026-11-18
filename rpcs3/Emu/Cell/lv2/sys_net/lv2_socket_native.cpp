@@ -99,11 +99,8 @@ void lv2_socket_native::set_socket(socket_type native_socket, lv2_socket_family 
 	set_dgram_disable_connreset();
 }
 
-std::tuple<bool, s32, shared_ptr<lv2_socket>, sys_net_sockaddr> lv2_socket_native::accept(bool is_lock)
+std::tuple<bool, s32, shared_ptr<lv2_socket>, sys_net_sockaddr> lv2_socket_native::accept()
 {
-	// The network thread's, as the socket is: no lock
-	static_cast<void>(is_lock);
-
 	::sockaddr_storage native_addr;
 	::socklen_t native_addrlen = sizeof(native_addr);
 
@@ -876,34 +873,31 @@ s32 lv2_socket_native::listen(s32 backlog)
 	return -get_last_error(false);
 }
 
-std::optional<std::tuple<s32, std::vector<u8>, sys_net_sockaddr>> lv2_socket_native::recvfrom(s32 flags, u32 len, bool is_lock)
+std::optional<std::pair<s32, sys_net_sockaddr>> lv2_socket_native::recvfrom(s32 flags, u8* dst, u32 len)
 {
-	// The network thread's, as the socket is: no lock
-	static_cast<void>(is_lock);
-
 	if (feign_tcp_conn_failure)
 	{
 		// As if just lost the connection
 		feign_tcp_conn_failure = false;
-		return {{-SYS_NET_ECONNRESET, {},{}}};
+		return {{-SYS_NET_ECONNRESET, {}}};
 	}
 
 	int native_flags = 0;
 	::sockaddr_storage native_addr{};
 	::socklen_t native_addrlen = sizeof(native_addr);
-	std::vector<u8> res_buf(len);
+	// Straight into the game's buffer (@dst): no copy in between
 
 	auto& dnshook = g_fxo->get<np::dnshook>();
 	if (dnshook.is_dns(lv2_id) && dnshook.is_dns_queue(lv2_id))
 	{
 		auto& nph         = g_fxo->get<named_thread<np::np_handler>>();
-		const u32 packet_size = dnshook.take_dns_packet(lv2_id, res_buf.data(), len);
+		const u32 packet_size = dnshook.take_dns_packet(lv2_id, dst, len);
 		native_addr.ss_family                                             = AF_INET;
 		(reinterpret_cast<::sockaddr_in*>(&native_addr))->sin_port        = std::bit_cast<u16, be_t<u16>>(53); // htons(53)
 		(reinterpret_cast<::sockaddr_in*>(&native_addr))->sin_addr.s_addr = nph.get_dns_ip();
 		const auto sn_addr                                                = native_addr_to_sys_net_addr(native_addr);
 
-		return {{::narrow<s32>(packet_size), res_buf, sn_addr}};
+		return {{::narrow<s32>(packet_size), sn_addr}};
 	}
 
 	if (flags & SYS_NET_MSG_PEEK)
@@ -916,12 +910,12 @@ std::optional<std::tuple<s32, std::vector<u8>, sys_net_sockaddr>> lv2_socket_nat
 		native_flags |= MSG_WAITALL;
 	}
 
-	auto native_result = ::recvfrom(native_socket, reinterpret_cast<char*>(res_buf.data()), len, native_flags, reinterpret_cast<struct sockaddr*>(&native_addr), &native_addrlen);
+	auto native_result = ::recvfrom(native_socket, reinterpret_cast<char*>(dst), len, native_flags, reinterpret_cast<struct sockaddr*>(&native_addr), &native_addrlen);
 
 	if (native_result >= 0)
 	{
 		const auto sn_addr = native_addr_to_sys_net_addr(native_addr);
-		return {{::narrow<s32>(native_result), res_buf, sn_addr}};
+		return {{::narrow<s32>(native_result), sn_addr}};
 	}
 #ifdef _WIN32
 	else
@@ -930,13 +924,13 @@ std::optional<std::tuple<s32, std::vector<u8>, sys_net_sockaddr>> lv2_socket_nat
 		if ((native_flags & MSG_PEEK) && get_native_error() == WSAEMSGSIZE)
 		{
 			const auto sn_addr = native_addr_to_sys_net_addr(native_addr);
-			return {{len, res_buf, sn_addr}};
+			return {{static_cast<s32>(len), sn_addr}};
 		}
 		// Windows will return WSASHUTDOWN when the connection is shutdown, POSIX just returns EOF (0) in this situation.
 		if (get_native_error() == WSAESHUTDOWN)
 		{
 			const auto sn_addr = native_addr_to_sys_net_addr(native_addr);
-			return {{0, {}, sn_addr}};
+			return {{0, sn_addr}};
 		}
 	}
 	const auto result = get_last_error(!so_nbio && (flags & SYS_NET_MSG_DONTWAIT) == 0, connecting);
@@ -946,17 +940,14 @@ std::optional<std::tuple<s32, std::vector<u8>, sys_net_sockaddr>> lv2_socket_nat
 
 	if (result)
 	{
-		return {{-result, {}, {}}};
+		return {{-result, {}}};
 	}
 
 	return std::nullopt;
 }
 
-std::optional<s32> lv2_socket_native::sendto(s32 flags, const std::vector<u8>& buf, std::optional<sys_net_sockaddr> opt_sn_addr, bool is_lock)
+std::optional<s32> lv2_socket_native::sendto(s32 flags, std::span<const u8> buf, std::optional<sys_net_sockaddr> opt_sn_addr)
 {
-	// The network thread's, as the socket is: no lock
-	static_cast<void>(is_lock);
-
 	int native_flags                       = 0;
 	int native_result                      = -1;
 	std::optional<sockaddr_in> native_addr = std::nullopt;
@@ -1025,11 +1016,8 @@ std::optional<s32> lv2_socket_native::sendto(s32 flags, const std::vector<u8>& b
 	return std::nullopt;
 }
 
-std::optional<s32> lv2_socket_native::sendmsg(s32 flags, const sys_net_msghdr& msg, bool is_lock)
+std::optional<s32> lv2_socket_native::sendmsg(s32 flags, const sys_net_msghdr& msg)
 {
-	// The network thread's, as the socket is: no lock
-	static_cast<void>(is_lock);
-
 	int native_flags                       = 0;
 	int native_result                      = -1;
 

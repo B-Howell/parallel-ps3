@@ -608,17 +608,18 @@ void lv2_socket_p2ps::send_u2s_packet(std::vector<u8> data, const ::sockaddr_in*
 	inet_ntop(AF_INET, &dst->sin_addr, ip_str, sizeof(ip_str));
 	sys_net.trace("[P2PS] Sending U2S packet on socket %d(id:%d): data(%d, seq %d, require_ack %d) to %s:%d", native_socket, lv2_id, data.size(), seq, require_ack, ip_str, std::bit_cast<u16, be_t<u16>>(dst->sin_port));
 
-	while (np::sendto_possibly_ipv6(native_socket, reinterpret_cast<char*>(data.data()), ::size32(data), dst, 0) == -1)
+	if (np::sendto_possibly_ipv6(native_socket, reinterpret_cast<char*>(data.data()), ::size32(data), dst, 0) == -1)
 	{
 		const sys_net_error err = get_last_error(false);
-		// concurrency on the socket can result in EAGAIN error in which case we try again
-		if (err == SYS_NET_EAGAIN)
-		{
-			continue;
-		}
 
-		sys_net.error("[P2PS] Attempting to send a u2s packet failed(%s)!", err);
-		return;
+		// The send buffer full: not tried again at once. A packet that wants
+		// an ack goes to the retransmitter below, which sends it again when
+		// it is due; one that does not is lost, as a datagram may be
+		if (err != SYS_NET_EAGAIN)
+		{
+			sys_net.error("[P2PS] Attempting to send a u2s packet failed(%s)!", err);
+			return;
+		}
 	}
 
 	// Adds to tcp timeout monitor to resend the message until an ack is received
@@ -696,11 +697,8 @@ std::pair<s32, sys_net_sockaddr> lv2_socket_p2ps::getpeername()
 	return {CELL_OK, res};
 }
 
-std::tuple<bool, s32, shared_ptr<lv2_socket>, sys_net_sockaddr> lv2_socket_p2ps::accept(bool is_lock)
+std::tuple<bool, s32, shared_ptr<lv2_socket>, sys_net_sockaddr> lv2_socket_p2ps::accept()
 {
-	// The network thread's, as the socket is: no lock
-	static_cast<void>(is_lock);
-
 	if (p2ps_backlog_empty(&backlog))
 	{
 		if (so_nbio)
@@ -908,28 +906,25 @@ s32 lv2_socket_p2ps::listen(s32 backlog)
 	return CELL_OK;
 }
 
-std::optional<std::tuple<s32, std::vector<u8>, sys_net_sockaddr>> lv2_socket_p2ps::recvfrom([[maybe_unused]] s32 flags, u32 len, bool is_lock)
+std::optional<std::pair<s32, sys_net_sockaddr>> lv2_socket_p2ps::recvfrom([[maybe_unused]] s32 flags, u8* dst, u32 len)
 {
-	// The network thread's, as the socket is: no lock
-	static_cast<void>(is_lock);
-
 	if (!data_available)
 	{
 		if (status == p2ps_stream_status::stream_disconnected)
 		{
 			sys_net.trace("[P2PS] Called recvfrom on a disconnected socket");
-			return {{0, {}, {}}};
+			return {{0, {}}};
 		}
 
 		if (status == p2ps_stream_status::stream_closed)
 		{
 			sys_net.error("[P2PS] Called recvfrom on an unconnected socket!");
-			return {{-SYS_NET_ENOTCONN, {}, {}}};
+			return {{-SYS_NET_ENOTCONN, {}}};
 		}
 
 		if (so_nbio || (flags & SYS_NET_MSG_DONTWAIT))
 		{
-			return {{-SYS_NET_EWOULDBLOCK, {}, {}}};
+			return {{-SYS_NET_EWOULDBLOCK, {}}};
 		}
 
 		return std::nullopt;
@@ -937,7 +932,6 @@ std::optional<std::tuple<s32, std::vector<u8>, sys_net_sockaddr>> lv2_socket_p2p
 
 	const u32 to_give = static_cast<u32>(std::min<u64>(data_available, len));
 	sys_net_sockaddr addr{};
-	std::vector<u8> dest_buf(to_give);
 
 	sys_net.trace("[P2PS] STREAM-P2P socket had %u available, given %u", data_available, to_give);
 
@@ -946,7 +940,8 @@ std::optional<std::tuple<s32, std::vector<u8>, sys_net_sockaddr>> lv2_socket_p2p
 	{
 		auto& cur_data               = received_data.begin()->second;
 		auto to_give_for_this_packet = std::min(static_cast<u32>(cur_data.size()), left_to_give);
-		memcpy(dest_buf.data() + (to_give - left_to_give), cur_data.data(), to_give_for_this_packet);
+		// Straight into the game's buffer (@dst)
+		memcpy(dst + (to_give - left_to_give), cur_data.data(), to_give_for_this_packet);
 		if (cur_data.size() != to_give_for_this_packet)
 		{
 			auto amount_left = cur_data.size() - to_give_for_this_packet;
@@ -971,14 +966,11 @@ std::optional<std::tuple<s32, std::vector<u8>, sys_net_sockaddr>> lv2_socket_p2p
 	addr_p2p->sin_vport               = op_port;
 	addr_p2p->sin_len                 = sizeof(sys_net_sockaddr_in_p2p);
 
-	return {{to_give, dest_buf, addr}};
+	return {{to_give, addr}};
 }
 
-std::optional<s32> lv2_socket_p2ps::sendto([[maybe_unused]] s32 flags, const std::vector<u8>& buf, std::optional<sys_net_sockaddr> opt_sn_addr, bool is_lock)
+std::optional<s32> lv2_socket_p2ps::sendto([[maybe_unused]] s32 flags, std::span<const u8> buf, std::optional<sys_net_sockaddr> opt_sn_addr)
 {
-	// The network thread's, as the socket is: no lock
-	static_cast<void>(is_lock);
-
 	if (status == p2ps_stream_status::stream_disconnected)
 	{
 		sys_net.error("[P2PS] Called sendto on a disconnected socket!");
@@ -1027,7 +1019,7 @@ std::optional<s32> lv2_socket_p2ps::sendto([[maybe_unused]] s32 flags, const std
 	return {::size32(buf)};
 }
 
-std::optional<s32> lv2_socket_p2ps::sendmsg([[maybe_unused]] s32 flags, [[maybe_unused]] const sys_net_msghdr& msg, [[maybe_unused]] bool is_lock)
+std::optional<s32> lv2_socket_p2ps::sendmsg([[maybe_unused]] s32 flags, [[maybe_unused]] const sys_net_msghdr& msg)
 {
 	sys_net.todo("lv2_socket_p2ps::sendmsg");
 	return {};

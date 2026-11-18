@@ -389,7 +389,7 @@ error_code sys_net_bnet_accept(ppu_thread& ppu, s32 s, vm::ptr<sys_net_sockaddr>
 					{
 						if (events & lv2_socket::poll_t::read)
 						{
-							auto [success, res, res_socket, res_addr] = sock.accept(false);
+							auto [success, res, res_socket, res_addr] = sock.accept();
 							if (success)
 							{
 								result  = res;
@@ -838,6 +838,14 @@ error_code sys_net_bnet_recvfrom(ppu_thread& ppu, s32 s, vm::ptr<void> buf, u32 
 		fmt::throw_exception("sys_net_bnet_recvfrom(s=%d): unknown flags (0x%x)", s, flags);
 	}
 
+	// Received straight into the game's buffer, on the network thread:
+	// all of it must be there to write to
+	if (!vm::check_addr(buf.addr(), vm::page_writable, len))
+	{
+		return -SYS_NET_EFAULT;
+	}
+
+	u8* const dst = static_cast<u8*>(buf.get_ptr());
 	s32 result = 0;
 	sys_net_sockaddr sn_addr{};
 
@@ -853,16 +861,15 @@ error_code sys_net_bnet_recvfrom(ppu_thread& ppu, s32 s, vm::ptr<void> buf, u32 
 	{
 		return idm::check_entered<lv2_socket>(s, [&, notify = lv2_obj::notify_all_t()](lv2_socket& sock)
 			{
-				const auto success = sock.recvfrom(flags, len, false);
+				const auto success = sock.recvfrom(flags, dst, len);
 
 				if (success)
 				{
-					const auto& [res, vec, res_addr] = *success;
+					const auto& [res, res_addr] = *success;
 					if (res > 0)
 					{
 						sn_addr = res_addr;
-						std::memcpy(buf.get_ptr(), vec.data(), res);
-						sys_net_dump_data("recvfrom", vec.data(), res, &res_addr);
+						sys_net_dump_data("recvfrom", dst, res, &res_addr);
 					}
 
 					result = res;
@@ -873,16 +880,15 @@ error_code sys_net_bnet_recvfrom(ppu_thread& ppu, s32 s, vm::ptr<void> buf, u32 
 					{
 						if (events & lv2_socket::poll_t::read)
 						{
-							const auto success = sock.recvfrom(flags, len, false);
+							const auto success = sock.recvfrom(flags, dst, len);
 
 							if (success)
 							{
-								const auto& [res, vec, res_addr] = *success;
+								const auto& [res, res_addr] = *success;
 								if (res > 0)
 								{
 									sn_addr = res_addr;
-									std::memcpy(buf.get_ptr(), vec.data(), res);
-									sys_net_dump_data("recvfrom", vec.data(), res, &res_addr);
+									sys_net_dump_data("recvfrom", dst, res, &res_addr);
 								}
 								result = res;
 								lv2_obj::awake(&ppu);
@@ -1028,7 +1034,7 @@ error_code sys_net_bnet_sendmsg(ppu_thread& ppu, s32 s, vm::cptr<sys_net_msghdr>
 					{
 						if (events & lv2_socket::poll_t::write)
 						{
-							const auto success = sock.sendmsg(flags, *netmsg, false);
+							const auto success = sock.sendmsg(flags, *netmsg);
 
 							if (success)
 							{
@@ -1138,7 +1144,15 @@ error_code sys_net_bnet_sendto(ppu_thread& ppu, s32 s, vm::cptr<void> buf, u32 l
 	sys_net_dump_data("sendto", static_cast<const u8*>(buf.get_ptr()), len, addr ? addr.get_ptr() : nullptr);
 
 	const std::optional<sys_net_sockaddr> sn_addr = addr ? std::optional<sys_net_sockaddr>(*addr) : std::nullopt;
-	const std::vector<u8> buf_copy(vm::_ptr<const char>(buf.addr()), vm::_ptr<const char>(buf.addr()) + len);
+	// Sent from where it is in the game's memory, on the network thread,
+	// not copied first: the game is in this call, so it stays as it is. All
+	// of it must be there to read
+	if (len && !vm::check_addr(buf.addr(), vm::page_readable, len))
+	{
+		return -SYS_NET_EFAULT;
+	}
+
+	const std::span<const u8> buf_view(static_cast<const u8*>(buf.get_ptr()), len);
 	s32 result{};
 
 	u64 timeout = 0;
@@ -1153,7 +1167,7 @@ error_code sys_net_bnet_sendto(ppu_thread& ppu, s32 s, vm::cptr<void> buf, u32 l
 	{
 		return idm::check_entered<lv2_socket>(s, [&, notify = lv2_obj::notify_all_t()](lv2_socket& sock)
 			{
-				auto success = sock.sendto(flags, buf_copy, sn_addr);
+				auto success = sock.sendto(flags, buf_view, sn_addr);
 
 				if (success)
 				{
@@ -1166,7 +1180,7 @@ error_code sys_net_bnet_sendto(ppu_thread& ppu, s32 s, vm::cptr<void> buf, u32 l
 					{
 						if (events & lv2_socket::poll_t::write)
 						{
-							auto success = sock.sendto(flags, buf_copy, sn_addr, false);
+							auto success = sock.sendto(flags, buf_view, sn_addr);
 							if (success)
 							{
 								result = *success;

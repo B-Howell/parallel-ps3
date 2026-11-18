@@ -78,6 +78,9 @@ namespace np
 
 	bool is_ipv6_supported(std::optional<IPV6_SUPPORT> force_state = std::nullopt);
 	s32 sendto_possibly_ipv6(socket_type native_socket, const char* data, u32 size, const sockaddr_in* addr, int native_flags);
+	// As one datagram, @head then @body, gathered by the system: neither is
+	// copied into a packet first
+	s32 sendto_possibly_ipv6(socket_type native_socket, const char* head, u32 head_size, const char* body, u32 body_size, const sockaddr_in* addr, int native_flags);
 	sockaddr_in6 sockaddr_to_sockaddr6(const sockaddr_in& addr);
 	sockaddr_in sockaddr6_to_sockaddr(const sockaddr_in6& addr);
 

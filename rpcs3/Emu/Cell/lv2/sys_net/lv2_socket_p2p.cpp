@@ -65,7 +65,7 @@ void lv2_socket_p2p::handle_new_data(const sys_net_sockaddr_in_p2p& p2p_addr, co
 	}
 }
 
-std::tuple<bool, s32, shared_ptr<lv2_socket>, sys_net_sockaddr> lv2_socket_p2p::accept([[maybe_unused]] bool is_lock)
+std::tuple<bool, s32, shared_ptr<lv2_socket>, sys_net_sockaddr> lv2_socket_p2p::accept()
 {
 	sys_net.fatal("[P2P] accept() called on a P2P socket");
 	return {};
@@ -221,40 +221,33 @@ s32 lv2_socket_p2p::setsockopt(s32 level, s32 optname, const std::vector<u8>& op
 	return CELL_OK;
 }
 
-std::optional<std::tuple<s32, std::vector<u8>, sys_net_sockaddr>> lv2_socket_p2p::recvfrom(s32 flags, u32 len, bool is_lock)
+std::optional<std::pair<s32, sys_net_sockaddr>> lv2_socket_p2p::recvfrom(s32 flags, u8* dst, u32 len)
 {
-	// The network thread's, as the socket is: no lock
-	static_cast<void>(is_lock);
-
 	if (p2p_packets_empty(&data))
 	{
 		if (so_nbio || (flags & SYS_NET_MSG_DONTWAIT))
-			return {{-SYS_NET_EWOULDBLOCK, {}, {}}};
+			return {{-SYS_NET_EWOULDBLOCK, {}}};
 
 		return std::nullopt;
 	}
 
 	sys_net.trace("[P2P] p2p_data for vport %d contains %d elements", vport, p2p_packets_count(&data));
 
-	std::vector<u8> res_buf(len);
-
 	const p2p_packet& p2p_data = *p2p_packets_front(&data);
 	s32 native_result          = std::min(len, p2p_data.size);
-	memcpy(res_buf.data(), p2p_data.bytes, native_result);
+	// Straight into the game's buffer (@dst)
+	memcpy(dst, p2p_data.bytes, native_result);
 
 	sys_net_sockaddr sn_addr;
 	memcpy(&sn_addr, &p2p_data.addr, sizeof(sn_addr));
 
 	p2p_packets_drop_front(data);
 
-	return {{native_result, res_buf, sn_addr}};
+	return {{native_result, sn_addr}};
 }
 
-std::optional<s32> lv2_socket_p2p::sendto(s32 flags, const std::vector<u8>& buf, std::optional<sys_net_sockaddr> opt_sn_addr, bool is_lock)
+std::optional<s32> lv2_socket_p2p::sendto(s32 flags, std::span<const u8> buf, std::optional<sys_net_sockaddr> opt_sn_addr)
 {
-	// The network thread's, as the socket is: no lock
-	static_cast<void>(is_lock);
-
 	ensure(opt_sn_addr);
 	ensure(native_socket); // ensures it has been bound
 	ensure(buf.size() <= static_cast<usz>(65535 - VPORT_P2P_HEADER_SIZE)); // catch games using full payload for future fragmentation implementation if necessary
@@ -273,14 +266,15 @@ std::optional<s32> lv2_socket_p2p::sendto(s32 flags, const std::vector<u8>& buf,
 		return {-SYS_NET_EACCES};
 	}
 
-	std::vector<u8> p2p_data(buf.size() + VPORT_P2P_HEADER_SIZE);
+	// The vport header, and the game's data sent from where it is: the two
+	// gathered into one datagram, nothing allocated or copied
+	u8 header[VPORT_P2P_HEADER_SIZE];
 	const le_t<u16> p2p_vport_le = p2p_vport;
 	const le_t<u16> src_vport_le = vport;
 	const le_t<u16> p2p_flags_le = P2P_FLAG_P2P;
-	memcpy(p2p_data.data(), &p2p_vport_le, sizeof(u16));
-	memcpy(p2p_data.data() + sizeof(u16), &src_vport_le, sizeof(u16));
-	memcpy(p2p_data.data() + sizeof(u16) + sizeof(u16), &p2p_flags_le, sizeof(u16));
-	memcpy(p2p_data.data() + VPORT_P2P_HEADER_SIZE, buf.data(), buf.size());
+	memcpy(header, &p2p_vport_le, sizeof(u16));
+	memcpy(header + sizeof(u16), &src_vport_le, sizeof(u16));
+	memcpy(header + sizeof(u16) + sizeof(u16), &p2p_flags_le, sizeof(u16));
 
 	int native_flags = 0;
 	if (flags & SYS_NET_MSG_WAITALL)
@@ -288,7 +282,7 @@ std::optional<s32> lv2_socket_p2p::sendto(s32 flags, const std::vector<u8>& buf,
 		native_flags |= MSG_WAITALL;
 	}
 
-	auto native_result = np::sendto_possibly_ipv6(native_socket, reinterpret_cast<const char*>(p2p_data.data()), ::size32(p2p_data), &native_addr, native_flags);
+	auto native_result = np::sendto_possibly_ipv6(native_socket, reinterpret_cast<const char*>(header), VPORT_P2P_HEADER_SIZE, reinterpret_cast<const char*>(buf.data()), ::size32(buf), &native_addr, native_flags);
 
 	if (native_result >= 0)
 	{
@@ -306,7 +300,7 @@ std::optional<s32> lv2_socket_p2p::sendto(s32 flags, const std::vector<u8>& buf,
 	return std::nullopt;
 }
 
-std::optional<s32> lv2_socket_p2p::sendmsg([[maybe_unused]] s32 flags, [[maybe_unused]] const sys_net_msghdr& msg, [[maybe_unused]] bool is_lock)
+std::optional<s32> lv2_socket_p2p::sendmsg([[maybe_unused]] s32 flags, [[maybe_unused]] const sys_net_msghdr& msg)
 {
 	sys_net.todo("lv2_socket_p2p::sendmsg");
 	return {};

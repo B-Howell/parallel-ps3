@@ -37,7 +37,7 @@ void lv2_socket_raw::save(utils::serial& ar)
 	lv2_socket::save(ar, true);
 }
 
-std::tuple<bool, s32, shared_ptr<lv2_socket>, sys_net_sockaddr> lv2_socket_raw::accept([[maybe_unused]] bool is_lock)
+std::tuple<bool, s32, shared_ptr<lv2_socket>, sys_net_sockaddr> lv2_socket_raw::accept()
 {
 	sys_net.fatal("[RAW] accept() called on a RAW socket");
 	return {};
@@ -100,25 +100,25 @@ s32 lv2_socket_raw::setsockopt(s32 level, s32 optname, const std::vector<u8>& op
 	return {};
 }
 
-std::optional<std::tuple<s32, std::vector<u8>, sys_net_sockaddr>> lv2_socket_raw::recvfrom(s32 flags, [[maybe_unused]] u32 len, [[maybe_unused]] bool is_lock)
+std::optional<std::pair<s32, sys_net_sockaddr>> lv2_socket_raw::recvfrom(s32 flags, [[maybe_unused]] u8* dst, [[maybe_unused]] u32 len)
 {
 	LOG_ONCE(raw_recvfrom, "lv2_socket_raw::recvfrom");
 
 	if (so_nbio || (flags & SYS_NET_MSG_DONTWAIT))
 	{
-		return {{-SYS_NET_EWOULDBLOCK, {}, {}}};
+		return {{-SYS_NET_EWOULDBLOCK, {}}};
 	}
 
 	return {};
 }
 
-std::optional<s32> lv2_socket_raw::sendto([[maybe_unused]] s32 flags, [[maybe_unused]] const std::vector<u8>& buf, [[maybe_unused]] std::optional<sys_net_sockaddr> opt_sn_addr, [[maybe_unused]] bool is_lock)
+std::optional<s32> lv2_socket_raw::sendto([[maybe_unused]] s32 flags, [[maybe_unused]] std::span<const u8> buf, [[maybe_unused]] std::optional<sys_net_sockaddr> opt_sn_addr)
 {
 	LOG_ONCE(raw_sendto, "lv2_socket_raw::sendto");
 	return ::size32(buf);
 }
 
-std::optional<s32> lv2_socket_raw::sendmsg([[maybe_unused]] s32 flags, [[maybe_unused]] const sys_net_msghdr& msg, [[maybe_unused]] bool is_lock)
+std::optional<s32> lv2_socket_raw::sendmsg([[maybe_unused]] s32 flags, [[maybe_unused]] const sys_net_msghdr& msg)
 {
 	LOG_ONCE(raw_sendmsg, "lv2_socket_raw::sendmsg");
 	return {};

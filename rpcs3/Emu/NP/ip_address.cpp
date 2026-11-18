@@ -10,6 +10,7 @@
 
 #ifndef _WIN32
 #include <unistd.h>
+#include <sys/uio.h>
 #include <fcntl.h>
 #else
 #include <MSWSock.h>
@@ -252,6 +253,59 @@ namespace np
 		}
 
 		return ::sendto(native_socket, data, size, native_flags, reinterpret_cast<const sockaddr*>(addr), sizeof(sockaddr_in));
+	}
+
+	s32 sendto_possibly_ipv6(socket_type native_socket, const char* head, u32 head_size, const char* body, u32 body_size, const sockaddr_in* addr, int native_flags)
+	{
+		sockaddr_in6 addr_ipv6{};
+		const sockaddr* to = reinterpret_cast<const sockaddr*>(addr);
+		int to_len = sizeof(sockaddr_in);
+
+		if (is_ipv6_supported())
+		{
+			if (np::ip_address_translator::is_ipv6(addr->sin_addr.s_addr))
+			{
+				auto& translator = g_fxo->get<np::ip_address_translator>();
+				addr_ipv6 = translator.get_ipv6_sockaddr(addr->sin_addr.s_addr, addr->sin_port);
+			}
+			else
+			{
+				addr_ipv6 = sockaddr_to_sockaddr6(*addr);
+			}
+
+			to = reinterpret_cast<const sockaddr*>(&addr_ipv6);
+			to_len = sizeof(sockaddr_in6);
+		}
+
+#ifdef _WIN32
+		WSABUF bufs[2];
+		bufs[0].len = head_size;
+		bufs[0].buf = const_cast<CHAR*>(head);
+		bufs[1].len = body_size;
+		bufs[1].buf = const_cast<CHAR*>(body);
+		DWORD sent = 0;
+
+		if (::WSASendTo(native_socket, bufs, 2, &sent, static_cast<DWORD>(native_flags), to, to_len, nullptr, nullptr) == SOCKET_ERROR)
+		{
+			return -1;
+		}
+
+		return static_cast<s32>(sent);
+#else
+		::iovec iov[2];
+		iov[0].iov_base = const_cast<char*>(head);
+		iov[0].iov_len = head_size;
+		iov[1].iov_base = const_cast<char*>(body);
+		iov[1].iov_len = body_size;
+
+		::msghdr msg{};
+		msg.msg_name = const_cast<sockaddr*>(to);
+		msg.msg_namelen = static_cast<socklen_t>(to_len);
+		msg.msg_iov = iov;
+		msg.msg_iovlen = 2;
+
+		return static_cast<s32>(::sendmsg(native_socket, &msg, native_flags));
+#endif
 	}
 
 	sockaddr_in6 sockaddr_to_sockaddr6(const sockaddr_in& addr)

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <span>
+
 #include <functional>
 #include <optional>
 
@@ -80,7 +82,7 @@ public:
 #endif
 
 public:
-	virtual std::tuple<bool, s32, shared_ptr<lv2_socket>, sys_net_sockaddr> accept(bool is_lock = true) = 0;
+	virtual std::tuple<bool, s32, shared_ptr<lv2_socket>, sys_net_sockaddr> accept() = 0;
 	virtual s32 bind(const sys_net_sockaddr& addr) = 0;
 
 	virtual std::optional<s32> connect(const sys_net_sockaddr& addr) = 0;
@@ -94,9 +96,9 @@ public:
 
 	virtual s32 listen(s32 backlog) = 0;
 
-	virtual std::optional<std::tuple<s32, std::vector<u8>, sys_net_sockaddr>> recvfrom(s32 flags, u32 len, bool is_lock = true)                = 0;
-	virtual std::optional<s32> sendto(s32 flags, const std::vector<u8>& buf, std::optional<sys_net_sockaddr> opt_sn_addr, bool is_lock = true) = 0;
-	virtual std::optional<s32> sendmsg(s32 flags, const sys_net_msghdr& msg, bool is_lock = true)                                              = 0;
+	virtual std::optional<std::pair<s32, sys_net_sockaddr>> recvfrom(s32 flags, u8* dst, u32 len) = 0;
+	virtual std::optional<s32> sendto(s32 flags, std::span<const u8> buf, std::optional<sys_net_sockaddr> opt_sn_addr) = 0;
+	virtual std::optional<s32> sendmsg(s32 flags, const sys_net_msghdr& msg) = 0;
 
 	virtual void close()          = 0;
 	virtual s32 shutdown(s32 how) = 0;

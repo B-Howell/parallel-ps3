@@ -108,7 +108,7 @@ public:
 	void send_u2s_packet(std::vector<u8> data, const ::sockaddr_in* dst, u64 seq, bool require_ack);
 	void close_stream();
 
-	std::tuple<bool, s32, shared_ptr<lv2_socket>, sys_net_sockaddr> accept(bool is_lock = true) override;
+	std::tuple<bool, s32, shared_ptr<lv2_socket>, sys_net_sockaddr> accept() override;
 	s32 bind(const sys_net_sockaddr& addr) override;
 
 	std::optional<s32> connect(const sys_net_sockaddr& addr) override;
@@ -118,9 +118,9 @@ public:
 
 	s32 listen(s32 backlog) override;
 
-	std::optional<std::tuple<s32, std::vector<u8>, sys_net_sockaddr>> recvfrom(s32 flags, u32 len, bool is_lock = true) override;
-	std::optional<s32> sendto(s32 flags, const std::vector<u8>& buf, std::optional<sys_net_sockaddr> opt_sn_addr, bool is_lock = true) override;
-	std::optional<s32> sendmsg(s32 flags, const sys_net_msghdr& msg, bool is_lock = true) override;
+	std::optional<std::pair<s32, sys_net_sockaddr>> recvfrom(s32 flags, u8* dst, u32 len) override;
+	std::optional<s32> sendto(s32 flags, std::span<const u8> buf, std::optional<sys_net_sockaddr> opt_sn_addr) override;
+	std::optional<s32> sendmsg(s32 flags, const sys_net_msghdr& msg) override;
 
 	void close() override;
 	s32 shutdown(s32 how) override;

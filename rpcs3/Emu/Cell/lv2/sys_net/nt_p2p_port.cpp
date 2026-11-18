@@ -319,7 +319,9 @@ bool nt_p2p_port::recv_data()
 	}
 	else if (vport_flags & P2P_FLAG_P2PS)
 	{
-		std::vector<u8> p2p_data(payload, payload + payload_size);
+		// Looked at, and its checksum zeroed, where it came in: the port's
+		// own buffer, the network thread's
+		const std::span<u8> p2p_data(p2p_recv_data.data() + VPORT_P2P_HEADER_SIZE, payload_size);
 
 		if (p2p_data.size() < sizeof(p2ps_encapsulated_tcp))
 		{
