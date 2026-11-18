@@ -21,6 +21,8 @@
 #include "Emu/NP/np_event_data.h"
 #include "Emu/NP/np_contexts.h"
 #include "Emu/NP/upnp_handler.h"
+#include "Emu/CPU/owner_calls.h"
+#include "Emu/Cell/Modules/hle_service.h"
 
 namespace np
 {
@@ -136,8 +138,22 @@ namespace np
 		const SceNpOnlineName& get_online_name() const;
 		const SceNpAvatarUrl& get_avatar_url() const;
 
-		// handles async messages from server(only needed for RPCN)
+		// handles async messages from server(only needed for RPCN), and runs
+		// what other threads hand it: the handler's state below - requests
+		// pending, results, the basic events and handler, the history, the
+		// GUI's requests and notifications, the custom menu, the messages
+		// selected - is this thread's alone, so it takes no lock
 		void operator()();
+
+		// @f run on this thread, its result given back; at once there
+		template <typename F>
+		auto on_np_thread(F&& f) const -> decltype(f())
+		{
+			const bool here = on_owner();
+			return cpu_owner_call(here ? nullptr : &np_calls, here, std::forward<F>(f));
+		}
+
+		static bool on_owner();
 
 		void init_NP(u32 poolsize, vm::ptr<void> poolptr);
 		void terminate_NP();
@@ -316,7 +332,7 @@ namespace np
 			u32 mask = SCE_NP_CUSTOM_MENU_ACTION_MASK_ME;
 			std::string name;
 		};
-		shared_mutex mutex_custom_menu;
+		// The NP thread's (on_np_thread)
 		bool custom_menu_registered = false;
 		vm::ptr<SceNpCustomMenuEventHandler> custom_menu_handler{};
 		vm::ptr<void> custom_menu_user_arg{};
@@ -324,8 +340,8 @@ namespace np
 		SceNpCustomMenuIndexArray custom_menu_activation{};
 		std::vector<SceNpCustomMenuActionExceptions> custom_menu_exception_list{};
 
-		// Mutex for NP status change
-		shared_mutex mutex_status;
+		// sceNpInit/sceNpTerm under way: one at a time, by compare-and-swap
+		atomic_t<u32> np_status_busy = 0;
 
 		static constexpr std::string_view thread_name = "NP Handler Thread";
 
@@ -428,12 +444,12 @@ namespace np
 		std::optional<callback_info> take_pending_request(u32 req_id);
 
 	private:
-		shared_mutex mutex_pending_requests;
+		// What other threads hand this one (on_np_thread)
+		mutable owner_calls_t np_calls{};
+
 		std::unordered_map<u32, callback_info> pending_requests;
-		shared_mutex mutex_pending_sign_infos_requests;
 		std::unordered_map<u32, u32> pending_sign_infos_requests;
 
-		shared_mutex mutex_queue_basic_events;
 		basic_events_t queue_basic_events{};
 
 		bool m_inited_np_handler_dependencies = false;
@@ -441,7 +457,7 @@ namespace np
 		// Basic event handler;
 		struct
 		{
-			shared_mutex mutex;
+			u32 unused = 0; // the lock's word once: kept, as saved states hold these bytes
 			SceNpCommunicationId context{};
 			vm::ptr<SceNpBasicEventHandler> handler_func;
 			vm::ptr<void> handler_arg;
@@ -479,7 +495,6 @@ namespace np
 		gui_cache_manager gui_cache;
 
 		// Messages related
-		shared_mutex m_mutex_selected_messages;
 		std::optional<u64> selected_invite_id{};
 		std::optional<u64> selected_message_id{};
 
@@ -487,7 +502,6 @@ namespace np
 		s64 network_time_offset = 0;
 
 		// Requests(reqEventKey : data)
-		shared_mutex mutex_match2_req_results;
 		std::unordered_map<u32, event_data> match2_req_results;
 		atomic_t<u16> match2_low_reqid_cnt = 1;
 		atomic_t<u32> match2_event_cnt     = 1;
@@ -510,7 +524,6 @@ namespace np
 		// GUI result
 		struct
 		{
-			shared_mutex mutex;
 			s32 event = 0;
 			event_data data;
 		} gui_result;
@@ -526,7 +539,6 @@ namespace np
 
 		struct
 		{
-			shared_mutex mutex;
 			std::map<std::pair<u32, u32>, gui_notification> list; // (ctx_id, req_id), notif
 			u32 counter_req_id = 1;
 			u32 current_gui_ctx_id = 0;
@@ -584,12 +596,10 @@ namespace np
 		player_history& get_player_and_set_timestamp(const SceNpId& npid, u64 timestamp);
 		void save_players_history();
 
-		mutable shared_mutex mutex_history;
 		std::map<std::string, player_history> players_history; // npid / history
 
 		struct
 		{
-			shared_mutex mutex;
 			std::map<u32, u32> list; // req_id / ctx_id
 		} gui_requests;
 
@@ -598,7 +608,6 @@ namespace np
 		u32 take_gui_request(u32 req_id);
 		shared_ptr<matching_ctx> take_pending_gui_request(u32 req_id);
 
-		shared_mutex mutex_quickmatching;
 		std::map<SceNpRoomId, u32> pending_quickmatching;
 	};
 } // namespace np

@@ -212,12 +212,9 @@ error_code sceNp2Init(u32 poolsize, vm::ptr<void> poolptr)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
+	if (nph.is_NP2_init)
 	{
-		std::lock_guard lock(nph.mutex_status);
-		if (nph.is_NP2_init)
-		{
-			return SCE_NP_ERROR_ALREADY_INITIALIZED;
-		}
+		return SCE_NP_ERROR_ALREADY_INITIALIZED;
 	}
 
 	const u32 result = std::bit_cast<u32>(sceNpInit(poolsize, poolptr));
@@ -249,17 +246,16 @@ error_code sceNpMatching2Init2(u32 stackSize, s32 priority, vm::ptr<SceNpMatchin
 		return SCE_NP_ERROR_NOT_INITIALIZED;
 	}
 
-	if (nph.is_NP2_Match2_init)
-	{
-		return SCE_NP_MATCHING2_ERROR_ALREADY_INITIALIZED;
-	}
-
 	// TODO:
 	// 1. Create an internal thread
 	// 2. Create heap area to be used by the NP matching 2 utility
 	// 3. Set maximum lengths for the event data queues in the system
 
-	nph.is_NP2_Match2_init = true;
+	// Set up by one caller only
+	if (nph.is_NP2_Match2_init.test_and_set())
+	{
+		return SCE_NP_MATCHING2_ERROR_ALREADY_INITIALIZED;
+	}
 
 	return CELL_OK;
 }
@@ -270,12 +266,9 @@ error_code sceNp2Term(ppu_thread& ppu)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
+	if (!nph.is_NP2_init)
 	{
-		std::lock_guard lock(nph.mutex_status);
-		if (!nph.is_NP2_init)
-		{
-			return SCE_NP_ERROR_NOT_INITIALIZED;
-		}
+		return SCE_NP_ERROR_NOT_INITIALIZED;
 	}
 
 	// TODO: does this return on error_code ?
@@ -300,19 +293,15 @@ error_code sceNpMatching2Term2()
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
+	if (!nph.is_NP2_init)
 	{
-		std::lock_guard lock(nph.mutex_status);
-		if (!nph.is_NP2_init)
-		{
-			return SCE_NP_ERROR_NOT_INITIALIZED;
-		}
+		return SCE_NP_ERROR_NOT_INITIALIZED;
+	}
 
-		if (!nph.is_NP2_Match2_init)
-		{
-			return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
-		}
-
-		nph.is_NP2_Match2_init = false;
+	// Taken down by one caller only
+	if (!nph.is_NP2_Match2_init.test_and_reset())
+	{
+		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
 
 	idm::clear<match2_ctx>();
@@ -1406,9 +1395,7 @@ error_code sceNpMatching2RegisterSignalingCallback(SceNpMatching2ContextId ctxId
 		return SCE_NP_MATCHING2_ERROR_CONTEXT_NOT_FOUND;
 	}
 
-	std::lock_guard lock(ctx->mutex);
-	ctx->signaling_cb = cbFunc;
-	ctx->signaling_cb_arg = cbFuncArg;
+	ctx->signaling_cb.set(cbFunc.addr(), cbFuncArg.addr());
 
 	auto& sigh = g_fxo->get<named_thread<signaling_handler>>();
 	sigh.add_match2_ctx(ctxId);

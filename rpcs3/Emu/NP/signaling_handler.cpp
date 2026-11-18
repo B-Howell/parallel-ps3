@@ -92,8 +92,7 @@ void signaling_handler::signal_sig_callback(u32 conn_id, s32 event, s32 error_co
 		if (!ctx)
 			continue;
 
-		std::lock_guard lock(ctx->mutex);
-
+		// Set as the context was made: read with no lock
 		if (ctx->handler)
 		{
 			sysutil_register_cb([sig_cb = ctx->handler, sig_cb_ctx = ctx_id, conn_id, event, error_code, sig_cb_arg = ctx->arg](ppu_thread& cb_ppu) -> s32
@@ -118,11 +117,13 @@ void signaling_handler::signal_ext_sig_callback(u32 conn_id, s32 event, s32 erro
 		if (!ctx)
 			continue;
 
-		std::lock_guard lock(ctx->mutex);
-
-		if (ctx->ext_handler)
+		// One word, read whole with no lock
+		if (const auto [cb_addr, arg_addr] = ctx->ext_handler.get(); cb_addr)
 		{
-			sysutil_register_cb([sig_ext_cb = ctx->ext_handler, sig_ext_cb_ctx = ctx_id, conn_id, event, error_code, sig_ext_cb_arg = ctx->ext_arg](ppu_thread& cb_ppu) -> s32
+			const vm::ptr<SceNpSignalingHandler> sig_ext_cb = vm::cast(cb_addr);
+			const vm::ptr<void> sig_ext_cb_arg = vm::cast(arg_addr);
+
+			sysutil_register_cb([sig_ext_cb, sig_ext_cb_ctx = ctx_id, conn_id, event, error_code, sig_ext_cb_arg](ppu_thread& cb_ppu) -> s32
 				{
 					sig_ext_cb(cb_ppu, sig_ext_cb_ctx, conn_id, event, error_code, sig_ext_cb_arg);
 					return 0;
@@ -143,9 +144,12 @@ void signaling_handler::signal_sig2_callback(u64 room_id, u16 member_id, SceNpMa
 			if (!ctx)
 				continue;
 
-			if (ctx->signaling_cb)
+			if (const auto [cb_addr, arg_addr] = ctx->signaling_cb.get(); cb_addr)
 			{
-				sysutil_register_cb([sig2_cb = ctx->signaling_cb, sig2_cb_ctx = ctx_id, room_id, member_id, event, error_code, sig2_cb_arg = ctx->signaling_cb_arg](ppu_thread& cb_ppu) -> s32
+				const vm::ptr<SceNpMatching2SignalingCallback> sig2_cb = vm::cast(cb_addr);
+				const vm::ptr<void> sig2_cb_arg = vm::cast(arg_addr);
+
+				sysutil_register_cb([sig2_cb, sig2_cb_ctx = ctx_id, room_id, member_id, event, error_code, sig2_cb_arg](ppu_thread& cb_ppu) -> s32
 					{
 						sig2_cb(cb_ppu, sig2_cb_ctx, room_id, member_id, event, error_code, sig2_cb_arg);
 						return 0;

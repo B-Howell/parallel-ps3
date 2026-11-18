@@ -303,49 +303,50 @@ namespace np
 			return;
 		}
 
-		std::lock_guard lock(gui_notifications.mutex);
-
-		if (!gui_notifications.current_gui_ctx_id)
-			return;
-
-		// Should the callback signaled depend on the room id and should we track if the context is the one that created/joined/left/etc the room?
-		auto ctx = get_matching_context(gui_notifications.current_gui_ctx_id);
-		ensure(ctx);
-		const u32 req_id = gui_notifications.counter_req_id++;
-
-		event_data edata(np_memory.allocate(MAX_SceNpMatchingRoomStatus_SIZE), sizeof(SceNpMatchingRoomStatus), MAX_SceNpMatchingRoomStatus_SIZE);
-		auto* room_status = reinterpret_cast<SceNpMatchingRoomStatus*>(edata.data());
-		MatchingRoomStatus_to_SceNpMatchingRoomStatus(edata, *update_info, room_status);
-		np_memory.shrink_allocation(edata.addr(), edata.size());
-
-		rpcn_log.notice("Received GUI notification: %s", name);
-		extra_nps::print_SceNpMatchingRoomStatus(room_status);
-
-		switch (notification_type)
+		return on_np_thread([&]() -> void
 		{
-		case SCE_NP_MATCHING_EVENT_ROOM_UPDATE_NEW_MEMBER:
-			gui_cache.add_member(room_status->id, room_status->members.get_ptr(), true);
-			break;
-		case SCE_NP_MATCHING_EVENT_ROOM_UPDATE_MEMBER_LEAVE:
-			gui_cache.del_member(room_status->id, room_status->members.get_ptr());
-			break;
-		case SCE_NP_MATCHING_EVENT_ROOM_DISAPPEARED:
-			gui_cache.del_room(room_status->id);
-			break;
-		case SCE_NP_MATCHING_EVENT_ROOM_UPDATE_OWNER_CHANGE:
-			gui_cache.add_member(room_status->id, room_status->members.get_ptr(), false);
-			gui_cache.add_member(room_status->id, room_status->members->next.get_ptr(), false);
-			break;
-		case SCE_NP_MATCHING_EVENT_ROOM_KICKED:
-			gui_cache.del_room(room_status->id);
-			break;
-		default:
-			fmt::throw_exception("Unexpected notification type in generic_gui_notification_handler: 0x%08X", notification_type);
-			break;
-		}
+			if (!gui_notifications.current_gui_ctx_id)
+				return;
 
-		gui_notifications.list.emplace(std::make_pair(gui_notifications.current_gui_ctx_id, req_id), gui_notification{.event = notification_type, .edata = std::move(edata)});
-		ctx->queue_callback(req_id, notification_type, 0);
+			// Should the callback signaled depend on the room id and should we track if the context is the one that created/joined/left/etc the room?
+			auto ctx = get_matching_context(gui_notifications.current_gui_ctx_id);
+			ensure(ctx);
+			const u32 req_id = gui_notifications.counter_req_id++;
+
+			event_data edata(np_memory.allocate(MAX_SceNpMatchingRoomStatus_SIZE), sizeof(SceNpMatchingRoomStatus), MAX_SceNpMatchingRoomStatus_SIZE);
+			auto* room_status = reinterpret_cast<SceNpMatchingRoomStatus*>(edata.data());
+			MatchingRoomStatus_to_SceNpMatchingRoomStatus(edata, *update_info, room_status);
+			np_memory.shrink_allocation(edata.addr(), edata.size());
+
+			rpcn_log.notice("Received GUI notification: %s", name);
+			extra_nps::print_SceNpMatchingRoomStatus(room_status);
+
+			switch (notification_type)
+			{
+			case SCE_NP_MATCHING_EVENT_ROOM_UPDATE_NEW_MEMBER:
+				gui_cache.add_member(room_status->id, room_status->members.get_ptr(), true);
+				break;
+			case SCE_NP_MATCHING_EVENT_ROOM_UPDATE_MEMBER_LEAVE:
+				gui_cache.del_member(room_status->id, room_status->members.get_ptr());
+				break;
+			case SCE_NP_MATCHING_EVENT_ROOM_DISAPPEARED:
+				gui_cache.del_room(room_status->id);
+				break;
+			case SCE_NP_MATCHING_EVENT_ROOM_UPDATE_OWNER_CHANGE:
+				gui_cache.add_member(room_status->id, room_status->members.get_ptr(), false);
+				gui_cache.add_member(room_status->id, room_status->members->next.get_ptr(), false);
+				break;
+			case SCE_NP_MATCHING_EVENT_ROOM_KICKED:
+				gui_cache.del_room(room_status->id);
+				break;
+			default:
+				fmt::throw_exception("Unexpected notification type in generic_gui_notification_handler: 0x%08X", notification_type);
+				break;
+			}
+
+			gui_notifications.list.emplace(std::make_pair(gui_notifications.current_gui_ctx_id, req_id), gui_notification{.event = notification_type, .edata = std::move(edata)});
+			ctx->queue_callback(req_id, notification_type, 0);
+		});
 	}
 
 	void np_handler::notif_member_joined_room_gui(vec_stream& noti)
@@ -385,44 +386,45 @@ namespace np
 			return;
 		}
 
-		std::lock_guard lock(mutex_quickmatching);
-
-		event_data edata(np_memory.allocate(MAX_SceNpMatchingJoinedRoomInfo_SIZE), sizeof(SceNpMatchingJoinedRoomInfo), MAX_SceNpMatchingJoinedRoomInfo_SIZE);
-		auto* room_info = reinterpret_cast<SceNpMatchingJoinedRoomInfo*>(edata.data());
-		MatchingRoomStatus_to_SceNpMatchingJoinedRoomInfo(edata, *update_info, room_info);
-		np_memory.shrink_allocation(edata.addr(), edata.size());
-
-		extra_nps::print_SceNpMatchingJoinedRoomInfo(room_info);
-
-		if (!pending_quickmatching.contains(room_info->room_status.id))
+		return on_np_thread([&]() -> void
 		{
-			np_memory.free(edata.addr());
-			return;
-		}
+			event_data edata(np_memory.allocate(MAX_SceNpMatchingJoinedRoomInfo_SIZE), sizeof(SceNpMatchingJoinedRoomInfo), MAX_SceNpMatchingJoinedRoomInfo_SIZE);
+			auto* room_info = reinterpret_cast<SceNpMatchingJoinedRoomInfo*>(edata.data());
+			MatchingRoomStatus_to_SceNpMatchingJoinedRoomInfo(edata, *update_info, room_info);
+			np_memory.shrink_allocation(edata.addr(), edata.size());
 
-		const u32 ctx_id = ::at32(pending_quickmatching, room_info->room_status.id);
-		ensure(pending_quickmatching.erase(room_info->room_status.id) == 1);
+			extra_nps::print_SceNpMatchingJoinedRoomInfo(room_info);
 
-		auto ctx = get_matching_context(ctx_id);
+			if (!pending_quickmatching.contains(room_info->room_status.id))
+			{
+				np_memory.free(edata.addr());
+				return;
+			}
 
-		if (!ctx)
-		{
-			np_memory.free(edata.addr());
-			return;
-		}
+			const u32 ctx_id = ::at32(pending_quickmatching, room_info->room_status.id);
+			ensure(pending_quickmatching.erase(room_info->room_status.id) == 1);
 
-		gui_cache.add_room(room_info->room_status.id);
+			auto ctx = get_matching_context(ctx_id);
 
-		for (auto cur_member = room_info->room_status.members; cur_member; cur_member = cur_member->next)
-		{
-			gui_cache.add_member(room_info->room_status.id, cur_member.get_ptr(), true);
-		}
+			if (!ctx)
+			{
+				np_memory.free(edata.addr());
+				return;
+			}
 
-		set_gui_result(SCE_NP_MATCHING_GUI_EVENT_QUICK_MATCH, std::move(edata));
-		ctx->queue_gui_callback(SCE_NP_MATCHING_GUI_EVENT_QUICK_MATCH, 0);
-		gui_epilog(ctx);
+			gui_cache.add_room(room_info->room_status.id);
 
-		ctx->wakey = 1;
-		ctx->wakey.notify_one();
+			for (auto cur_member = room_info->room_status.members; cur_member; cur_member = cur_member->next)
+			{
+				gui_cache.add_member(room_info->room_status.id, cur_member.get_ptr(), true);
+			}
+
+			set_gui_result(SCE_NP_MATCHING_GUI_EVENT_QUICK_MATCH, std::move(edata));
+			ctx->queue_gui_callback(SCE_NP_MATCHING_GUI_EVENT_QUICK_MATCH, 0);
+			gui_epilog(ctx);
+
+			ctx->wakey = 1;
+			ctx->wakey.notify_one();
+		});
 	}
 } // namespace np

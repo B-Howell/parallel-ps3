@@ -436,12 +436,21 @@ namespace np
 		}
 	}
 
+	static thread_local bool t_on_np_thread = false;
+
+	bool np_handler::on_owner()
+	{
+		return t_on_np_thread;
+	}
+
 	np_handler::np_handler()
 	{
+		owner_calls_init(&np_calls);
+
 		{
 			auto history = load_players_history();
 
-			std::lock_guard lock(mutex_history);
+			// Before its thread runs: no other thread at it yet
 			players_history = std::move(history);
 		}
 
@@ -953,40 +962,43 @@ namespace np
 
 	u32 np_handler::get_match2_event(SceNpMatching2EventKey event_key, u32 dest_addr, u32 size)
 	{
-		std::lock_guard lock(mutex_match2_req_results);
-
-		if (!match2_req_results.contains(event_key))
-			return 0;
-
-		auto& data = ::at32(match2_req_results, event_key);
-		data.apply_relocations(dest_addr);
-
-		const u32 size_copied = std::min(size, data.size());
-
-		if (dest_addr && size_copied)
+		return on_np_thread([&]() -> u32
 		{
-			vm::ptr<void> dest = vm::cast(dest_addr);
-			memcpy(dest.get_ptr(), data.data(), size_copied);
-		}
+			if (!match2_req_results.contains(event_key))
+				return 0;
 
-		np_memory.free(data.addr());
-		match2_req_results.erase(event_key);
+			auto& data = ::at32(match2_req_results, event_key);
+			data.apply_relocations(dest_addr);
 
-		return size_copied;
+			const u32 size_copied = std::min(size, data.size());
+
+			if (dest_addr && size_copied)
+			{
+				vm::ptr<void> dest = vm::cast(dest_addr);
+				memcpy(dest.get_ptr(), data.data(), size_copied);
+			}
+
+			np_memory.free(data.addr());
+			match2_req_results.erase(event_key);
+
+			return size_copied;
+		});
 	}
 
 	void np_handler::register_basic_handler(vm::cptr<SceNpCommunicationId> context, vm::ptr<SceNpBasicEventHandler> handler, vm::ptr<void> arg, bool context_sensitive)
 	{
 		{
-			std::lock_guard lock(basic_handler.mutex);
-			memcpy(&basic_handler.context, context.get_ptr(), sizeof(basic_handler.context));
-			basic_handler.handler_func = handler;
-			basic_handler.handler_arg = arg;
-			basic_handler.context_sensitive = context_sensitive;
-			basic_handler_registered = true;
+			on_np_thread([&]()
+			{
+				memcpy(&basic_handler.context, context.get_ptr(), sizeof(basic_handler.context));
+				basic_handler.handler_func = handler;
+				basic_handler.handler_arg = arg;
+				basic_handler.context_sensitive = context_sensitive;
+				basic_handler_registered = true;
 
-			presence_self.pr_com_id = *context;
-			presence_self.pr_title = fmt::truncate(Emu.GetTitle(), SCE_NP_BASIC_PRESENCE_TITLE_SIZE_MAX - 1);
+				presence_self.pr_com_id = *context;
+				presence_self.pr_title = fmt::truncate(Emu.GetTitle(), SCE_NP_BASIC_PRESENCE_TITLE_SIZE_MAX - 1);
+			});
 		}
 
 		if (g_cfg.net.psn_status != np_psn_status::psn_rpcn || !is_psn_active)
@@ -1042,17 +1054,23 @@ namespace np
 
 	SceNpCommunicationId np_handler::get_basic_handler_context()
 	{
-		std::lock_guard lock(basic_handler.mutex);
-		return basic_handler.context;
+		return on_np_thread([&]() -> SceNpCommunicationId
+		{
+			return basic_handler.context;
+		});
 	}
 
 	bool np_handler::send_basic_event(s32 event, s32 retCode, u32 reqId)
 	{
 		if (basic_handler_registered)
 		{
-			std::lock_guard lock(basic_handler.mutex);
+			// The handler, the NP thread's: read there
+			const auto [handler_func, handler_arg] = on_np_thread([&]()
+			{
+				return std::make_pair(this->basic_handler.handler_func, this->basic_handler.handler_arg);
+			});
 
-			sysutil_register_cb([handler_func = this->basic_handler.handler_func, handler_arg = this->basic_handler.handler_arg, event, retCode, reqId](ppu_thread& cb_ppu) -> s32
+			sysutil_register_cb([handler_func, handler_arg, event, retCode, reqId](ppu_thread& cb_ppu) -> s32
 				{
 					handler_func(cb_ppu, event, retCode, reqId, handler_arg);
 					return 0;
@@ -1075,22 +1093,30 @@ namespace np
 			std::memcpy(queued.data, to_queue.data.data(), queued.size);
 		}
 
-		std::lock_guard lock(mutex_queue_basic_events);
-		ensure(basic_events_push_back_growing(&queue_basic_events, &queued));
+		on_np_thread([&]()
+		{
+			ensure(basic_events_push_back_growing(&queue_basic_events, &queued));
+		});
 	}
 
 	error_code np_handler::get_basic_event(vm::ptr<s32> event, vm::ptr<SceNpUserInfo> from, vm::ptr<u8> data, vm::ptr<u32> size)
 	{
 		queued_basic_event cur_event;
+
+		// The queue is the NP thread's: taken from there
+		if (!on_np_thread([&]() -> bool
 		{
-			std::lock_guard lock(mutex_queue_basic_events);
 			if (basic_events_empty(&queue_basic_events))
 			{
-				return not_an_error(SCE_NP_BASIC_ERROR_NO_EVENT);
+				return false;
 			}
 
 			cur_event = *basic_events_front(&queue_basic_events);
 			basic_events_pop_front(&queue_basic_events);
+			return true;
+		}))
+		{
+			return not_an_error(SCE_NP_BASIC_ERROR_NO_EVENT);
 		}
 
 		// Its bytes are ours now, until the game has them
@@ -1124,57 +1150,60 @@ namespace np
 
 	void np_handler::set_message_selected(SceNpBasicAttachmentDataId id, u64 msg_id)
 	{
-		std::lock_guard lock(m_mutex_selected_messages);
-
-		switch (id)
+		on_np_thread([&]()
 		{
-		case SCE_NP_BASIC_SELECTED_INVITATION_DATA:
-			selected_invite_id = msg_id;
-			break;
-		case SCE_NP_BASIC_SELECTED_MESSAGE_DATA:
-			selected_message_id = msg_id;
-			break;
-		default:
-			fmt::throw_exception("set_message_selected with id %d", id);
-		}
+			switch (id)
+			{
+			case SCE_NP_BASIC_SELECTED_INVITATION_DATA:
+				selected_invite_id = msg_id;
+				break;
+			case SCE_NP_BASIC_SELECTED_MESSAGE_DATA:
+				selected_message_id = msg_id;
+				break;
+			default:
+				fmt::throw_exception("set_message_selected with id %d", id);
+			}
+		});
 	}
 
 	std::optional<shared_ptr<std::pair<std::string, message_data>>> np_handler::get_message_selected(SceNpBasicAttachmentDataId id)
 	{
-		std::lock_guard lock(m_mutex_selected_messages);
-
-		switch (id)
+		return on_np_thread([&]() -> std::optional<shared_ptr<std::pair<std::string, message_data>>>
 		{
-		case SCE_NP_BASIC_SELECTED_INVITATION_DATA:
-			if (!selected_invite_id)
-				return std::nullopt;
+			switch (id)
+			{
+			case SCE_NP_BASIC_SELECTED_INVITATION_DATA:
+				if (!selected_invite_id)
+					return std::nullopt;
 
-			return get_message(*selected_invite_id);
-		case SCE_NP_BASIC_SELECTED_MESSAGE_DATA:
-			if (!selected_message_id)
-				return std::nullopt;
+				return get_message(*selected_invite_id);
+			case SCE_NP_BASIC_SELECTED_MESSAGE_DATA:
+				if (!selected_message_id)
+					return std::nullopt;
 
-			return get_message(*selected_message_id);
-		default:
-			fmt::throw_exception("get_message_selected with id %d", id);
-		}
+				return get_message(*selected_message_id);
+			default:
+				fmt::throw_exception("get_message_selected with id %d", id);
+			}
+		});
 	}
 
 	void np_handler::clear_message_selected(SceNpBasicAttachmentDataId id)
 	{
-		std::lock_guard lock(m_mutex_selected_messages);
-
-		switch (id)
+		on_np_thread([&]()
 		{
-		case SCE_NP_BASIC_SELECTED_INVITATION_DATA:
-			selected_invite_id = std::nullopt;
-			break;
-		case SCE_NP_BASIC_SELECTED_MESSAGE_DATA:
-			selected_message_id = std::nullopt;
-			break;
-		default:
-			fmt::throw_exception("clear_message_selected with id %d", id);
-		}
+			switch (id)
+			{
+			case SCE_NP_BASIC_SELECTED_INVITATION_DATA:
+				selected_invite_id = std::nullopt;
+				break;
+			case SCE_NP_BASIC_SELECTED_MESSAGE_DATA:
+				selected_message_id = std::nullopt;
+				break;
+			default:
+				fmt::throw_exception("clear_message_selected with id %d", id);
+			}
+		});
 	}
 
 	void np_handler::send_message(const message_data& msg_data, const std::set<std::string>& npids)
@@ -1210,18 +1239,24 @@ namespace np
 
 	void np_handler::operator()()
 	{
-		if (g_cfg.net.psn_status != np_psn_status::psn_rpcn)
-			return;
+		t_on_np_thread = true;
 
+		// With RPCN or without, the thread runs: it owns the handler's state,
+		// which every NP call hands it (on_np_thread)
 		while (thread_ctrl::state() != thread_state::aborting && !Emu.IsStopped())
 		{
-			// Read before looking: the client's packets (m_events) and the
-			// emulator's state, or a client made (g_libretro_events)
+			// Read before looking: the client's packets (m_events), the
+			// emulator's state, or a client made (g_libretro_events), and a
+			// call handed over (the calls' wake word)
 			std::shared_ptr<rpcn::rpcn_client> watched;
 			u32 seen = 0;
 			const u32 events = g_libretro_events.load();
+			retro_atomic_int_t* const calls_word = owner_calls_wake_word(&np_calls);
+			const u32 calls_seen = static_cast<u32>(retro_atomic_load_acquire_int(calls_word));
 
-			// A requester's changes first, before the replies after them
+			// The calls handed over, then a requester's changes, before the
+			// replies after them
+			owner_calls_run(&np_calls);
 			run_np_jobs();
 
 			bool sleep = true;
@@ -1412,7 +1447,7 @@ namespace np
 			// state changing, or this thread told to end (a 200 ms poll before)
 			if (sleep)
 			{
-				thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+				thread_ctrl::wait_on_custom<3>([&](atomic_wait::list<5>& list)
 				{
 					list.template set<0>(g_libretro_events, events);
 
@@ -1420,10 +1455,17 @@ namespace np
 						list.template set<1>(watched->m_events, seen);
 					else
 						list.template set<1>(g_libretro_events, events);
+
+					list.template set<2>(*calls_word, calls_seen);
 				});
 				continue;
 			}
 		}
+
+		// No more calls: those made are run, and one made after runs on its
+		// caller's thread
+		owner_calls_close(&np_calls);
+		t_on_np_thread = false;
 	}
 
 	bool np_handler::error_and_disconnect(std::string_view error_msg)
@@ -1453,8 +1495,10 @@ namespace np
 		nph_log.trace("Callback used is 0x%x with req_id %d", ret.cb, req_id);
 
 		{
-			std::lock_guard lock(mutex_pending_requests);
-			pending_requests[req_id] = std::move(ret);
+			on_np_thread([&]()
+			{
+				pending_requests[req_id] = std::move(ret);
+			});
 		}
 
 		return req_id;
@@ -1462,40 +1506,44 @@ namespace np
 
 	std::optional<np_handler::callback_info> np_handler::take_pending_request(u32 req_id)
 	{
-		std::lock_guard lock(mutex_pending_requests);
+		return on_np_thread([&]() -> std::optional<np_handler::callback_info>
+		{
+			if (!pending_requests.contains(req_id))
+				return std::nullopt;
 
-		if (!pending_requests.contains(req_id))
-			return std::nullopt;
+			const auto cb_info = std::move(::at32(pending_requests, req_id));
+			pending_requests.erase(req_id);
 
-		const auto cb_info = std::move(::at32(pending_requests, req_id));
-		pending_requests.erase(req_id);
-
-		return cb_info;
+			return cb_info;
+		});
 	}
 
 	error_code np_handler::abort_request(u32 req_id)
 	{
-		std::lock_guard lock(mutex_pending_requests);
+		return on_np_thread([&]() -> error_code
+		{
+			if (!pending_requests.contains(req_id))
+				return SCE_NP_MATCHING2_ERROR_REQUEST_NOT_FOUND;
 
-		if (!pending_requests.contains(req_id))
-			return SCE_NP_MATCHING2_ERROR_REQUEST_NOT_FOUND;
+			if (!::at32(pending_requests, req_id).abortable)
+				return SCE_NP_MATCHING2_ERROR_CANNOT_ABORT;
 
-		if (!::at32(pending_requests, req_id).abortable)
-			return SCE_NP_MATCHING2_ERROR_CANNOT_ABORT;
+			const auto cb_info = std::move(::at32(pending_requests, req_id));
+			pending_requests.erase(req_id);
 
-		const auto cb_info = std::move(::at32(pending_requests, req_id));
-		pending_requests.erase(req_id);
+			cb_info.queue_callback(req_id, 0, SCE_NP_MATCHING2_ERROR_ABORTED, 0);
 
-		cb_info.queue_callback(req_id, 0, SCE_NP_MATCHING2_ERROR_ABORTED, 0);
-
-		return CELL_OK;
+			return CELL_OK;
+		});
 	}
 
 	event_data& np_handler::allocate_req_result(u32 event_key, u32 max_size, u32 initial_size)
 	{
-		std::lock_guard lock(mutex_match2_req_results);
-		match2_req_results.emplace(std::piecewise_construct, std::forward_as_tuple(event_key), std::forward_as_tuple(np_memory.allocate(max_size), initial_size, max_size));
-		return ::at32(match2_req_results, event_key);
+		return *on_np_thread([&]() -> event_data*
+		{
+			match2_req_results.emplace(std::piecewise_construct, std::forward_as_tuple(event_key), std::forward_as_tuple(np_memory.allocate(max_size), initial_size, max_size));
+			return &::at32(match2_req_results, event_key);
+		});
 	}
 
 	player_history& np_handler::get_player_and_set_timestamp(const SceNpId& npid, u64 timestamp)
@@ -1536,105 +1584,110 @@ namespace np
 
 	void np_handler::add_player_to_history(const SceNpId* npid, const char* description)
 	{
-		std::lock_guard lock(mutex_history);
-		auto& history = get_player_and_set_timestamp(*npid, get_system_time());
-
-		if (description)
-			history.description = description;
-
-		while (players_history.size() > MAX_HISTORY_ENTRIES)
+		return on_np_thread([&]() -> void
 		{
-			auto it = std::min_element(players_history.begin(), players_history.end(), [](const auto& a, const auto& b) { return a.second.timestamp < b.second.timestamp; } );
-			players_history.erase(it);
-		}
-
-		save_players_history();
-	}
-
-	u32 np_handler::add_players_to_history(const SceNpId* npids, const char* description, u32 count)
-	{
-		std::lock_guard lock(mutex_history);
-
-		const std::string communication_id_str = std::string(basic_handler.context.data);
-
-		for (u32 i = 0; i < count; i++)
-		{
-			auto& history = get_player_and_set_timestamp(npids[i], get_system_time());
+			auto& history = get_player_and_set_timestamp(*npid, get_system_time());
 
 			if (description)
 				history.description = description;
 
-			history.communication_ids.insert(communication_id_str);
-		}
+			while (players_history.size() > MAX_HISTORY_ENTRIES)
+			{
+				auto it = std::min_element(players_history.begin(), players_history.end(), [](const auto& a, const auto& b) { return a.second.timestamp < b.second.timestamp; } );
+				players_history.erase(it);
+			}
 
-		while (players_history.size() > MAX_HISTORY_ENTRIES)
+			save_players_history();
+		});
+	}
+
+	u32 np_handler::add_players_to_history(const SceNpId* npids, const char* description, u32 count)
+	{
+		return on_np_thread([&]() -> u32
 		{
-			auto it = std::min_element(players_history.begin(), players_history.end(), [](const auto& a, const auto& b) { return a.second.timestamp < b.second.timestamp; } );
-			players_history.erase(it);
-		}
+			const std::string communication_id_str = std::string(basic_handler.context.data);
 
-		save_players_history();
+			for (u32 i = 0; i < count; i++)
+			{
+				auto& history = get_player_and_set_timestamp(npids[i], get_system_time());
 
-		const u32 req_id = get_req_id(REQUEST_ID_HIGH::MISC);
-		send_basic_event(SCE_NP_BASIC_EVENT_ADD_PLAYERS_HISTORY_RESULT, 0, req_id);
-		return req_id;
+				if (description)
+					history.description = description;
+
+				history.communication_ids.insert(communication_id_str);
+			}
+
+			while (players_history.size() > MAX_HISTORY_ENTRIES)
+			{
+				auto it = std::min_element(players_history.begin(), players_history.end(), [](const auto& a, const auto& b) { return a.second.timestamp < b.second.timestamp; } );
+				players_history.erase(it);
+			}
+
+			save_players_history();
+
+			const u32 req_id = get_req_id(REQUEST_ID_HIGH::MISC);
+			send_basic_event(SCE_NP_BASIC_EVENT_ADD_PLAYERS_HISTORY_RESULT, 0, req_id);
+			return req_id;
+		});
 	}
 
 	u32 np_handler::get_players_history_count(u32 options) const
 	{
 		const bool all_history = (options == SCE_NP_BASIC_PLAYERS_HISTORY_OPTIONS_ALL);
 
-		std::lock_guard lock(mutex_history);
-
-		if (all_history)
+		return on_np_thread([&]() -> u32
 		{
-			return ::size32(players_history);
-		}
-
-		const std::string communication_id_str = std::string(basic_handler.context.data);
-		return static_cast<u32>(std::count_if(players_history.begin(), players_history.end(), [&](const auto& entry)
+			if (all_history)
 			{
-				return entry.second.communication_ids.contains(communication_id_str);
-			}));
+				return ::size32(players_history);
+			}
+
+			const std::string communication_id_str = std::string(basic_handler.context.data);
+			return static_cast<u32>(std::count_if(players_history.begin(), players_history.end(), [&](const auto& entry)
+				{
+					return entry.second.communication_ids.contains(communication_id_str);
+				}));
+		});
 	}
 
 	bool np_handler::get_player_history_entry(u32 options, u32 index, SceNpId* npid) const
 	{
 		const bool all_history = (options == SCE_NP_BASIC_PLAYERS_HISTORY_OPTIONS_ALL);
 
-		std::lock_guard lock(mutex_history);
-
-		if (all_history)
+		return on_np_thread([&]() -> bool
 		{
-			if (index >= players_history.size())
-				return false;
-
-			auto it = players_history.begin();
-			std::advance(it, index);
-			string_to_npid(it->first, *npid);
-			return true;
-		}
-		else
-		{
-			const std::string communication_id_str = std::string(basic_handler.context.data);
-
-			// Get the nth element that contains the current communication_id
-			for (auto it = players_history.begin(); it != players_history.end(); it++)
+			if (all_history)
 			{
-				if (it->second.communication_ids.contains(communication_id_str))
-				{
-					if (index == 0)
-					{
-						string_to_npid(it->first, *npid);
-						return true;
-					}
+				if (index >= players_history.size())
+					return false;
 
-					index--;
+				auto it = players_history.begin();
+				std::advance(it, index);
+				string_to_npid(it->first, *npid);
+				return true;
+			}
+			else
+			{
+				const std::string communication_id_str = std::string(basic_handler.context.data);
+
+				// Get the nth element that contains the current communication_id
+				for (auto it = players_history.begin(); it != players_history.end(); it++)
+				{
+					if (it->second.communication_ids.contains(communication_id_str))
+					{
+						if (index == 0)
+						{
+							string_to_npid(it->first, *npid);
+							return true;
+						}
+
+						index--;
+					}
 				}
 			}
-		}
 
-		return false;
+			return false;
+		});
 	}
 
 	void np_handler::save_players_history()
@@ -1877,32 +1930,37 @@ namespace np
 
 	void np_handler::add_gui_request(u32 req_id, u32 ctx_id)
 	{
-		std::lock_guard lock(gui_requests.mutex);
-		ensure(gui_requests.list.insert({req_id, ctx_id}).second);
+		on_np_thread([&]()
+		{
+			ensure(gui_requests.list.insert({req_id, ctx_id}).second);
+		});
 	}
 
 	void np_handler::remove_gui_request(u32 req_id)
 	{
-		std::lock_guard lock(gui_requests.mutex);
-		if (gui_requests.list.erase(req_id) != 1)
+		on_np_thread([&]()
 		{
-			rpcn_log.error("Failed to erase gui request %d", req_id);
-		}
+			if (gui_requests.list.erase(req_id) != 1)
+			{
+				rpcn_log.error("Failed to erase gui request %d", req_id);
+			}
+		});
 	}
 
 	u32 np_handler::take_gui_request(u32 req_id)
 	{
-		std::lock_guard lock(gui_requests.mutex);
-
-		if (!gui_requests.list.contains(req_id))
+		return on_np_thread([&]() -> u32
 		{
-			return 0;
-		}
+			if (!gui_requests.list.contains(req_id))
+			{
+				return 0;
+			}
 
-		const u32 ctx_id = ::at32(gui_requests.list, req_id);
-		gui_requests.list.erase(req_id);
+			const u32 ctx_id = ::at32(gui_requests.list, req_id);
+			gui_requests.list.erase(req_id);
 
-		return ctx_id;
+			return ctx_id;
+		});
 	}
 
 	shared_ptr<matching_ctx> np_handler::take_pending_gui_request(u32 req_id)

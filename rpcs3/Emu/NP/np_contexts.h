@@ -3,7 +3,7 @@
 #include <optional>
 #include <variant>
 
-#include "Utilities/mutex.h"
+#include "Emu/Cell/Modules/cellSysutil.h"
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/Cell/Modules/sceNp.h"
 #include "Emu/Cell/Modules/sceNp2.h"
@@ -137,7 +137,6 @@ struct tus_ctx
 	static const u32 id_count = SCE_NP_TUS_MAX_CTX_NUM;
 	SAVESTATE_INIT_POS(50);
 
-	shared_mutex mutex;
 	u64 timeout = 60'000'000; // 60 seconds
 	SceNpCommunicationId communicationId{};
 	SceNpCommunicationPassphrase passphrase{};
@@ -170,7 +169,6 @@ struct score_ctx
 	static const u32 id_count = SCE_NP_SCORE_MAX_CTX_NUM;
 	SAVESTATE_INIT_POS(25);
 
-	shared_mutex mutex;
 	u64 timeout = 60'000'000; // 60 seconds
 	SceNpCommunicationId communicationId{};
 	SceNpCommunicationPassphrase passphrase{};
@@ -206,7 +204,6 @@ struct match2_ctx
 
 	atomic_t<u32> started = 0;
 
-	shared_mutex mutex;
 
 	SceNpCommunicationId communicationId{};
 	SceNpCommunicationPassphrase passphrase{};
@@ -217,8 +214,9 @@ struct match2_ctx
 
 	SceNpMatching2RequestOptParam default_match2_optparam{};
 
-	vm::ptr<SceNpMatching2SignalingCallback> signaling_cb{};
-	vm::ptr<void> signaling_cb_arg{};
+	// The callback and its argument, one word: set by the game, read by the
+	// signaling thread with no lock
+	sysutil_cb_word signaling_cb;
 };
 u16 create_match2_context(vm::cptr<SceNpCommunicationId> communicationId, vm::cptr<SceNpCommunicationPassphrase> passphrase, s32 option);
 bool check_match2_context(u16 ctx_id);
@@ -281,13 +279,12 @@ struct signaling_ctx
 	static const u32 id_count = SCE_NP_SIGNALING_CTX_MAX;
 	SAVESTATE_INIT_POS(31);
 
-	shared_mutex mutex;
-
 	SceNpId npid{};
 	vm::ptr<SceNpSignalingHandler> handler{};
 	vm::ptr<void> arg{};
-	vm::ptr<SceNpSignalingHandler> ext_handler{};
-	vm::ptr<void> ext_arg{};
+	// The extended handler and its argument, one word: set by the game, read
+	// by the signaling thread with no lock
+	sysutil_cb_word ext_handler;
 };
 s32 create_signaling_context(vm::ptr<SceNpId> npid, vm::ptr<SceNpSignalingHandler> handler, vm::ptr<void> arg);
 shared_ptr<signaling_ctx> get_signaling_context(u32 ctx_id);

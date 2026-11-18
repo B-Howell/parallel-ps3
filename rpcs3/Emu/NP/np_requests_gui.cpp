@@ -39,102 +39,107 @@ namespace np
 
 	void np_handler::set_current_gui_ctx_id(u32 id)
 	{
-		std::lock_guard lock(gui_notifications.mutex);
-
-		gui_notifications.current_gui_ctx_id = id;
-
-		if (id == 0)
+		on_np_thread([&]()
 		{
-			for (const auto& [key, notif_data] : gui_notifications.list)
-			{
-				np_memory.free(notif_data.edata.addr());
-			}
+			gui_notifications.current_gui_ctx_id = id;
 
-			gui_notifications.list.clear();
-		}
+			if (id == 0)
+			{
+				for (const auto& [key, notif_data] : gui_notifications.list)
+				{
+					np_memory.free(notif_data.edata.addr());
+				}
+
+				gui_notifications.list.clear();
+			}
+		});
 	}
 
 	void np_handler::set_gui_result(s32 event, np::event_data data)
 	{
-		std::lock_guard lock(gui_result.mutex);
-		if (gui_result.event)
-			np_memory.free(gui_result.data.addr());
+		on_np_thread([&]()
+		{
+			if (gui_result.event)
+				np_memory.free(gui_result.data.addr());
 
-		gui_result.data = std::move(data);
-		gui_result.event = event;
+			gui_result.data = std::move(data);
+			gui_result.event = event;
+		});
 	}
 
 	error_code np_handler::get_matching_result(u32 ctx_id, u32 req_id, vm::ptr<void> buf, vm::ptr<u32> size, vm::ptr<s32> event)
 	{
-		std::lock_guard lock(gui_notifications.mutex);
-
-		auto ctx = get_matching_context(ctx_id);
-
-		if (!gui_notifications.current_gui_ctx_id || !ctx)
+		return on_np_thread([&]() -> error_code
 		{
-			return SCE_NP_MATCHING_ERROR_CTX_NOT_FOUND;
-		}
+			auto ctx = get_matching_context(ctx_id);
 
-		if (!gui_notifications.list.contains(std::make_pair(ctx_id, req_id)))
-		{
-			return SCE_NP_MATCHING_ERROR_INVALID_REQ_ID;
-		}
+			if (!gui_notifications.current_gui_ctx_id || !ctx)
+			{
+				return SCE_NP_MATCHING_ERROR_CTX_NOT_FOUND;
+			}
 
-		const auto key = std::make_pair(ctx_id, req_id);
+			if (!gui_notifications.list.contains(std::make_pair(ctx_id, req_id)))
+			{
+				return SCE_NP_MATCHING_ERROR_INVALID_REQ_ID;
+			}
 
-		auto& notif = ::at32(gui_notifications.list, key);
+			const auto key = std::make_pair(ctx_id, req_id);
 
-		if (event)
-		{
-			*event = notif.event;
-		}
+			auto& notif = ::at32(gui_notifications.list, key);
 
-		if (!buf)
-		{
-			*size = notif.edata.size();
+			if (event)
+			{
+				*event = notif.event;
+			}
+
+			if (!buf)
+			{
+				*size = notif.edata.size();
+				return CELL_OK;
+			}
+
+			const u32 final_size = std::min(static_cast<u32>(*size), notif.edata.size());
+			notif.edata.apply_relocations(buf.addr());
+			memcpy(buf.get_ptr(), notif.edata.data(), final_size);
+			*size = final_size;
+
+			np_memory.free(notif.edata.addr());
+			gui_notifications.list.erase(key);
+
 			return CELL_OK;
-		}
-
-		const u32 final_size = std::min(static_cast<u32>(*size), notif.edata.size());
-		notif.edata.apply_relocations(buf.addr());
-		memcpy(buf.get_ptr(), notif.edata.data(), final_size);
-		*size = final_size;
-
-		np_memory.free(notif.edata.addr());
-		gui_notifications.list.erase(key);
-
-		return CELL_OK;
+		});
 	}
 
 	error_code np_handler::get_result_gui(vm::ptr<void> buf, vm::ptr<u32> size, vm::ptr<s32> event)
 	{
-		std::lock_guard lock(gui_result.mutex);
-
-		if (!gui_result.event)
+		return on_np_thread([&]() -> error_code
 		{
-			return SCE_NP_MATCHING_ERROR_RESULT_NOT_FOUND;
-		}
+			if (!gui_result.event)
+			{
+				return SCE_NP_MATCHING_ERROR_RESULT_NOT_FOUND;
+			}
 
-		if (event)
-		{
-			*event = gui_result.event;
-		}
+			if (event)
+			{
+				*event = gui_result.event;
+			}
 
-		if (!buf)
-		{
-			*size = gui_result.data.size();
+			if (!buf)
+			{
+				*size = gui_result.data.size();
+				return CELL_OK;
+			}
+
+			const u32 final_size = std::min(static_cast<u32>(*size), gui_result.data.size());
+			gui_result.data.apply_relocations(buf.addr());
+			memcpy(buf.get_ptr(), gui_result.data.data(), final_size);
+			*size = final_size;
+
+			np_memory.free(gui_result.data.addr());
+			gui_result.event = 0;
+
 			return CELL_OK;
-		}
-
-		const u32 final_size = std::min(static_cast<u32>(*size), gui_result.data.size());
-		gui_result.data.apply_relocations(buf.addr());
-		memcpy(buf.get_ptr(), gui_result.data.data(), final_size);
-		*size = final_size;
-
-		np_memory.free(gui_result.data.addr());
-		gui_result.event = 0;
-
-		return CELL_OK;
+		});
 	}
 
 	error_code np_handler::create_room_gui(u32 ctx_id, vm::cptr<SceNpCommunicationId> communicationId, vm::cptr<SceNpMatchingAttr> attr, vm::ptr<SceNpMatchingGUIHandler> handler, vm::ptr<void> arg)
@@ -304,8 +309,10 @@ namespace np
 		gui_cache.del_room(room_status->id);
 
 		{
-			std::lock_guard lock(gui_notifications.mutex);
-			gui_notifications.list.emplace(std::make_pair(gui_notifications.current_gui_ctx_id, req_id), gui_notification{.event = SCE_NP_MATCHING_EVENT_LEAVE_ROOM_DONE, .edata = std::move(edata)});
+			on_np_thread([&]()
+			{
+				gui_notifications.list.emplace(std::make_pair(gui_notifications.current_gui_ctx_id, req_id), gui_notification{.event = SCE_NP_MATCHING_EVENT_LEAVE_ROOM_DONE, .edata = std::move(edata)});
+			});
 		}
 
 		ctx->queue_callback(req_id, SCE_NP_MATCHING_EVENT_LEAVE_ROOM_DONE, 0);
@@ -458,8 +465,10 @@ namespace np
 		extra_nps::print_SceNpMatchingRoom(room_info);
 
 		{
-			std::lock_guard lock(gui_notifications.mutex);
-			gui_notifications.list.emplace(std::make_pair(gui_notifications.current_gui_ctx_id, req_id), gui_notification{.event = SCE_NP_MATCHING_EVENT_GET_ROOM_SEARCH_FLAG_DONE, .edata = std::move(edata)});
+			on_np_thread([&]()
+			{
+				gui_notifications.list.emplace(std::make_pair(gui_notifications.current_gui_ctx_id, req_id), gui_notification{.event = SCE_NP_MATCHING_EVENT_GET_ROOM_SEARCH_FLAG_DONE, .edata = std::move(edata)});
+			});
 		}
 
 		ctx->queue_callback(req_id, SCE_NP_MATCHING_EVENT_GET_ROOM_SEARCH_FLAG_DONE, 0);
@@ -557,8 +566,10 @@ namespace np
 		extra_nps::print_SceNpMatchingRoom(room_info);
 
 		{
-			std::lock_guard lock(gui_notifications.mutex);
-			gui_notifications.list.emplace(std::make_pair(gui_notifications.current_gui_ctx_id, req_id), gui_notification{.event = SCE_NP_MATCHING_EVENT_GET_ROOM_INFO_DONE, .edata = std::move(edata)});
+			on_np_thread([&]()
+			{
+				gui_notifications.list.emplace(std::make_pair(gui_notifications.current_gui_ctx_id, req_id), gui_notification{.event = SCE_NP_MATCHING_EVENT_GET_ROOM_INFO_DONE, .edata = std::move(edata)});
+			});
 		}
 
 		ctx->queue_callback(req_id, SCE_NP_MATCHING_EVENT_GET_ROOM_INFO_DONE, 0);
@@ -596,9 +607,11 @@ namespace np
 		ctx->wakey = 0;
 		std::memcpy(room_id.opt, resp->id().data(), sizeof(SceNpRoomId::opt));
 		{
-			std::lock_guard lock(this->mutex_quickmatching);
-			const auto [_, inserted] = pending_quickmatching.insert_or_assign(room_id, ctx->ctx_id);
-			ensure(inserted);
+			on_np_thread([&]()
+			{
+				const auto [_, inserted] = pending_quickmatching.insert_or_assign(room_id, ctx->ctx_id);
+				ensure(inserted);
+			});
 		}
 
 		// Now that the reply has been received, we start the wait for the notification
@@ -609,11 +622,9 @@ namespace np
 				if (thread_ctrl::state() == thread_state::aborting)
 					return;
 
-				{
-					std::lock_guard lock(this->mutex_quickmatching);
-					if (this->pending_quickmatching.erase(room_id) != 1)
-						return;
-				}
+				// The NP thread's: taken off there
+				if (!this->on_np_thread([&]() { return this->pending_quickmatching.erase(room_id) == 1; }))
+					return;
 
 				if (ctx->wakey == 0)
 				{

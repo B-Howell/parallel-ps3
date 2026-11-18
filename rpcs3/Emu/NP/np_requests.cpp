@@ -830,8 +830,10 @@ namespace np
 	{
 		const u32 req_id = get_req_id(REQUEST_ID_HIGH::MISC);
 		{
-			std::lock_guard lock(mutex_pending_sign_infos_requests);
-			pending_sign_infos_requests[req_id] = conn_id;
+			on_np_thread([&]()
+			{
+				pending_sign_infos_requests[req_id] = conn_id;
+			});
 		}
 
 		if (!get_rpcn()->req_sign_infos(req_id, npid))
@@ -845,9 +847,11 @@ namespace np
 	{
 		u32 conn_id;
 		{
-			std::lock_guard lock(mutex_pending_sign_infos_requests);
-			conn_id = ::at32(pending_sign_infos_requests, req_id);
-			pending_sign_infos_requests.erase(req_id);
+			on_np_thread([&]()
+			{
+				conn_id = ::at32(pending_sign_infos_requests, req_id);
+				pending_sign_infos_requests.erase(req_id);
+			});
 		}
 
 		switch (error)

@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The NP handler takes no lock.**
+  - **The handler's state:** it had 14 mutexes, over the requests pending, the Matching2 results, the basic events and their handler, the messages selected, the players' history, the GUI's requests, notifications and result, the quick matches and the custom menu. All of it now belongs to the NP handler's thread, and each change is handed there (`on_np_thread`, on `owner_calls`).
+  - **The NP handler's thread** now runs with RPCN or without: it returned at once before when RPCN was off. It wakes on a call handed over as well as on the client's packets and the emulator's state.
+  - **`sceNpInit` and `sceNpTerm`:** these take turns by a compare-and-swap. One made while the other is under way returns as if that one came first.
+  - **The Matching2 set-up and take-down** flip their flag by test-and-set. The `sceNp2` checks of a single flag drop their lock.
+  - **The signaling callbacks:** a signaling context's extended handler and a Matching2 context's signaling callback are now one word each with their argument (`sysutil_cb_word`). The signaling thread reads them whole; it read the Matching2 one with no lock before, too.
+  - **Unused mutexes gone:** those in the TUS, score and Matching2 contexts were never taken.
+  - **Save states:** they keep the bytes of the basic handler, a word in place of its mutex.
+  - `std::lock_guard` count 62. A check fails if a lock comes back in any of these. No new test: the hand-over is `owner_calls`', which `test_owner_calls` covers, and only a game online drives the rest. Not yet run online.
 - **Socket data is sent and received in place.**
   - **Receiving:** `recvfrom` allocated a vector the size the game asked for, received into it, returned it by value, and then copied it into the game's buffer. Now it receives straight into the game's buffer: the native socket's `recvfrom`, the DNS hook, and the P2P and P2P stream queues all write there.
   - **Sending:** `sendto` copied the game's data into a vector first. Now it sends from the game's memory, which stays as it is while the game is in the call.

@@ -581,27 +581,38 @@ error_code sceNpInit(u32 poolsize, vm::ptr<void> poolptr)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	std::lock_guard lock(nph.mutex_status);
-
-	if (nph.is_NP_init)
+	// One sceNpInit or sceNpTerm at a time, by compare-and-swap: another
+	// under way, it is as if that one came first
+	if (!nph.np_status_busy.compare_and_swap_test(0, 1))
 	{
 		return SCE_NP_ERROR_ALREADY_INITIALIZED;
 	}
 
+	const auto done = [&](error_code err)
+	{
+		nph.np_status_busy.release(0);
+		return err;
+	};
+
+	if (nph.is_NP_init)
+	{
+		return done(SCE_NP_ERROR_ALREADY_INITIALIZED);
+	}
+
 	if (poolsize == 0 || !poolptr)
 	{
-		return SCE_NP_ERROR_INVALID_ARGUMENT;
+		return done(SCE_NP_ERROR_INVALID_ARGUMENT);
 	}
 
 	if (poolsize < SCE_NP_MIN_POOL_SIZE)
 	{
-		return SCE_NP_ERROR_INSUFFICIENT_BUFFER;
+		return done(SCE_NP_ERROR_INSUFFICIENT_BUFFER);
 	}
 
 	nph.init_NP(poolsize, poolptr);
 	nph.is_NP_init = true;
 
-	return CELL_OK;
+	return done(CELL_OK);
 }
 
 error_code sceNpTerm()
@@ -610,15 +621,21 @@ error_code sceNpTerm()
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	std::lock_guard lock(nph.mutex_status);
+	// As sceNpInit: another under way, it is as if that one came first
+	if (!nph.np_status_busy.compare_and_swap_test(0, 1))
+	{
+		return SCE_NP_ERROR_NOT_INITIALIZED;
+	}
 
 	if (!nph.is_NP_init)
 	{
+		nph.np_status_busy.release(0);
 		return SCE_NP_ERROR_NOT_INITIALIZED;
 	}
 
 	nph.terminate_NP();
 	nph.is_NP_init = false;
+	nph.np_status_busy.release(0);
 
 	idm::clear<signaling_ctx>();
 
@@ -1123,27 +1140,30 @@ u64 sys_time_get_system_time();
 
 error_code acquire_time_slot(u64* time_array, usz array_size, u64 slot_duration)
 {
-	static shared_mutex mutex;
-	std::lock_guard lock(mutex);
+	// The slots are the NP thread's: taken there
+	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	const u64 current_time = sys_time_get_system_time();
-
-	for (usz index = 0; index < array_size; index++)
+	return nph.on_np_thread([&]() -> error_code
 	{
-		if (time_array[index] == 0)
+		const u64 current_time = sys_time_get_system_time();
+
+		for (usz index = 0; index < array_size; index++)
 		{
-			time_array[index] = current_time;
-			return CELL_OK;
+			if (time_array[index] == 0)
+			{
+				time_array[index] = current_time;
+				return CELL_OK;
+			}
+
+			if (current_time > (time_array[index] + slot_duration))
+			{
+				time_array[index] = current_time;
+				return CELL_OK;
+			}
 		}
 
-		if (current_time > (time_array[index] + slot_duration))
-		{
-			time_array[index] = current_time;
-			return CELL_OK;
-		}
-	}
-
-	return SCE_NP_BASIC_ERROR_BUSY;
+		return SCE_NP_BASIC_ERROR_BUSY;
+	});
 }
 
 error_code _sceNpBasicSendMessage(vm::cptr<SceNpId> to, vm::cptr<void> data, u32 size, bool rate_limited)
@@ -3056,15 +3076,17 @@ error_code sceNpCustomMenuRegisterActions(vm::cptr<SceNpCustomMenu> menu, vm::pt
 	}
 
 	// TODO: add the custom menu to the friendlist and profile dialogs
-	std::lock_guard lock(nph.mutex_custom_menu);
-	nph.custom_menu_handler = handler;
-	nph.custom_menu_user_arg = userArg;
-	nph.custom_menu_actions = std::move(actions);
-	nph.custom_menu_registered = true;
-	nph.custom_menu_activation = {};
-	nph.custom_menu_exception_list = {};
+	return nph.on_np_thread([&]() -> error_code
+	{
+		nph.custom_menu_handler = handler;
+		nph.custom_menu_user_arg = userArg;
+		nph.custom_menu_actions = std::move(actions);
+		nph.custom_menu_registered = true;
+		nph.custom_menu_activation = {};
+		nph.custom_menu_exception_list = {};
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code sceNpCustomMenuActionSetActivation(vm::cptr<SceNpCustomMenuIndexArray> array, u64 options)
@@ -3080,21 +3102,22 @@ error_code sceNpCustomMenuActionSetActivation(vm::cptr<SceNpCustomMenuIndexArray
 		return SCE_NP_CUSTOM_MENU_ERROR_NOT_INITIALIZED;
 	}
 
-	std::lock_guard lock(nph.mutex_custom_menu);
-
-	if (!nph.custom_menu_registered)
+	return nph.on_np_thread([&]() -> error_code
 	{
-		return SCE_NP_CUSTOM_MENU_ERROR_NOT_REGISTERED;
-	}
+		if (!nph.custom_menu_registered)
+		{
+			return SCE_NP_CUSTOM_MENU_ERROR_NOT_REGISTERED;
+		}
 
-	if (!array)
-	{
-		return SCE_NP_CUSTOM_MENU_ERROR_INVALID_ARGUMENT;
-	}
+		if (!array)
+		{
+			return SCE_NP_CUSTOM_MENU_ERROR_INVALID_ARGUMENT;
+		}
 
-	nph.custom_menu_activation = *array;
+		nph.custom_menu_activation = *array;
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code sceNpCustomMenuRegisterExceptionList(vm::cptr<SceNpCustomMenuActionExceptions> items, u32 numItems, u64 options)
@@ -3110,32 +3133,33 @@ error_code sceNpCustomMenuRegisterExceptionList(vm::cptr<SceNpCustomMenuActionEx
 		return SCE_NP_CUSTOM_MENU_ERROR_NOT_INITIALIZED;
 	}
 
-	std::lock_guard lock(nph.mutex_custom_menu);
-
-	if (!nph.custom_menu_registered)
+	return nph.on_np_thread([&]() -> error_code
 	{
-		return SCE_NP_CUSTOM_MENU_ERROR_NOT_REGISTERED;
-	}
+		if (!nph.custom_menu_registered)
+		{
+			return SCE_NP_CUSTOM_MENU_ERROR_NOT_REGISTERED;
+		}
 
-	if (numItems > SCE_NP_CUSTOM_MENU_EXCEPTION_ITEMS_MAX)
-	{
-		return SCE_NP_CUSTOM_MENU_ERROR_EXCEEDS_MAX;
-	}
+		if (numItems > SCE_NP_CUSTOM_MENU_EXCEPTION_ITEMS_MAX)
+		{
+			return SCE_NP_CUSTOM_MENU_ERROR_EXCEEDS_MAX;
+		}
 
-	if (!items)
-	{
-		return SCE_NP_CUSTOM_MENU_ERROR_INVALID_ARGUMENT;
-	}
+		if (!items)
+		{
+			return SCE_NP_CUSTOM_MENU_ERROR_INVALID_ARGUMENT;
+		}
 
-	nph.custom_menu_exception_list.clear();
+		nph.custom_menu_exception_list.clear();
 
-	for (u32 i = 0; i < numItems; i++)
-	{
-		// TODO: Are the exceptions checked ?
-		nph.custom_menu_exception_list.push_back(items[i]);
-	}
+		for (u32 i = 0; i < numItems; i++)
+		{
+			// TODO: Are the exceptions checked ?
+			nph.custom_menu_exception_list.push_back(items[i]);
+		}
 
-	return CELL_OK;
+		return CELL_OK;
+	});
 }
 
 error_code sceNpFriendlist(vm::ptr<SceNpFriendlistResultHandler> resultHandler, vm::ptr<void> userArg, sys_memory_container_t containerId)
@@ -6724,9 +6748,7 @@ error_code sceNpSignalingAddExtendedHandler(u32 ctx_id, vm::ptr<SceNpSignalingHa
 		return SCE_NP_SIGNALING_ERROR_CTX_NOT_FOUND;
 	}
 
-	std::lock_guard lock(ctx->mutex);
-	ctx->ext_handler = handler;
-	ctx->ext_arg = arg;
+	ctx->ext_handler.set(handler.addr(), arg.addr());
 
 	return CELL_OK;
 }
