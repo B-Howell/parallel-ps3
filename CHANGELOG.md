@@ -4,6 +4,9 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **libretro-common: rslc takes specialization constants**, synced from RetroArch's. It now accepts `layout(constant_id)` on a global const scalar and `local_size_x_id` to `_z_id`. They are SPIR-V only and never folded to their defaults, which lets the Vulkan renderer's fixed compute shaders be compiled once and still be sized for the GPU they run on.
+  - A stage without one compiles word for word as before: all 1814 modules the shader corpus test makes are byte-identical. RetroArch's `rslc_ext_test` covers the new code; nothing in the core uses it yet.
+
 - **The guest's process-shared objects take no lock.** Not yet run on a game.
   - These are the lv2 mutexes, condition variables, semaphores, event queues and shared memory a game creates with an IPC key. They were a map under a shared mutex, looked up and added to by the game's PPU threads.
   - The table is now read in place: a lookup enters, finds and leaves. The HLE thread alone changes it (`hle_call`). It copies the table, changes the copy and publishes it, and the table replaced is retired (`retro_retire`).
