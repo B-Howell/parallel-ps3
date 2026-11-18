@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The RSX's "Driver Wake-Up Delay" core option waits in the game's time, without a spin.** Not yet run on a game; it is off by default.
+  - **Before:** it slept on the host's clock in the host scheduler's quantum, then yielded, then busy-waited 100 at a time until the host's clock said the delay had passed.
+  - **Now:** it waits that many microseconds of the game's time at retro_run's pace (`libretro_guest_wait_as_host`, as the hardware thread switch's cost does), cut short by a change of the RSX thread's state.
+  - **Tests:** the delay is a timing hack a game shows, so there is no test of its own; a check fails if the host's clock, a yield or a spin comes back in it.
+
 - **The RSX thread's wait for the game to set it up, and the progress dialog's wait for the renderer, no longer poll or time out on the host's clock.** Not yet run on a game.
   - **Before:** the RSX thread looked every 1 ms, until the game set the RSX up and the emulator ran. The progress dialog waited up to 5 seconds of the host's time for the renderer to finish starting.
   - **Now:** the RSX thread waits for a frame of retro_run's, a change of the emulator's state, or the RSX being set up (both places that set it up now notify). It still runs its own tasks once a frame, as it does while paused. The dialog waits up to 300 frames, woken as the renderer finishes starting.

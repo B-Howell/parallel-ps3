@@ -3035,46 +3035,13 @@ namespace rsx
 
 		// Some cases do not need full delay
 		remaining = utils::aligned_div(remaining, div);
-		const u64 until = get_system_time() + remaining;
 
-		while (true)
-		{
-#ifdef __linux__
-			// NOTE: Assumption that timer initialization has succeeded
-			constexpr u64 host_min_quantum = 10;
-#else
-			// Host scheduler quantum for windows (worst case)
-			// NOTE: On ps3 this function has very high accuracy
-			constexpr u64 host_min_quantum = 500;
-#endif
-			if (remaining >= host_min_quantum)
-			{
-#ifdef __linux__
-				thread_ctrl::wait_for(remaining, false);
-#else
-				// Wait on multiple of min quantum for large durations to avoid overloading low thread cpus
-				thread_ctrl::wait_for(remaining - (remaining % host_min_quantum), false);
-#endif
-			}
-			// TODO: Determine best value for yield delay
-			else if (remaining >= host_min_quantum / 2)
-			{
-				std::this_thread::yield();
-			}
-			else
-			{
-				busy_wait(100);
-			}
-
-			const u64 current = get_system_time();
-
-			if (current >= until)
-			{
-				break;
-			}
-
-			remaining = until - current;
-		}
+		// In the guest's time at retro_run's pace, as the hardware thread
+		// switch's cost is, and cut short by a change of this thread's
+		// state (its callers are all on it) - not the host's clock, no spin
+		auto& rsx = *get_current_renderer();
+		const auto old = +rsx.state;
+		thread_ctrl::wait_on(rsx.state, old, libretro_guest_wait_as_host(remaining));
 	}
 
 	u32 thread::get_fifo_cmd() const

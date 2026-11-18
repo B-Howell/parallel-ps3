@@ -1117,6 +1117,8 @@ check: all
 	@if grep -nE "wait_on\(m_wake_up, 0, timeout\)|wait_on\(m_done, 2, 5'000'000\)" ../../Emu/Cell/Modules/cellGem.cpp; then echo "cellGem: a host timer is back"; exit 1; else echo "cellGem: paced by frames"; fi
 	@# the RSX thread waits for startup by frames and notifications, and the progress dialog waits for the renderer by frames
 	@if grep -n "thread_ctrl::wait_for(1000)" ../../Emu/RSX/RSXThread.cpp || grep -n "atomic_wait_timeout(5" ../../Emu/system_progress.cpp; then echo "RSX startup: a poll or a host timeout is back"; exit 1; else echo "RSX startup: no poll, no host timeout"; fi
+	@# the RSX driver wake-up delay is the guest's time, cut short by the thread's state: no host clock, no spin
+	@if awk '/void thread::fifo_wake_delay/,/u32 thread::get_fifo_cmd/' ../../Emu/RSX/RSXThread.cpp | grep -nE "busy_wait|yield|get_system_time|wait_for\("; then echo "RSX wake-up delay: the host's clock or a spin is back"; exit 1; else echo "RSX wake-up delay: the guest's time"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
