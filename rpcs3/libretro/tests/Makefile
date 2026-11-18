@@ -879,7 +879,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 170
+LOCK_GUARD_MAX := 109
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -1059,6 +1059,8 @@ check: all
 	@if grep -nE "shared_mutex|std::mutex|lock_guard|scoped_lock|shared_lock|unique_lock[^a-z_]|reader_lock|get_system_time|wait_for\(" ../../Emu/Cell/Modules/sceNpTrophy.cpp ../../Emu/Cell/Modules/sceNpTrophy.h; then echo "trophies: a lock or a clock is back"; exit 1; else echo "trophies: no lock, no clock"; fi
 	@# The network threads wait in poll() untimed, woken by a wake-up socket (net_wake.c); a socket's timeout is its waiter's own: no timed poll, no sleep
 	@if grep -nE "poll\([^)]*, *(1|5)\)|Sleep\(" ../../Emu/Cell/lv2/sys_net/network_context.cpp ../../Emu/Cell/lv2/sys_net/sys_net_helpers.cpp || grep -nE "get_guest_system_time\(\) - ppu.start_time" ../../Emu/Cell/lv2/sys_net.cpp; then echo "network threads: a timed poll is back"; exit 1; else echo "network threads: untimed"; fi
+	@# All of sys_net is the network thread's: sockets, queues, P2P ports, the threads to wake - handed to it (net_call), no lock anywhere in it
+	@if grep -rnE --include=*.cpp --include=*.h "mutex|lock_guard|scoped_lock|unique_lock|reader_lock|lock_unlock" ../../Emu/Cell/lv2/sys_net.cpp ../../Emu/Cell/lv2/sys_net/; then echo "sys_net: a lock is back"; exit 1; else echo "sys_net: no lock"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

@@ -3,7 +3,6 @@
 #include <functional>
 #include <optional>
 
-#include "Utilities/mutex.h"
 #include "Emu/IdManager.h"
 #include "Emu/Cell/lv2/sys_net.h"
 #include "Emu/NP/ip_address.h"
@@ -62,8 +61,6 @@ public:
 	virtual ~lv2_socket() noexcept;
 	lv2_socket& operator=(thread_state s) noexcept;
 
-	std::unique_lock<shared_mutex> lock();
-
 	void set_lv2_id(u32 id);
 	bs_t<poll_t> get_events() const;
 	void set_poll_event(bs_t<poll_t> event);
@@ -120,7 +117,7 @@ public:
 protected:
 	lv2_socket(utils::serial&, bool);
 
-	shared_mutex mutex;
+	// No lock: a socket is the network thread's alone (net_call)
 	s32 lv2_id = 0;
 
 	socket_type native_socket = 0;

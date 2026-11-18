@@ -50,7 +50,7 @@ struct nt_p2p_port
 	socket_type p2p_socket = 0;
 	u16 port               = 0;
 
-	shared_mutex bound_p2p_vports_mutex;
+	// The vports and streams are the network thread's, as the port is: no lock
 	// For DGRAM_P2P sockets (vport, sock_ids)
 	std::map<u16, std::set<s32>> bound_p2p_vports{};
 	// For STREAM_P2P sockets (vport, sock_ids)

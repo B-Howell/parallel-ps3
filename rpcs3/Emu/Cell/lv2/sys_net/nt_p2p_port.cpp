@@ -143,7 +143,7 @@ void nt_p2p_port::dump_packet(p2ps_encapsulated_tcp* tcph)
 	sys_net.trace("PACKET DUMP:\nsrc_port: %d\ndst_port: %d\nflags: %d\nseq: %d\nack: %d\nlen: %d", tcph->src_port, tcph->dst_port, tcph->flags, tcph->seq, tcph->ack, tcph->length);
 }
 
-// Must be used under bound_p2p_vports_mutex lock
+// On the network thread, which the vports are
 u16 nt_p2p_port::get_port()
 {
 	if (binding_port == 0)
@@ -274,7 +274,6 @@ bool nt_p2p_port::recv_data()
 
 	if (vport_flags & P2P_FLAG_P2P)
 	{
-		std::lock_guard lock(bound_p2p_vports_mutex);
 		if (bound_p2p_vports.contains(dst_vport))
 		{
 			sys_net_sockaddr_in_p2p p2p_addr{};
@@ -366,7 +365,6 @@ bool nt_p2p_port::recv_data()
 		const u64 key_connected = (reinterpret_cast<struct sockaddr_in*>(&native_addr)->sin_addr.s_addr) | (static_cast<u64>(tcp_header->src_port) << 48) | (static_cast<u64>(tcp_header->dst_port) << 32);
 
 		{
-			std::lock_guard lock(bound_p2p_vports_mutex);
 			if (bound_p2p_streams.contains(key_connected))
 			{
 				const auto sock_id = ::at32(bound_p2p_streams, key_connected);

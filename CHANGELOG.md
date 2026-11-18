@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **sys_net takes no lock.** Before, each socket had its own mutex, the P2P port list and each port's vports had theirs, the threads to wake had one, and each network thread had one for its loop. That came to 61 `std::lock_guard`s and the rest.
+  - **One owner:** all of it now belongs to the network thread, and it alone touches any of it. A syscall, the RPCN and signaling threads, and the P2P stream retransmitter hand what they need done over to it (`net_call`, on `owner_calls`) and wait.
+  - **Waking the network thread:** handing a call over pokes its wake-up socket. To make that possible, `owner_calls` gains a waker (`owner_calls_set_waker`), called with every wake, for an owner that waits on something other than its wake word.
+  - **The P2P thread:** its polling is folded into the network thread. One untimed `poll()` covers the native sockets, the P2P ports and the wake-up.
+  - **A call that blocks** (`accept`, `connect`, `recvfrom`, `sendto`, `sendmsg`, `poll`, `select`) queues on the network thread, then sleeps once back on its own thread. If its wake comes first, the sleep is cancelled, as `sys_event_queue_receive` does.
+  - **Closing a socket** runs between the network thread's rounds, so no copy of the socket is left in one. This replaces taking both threads' loop locks.
+  - **The P2P retransmitter:** it spun on `EAGAIN` from a full send buffer. It now leaves the packet for its next due time.
+  - `std::lock_guard` count 109. `test_owner_calls` gains an owner that waits on its own word, woken only by the waker: 2000 calls from two threads all run, and a mutant that never calls the waker hangs. The sys_net hand-over itself has no test of its own: only a game online drives it. A check fails if a lock comes back anywhere in sys_net. Not yet run online.
 - **The network threads no longer poll on a timer.** The network thread called `poll()` with a 1 ms timeout and the P2P thread with a 1 ms one (5 ms on Windows), around and around, whenever anything was waited on. Both now wait in `poll()` untimed.
   - **The wake-up:** each thread's poll set includes a wake-up socket, from a new C89 module, `net_wake.c`. It is a UDP socket on the loopback, connected to itself.
     - It is poked when a socket is queued for polling or taken off, when a P2P port is made, and when the thread is to stop.

@@ -371,8 +371,6 @@ error_code sceNpTrophyDestroyHandle(u32 handle)
 {
 	sceNpTrophy.warning("sceNpTrophyDestroyHandle(handle=0x%x)", handle);
 
-	auto& trophy_manager = g_fxo->get<sce_np_trophy_manager>();
-
 	// The manager and its contexts are the HLE thread's (hle_call)
 	return hle_call([&]() -> error_code
 	{
@@ -406,8 +404,6 @@ error_code sceNpTrophyGetGameDetails()
 error_code sceNpTrophyAbortHandle(u32 handle)
 {
 	sceNpTrophy.todo("sceNpTrophyAbortHandle(handle=0x%x)", handle);
-
-	auto& trophy_manager = g_fxo->get<sce_np_trophy_manager>();
 
 	// The manager and its contexts are the HLE thread's (hle_call)
 	return hle_call([&]() -> error_code

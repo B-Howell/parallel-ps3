@@ -39,9 +39,16 @@ typedef struct owner_calls
    mpsc_stack_t calls;
    retro_atomic_int_t wake;    /* bumped and notified: a call made, or a caller gone */
    retro_atomic_int_t callers; /* callers in a call; | OWNER_CALLS_CLOSED once closed */
+   void (*waker)(void *ctx);   /* NULL, or also called as the owner is woken */
+   void *waker_ctx;
 } owner_calls_t;
 
 void owner_calls_init(owner_calls_t *calls);
+
+/* For an owner that waits on something other than the wake word (a
+ * poll(), say): @waker(@ctx) is called with every wake, after the word is
+ * bumped. Set before any call is made */
+void owner_calls_set_waker(owner_calls_t *calls, void (*waker)(void *ctx), void *ctx);
 
 /* Any thread but the owner: @run(@ctx) on the owner, waited for; on this
  * thread when the calls are closed */

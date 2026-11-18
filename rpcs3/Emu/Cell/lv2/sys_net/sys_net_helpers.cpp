@@ -198,22 +198,28 @@ bool is_ip_public_address(const ::sockaddr_in& addr)
 	return true;
 }
 
+// The queues are the network thread's: looked at there
 u32 network_clear_queue(ppu_thread& ppu)
 {
-	u32 cleared = 0;
+	return net_call([&]() -> u32
+	{
+		u32 cleared = 0;
 
-	idm::select<lv2_socket>([&](u32, lv2_socket& sock)
-		{
-			cleared += sock.clear_queue(&ppu);
-		});
+		idm::select<lv2_socket>([&](u32, lv2_socket& sock)
+			{
+				cleared += sock.clear_queue(&ppu);
+			});
 
-	return cleared;
+		return cleared;
+	});
 }
 
 void clear_ppu_to_awake(ppu_thread& ppu)
 {
-	g_fxo->get<network_context>().del_ppu_to_awake(&ppu);
-	g_fxo->get<p2p_context>().del_ppu_to_awake(&ppu);
+	net_call([&]()
+	{
+		g_fxo->get<network_context>().del_ppu_to_awake(&ppu);
+	});
 }
 
 be_t<u32> resolve_binding_ip()

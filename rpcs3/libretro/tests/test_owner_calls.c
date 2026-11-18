@@ -5,7 +5,10 @@
  *   caller sees what its call wrote.
  * - Closed while callers are still calling: every call still runs once -
  *   on the owner before the close, on the caller's thread after - and the
- *   close ends once no caller is left in one. */
+ *   close ends once no caller is left in one.
+ * - An owner that waits on a word of its own, not the wake word (as one
+ *   in poll() waits on a socket): the waker is called with every wake, so
+ *   2000 calls from two threads all get run. */
 
 #include "../../Emu/CPU/owner_calls.h"
 #include "test_common.h"
@@ -152,6 +155,77 @@ static void round_of(int close_midway)
          retro_atomic_load_acquire_int(&elsewhere), retro_atomic_load_acquire_int(&wrong), plain);
 }
 
+/* The waker's owner: waits on its own word, which only the waker bumps */
+static owner_calls_t wcalls;
+static retro_atomic_int_t own_word, wakes, wstop, wran;
+
+static void waker(void *ctx)
+{
+   (void)ctx;
+   retro_atomic_fetch_add_int(&wakes, 1);
+   retro_atomic_fetch_add_int(&own_word, 1);
+   retro_waitaddr_notify_all(&own_word);
+}
+
+static void *waker_owner(void *p)
+{
+   (void)p;
+   while (!retro_atomic_load_acquire_int(&wstop))
+   {
+      retro_waitaddr_t on;
+      on.addr = &own_word;
+      on.old  = (uint32_t)retro_atomic_load_acquire_int(&own_word);
+      owner_calls_run(&wcalls);
+      if (retro_atomic_load_acquire_int(&wstop))
+         break;
+      retro_waitaddr_wait(&on, 1, -1);
+   }
+   owner_calls_close(&wcalls);
+   return NULL;
+}
+
+static void wcall(void *p)
+{
+   (void)p;
+   retro_atomic_fetch_add_int(&wran, 1);
+}
+
+static void *waker_caller(void *p)
+{
+   int i;
+   (void)p;
+   for (i = 0; i < 1000; i++)
+      owner_calls_call(&wcalls, wcall, NULL);
+   return NULL;
+}
+
+static void waker_round(void)
+{
+   pthread_t o, c[2];
+   int i;
+
+   owner_calls_init(&wcalls);
+   owner_calls_set_waker(&wcalls, waker, NULL);
+   retro_atomic_int_init(&own_word, 0);
+   retro_atomic_int_init(&wakes, 0);
+   retro_atomic_int_init(&wstop, 0);
+   retro_atomic_int_init(&wran, 0);
+
+   pthread_create(&o, NULL, waker_owner, NULL);
+   for (i = 0; i < 2; i++)
+      pthread_create(&c[i], NULL, waker_caller, NULL);
+   for (i = 0; i < 2; i++)
+      pthread_join(c[i], NULL);
+
+   retro_atomic_store_release_int(&wstop, 1);
+   waker(NULL);
+   pthread_join(o, NULL);
+
+   TEST_CHECK(retro_atomic_load_acquire_int(&wran) == 2000);
+   TEST_CHECK(retro_atomic_load_acquire_int(&wakes) > 0);
+   printf("test_owner_calls: an owner waiting on its own word: %d calls run, woken by the waker\n", retro_atomic_load_acquire_int(&wran));
+}
+
 int main(void)
 {
    int r;
@@ -164,6 +238,7 @@ int main(void)
    for (r = 0; r < 2000; r++)
       round_of(2);
    printf("test_owner_calls: 2000 short rounds closed midway, every call run\n");
+   waker_round();
    printf("test_owner_calls: %s\n", test_failures ? "FAIL" : "ok");
    return test_failures ? 1 : 0;
 }

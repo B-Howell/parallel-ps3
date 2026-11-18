@@ -11,9 +11,11 @@ LOG_CHANNEL(sys_net);
 // Used by RPCN to send signaling packets to RPCN server(for UDP hole punching)
 bool send_packet_from_p2p_port_ipv4(const std::vector<u8>& data, const sockaddr_in& addr)
 {
-	auto& nc = g_fxo->get<p2p_context>();
+	// The ports are the network thread's
+	return net_call([&]() -> bool
 	{
-		std::lock_guard list_lock(nc.list_p2p_ports_mutex);
+		auto& nc = g_fxo->get<p2p_context>();
+
 		if (nc.list_p2p_ports.contains(SCE_NP_PORT))
 		{
 			auto& def_port = ::at32(nc.list_p2p_ports, SCE_NP_PORT);
@@ -39,16 +41,17 @@ bool send_packet_from_p2p_port_ipv4(const std::vector<u8>& data, const sockaddr_
 			sys_net.error("send_packet_from_p2p_port_ipv4: port %d not present", +SCE_NP_PORT);
 			return false;
 		}
-	}
 
-	return true;
+		return true;
+	});
 }
 
 bool send_packet_from_p2p_port_ipv6(const std::vector<u8>& data, const sockaddr_in6& addr)
 {
-	auto& nc = g_fxo->get<p2p_context>();
+	return net_call([&]() -> bool
 	{
-		std::lock_guard list_lock(nc.list_p2p_ports_mutex);
+		auto& nc = g_fxo->get<p2p_context>();
+
 		if (nc.list_p2p_ports.contains(SCE_NP_PORT))
 		{
 			auto& def_port = ::at32(nc.list_p2p_ports, SCE_NP_PORT);
@@ -65,47 +68,44 @@ bool send_packet_from_p2p_port_ipv6(const std::vector<u8>& data, const sockaddr_
 			sys_net.error("send_packet_from_p2p_port_ipv6: port %d not present", +SCE_NP_PORT);
 			return false;
 		}
-	}
 
-	return true;
+		return true;
+	});
+}
+
+// The port is looked up on the network thread; what it took in is taken
+// with no lock (nt_p2p_port's own stacks)
+static nt_p2p_port* sce_np_port()
+{
+	return net_call([]() -> nt_p2p_port*
+	{
+		auto& nc = g_fxo->get<p2p_context>();
+		const auto found = nc.list_p2p_ports.find(SCE_NP_PORT);
+		return found == nc.list_p2p_ports.end() ? nullptr : &found->second;
+	});
 }
 
 std::vector<std::vector<u8>> get_rpcn_msgs()
 {
-	std::vector<std::vector<u8>> msgs;
-	auto& nc = g_fxo->get<p2p_context>();
+	// A port, once made, stays until the context goes
+	if (nt_p2p_port* const port = sce_np_port())
 	{
-		std::lock_guard list_lock(nc.list_p2p_ports_mutex);
-		if (nc.list_p2p_ports.contains(SCE_NP_PORT))
-		{
-			msgs = ::at32(nc.list_p2p_ports, SCE_NP_PORT).take_rpcn_msgs();
-		}
-		else
-		{
-			sys_net.error("get_rpcn_msgs: port %d not present", +SCE_NP_PORT);
-		}
+		return port->take_rpcn_msgs();
 	}
 
-	return msgs;
+	sys_net.error("get_rpcn_msgs: port %d not present", +SCE_NP_PORT);
+	return {};
 }
 
 std::vector<signaling_message> get_sign_msgs()
 {
-	std::vector<signaling_message> msgs;
-	auto& nc = g_fxo->get<p2p_context>();
+	if (nt_p2p_port* const port = sce_np_port())
 	{
-		std::lock_guard list_lock(nc.list_p2p_ports_mutex);
-		if (nc.list_p2p_ports.contains(SCE_NP_PORT))
-		{
-			msgs = ::at32(nc.list_p2p_ports, SCE_NP_PORT).take_sign_msgs();
-		}
-		else
-		{
-			sys_net.error("get_sign_msgs: port %d not present", +SCE_NP_PORT);
-		}
+		return port->take_sign_msgs();
 	}
 
-	return msgs;
+	sys_net.error("get_sign_msgs: port %d not present", +SCE_NP_PORT);
+	return {};
 }
 
 namespace np
@@ -113,16 +113,37 @@ namespace np
 	void init_np_handler_dependencies();
 }
 
-void base_network_thread::add_ppu_to_awake(ppu_thread* ppu)
+static thread_local bool t_on_network_thread = false;
+
+network_thread::network_thread()
 {
-	std::lock_guard lock(mutex_ppu_to_awake);
+	net_wake_init(&wake);
+	owner_calls_init(&calls);
+
+	// A call handed over wakes the thread out of its poll
+	owner_calls_set_waker(&calls, [](void* w)
+	{
+		net_wake_poke(static_cast<net_wake_t*>(w));
+	}, &wake);
+}
+
+network_thread::~network_thread()
+{
+	net_wake_deinit(&wake);
+}
+
+bool network_thread::on_owner()
+{
+	return t_on_network_thread;
+}
+
+void network_thread::add_ppu_to_awake(ppu_thread* ppu)
+{
 	ppu_to_awake.emplace_back(ppu);
 }
 
-void base_network_thread::del_ppu_to_awake(ppu_thread* ppu)
+void network_thread::del_ppu_to_awake(ppu_thread* ppu)
 {
-	std::lock_guard lock(mutex_ppu_to_awake);
-
 	for (auto it = ppu_to_awake.begin(); it != ppu_to_awake.end();)
 	{
 		if (*it == ppu)
@@ -135,10 +156,8 @@ void base_network_thread::del_ppu_to_awake(ppu_thread* ppu)
 	}
 }
 
-void base_network_thread::wake_threads()
+void network_thread::wake_threads()
 {
-	std::lock_guard lock(mutex_ppu_to_awake);
-
 	ppu_to_awake.erase(std::unique(ppu_to_awake.begin(), ppu_to_awake.end()), ppu_to_awake.end());
 	for (ppu_thread* ppu : ppu_to_awake)
 	{
@@ -160,21 +179,26 @@ p2p_thread::p2p_thread()
 
 void p2p_thread::bind_sce_np_port()
 {
-	std::lock_guard list_lock(list_p2p_ports_mutex);
-	create_p2p_port(SCE_NP_PORT);
+	net_call([this]()
+	{
+		create_p2p_port(SCE_NP_PORT);
+	});
 }
 
 void network_thread::operator()()
 {
+	t_on_network_thread = true;
+
 	std::vector<shared_ptr<lv2_socket>> socklist;
 	socklist.reserve(lv2_socket::id_count);
 
-	{
-		std::lock_guard lock(mutex_ppu_to_awake);
-		ppu_to_awake.clear();
-	}
+	// The ports polled, in the order of the map
+	std::vector<nt_p2p_port*> portlist;
 
-	// The sockets, and the wake-up last
+	ppu_to_awake.clear();
+
+	// The sockets, the P2P ports, and the wake-up last: grown only as ports
+	// are made
 	std::vector<::pollfd> fds(lv2_socket::id_count + 1);
 #ifdef _WIN32
 	std::vector<bool> connecting(lv2_socket::id_count + 1);
@@ -183,44 +207,12 @@ void network_thread::operator()()
 
 	while (thread_ctrl::state() != thread_state::aborting)
 	{
-		if (!num_polls)
-		{
-			thread_ctrl::wait_on(num_polls, 0);
-			continue;
-		}
+		// What was handed over, before the set is made: a call queueing a
+		// socket is polled from this round
+		owner_calls_run(&calls);
 
-		ensure(socklist.size() <= lv2_socket::id_count);
-
-		// Untimed: woken by the sockets, or by a poke as the set to poll
-		// changes or the thread is to stop. Socket timeouts are the waiting
-		// PPU threads' own (lv2_obj::wait_timeout)
-		const usz nwake = socklist.size();
-		fds[nwake].fd = static_cast<socket_type>(wake.fd);
-		fds[nwake].events = POLLIN;
-		fds[nwake].revents = 0;
-#ifdef _WIN32
-		connecting[nwake] = false;
-		windows_poll(fds, ::size32(socklist) + 1, -1, connecting);
-#else
-		::poll(fds.data(), socklist.size() + 1, -1);
-#endif
-
-		// Then looked at again, whatever woke it
-		net_wake_drain(&wake);
-
-		std::lock_guard lock(mutex_thread_loop);
-
-		for (usz i = 0; i < socklist.size(); i++)
-		{
-#ifdef _WIN32
-			socklist[i]->handle_events(fds[i], was_connecting[i] && !connecting[i]);
-#else
-			socklist[i]->handle_events(fds[i]);
-#endif
-		}
-
-		wake_threads();
 		socklist.clear();
+		portlist.clear();
 
 		// Obtain all native active sockets
 		idm::select<lv2_socket>([&](u32 id, lv2_socket& s)
@@ -230,6 +222,24 @@ void network_thread::operator()()
 					socklist.emplace_back(idm::get_unlocked<lv2_socket>(id));
 				}
 			});
+
+		ensure(socklist.size() <= lv2_socket::id_count);
+
+		for (auto& [_, port] : g_fxo->get<p2p_context>().list_p2p_ports)
+		{
+			portlist.push_back(&port);
+		}
+
+		const usz nfds = socklist.size() + portlist.size() + 1;
+
+		if (fds.size() < nfds)
+		{
+			fds.resize(nfds);
+#ifdef _WIN32
+			connecting.resize(nfds);
+			was_connecting.resize(nfds);
+#endif
+		}
 
 		for (usz i = 0; i < socklist.size(); i++)
 		{
@@ -247,96 +257,71 @@ void network_thread::operator()()
 			connecting[i] = cur_connecting;
 #endif
 		}
+
+		for (usz j = 0; j < portlist.size(); j++)
+		{
+			const usz i = socklist.size() + j;
+			fds[i].fd = portlist[j]->p2p_socket;
+			fds[i].events = POLLIN;
+			fds[i].revents = 0;
+#ifdef _WIN32
+			was_connecting[i] = false;
+			connecting[i] = false;
+#endif
+		}
+
+		// Untimed: woken by the sockets, the ports, or a poke (a call handed
+		// over, the thread to stop). Socket timeouts are the waiting PPU
+		// threads' own (lv2_obj::wait_timeout)
+		const usz nwake = nfds - 1;
+		fds[nwake].fd = static_cast<socket_type>(wake.fd);
+		fds[nwake].events = POLLIN;
+		fds[nwake].revents = 0;
+#ifdef _WIN32
+		was_connecting[nwake] = false;
+		connecting[nwake] = false;
+		windows_poll(fds, ::size32(nfds), -1, connecting);
+#else
+		::poll(fds.data(), nfds, -1);
+#endif
+
+		// Then looked at again, whatever woke it
+		net_wake_drain(&wake);
+
+		for (usz i = 0; i < socklist.size(); i++)
+		{
+#ifdef _WIN32
+			socklist[i]->handle_events(fds[i], was_connecting[i] && !connecting[i]);
+#else
+			socklist[i]->handle_events(fds[i]);
+#endif
+		}
+
+		for (usz j = 0; j < portlist.size(); j++)
+		{
+			const auto revents = fds[socklist.size() + j].revents;
+
+			if ((revents & POLLIN) == POLLIN || (revents & POLLRDNORM) == POLLRDNORM)
+			{
+				while (portlist[j]->recv_data())
+					;
+			}
+		}
+
+		wake_threads();
 	}
+
+	// No more calls: those made are run, and any made after runs on its
+	// caller's thread
+	owner_calls_close(&calls);
+	t_on_network_thread = false;
 }
 
-// Must be used under list_p2p_ports_mutex lock!
+// On the network thread
 void p2p_thread::create_p2p_port(u16 p2p_port)
 {
 	if (!list_p2p_ports.contains(p2p_port))
 	{
 		list_p2p_ports.emplace(std::piecewise_construct, std::forward_as_tuple(p2p_port), std::forward_as_tuple(p2p_port));
-		const u32 prev_value = num_p2p_ports.fetch_add(1);
-		if (!prev_value)
-		{
-			num_p2p_ports.notify_one();
-		}
-
-		// Polled from its next round
-		poke();
-	}
-}
-
-void p2p_thread::operator()()
-{
-	// The ports, and the wake-up last
-	std::vector<::pollfd> p2p_fd(lv2_socket::id_count + 1);
-
-	while (thread_ctrl::state() != thread_state::aborting)
-	{
-		if (!num_p2p_ports)
-		{
-			thread_ctrl::wait_on(num_p2p_ports, 0);
-			continue;
-		}
-
-		// Check P2P sockets for incoming packets
-		auto num_p2p_sockets = 0;
-		std::memset(p2p_fd.data(), 0, p2p_fd.size() * sizeof(::pollfd));
-		{
-			auto set_fd = [&](socket_type socket)
-			{
-				p2p_fd[num_p2p_sockets].events = POLLIN;
-				p2p_fd[num_p2p_sockets].revents = 0;
-				p2p_fd[num_p2p_sockets].fd = socket;
-				num_p2p_sockets++;
-			};
-
-			std::lock_guard lock(list_p2p_ports_mutex);
-			for (const auto& [_, p2p_port] : list_p2p_ports)
-			{
-				set_fd(p2p_port.p2p_socket);
-			}
-		}
-
-		// Untimed: woken by the ports, or by a poke as a port is made or the
-		// thread is to stop
-		p2p_fd[num_p2p_sockets].events = POLLIN;
-		p2p_fd[num_p2p_sockets].revents = 0;
-		p2p_fd[num_p2p_sockets].fd = static_cast<socket_type>(wake.fd);
-
-#ifdef _WIN32
-		const auto ret_p2p = WSAPoll(p2p_fd.data(), num_p2p_sockets + 1, -1);
-#else
-		const auto ret_p2p = ::poll(p2p_fd.data(), num_p2p_sockets + 1, -1);
-#endif
-		net_wake_drain(&wake);
-
-		if (ret_p2p > 0)
-		{
-			std::scoped_lock lock(mutex_thread_loop, list_p2p_ports_mutex);
-			auto fd_index = 0;
-
-			auto process_fd = [&](nt_p2p_port& p2p_port)
-			{
-				if ((p2p_fd[fd_index].revents & POLLIN) == POLLIN || (p2p_fd[fd_index].revents & POLLRDNORM) == POLLRDNORM)
-				{
-					while (p2p_port.recv_data())
-						;
-				}
-				fd_index++;
-			};
-
-			for (auto& [_, p2p_port] : list_p2p_ports)
-			{
-				process_fd(p2p_port);
-			}
-
-			wake_threads();
-		}
-		else if (ret_p2p < 0)
-		{
-			sys_net.error("[P2P] Error poll on master P2P socket: %d", get_last_error(false));
-		}
 	}
 }

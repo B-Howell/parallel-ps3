@@ -11,11 +11,6 @@ lv2_socket::lv2_socket(lv2_socket_family family, lv2_socket_type type, lv2_ip_pr
 	this->protocol = protocol;
 }
 
-std::unique_lock<shared_mutex> lv2_socket::lock()
-{
-	return std::unique_lock(mutex);
-}
-
 lv2_socket_family lv2_socket::get_family() const
 {
 	return family;
@@ -69,24 +64,12 @@ void lv2_socket::poll_queue(shared_ptr<ppu_thread> ppu, bs_t<lv2_socket::poll_t>
 	set_poll_event(event);
 	queue.emplace_back(std::move(ppu), poll_cb);
 
-	// Makes sure network_context thread is awaken
-	if (type == SYS_NET_SOCK_STREAM || type == SYS_NET_SOCK_DGRAM)
-	{
-		auto& nc = g_fxo->get<network_context>();
-		const u32 prev_value = nc.num_polls.fetch_add(1);
-		if (!prev_value)
-		{
-			nc.num_polls.notify_one();
-		}
-
-		// In poll() untimed: to poll this socket from its next round
-		nc.poke();
-	}
+	// On the network thread, which makes its poll set after this: the
+	// socket is polled from its next round
 }
 
 u32 lv2_socket::clear_queue(ppu_thread* ppu)
 {
-	std::lock_guard lock(mutex);
 
 	u32 cleared = 0;
 
@@ -107,16 +90,6 @@ u32 lv2_socket::clear_queue(ppu_thread* ppu)
 		events.store({});
 	}
 
-	if (cleared && (type == SYS_NET_SOCK_STREAM || type == SYS_NET_SOCK_DGRAM))
-	{
-		// Makes sure network_context thread can go back to sleep if there is no active polling
-		const u32 prev_value = g_fxo->get<network_context>().num_polls.fetch_sub(cleared);
-		ensure(prev_value >= cleared);
-
-		// Not to poll it any more for these
-		g_fxo->get<network_context>().poke();
-	}
-
 	return cleared;
 }
 
@@ -135,7 +108,6 @@ void lv2_socket::handle_events(const pollfd& native_pfd, [[maybe_unused]] bool u
 	// only for the events
 	if (events_happening)
 	{
-		std::lock_guard lock(mutex);
 #ifdef _WIN32
 		if (unset_connecting)
 			set_connecting(false);
@@ -154,12 +126,6 @@ void lv2_socket::handle_events(const pollfd& native_pfd, [[maybe_unused]] bool u
 			it++;
 		}
 
-		if (handled && (type == SYS_NET_SOCK_STREAM || type == SYS_NET_SOCK_DGRAM))
-		{
-			const u32 prev_value = g_fxo->get<network_context>().num_polls.fetch_sub(handled);
-			ensure(prev_value >= handled);
-		}
-
 		if (queue.empty())
 		{
 			events.store({});
@@ -173,11 +139,10 @@ void lv2_socket::queue_wake(ppu_thread* ppu)
 	{
 	case SYS_NET_SOCK_STREAM:
 	case SYS_NET_SOCK_DGRAM:
-		g_fxo->get<network_context>().add_ppu_to_awake(ppu);
-		break;
 	case SYS_NET_SOCK_DGRAM_P2P:
 	case SYS_NET_SOCK_STREAM_P2P:
-		g_fxo->get<p2p_context>().add_ppu_to_awake(ppu);
+		// The network thread's, which polls all of them
+		g_fxo->get<network_context>().add_ppu_to_awake(ppu);
 		break;
 	default:
 		break;

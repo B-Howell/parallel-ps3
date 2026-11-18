@@ -12,12 +12,23 @@ void owner_calls_init(owner_calls_t *calls)
    mpsc_stack_init(&calls->calls);
    retro_atomic_int_init(&calls->wake, 0);
    retro_atomic_int_init(&calls->callers, 0);
+   calls->waker     = NULL;
+   calls->waker_ctx = NULL;
+}
+
+void owner_calls_set_waker(owner_calls_t *calls, void (*waker)(void *ctx), void *ctx)
+{
+   calls->waker_ctx = ctx;
+   calls->waker     = waker;
 }
 
 void owner_calls_wake(owner_calls_t *calls)
 {
    retro_atomic_fetch_add_int(&calls->wake, 1);
    retro_waitaddr_notify_all(&calls->wake);
+
+   if (calls->waker)
+      calls->waker(calls->waker_ctx);
 }
 
 retro_atomic_int_t *owner_calls_wake_word(owner_calls_t *calls)

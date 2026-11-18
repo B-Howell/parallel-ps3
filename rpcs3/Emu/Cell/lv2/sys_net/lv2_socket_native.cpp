@@ -101,12 +101,8 @@ void lv2_socket_native::set_socket(socket_type native_socket, lv2_socket_family 
 
 std::tuple<bool, s32, shared_ptr<lv2_socket>, sys_net_sockaddr> lv2_socket_native::accept(bool is_lock)
 {
-	std::unique_lock<shared_mutex> lock(mutex, std::defer_lock);
-
-	if (is_lock)
-	{
-		lock.lock();
-	}
+	// The network thread's, as the socket is: no lock
+	static_cast<void>(is_lock);
 
 	::sockaddr_storage native_addr;
 	::socklen_t native_addrlen = sizeof(native_addr);
@@ -141,7 +137,6 @@ std::tuple<bool, s32, shared_ptr<lv2_socket>, sys_net_sockaddr> lv2_socket_nativ
 
 s32 lv2_socket_native::bind(const sys_net_sockaddr& addr)
 {
-	std::lock_guard lock(mutex);
 
 	const auto* psa_in = reinterpret_cast<const sys_net_sockaddr_in*>(&addr);
 
@@ -213,7 +208,6 @@ s32 lv2_socket_native::bind(const sys_net_sockaddr& addr)
 
 std::optional<s32> lv2_socket_native::connect(const sys_net_sockaddr& addr)
 {
-	std::lock_guard lock(mutex);
 
 	const auto* psa_in = reinterpret_cast<const sys_net_sockaddr_in*>(&addr);
 
@@ -316,7 +310,6 @@ s32 lv2_socket_native::connect_followup()
 
 std::pair<s32, sys_net_sockaddr> lv2_socket_native::getpeername()
 {
-	std::lock_guard lock(mutex);
 
 	::sockaddr_storage native_addr;
 	::socklen_t native_addrlen = sizeof(native_addr);
@@ -335,7 +328,6 @@ std::pair<s32, sys_net_sockaddr> lv2_socket_native::getpeername()
 
 std::pair<s32, sys_net_sockaddr> lv2_socket_native::getsockname()
 {
-	std::lock_guard lock(mutex);
 
 	::sockaddr_storage native_addr;
 	::socklen_t native_addrlen = sizeof(native_addr);
@@ -364,7 +356,6 @@ std::pair<s32, sys_net_sockaddr> lv2_socket_native::getsockname()
 
 std::tuple<s32, lv2_socket::sockopt_data, u32> lv2_socket_native::getsockopt(s32 level, s32 optname, u32 len)
 {
-	std::lock_guard lock(mutex);
 
 	sockopt_data out_val;
 	u32 out_len = sizeof(out_val);
@@ -620,7 +611,6 @@ std::tuple<s32, lv2_socket::sockopt_data, u32> lv2_socket_native::getsockopt(s32
 
 s32 lv2_socket_native::setsockopt(s32 level, s32 optname, const std::vector<u8>& optval)
 {
-	std::lock_guard lock(mutex);
 
 	int native_int         = 0;
 	int native_level       = -1;
@@ -877,7 +867,6 @@ s32 lv2_socket_native::setsockopt(s32 level, s32 optname, const std::vector<u8>&
 
 s32 lv2_socket_native::listen(s32 backlog)
 {
-	std::lock_guard lock(mutex);
 
 	if (::listen(native_socket, backlog) == 0)
 	{
@@ -889,12 +878,8 @@ s32 lv2_socket_native::listen(s32 backlog)
 
 std::optional<std::tuple<s32, std::vector<u8>, sys_net_sockaddr>> lv2_socket_native::recvfrom(s32 flags, u32 len, bool is_lock)
 {
-	std::unique_lock<shared_mutex> lock(mutex, std::defer_lock);
-
-	if (is_lock)
-	{
-		lock.lock();
-	}
+	// The network thread's, as the socket is: no lock
+	static_cast<void>(is_lock);
 
 	if (feign_tcp_conn_failure)
 	{
@@ -969,12 +954,8 @@ std::optional<std::tuple<s32, std::vector<u8>, sys_net_sockaddr>> lv2_socket_nat
 
 std::optional<s32> lv2_socket_native::sendto(s32 flags, const std::vector<u8>& buf, std::optional<sys_net_sockaddr> opt_sn_addr, bool is_lock)
 {
-	std::unique_lock<shared_mutex> lock(mutex, std::defer_lock);
-
-	if (is_lock)
-	{
-		lock.lock();
-	}
+	// The network thread's, as the socket is: no lock
+	static_cast<void>(is_lock);
 
 	int native_flags                       = 0;
 	int native_result                      = -1;
@@ -1046,12 +1027,8 @@ std::optional<s32> lv2_socket_native::sendto(s32 flags, const std::vector<u8>& b
 
 std::optional<s32> lv2_socket_native::sendmsg(s32 flags, const sys_net_msghdr& msg, bool is_lock)
 {
-	std::unique_lock<shared_mutex> lock(mutex, std::defer_lock);
-
-	if (is_lock)
-	{
-		lock.lock();
-	}
+	// The network thread's, as the socket is: no lock
+	static_cast<void>(is_lock);
 
 	int native_flags                       = 0;
 	int native_result                      = -1;
@@ -1098,7 +1075,6 @@ std::optional<s32> lv2_socket_native::sendmsg(s32 flags, const sys_net_msghdr& m
 
 void lv2_socket_native::close()
 {
-	std::lock_guard lock(mutex);
 
 	np::close_socket(native_socket);
 	native_socket = {};
@@ -1118,7 +1094,6 @@ void lv2_socket_native::close()
 
 s32 lv2_socket_native::shutdown(s32 how)
 {
-	std::lock_guard lock(mutex);
 
 	if (feign_tcp_conn_failure)
 	{
@@ -1233,7 +1208,6 @@ void lv2_socket_native::get_sockinfo(sys_net_sockinfo_t& info)
 	}
 
 	{
-		std::lock_guard lock(mutex);
 
 		int listening = 0;
 		socklen_t len = sizeof(listening);
@@ -1255,7 +1229,6 @@ bool lv2_socket_native::is_socket_connected()
 		return false;
 	}
 
-	std::lock_guard lock(mutex);
 
 	int listening = 0;
 	socklen_t len = sizeof(listening);
