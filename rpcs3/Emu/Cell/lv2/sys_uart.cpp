@@ -2030,11 +2030,11 @@ void vuart_av_thread::operator()()
 	while (thread_ctrl::state() != thread_state::aborting)
 	{
 		// Paused: woken as the emulator's state changes (a 5 ms poll before)
-		const u32 events = g_libretro_events.load();
+		const u32 events = libretro_events_seen();
 
 		if (Emu.IsPausedOrReady())
 		{
-			thread_ctrl::wait_on(g_libretro_events, events);
+			libretro_events_wait_named(events);
 			continue;
 		}
 

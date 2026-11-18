@@ -37,10 +37,10 @@ void qt_events_aware_op(int repeat_duration_ms, std::function<bool()> wrapped_op
 
 	for (;;)
 	{
-		const u32 events = g_libretro_events;
+		const u32 events = libretro_events_seen();
 		if (wrapped_op())
 			return;
 		if (repeat_duration_ms > 0)
-			g_libretro_events.wait(events);
+			libretro_events_wait(events);
 	}
 }

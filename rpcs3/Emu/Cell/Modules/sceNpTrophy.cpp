@@ -846,11 +846,11 @@ error_code sceNpTrophyRegisterContext(ppu_thread& ppu, u32 context, u32 handle, 
 					// retro_run's frames (g_libretro_events) pace it
 					for (u32 old_value = *queued, frames = 0; old_value && frames < 6; old_value = *queued)
 					{
-						const u32 events = g_libretro_events.load();
+						const u32 events = libretro_events_seen();
 
 						libretro_wait_on(*queued, old_value);
 
-						if (g_libretro_events.load() != events)
+						if (libretro_events_seen() != events)
 						{
 							frames++;
 						}

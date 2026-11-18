@@ -4,6 +4,7 @@
 #include "util/atomic.hpp"
 
 #include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 #include "util/shared_ptr.hpp"
 #include "Utilities/bit_set.h"
 #include "config_mode.h"
@@ -78,12 +79,29 @@ struct emu_precompilation_option_t
 // Bumped, and its waiters woken, at every change of the emulator's state or
 // of a stop pending, and by every retro_run: a thread waiting for any of them
 // waits on it, untimed, where standalone RPCS3 sleeps and looks again
-extern atomic_t<u32> g_libretro_events;
+extern retro_atomic_int_t g_libretro_events;
 inline void libretro_event()
 {
-	g_libretro_events++;
-	g_libretro_events.notify_all();
+	retro_atomic_fetch_add_int(&g_libretro_events, 1);
+	retro_waitaddr_notify_all(&g_libretro_events);
 }
+
+// Its count now, to wait for the next
+inline u32 libretro_events_seen()
+{
+	return static_cast<u32>(retro_atomic_load_acquire_int(&g_libretro_events));
+}
+
+// Until it moves on from @seen (it may return early: the caller looks again)
+inline void libretro_events_wait(u32 seen)
+{
+	const retro_waitaddr_t w{&g_libretro_events, seen};
+	retro_waitaddr_wait(&w, 1, -1);
+}
+
+// The same on one of the core's named threads, also woken as the thread is
+// told to end (System.cpp)
+void libretro_events_wait_named(u32 seen);
 
 // A host thread's wait for @word to leave @old, or for the emulator's state
 // to change (a stop that skips what was waited for is one): untimed, no
@@ -91,15 +109,16 @@ inline void libretro_event()
 template <typename T>
 inline void libretro_wait_on(atomic_t<T>& word, T old)
 {
-	const u32 events = g_libretro_events.load();
+	const u32 events = libretro_events_seen();
 
 	if (word.load() != old)
 	{
 		return;
 	}
 
-	atomic_wait::list<2> list(word, g_libretro_events);
-	list.values(old, events);
+	atomic_wait::list<2> list;
+	list.template set<0>(word, old);
+	list.template set_raw<1>(&g_libretro_events, events);
 	list.wait();
 }
 

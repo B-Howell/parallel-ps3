@@ -1461,7 +1461,7 @@ void gem_config_data::operator()()
 		const u64 since = get_hw_clock_time();
 		while (m_done == 2u && get_hw_clock_time() - since < 5'000'000 && thread_ctrl::state() != thread_state::aborting && !Emu.IsStopped())
 		{
-			const u32 frames_seen = g_libretro_events.load();
+			const u32 frames_seen = libretro_events_seen();
 
 			if (m_done != 2u)
 			{
@@ -1471,7 +1471,7 @@ void gem_config_data::operator()()
 			thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
 			{
 				list.template set<0>(m_done, 2u);
-				list.template set<1>(g_libretro_events, frames_seen);
+				list.template set_raw<1>(&g_libretro_events, frames_seen);
 			});
 		}
 
@@ -1483,7 +1483,7 @@ void gem_config_data::operator()()
 	while (thread_ctrl::state() != thread_state::aborting && !Emu.IsStopped())
 	{
 		// Read before the look, so a frame after it is not missed
-		const u32 frames_seen = g_libretro_events.load();
+		const u32 frames_seen = libretro_events_seen();
 		bool by_frame = false;
 
 		if (initialized() && !video_conversion_in_progress)
@@ -1514,7 +1514,7 @@ void gem_config_data::operator()()
 				thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
 				{
 					list.template set<0>(m_wake_up, 0u);
-					list.template set<1>(g_libretro_events, frames_seen);
+					list.template set_raw<1>(&g_libretro_events, frames_seen);
 				});
 			}
 			else

@@ -606,7 +606,7 @@ void rec_info::start_video_provider()
 		{
 			// Read before looking: anything handed over after it moves it
 			const u32 sink_seen = sink ? sink->seen() : 0;
-			const u32 frames_seen = g_libretro_events.load();
+			const u32 frames_seen = libretro_events_seen();
 			const u32 periods_seen = g_audio_periods.load();
 			bool progressed = false;
 
@@ -629,7 +629,7 @@ void rec_info::start_video_provider()
 			if (retro_atomic_load_acquire_int(&paused))
 			{
 				// Until resumed or stopped, a look a frame (retro_run's), no clock
-				g_libretro_events.wait(frames_seen);
+				libretro_events_wait(frames_seen);
 				continue;
 			}
 

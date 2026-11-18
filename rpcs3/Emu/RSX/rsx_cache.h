@@ -319,13 +319,14 @@ namespace rsx
 					// Woken once a frontend frame (g_libretro_events) to update the
 					// dialog, or as a worker is done - it slept 16 ms
 					{
-						const u32 events = g_libretro_events.load();
+						const u32 events = libretro_events_seen();
 						const u32 seen = processed.load();
 
 						if (seen < entry_count && !Emu.IsStopped())
 						{
-							atomic_wait::list<2> list(processed, g_libretro_events);
-							list.values(seen, events);
+							atomic_wait::list<2> list;
+							list.template set<0>(processed, seen);
+							list.template set_raw<1>(&g_libretro_events, events);
 							list.wait();
 						}
 					}

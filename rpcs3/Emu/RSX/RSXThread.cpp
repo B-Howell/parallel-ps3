@@ -996,12 +996,13 @@ namespace rsx
 			// During emulation pause: the overlays drawn once a frame (retro_run's,
 			// g_libretro_events), or as the state changes - no clock
 			do_local_task(rsx::FIFO::state::paused);
-			const u32 events = g_libretro_events.load();
+			const u32 events = libretro_events_seen();
 			const bs_t<cpu_flag> now = state;
 			if ((now & (cpu_flag::dbg_global_pause + cpu_flag::exit)) == cpu_flag::dbg_global_pause)
 			{
-				atomic_wait::list<2> list(state, g_libretro_events);
-				list.values(now, events);
+				atomic_wait::list<2> list;
+				list.template set<0>(state, now);
+				list.template set_raw<1>(&g_libretro_events, events);
 				list.wait();
 			}
 			static_cast<void>(old);
@@ -1100,7 +1101,7 @@ namespace rsx
 		// state changes or as the RSX is set up (both notify it), or a stop
 		while (!rsx_thread_running || Emu.IsPausedOrReady())
 		{
-			const u32 events = g_libretro_events.load();
+			const u32 events = libretro_events_seen();
 
 			// Execute backend-local tasks first
 			do_local_task(performance_counters.state);
@@ -1120,8 +1121,9 @@ namespace rsx
 				break;
 			}
 
-			atomic_wait::list<2> list(state, g_libretro_events);
-			list.values(now, events);
+			atomic_wait::list<2> list;
+			list.template set<0>(state, now);
+			list.template set_raw<1>(&g_libretro_events, events);
 			list.wait();
 		}
 

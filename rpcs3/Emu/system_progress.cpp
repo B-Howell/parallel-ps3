@@ -73,8 +73,8 @@ void progress_dialog_server::operator()()
 	// from a close's change of state to its join this would spin on it
 	const auto next_frame = []()
 	{
-		const u32 events = g_libretro_events.load();
-		thread_ctrl::wait_on(g_libretro_events, events);
+		const u32 events = libretro_events_seen();
+		libretro_events_wait_named(events);
 	};
 
 	const auto create_native_dialog = [&native_dlg](const std::string& text, bool* show_overlay_message)
@@ -87,7 +87,7 @@ void progress_dialog_server::operator()()
 			// we have hardware/driver issues.
 			for (u32 frames = 0; frames < 300 && !renderer->is_initialized && !Emu.IsStopped() && thread_ctrl::state() != thread_state::aborting; frames++)
 			{
-				const u32 events = g_libretro_events.load();
+				const u32 events = libretro_events_seen();
 
 				if (renderer->is_initialized)
 				{
@@ -97,7 +97,7 @@ void progress_dialog_server::operator()()
 				thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
 				{
 					list.template set<0>(renderer->is_initialized, 0u);
-					list.template set<1>(g_libretro_events, events);
+					list.template set_raw<1>(&g_libretro_events, events);
 				});
 			}
 

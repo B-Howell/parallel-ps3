@@ -77,7 +77,7 @@ std::string g_cfg_defaults;
 
 atomic_t<u64> g_watchdog_hold_ctr{0};
 
-atomic_t<u32> g_libretro_events{0};
+retro_atomic_int_t g_libretro_events{0};
 
 extern bool ppu_load_exec(const ppu_exec_object&, bool virtual_load, const std::string&, utils::serial* = nullptr);
 extern void spu_load_exec(const spu_exec_object&);
@@ -4445,9 +4445,17 @@ void Emulator::SaveSettings(std::string_view settings, const std::string& title_
 
 Emulator Emu;
 
+void libretro_events_wait_named(u32 seen)
+{
+	thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list)
+	{
+		list.template set_raw<0>(&g_libretro_events, seen);
+	});
+}
+
 bool libretro_wait_frame()
 {
-	const u32 events = g_libretro_events.load();
+	const u32 events = libretro_events_seen();
 	const bool named = thread_ctrl::get_current() != nullptr;
 
 	if (Emu.IsStopped() || (named && thread_ctrl::state() == thread_state::aborting))
@@ -4457,10 +4465,10 @@ bool libretro_wait_frame()
 
 	if (named)
 	{
-		thread_ctrl::wait_on(g_libretro_events, events);
+		libretro_events_wait_named(events);
 		return !(thread_ctrl::state() == thread_state::aborting);
 	}
 
-	g_libretro_events.wait(events);
+	libretro_events_wait(events);
 	return true;
 }

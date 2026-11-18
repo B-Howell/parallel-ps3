@@ -1899,10 +1899,10 @@ static void wait_for_emulator(Done done)
 {
     for (;;)
     {
-        const u32 events = g_libretro_events;
+        const u32 events = libretro_events_seen();
         if (done())
             return;
-        g_libretro_events.wait(events);
+        libretro_events_wait(events);
     }
 }
 

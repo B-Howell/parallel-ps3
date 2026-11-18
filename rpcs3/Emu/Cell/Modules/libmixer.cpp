@@ -383,12 +383,13 @@ struct surmixer_thread : ppu_thread
 				const bool flagged = !(state & cpu_flag::wait);
 				if (flagged)
 					state += cpu_flag::wait;
-				const u32 events = g_libretro_events.load();
+				const u32 events = libretro_events_seen();
 				const auto old_state = +state;
 				if (!::is_stopped(old_state))
 				{
-					atomic_wait::list<2> list(state, g_libretro_events);
-					list.values(old_state, events);
+					atomic_wait::list<2> list;
+					list.template set<0>(state, old_state);
+					list.template set_raw<1>(&g_libretro_events, events);
 					list.wait();
 				}
 				if (flagged)

@@ -1250,7 +1250,7 @@ namespace np
 			// call handed over (the calls' wake word)
 			std::shared_ptr<rpcn::rpcn_client> watched;
 			u32 seen = 0;
-			const u32 events = g_libretro_events.load();
+			const u32 events = libretro_events_seen();
 			retro_atomic_int_t* const calls_word = owner_calls_wake_word(&np_calls);
 			const u32 calls_seen = static_cast<u32>(retro_atomic_load_acquire_int(calls_word));
 
@@ -1449,12 +1449,12 @@ namespace np
 			{
 				thread_ctrl::wait_on_custom<3>([&](atomic_wait::list<5>& list)
 				{
-					list.template set<0>(g_libretro_events, events);
+					list.template set_raw<0>(&g_libretro_events, events);
 
 					if (watched)
 						list.template set<1>(watched->m_events, seen);
 					else
-						list.template set<1>(g_libretro_events, events);
+						list.template set_raw<1>(&g_libretro_events, events);
 
 					list.template set<2>(*calls_word, calls_seen);
 				});

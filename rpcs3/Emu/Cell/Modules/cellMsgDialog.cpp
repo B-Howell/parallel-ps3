@@ -127,7 +127,7 @@ struct msg_dlg_thread_info
 			// 10 ms poll
 			while (get_guest_system_time() < new_value && thread_ctrl::state() != thread_state::aborting)
 			{
-				const u32 events = g_libretro_events.load();
+				const u32 events = libretro_events_seen();
 
 				if (wait_until.load() != new_value || get_guest_system_time() >= new_value)
 					break;
@@ -135,7 +135,7 @@ struct msg_dlg_thread_info
 				thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
 				{
 					list.template set<0>(wait_until, static_cast<u32>(new_value));
-					list.template set<1>(g_libretro_events, events);
+					list.template set_raw<1>(&g_libretro_events, events);
 				});
 			}
 

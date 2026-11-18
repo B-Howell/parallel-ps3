@@ -1138,13 +1138,13 @@ check: all
 	@# the last flip's time is the game's own clock, and the AV hardware's events and a pad's replug go by the guest's clock
 	@if grep -n "last_guest_flip_timestamp = get_system_time" ../../Emu/RSX/RSXThread.cpp || awk '/vuart_hdmi_event_handler::time_until_next|vuart_hdmi_event_handler::schedule_next/,/^}/' ../../Emu/Cell/lv2/sys_uart.cpp | grep -n "get_system_time" || grep -n "get_system_time" ../../Input/pad_thread.cpp; then echo "the host's clock is back in the flip time, the AV events or a pad's replug"; exit 1; else echo "flip time, AV events, pad replug: the guest's clock"; fi
 	@# the progress dialog's server and the pause message's thread wait for frames through libretro_wait_frame, which a join wakes
-	@if grep -n "g_libretro_events.wait(" ../../Emu/system_progress.cpp || awk '/auto refresh_l = /,/retro_atomic_store_release_int\(msg_ref.get\(\), 0\)/' ../../Emu/System.cpp | grep -n "g_libretro_events.wait("; then echo "a thread a close joins waits for frames alone again: the close hangs"; exit 1; else echo "frame waits a join wakes"; fi
+	@if grep -nE "g_libretro_events.wait\(|libretro_events_wait\(" ../../Emu/system_progress.cpp || awk '/auto refresh_l = /,/retro_atomic_store_release_int\(msg_ref.get\(\), 0\)/' ../../Emu/System.cpp | grep -nE "g_libretro_events.wait\(|libretro_events_wait\("; then echo "a thread a close joins waits for frames alone again: the close hangs"; exit 1; else echo "frame waits a join wakes"; fi
 	@# libmixer's mixing loop waits for a frame or its PPU's state, so a close's stop wakes it
-	@if ! grep -q "atomic_wait::list<2> list(state, g_libretro_events);" ../../Emu/Cell/Modules/libmixer.cpp; then echo "libmixer: the mixing loop waits for frames alone again"; exit 1; else echo "libmixer: a stop wakes the mixing loop"; fi
+	@if ! grep -q "list.template set<0>(state, old_state);" ../../Emu/Cell/Modules/libmixer.cpp; then echo "libmixer: the mixing loop waits for frames alone again"; exit 1; else echo "libmixer: a stop wakes the mixing loop"; fi
 	@# sceNpTrophyRegisterContext's pacing of its status events leaves when the emulator stops
 	@if ! grep -q "thread_ctrl::state() == thread_state::aborting || Emu.IsStopped()" ../../Emu/Cell/Modules/sceNpTrophy.cpp; then echo "sceNpTrophy: the status events' wait no longer leaves on a stop"; exit 1; else echo "sceNpTrophy: a stop ends the status events' wait"; fi
 	@# cellGcmCallback's wait for the RSX's get pointer has the PPU's own state in it, so a close's stop wakes it
-	@if ! awk '/^s32 cellGcmCallback/,/^}/' ../../Emu/Cell/Modules/cellGcmSys.cpp | grep -q "list(ctrl.get, ppu.state, g_libretro_events)"; then echo "cellGcmCallback: a stop no longer wakes the wait for the get pointer"; exit 1; else echo "cellGcmCallback: a stop wakes it"; fi
+	@if ! awk '/^s32 cellGcmCallback/,/^}/' ../../Emu/Cell/Modules/cellGcmSys.cpp | grep -q "list.template set<1>(ppu.state, old_state);"; then echo "cellGcmCallback: a stop no longer wakes the wait for the get pointer"; exit 1; else echo "cellGcmCallback: a stop wakes it"; fi
 	@# the PS Move tracker waits for each worker until it is done, and makes no list of devices each frame
 	@if grep -n "std::vector<u32> active_devices" ../../Input/ps_move_tracker.cpp || ! grep -q "if (!retro_waitaddr_wait(&w, 1, 5000000))" ../../Input/ps_move_tracker.cpp; then echo "ps_move_tracker: the one-shot wait for a worker or the per-frame vector is back"; exit 1; else echo "ps_move_tracker: waits until a worker is done, nothing allocated a frame"; fi
 	@# the progress counters and flags are retro_atomic, waited on through retro_waitaddr
@@ -1157,6 +1157,8 @@ check: all
 	@if grep -nE "atomic_t<bool> visible" ../../Emu/RSX/Overlays/overlays.h; then echo "an overlay's visible flag is atomic_t again"; exit 1; else echo "overlay visible: retro_atomic"; fi
 	@# cellVdec takes no atomic_t: its words are retro_atomic, waited on through retro_waitaddr
 	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/cellVdec.cpp; then echo "cellVdec has an atomic_t again"; exit 1; else echo "cellVdec: retro_atomic"; fi
+	@# g_libretro_events is a retro_atomic word: atomic_t must not come back to it
+	@if grep -rnE --exclude=Makefile "atomic_t<u32> g_libretro_events|g_libretro_events(\.|->)(load|wait|notify|store)\(" ../../Emu ../../libretro ../../Input; then echo "g_libretro_events is atomic_t again"; exit 1; else echo "g_libretro_events is retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

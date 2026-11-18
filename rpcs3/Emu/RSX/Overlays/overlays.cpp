@@ -79,7 +79,7 @@ namespace rsx
 
 		u32 overlay_seen()
 		{
-			return g_libretro_events.load();
+			return libretro_events_seen();
 		}
 
 		void overlay_wait(u32 seen)
@@ -87,11 +87,11 @@ namespace rsx
 			if (thread_ctrl::get_current())
 			{
 				// Also woken as the thread is told to end
-				thread_ctrl::wait_on(g_libretro_events, seen);
+				libretro_events_wait_named(seen);
 			}
 			else
 			{
-				g_libretro_events.wait(seen);
+				libretro_events_wait(seen);
 			}
 		}
 

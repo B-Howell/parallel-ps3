@@ -1590,7 +1590,7 @@ s32 cellGcmCallback(ppu_thread& ppu, vm::ptr<CellGcmContextData> context, u32 co
 
 	while (true)
 	{
-		const u32 events = g_libretro_events.load();
+		const u32 events = libretro_events_seen();
 		const be_t<u32> seen = ctrl.get.load();
 		const u32 getPos = seen;
 		if (isInCommandBufferExcept(getPos, newCommandBuffer.first, newCommandBuffer.second))
@@ -1609,8 +1609,10 @@ s32 cellGcmCallback(ppu_thread& ppu, vm::ptr<CellGcmContextData> context, u32 co
 		const auto old_state = +ppu.state;
 		if (::is_stopped(old_state))
 			continue;
-		atomic_wait::list<3> list(ctrl.get, ppu.state, g_libretro_events);
-		list.values(seen, old_state, events);
+		atomic_wait::list<3> list;
+		list.template set<0>(ctrl.get, seen);
+		list.template set<1>(ppu.state, old_state);
+		list.template set_raw<2>(&g_libretro_events, events);
 		list.wait();
 	}
 

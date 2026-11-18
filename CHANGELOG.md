@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **`g_libretro_events`, the frame counter every wait for a retro_run is paced by, is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** it is a `retro_atomic_int_t`. `System.h` has four small functions for it: `libretro_event()` (count a frame and wake every waiter), `libretro_events_seen()`, `libretro_events_wait()` for a thread that is not a named thread, and `libretro_events_wait_named()`, whose wait a join also wakes. Wait lists that held it hold it through `set_raw`. The 18 files that read or waited on it use these; nothing else changed in how they wait.
+  - **Tests:** `test_emu_waits` covers a frame wait woken by a frame, a named thread waiting for a frame being joined with no retro_run, and a wait list holding a `retro_atomic` word. The close-hang check now also fails if the progress dialog's thread waits with `libretro_events_wait` (which a join does not wake); it was shown to fail on that change. A check fails if `atomic_t` comes back to the counter.
+
+
 - **cellVdec is off `atomic_t`, the fifth module, and a wait list can wait on a `retro_atomic` word.** Not yet run on a game.
   - **What changed:** the decoder context's sequence and command ids, its abort and running flags, sequence state, AU count and PPU thread id, the picture pool's slots, and the reaper's count of closed contexts are now `retro_atomic_int_t`, `retro_atomic_64_t` and `retro_atomic_ptr_t`. The context has small member functions for what is read and changed most (`state()`, `set_state()`, `state_cas()`, `seq()`, `take_cmd_id()`, `aborting_decode()`, `au_count_try_inc()`). They are methods of the struct, not a wrapper type.
   - **The ops:** the picture slots are taken by exchange and filled by compare-and-swap as before. The bounded AU count is a compare-and-swap loop, where `try_inc` was. Each sequence-state change is a compare-and-swap as before.
