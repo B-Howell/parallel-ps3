@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The SPU LLVM compile thread no longer runs a sampling thread.** Not yet run on a game.
+  - **Before:** while blocks waited to be compiled, a "profiler" thread looked at every SPU's current block every 20 µs of the host's time, behind a lock of its own (`stx::init_mutex`), so the compile thread could hand out the busiest block first.
+  - **Why it went:** the compile thread hands every waiting block to the workers as soon as it comes. Between a batch's arrival and its blocks being handed out, the sampler had next to nothing to tell, and it spun on the host's clock while it ran.
+  - **Now:** each time the compile thread picks from more than one waiting block, it looks at the SPUs once and counts the blocks they are running. It picks by those counts as before.
+  - **Tests:** the order of compiles shows only in a game, so there is no test of its own; a check fails if the sampling thread comes back.
+
 - **The Vulkan renderer takes one lock to submit, not two: the frontend's, when it lends one.** Not yet run on a game.
   - **Before:** every submit, and every wait for the device to go idle, took the core's own `g_submit_mutex` and then the frontend's queue lock, which the libretro Vulkan interface lends with the queue.
   - **Now:** with the frontend's lock, that is all it takes. Every one of the core's queue calls goes through `acquire_global_submit_lock`, so that lock alone keeps the core's threads apart as well as the frontend's. The core's own lock is taken only for a frontend that lends none (`vk::libretro::has_queue_lock`).

@@ -9212,48 +9212,13 @@ struct spu_llvm
 		// To compile (hash -> item)
 		std::unordered_multimap<u64, spu_item*, value_hash<u64>> enqueued;
 
-		// Mini-profiler (hash -> number of occurrences)
+		// Mini-profiler (hash -> number of occurrences): which of the blocks
+		// waiting the SPUs are running, looked at each time one is picked
+		// from more than one. A profiler thread sampled them every 20 us of
+		// the host's time before, but every block waiting is handed to the
+		// workers as soon as it comes, so between a batch's arrival and its
+		// blocks' being handed out it had next to nothing to tell
 		std::unordered_map<u64, atomic_t<u64>, value_hash<u64>> samples;
-
-		// For synchronization with profiler thread
-		stx::init_mutex prof_mutex;
-
-		named_thread profiler("SPU LLVM Profiler"sv, [&]()
-		{
-			while (thread_ctrl::state() != thread_state::aborting)
-			{
-				{
-					// Lock if enabled
-					const auto lock = prof_mutex.access();
-
-					if (!lock)
-					{
-						// Wait when the profiler is disabled
-						prof_mutex.wait_for_initialized();
-						continue;
-					}
-
-					// Collect profiling samples
-					idm::select<named_thread<spu_thread>>([&](u32 /*id*/, spu_thread& spu)
-					{
-						const u64 name = atomic_storage<u64>::load(spu.block_hash);
-
-						if (auto state = +spu.state; !::is_paused(state) && !::is_stopped(state) && cpu_flag::wait - state)
-						{
-							const auto found = std::as_const(samples).find(name);
-
-							if (found != std::as_const(samples).end())
-							{
-								const_cast<atomic_t<u64>&>(found->second)++;
-							}
-						}
-					});
-				}
-
-				// Sleep for a short period if enabled
-				thread_ctrl::wait_for(20, false);
-			}
-		});
 
 		u32 worker_count = 1;
 
@@ -9281,11 +9246,28 @@ struct spu_llvm
 			{
 				enqueued.emplace(pair);
 
-				// Interrupt and kick profiler thread
-				const auto lock = prof_mutex.init_always([&]{});
-
 				// Register new blocks to collect samples
 				samples.emplace(pair.first, 0);
+			}
+
+			// With more than one to choose from, the ones the SPUs are
+			// running now first
+			if (enqueued.size() > 1)
+			{
+				idm::select<named_thread<spu_thread>>([&](u32 /*id*/, spu_thread& spu)
+				{
+					const u64 name = atomic_storage<u64>::load(spu.block_hash);
+
+					if (auto state = +spu.state; !::is_paused(state) && !::is_stopped(state) && cpu_flag::wait - state)
+					{
+						const auto found = std::as_const(samples).find(name);
+
+						if (found != std::as_const(samples).end())
+						{
+							const_cast<atomic_t<u64>&>(found->second)++;
+						}
+					}
+				});
 			}
 
 			if (enqueued.empty())
@@ -9302,8 +9284,6 @@ struct spu_llvm
 					}
 				}
 
-				// Interrupt profiler thread and put it to sleep
-				static_cast<void>(prof_mutex.reset());
 				thread_ctrl::wait_on(registered.get_wait_atomic(), 0);
 				std::fill(notify_compile.begin(), notify_compile.end(), 0); // Reset notification flags
 				notify_compile_count = 0;
@@ -9373,7 +9353,7 @@ struct spu_llvm
 			worker_index++;
 		}
 
-		static_cast<void>(prof_mutex.init_always([&]{ samples.clear(); }));
+		samples.clear();
 
 		m_workers.reset();
 
