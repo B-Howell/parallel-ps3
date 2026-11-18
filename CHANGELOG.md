@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **A close during trophy registration no longer waits for frames that never come.** Not yet run on a game; found looking for more of what hung closing content (0393).
+  - **Before:** `sceNpTrophyRegisterContext` paces its status callbacks by the game taking each one, or by six frames going by. While the game had not taken one, a close's change of state woke the wait once, and it went back to waiting for more frames. None comes once retro_run has stopped, so the close could hang there.
+  - **Now:** it leaves once the emulator stops, as every dialog's wait does.
+  - **Tests:** this needs a game registering its trophies as it is closed, so there is no test of its own; a check fails if the stop leaves the loop's way out.
+
 - **libmixer's mixing loop wakes when its PPU is told to stop.** Not yet run on a game; found while looking for more of what hung closing content (0393).
   - **Before:** a block ahead of the audio port, the loop on the game's PPU thread waited for retro_run's next frame, or a change of the emulator's state, and then looked at whether its PPU had been told to stop. A close changes the emulator's state first and tells the PPUs to stop after. A loop woken by the first went back to waiting for a frame before the second came, and none comes after retro_run has stopped, so the close could hang as 0393's did.
   - **Now:** it waits on its PPU's state as well, so being told to stop wakes it.

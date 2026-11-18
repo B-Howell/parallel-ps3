@@ -1141,6 +1141,8 @@ check: all
 	@if grep -n "g_libretro_events.wait(" ../../Emu/system_progress.cpp || awk '/auto refresh_l = /,/retro_atomic_store_release_int\(msg_ref.get\(\), 0\)/' ../../Emu/System.cpp | grep -n "g_libretro_events.wait("; then echo "a thread a close joins waits for frames alone again: the close hangs"; exit 1; else echo "frame waits a join wakes"; fi
 	@# libmixer's mixing loop waits for a frame or its PPU's state, so a close's stop wakes it
 	@if ! grep -q "atomic_wait::list<2> list(state, g_libretro_events);" ../../Emu/Cell/Modules/libmixer.cpp; then echo "libmixer: the mixing loop waits for frames alone again"; exit 1; else echo "libmixer: a stop wakes the mixing loop"; fi
+	@# sceNpTrophyRegisterContext's pacing of its status events leaves when the emulator stops
+	@if ! grep -q "thread_ctrl::state() == thread_state::aborting || Emu.IsStopped()" ../../Emu/Cell/Modules/sceNpTrophy.cpp; then echo "sceNpTrophy: the status events' wait no longer leaves on a stop"; exit 1; else echo "sceNpTrophy: a stop ends the status events' wait"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

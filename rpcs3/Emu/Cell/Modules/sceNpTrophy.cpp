@@ -855,7 +855,10 @@ error_code sceNpTrophyRegisterContext(ppu_thread& ppu, u32 context, u32 handle, 
 							frames++;
 						}
 
-						if (thread_ctrl::state() == thread_state::aborting)
+						// A stop's change of state wakes the wait; after it no
+						// frame comes (retro_run has stopped), so leave then,
+						// as the dialogs' waits do, or a close hangs here
+						if (thread_ctrl::state() == thread_state::aborting || Emu.IsStopped())
 						{
 							return {};
 						}
