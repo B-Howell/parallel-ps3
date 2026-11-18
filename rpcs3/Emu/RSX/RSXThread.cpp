@@ -1043,9 +1043,18 @@ namespace rsx
 
 		if ((state & (cpu_flag::dbg_global_pause + cpu_flag::exit)) == cpu_flag::dbg_global_pause)
 		{
-			// Wait 16ms during emulation pause. This reduces cpu load while still giving us the chance to render overlays.
+			// During emulation pause: the overlays drawn once a frame (retro_run's,
+			// g_libretro_events), or as the state changes - no clock
 			do_local_task(rsx::FIFO::state::paused);
-			thread_ctrl::wait_on(state, old, 16000);
+			const u32 events = g_libretro_events.load();
+			const bs_t<cpu_flag> now = state;
+			if ((now & (cpu_flag::dbg_global_pause + cpu_flag::exit)) == cpu_flag::dbg_global_pause)
+			{
+				atomic_wait::list<2> list(state, g_libretro_events);
+				list.values(now, events);
+				list.wait();
+			}
+			static_cast<void>(old);
 		}
 		else
 		{
@@ -3503,7 +3512,10 @@ namespace rsx
 		if (pause_emulator)
 		{
 			Emu.Pause();
-			thread_ctrl::wait_for(30'000);
+
+			// The pause taken in: a change of state or a frame, no clock
+			const u32 events = g_libretro_events.load();
+			g_libretro_events.wait(events);
 		}
 
 		// Reset current stats
