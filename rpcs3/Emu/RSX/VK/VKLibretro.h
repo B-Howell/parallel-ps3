@@ -56,6 +56,7 @@ namespace vk::libretro
 	// a VkQueue must be externally synchronized: every submit of the renderer,
 	// and every wait for the device to go idle, takes the frontend's lock.
 	void set_queue_lock(void (*lock)(void*), void (*unlock)(void*), void* handle);
+	bool has_queue_lock();
 	void lock_queue();
 	void unlock_queue();
 

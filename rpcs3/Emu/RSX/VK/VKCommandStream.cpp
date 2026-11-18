@@ -12,20 +12,33 @@
 
 namespace vk
 {
-	// global submit guard to prevent race condition on queue submit
+	// What keeps the queue's submits apart, the core's threads' and the
+	// frontend's: the frontend's own lock, which the libretro Vulkan
+	// interface lends with the queue (every submit, and every wait for the
+	// device to go idle, of the core's goes through here, so it alone keeps
+	// the core's threads apart too). The core's own lock only for a frontend
+	// that lends none.
 	shared_mutex g_submit_mutex;
 
 	void acquire_global_submit_lock()
 	{
+		if (vk::libretro::has_queue_lock())
+		{
+			vk::libretro::lock_queue();
+			return;
+		}
+
 		g_submit_mutex.lock();
-		// With the libretro core's hardware Vulkan context the frontend
-		// submits to the same queue from its own thread.
-		vk::libretro::lock_queue();
 	}
 
 	void release_global_submit_lock()
 	{
-		vk::libretro::unlock_queue();
+		if (vk::libretro::has_queue_lock())
+		{
+			vk::libretro::unlock_queue();
+			return;
+		}
+
 		g_submit_mutex.unlock();
 	}
 

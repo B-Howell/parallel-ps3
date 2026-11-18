@@ -119,6 +119,8 @@ namespace vk::libretro
 		s_lock_handle = handle;
 	}
 
+	bool has_queue_lock() { return s_lock != nullptr; }
+
 	void lock_queue()
 	{
 		if (s_lock)

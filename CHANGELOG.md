@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The Vulkan renderer takes one lock to submit, not two: the frontend's, when it lends one.** Not yet run on a game.
+  - **Before:** every submit, and every wait for the device to go idle, took the core's own `g_submit_mutex` and then the frontend's queue lock, which the libretro Vulkan interface lends with the queue.
+  - **Now:** with the frontend's lock, that is all it takes. Every one of the core's queue calls goes through `acquire_global_submit_lock`, so that lock alone keeps the core's threads apart as well as the frontend's. The core's own lock is taken only for a frontend that lends none (`vk::libretro::has_queue_lock`).
+  - **Tests:** `test_vk_handoff` checks that the core's lock is free while the submit lock is held with a frontend's lock, and taken without one. It fails with the two locks taken together, as before.
+
 - **The performance monitor thread is gone from the core.** It woke every half second on the host's clock to read the host's per-core CPU use and the process's RAM use, and logged them every 10 seconds (every half second while RAM grew). This is measuring logged by shipping code, and it measured nothing of the game's. Nothing else used it. A check fails if it comes back.
 
 - **`libretro_core.cpp` and `libretro_video.h` no longer include `<mutex>` or `<condition_variable>`.** Nothing in them, or in the files that include `libretro_video.h`, used either. A check fails if they come back.

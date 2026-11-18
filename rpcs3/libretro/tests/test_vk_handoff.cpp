@@ -16,6 +16,8 @@
 
 #include "stdafx.h"
 #include "Emu/RSX/VK/VKLibretro.h"
+#include "Emu/RSX/VK/VKHelpers.h"
+#include "Utilities/mutex.h"
 
 #include <atomic>
 #include <chrono>
@@ -43,10 +45,51 @@ void* operator new(std::size_t n)
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 
+namespace vk
+{
+	extern shared_mutex g_submit_mutex;
+}
+
+static int s_frontend_locks = 0;
+static int s_frontend_unlocks = 0;
+static void frontend_lock(void*) { s_frontend_locks++; }
+static void frontend_unlock(void*) { s_frontend_unlocks++; }
+
+// The submit lock: the frontend's when it lends one, and then the core's
+// own is not taken too; the core's own only when it lends none
+static void check_submit_lock()
+{
+	vk::libretro::set_queue_lock(frontend_lock, frontend_unlock, nullptr);
+	vk::acquire_global_submit_lock();
+	CHECK(s_frontend_locks == 1 && s_frontend_unlocks == 0);
+	{
+		bool free_while_held = false;
+		std::thread other([&] { if ((free_while_held = vk::g_submit_mutex.try_lock())) vk::g_submit_mutex.unlock(); });
+		other.join();
+		CHECK(free_while_held);
+	}
+	vk::release_global_submit_lock();
+	CHECK(s_frontend_locks == 1 && s_frontend_unlocks == 1);
+
+	vk::libretro::set_queue_lock(nullptr, nullptr, nullptr);
+	vk::acquire_global_submit_lock();
+	{
+		bool free_while_held = true;
+		std::thread other([&] { if ((free_while_held = vk::g_submit_mutex.try_lock())) vk::g_submit_mutex.unlock(); });
+		other.join();
+		CHECK(!free_while_held);
+	}
+	vk::release_global_submit_lock();
+	CHECK(s_frontend_locks == 1 && s_frontend_unlocks == 1);
+	std::printf("test_vk_handoff: the submit lock is the frontend's when it lends one, the core's own only without\n");
+}
+
 int main()
 {
 	using namespace vk::libretro;
 	u32 index = 0;
+
+	check_submit_lock();
 
 	// Frames in order, a third overtakes the oldest
 	frame_ready(1);
