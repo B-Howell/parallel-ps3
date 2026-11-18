@@ -1127,6 +1127,8 @@ check: all
 	@if grep -nE "SPU LLVM Profiler|prof_mutex|wait_for\(20, false\)" ../../Emu/Cell/SPUCommonRecompiler.cpp; then echo "SPU LLVM: the sampling thread is back"; exit 1; else echo "SPU LLVM: no sampling thread"; fi
 	@# the RSX FIFO's recovery and a refused rename wait for retro_run's frames, not the host's clock
 	@if grep -n "sleep_for(2ms)" ../../Emu/RSX/RSXThread.cpp || grep -nE "this_thread::yield|steady_clock" ../../Emu/VFS.cpp; then echo "RSX recovery / VFS rename: the host's clock or a yield loop is back"; exit 1; else echo "RSX recovery / VFS rename: by frames"; fi
+	@# np_handler.h takes no <condition_variable>
+	@if grep -n "#include <condition_variable>" ../../Emu/NP/np_handler.h; then echo "np_handler.h: <condition_variable> is included again"; exit 1; else echo "np_handler.h: no <condition_variable>"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

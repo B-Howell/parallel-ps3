@@ -4,6 +4,8 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **`np_handler.h` no longer includes `<condition_variable>`.** Nothing in the core uses one. A check fails if the include comes back.
+
 - **Two waits on the host's clock go by retro_run's frames instead.** Not yet run on a game.
   - **The RSX FIFO's recovery:** after a dead FIFO is reset, the RSX thread waited 2 ms of the host's time before starting again. It now waits a frame.
   - **A rename the host refuses:** a rename the host refused (a file another program holds open, which Windows refuses) was tried again in a yield loop, with the host's clock timing its report. It is now tried once a frame, and reported every 60 frames. It is never called on retro_run's own thread: the game's threads and sys_fs's call it, and a stop's teardown gives up at once, as before.

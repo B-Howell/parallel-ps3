@@ -6,7 +6,6 @@
 #include <queues/retro_deque.h>
 #include <map>
 #include <unordered_map>
-#include <condition_variable>
 
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/Cell/Modules/sceNp.h"
