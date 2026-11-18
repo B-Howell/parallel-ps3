@@ -174,7 +174,7 @@ namespace rsx
 
 		compiled_resource recvmessage_dialog::get_compiled()
 		{
-			if (!visible)
+			if (!retro_atomic_load_acquire_int(&visible))
 			{
 				return {};
 			}
@@ -191,7 +191,7 @@ namespace rsx
 
 		error_code recvmessage_dialog::Exec(SceNpBasicMessageMainType type, SceNpBasicMessageRecvOptions options, SceNpBasicMessageRecvAction& recv_result, u64& chosen_msg_id)
 		{
-			visible = false;
+			retro_atomic_store_release_int(&visible, 0);
 
 			switch (type)
 			{
@@ -248,7 +248,7 @@ namespace rsx
 			fade_animation.end = color4f(1.f);
 			fade_animation.active = true;
 
-			visible = true;
+			retro_atomic_store_release_int(&visible, 1);
 
 			const auto notify = std::make_shared<atomic_t<u32>>(0);
 			auto& overlayman = g_fxo->get<display_manager>();

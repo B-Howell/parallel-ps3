@@ -213,7 +213,7 @@ namespace rsx
 
 		compiled_resource trophy_list_dialog::get_compiled()
 		{
-			if (!visible)
+			if (!retro_atomic_load_acquire_int(&visible))
 			{
 				return {};
 			}
@@ -269,7 +269,7 @@ namespace rsx
 
 		void trophy_list_dialog::show(const std::string& trop_name)
 		{
-			visible = false;
+			retro_atomic_store_release_int(&visible, 0);
 
 			m_trop_name = trop_name;
 			m_trophy_data = load_trophies(trop_name);
@@ -279,7 +279,7 @@ namespace rsx
 			fade_animation.end = color4f(1.f);
 			fade_animation.active = true;
 
-			visible = true;
+			retro_atomic_store_release_int(&visible, 1);
 
 			const auto notify = std::make_shared<atomic_t<u32>>(0);
 			auto& overlayman = g_fxo->get<display_manager>();

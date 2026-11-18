@@ -59,7 +59,7 @@ namespace rsx
 			bool use_window_space = false;
 
 			u32 min_refresh_duration_us = 16600;
-			atomic_t<bool> visible = false;
+			retro_atomic_int_t visible{0}; // 0 or 1: drawn
 			atomic_bitmask_t<status_bits> status_flags = {};
 
 			virtual ~overlay() = default;

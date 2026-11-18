@@ -186,7 +186,7 @@ namespace rsx
 
 		compiled_resource media_list_dialog::get_compiled()
 		{
-			if (!visible)
+			if (!retro_atomic_load_acquire_int(&visible))
 			{
 				return {};
 			}
@@ -313,7 +313,7 @@ namespace rsx
 			m_description->set_text(title);
 			m_description->auto_resize();
 
-			visible = true;
+			retro_atomic_store_release_int(&visible, 1);
 		}
 
 		struct media_list_dialog_thread

@@ -286,7 +286,7 @@ namespace rsx
 			reset_transforms();
 
 			m_is_initialised = true;
-			visible = true;
+			retro_atomic_store_release_int(&visible, 1);
 		}
 
 		void perf_metrics_overlay::set_framerate_graph_enabled(bool enabled)
@@ -666,7 +666,7 @@ namespace rsx
 
 		compiled_resource perf_metrics_overlay::get_compiled()
 		{
-			if (!visible)
+			if (!retro_atomic_load_acquire_int(&visible))
 			{
 				return {};
 			}

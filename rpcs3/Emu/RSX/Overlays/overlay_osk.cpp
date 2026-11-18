@@ -614,28 +614,26 @@ namespace rsx
 			select_cell(index, true);
 		}
 
-		void osk_dialog::set_visible(bool visible)
+		void osk_dialog::set_visible(bool show)
 		{
 			if (m_use_separate_windows)
 			{
-				if (visible && continuous_mode == CELL_OSKDIALOG_CONTINUOUS_MODE_HIDE)
+				if (show && continuous_mode == CELL_OSKDIALOG_CONTINUOUS_MODE_HIDE)
 				{
 					continuous_mode = CELL_OSKDIALOG_CONTINUOUS_MODE_SHOW;
 				}
-				else if (!visible && continuous_mode == CELL_OSKDIALOG_CONTINUOUS_MODE_SHOW)
+				else if (!show && continuous_mode == CELL_OSKDIALOG_CONTINUOUS_MODE_SHOW)
 				{
 					continuous_mode = CELL_OSKDIALOG_CONTINUOUS_MODE_HIDE;
 				}
 			}
 
-			if (this->visible != visible)
+			if ((retro_atomic_exchange_int(&visible, show ? 1 : 0) != 0) != show)
 			{
-				this->visible = visible;
-
 				if (m_use_separate_windows)
 				{
-					osk.notice("set_visible: sending CELL_SYSUTIL_OSKDIALOG_DISPLAY_CHANGED with %s", visible ? "CELL_OSKDIALOG_DISPLAY_STATUS_SHOW" : "CELL_OSKDIALOG_DISPLAY_STATUS_HIDE");
-					sysutil_send_system_cmd(CELL_SYSUTIL_OSKDIALOG_DISPLAY_CHANGED, visible ? CELL_OSKDIALOG_DISPLAY_STATUS_SHOW : CELL_OSKDIALOG_DISPLAY_STATUS_HIDE);
+					osk.notice("set_visible: sending CELL_SYSUTIL_OSKDIALOG_DISPLAY_CHANGED with %s", show ? "CELL_OSKDIALOG_DISPLAY_STATUS_SHOW" : "CELL_OSKDIALOG_DISPLAY_STATUS_HIDE");
+					sysutil_send_system_cmd(CELL_SYSUTIL_OSKDIALOG_DISPLAY_CHANGED, show ? CELL_OSKDIALOG_DISPLAY_STATUS_SHOW : CELL_OSKDIALOG_DISPLAY_STATUS_HIDE);
 				}
 			}
 		}
@@ -1187,7 +1185,7 @@ namespace rsx
 
 		compiled_resource osk_dialog::get_compiled()
 		{
-			if (!visible)
+			if (!retro_atomic_load_acquire_int(&visible))
 			{
 				return {};
 			}

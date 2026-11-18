@@ -60,7 +60,7 @@ namespace rsx
 
 		compiled_resource message_dialog::get_compiled()
 		{
-			if (!visible)
+			if (!retro_atomic_load_acquire_int(&visible))
 			{
 				return {};
 			}
@@ -202,7 +202,7 @@ namespace rsx
 
 		error_code message_dialog::show(bool is_blocking, const std::string& text, const MsgDialogType& type, msg_dialog_source source, std::function<void(s32 status)> on_close)
 		{
-			visible = false;
+			retro_atomic_store_release_int(&visible, 0);
 			m_source = source;
 
 			num_progress_bars = type.progress_bar_count;
@@ -261,7 +261,7 @@ namespace rsx
 			}
 
 			this->on_close = std::move(on_close);
-			visible = true;
+			retro_atomic_store_release_int(&visible, 1);
 
 			if (is_blocking)
 			{

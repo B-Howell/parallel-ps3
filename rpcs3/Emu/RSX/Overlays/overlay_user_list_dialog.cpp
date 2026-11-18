@@ -159,7 +159,7 @@ namespace rsx
 
 		compiled_resource user_list_dialog::get_compiled()
 		{
-			if (!visible)
+			if (!retro_atomic_load_acquire_int(&visible))
 			{
 				return {};
 			}
@@ -176,7 +176,7 @@ namespace rsx
 
 		error_code user_list_dialog::show(std::string_view title, u32 focused, const std::vector<u32>& user_ids, bool enable_overlay, std::function<void(s32 status)> on_close)
 		{
-			visible = false;
+			retro_atomic_store_release_int(&visible, 0);
 
 			if (enable_overlay)
 			{
@@ -235,7 +235,7 @@ namespace rsx
 			fade_animation.active = true;
 
 			this->on_close = std::move(on_close);
-			visible = true;
+			retro_atomic_store_release_int(&visible, 1);
 
 			const auto notify = std::make_shared<atomic_t<u32>>(0);
 			auto& overlayman = g_fxo->get<display_manager>();

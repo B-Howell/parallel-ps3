@@ -232,7 +232,7 @@ namespace rsx
 					}
 
 					add_item(*queue, p->item);
-					visible = true;
+					retro_atomic_store_release_int(&visible, 1);
 				}
 
 				delete p;
@@ -333,7 +333,7 @@ namespace rsx
 			// The renderer's: what was handed over first, with no lock
 			take_up_pending();
 
-			if (!visible)
+			if (!retro_atomic_load_acquire_int(&visible))
 			{
 				return;
 			}
@@ -343,13 +343,14 @@ namespace rsx
 			update_queue(m_visible_items_top_right, m_ready_queue_top_right, message_pin_location::top_right);
 			update_queue(m_visible_items_top_left, m_ready_queue_top_left, message_pin_location::top_left);
 
-			visible = !message_items_empty(&m_visible_items_bottom_right) || !message_items_empty(&m_visible_items_bottom_left) ||
+			const bool any = !message_items_empty(&m_visible_items_bottom_right) || !message_items_empty(&m_visible_items_bottom_left) ||
 			          !message_items_empty(&m_visible_items_top_right) || !message_items_empty(&m_visible_items_top_left);
+			retro_atomic_store_release_int(&visible, any ? 1 : 0);
 		}
 
 		compiled_resource message::get_compiled()
 		{
-			if (!visible)
+			if (!retro_atomic_load_acquire_int(&visible))
 			{
 				return {};
 			}

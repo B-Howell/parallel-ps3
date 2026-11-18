@@ -614,7 +614,7 @@ namespace rsx
 
 		void overlay::refresh() const
 		{
-			if (!visible)
+			if (!retro_atomic_load_acquire_int(&visible))
 			{
 				return;
 			}

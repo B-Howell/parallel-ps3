@@ -139,7 +139,7 @@ namespace rsx
 
 		compiled_resource home_menu_dialog::get_compiled()
 		{
-			if (!visible)
+			if (!retro_atomic_load_acquire_int(&visible))
 			{
 				return {};
 			}
@@ -157,14 +157,14 @@ namespace rsx
 
 		error_code home_menu_dialog::show(std::function<void(s32 status)> on_close)
 		{
-			visible = false;
+			retro_atomic_store_release_int(&visible, 0);
 
 			fade_animation.current = color4f(0.f);
 			fade_animation.end = color4f(1.f);
 			fade_animation.active = true;
 
 			this->on_close = std::move(on_close);
-			visible = true;
+			retro_atomic_store_release_int(&visible, 1);
 
 			const auto notify = std::make_shared<atomic_t<u32>>(0);
 			auto& overlayman = g_fxo->get<display_manager>();

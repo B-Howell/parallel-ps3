@@ -140,7 +140,7 @@ namespace rsx
 
 		compiled_resource sendmessage_dialog::get_compiled()
 		{
-			if (!visible)
+			if (!retro_atomic_load_acquire_int(&visible))
 			{
 				return {};
 			}
@@ -162,7 +162,7 @@ namespace rsx
 
 		error_code sendmessage_dialog::Exec(message_data& msg_data, std::set<std::string>& npids)
 		{
-			visible = false;
+			retro_atomic_store_release_int(&visible, 0);
 
 			localized_string_id confirmation_loc_id = localized_string_id::CELL_NP_SENDMESSAGE_DIALOG_CONFIRMATION;
 
@@ -214,7 +214,7 @@ namespace rsx
 			fade_animation.end = color4f(1.f);
 			fade_animation.active = true;
 
-			visible = true;
+			retro_atomic_store_release_int(&visible, 1);
 
 			const auto notify = std::make_shared<atomic_t<u32>>(0);
 			auto& overlayman = g_fxo->get<display_manager>();
@@ -248,7 +248,7 @@ namespace rsx
 					s32 confirmation_code = CELL_MSGDIALOG_BUTTON_NO;
 
 					// Hide list
-					visible = false;
+					retro_atomic_store_release_int(&visible, 0);
 
 					error_code res = open_msg_dialog(true, CELL_MSGDIALOG_TYPE_BUTTON_TYPE_YESNO, vm::make_str(confirmation_msg), msg_dialog_source::_sceNp, vm::null, vm::null, vm::null, &confirmation_code);
 					if (res != CELL_OK)
@@ -268,7 +268,7 @@ namespace rsx
 					}
 
 					// Show list again
-					visible = true;
+					retro_atomic_store_release_int(&visible, 1);
 
 					// Allow input again
 					m_confirmation_dialog_open = false;

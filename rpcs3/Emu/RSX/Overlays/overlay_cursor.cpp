@@ -128,7 +128,7 @@ namespace rsx
 		{
 			take_requests();
 
-			if (!visible)
+			if (!retro_atomic_load_acquire_int(&visible))
 			{
 				return;
 			}
@@ -142,7 +142,7 @@ namespace rsx
 
 			if (!any_cursor_visible)
 			{
-				visible = false;
+				retro_atomic_store_release_int(&visible, 0);
 			}
 		}
 
@@ -150,7 +150,7 @@ namespace rsx
 		{
 			take_requests();
 
-			if (!visible)
+			if (!retro_atomic_load_acquire_int(&visible))
 			{
 				return {};
 			}
@@ -189,7 +189,7 @@ namespace rsx
 			}
 
 			// Drawn, so that the render thread looks; it works out whether it stays
-			visible = true;
+			retro_atomic_store_release_int(&visible, 1);
 		}
 
 		void set_cursor(u32 id, s16 x, s16 y, const color4f& color, u64 duration_us, bool force_update)

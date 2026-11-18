@@ -179,7 +179,7 @@ namespace rsx
 
 		compiled_resource save_dialog::get_compiled()
 		{
-			if (!visible)
+			if (!retro_atomic_load_acquire_int(&visible))
 			{
 				return {};
 			}
@@ -202,7 +202,7 @@ namespace rsx
 		{
 			rsx_log.notice("Showing native UI save_dialog (save_entries=%d, focused=%d, op=0x%x, listSet=*0x%x, enable_overlay=%d)", save_entries.size(), focused, op, listSet, enable_overlay);
 
-			visible = false;
+			retro_atomic_store_release_int(&visible, 0);
 
 			if (enable_overlay)
 			{
@@ -308,7 +308,7 @@ namespace rsx
 			fade_animation.end = color4f(1.f);
 			fade_animation.active = true;
 
-			visible = true;
+			retro_atomic_store_release_int(&visible, 1);
 
 			if (const auto error = run_input_loop())
 			{

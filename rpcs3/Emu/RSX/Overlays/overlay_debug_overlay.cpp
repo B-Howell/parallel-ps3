@@ -20,7 +20,7 @@ namespace rsx
 
 		compiled_resource debug_overlay::get_compiled()
 		{
-			if (!visible)
+			if (!retro_atomic_load_acquire_int(&visible))
 			{
 				return {};
 			}
@@ -38,7 +38,7 @@ namespace rsx
 		void debug_overlay::set_text(std::string&& text)
 		{
 			text_guard.set_text(std::move(text));
-			visible = true;
+			retro_atomic_store_release_int(&visible, 1);
 		}
 
 		extern void reset_debug_overlay()

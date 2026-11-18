@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **An overlay's `visible` flag is `retro_atomic`, which finishes the overlays' move off `atomic_t`.** Not yet run on a game.
+  - **What changed:** each overlay's "drawn" flag (dialogs, messages, the trophy notice, the performance overlay, the cursors) is `retro_atomic_int_t`, with release stores and acquire loads in the sixteen files that set or read it. The plain `visible` of an overlay element (a message box inside a dialog, a slider's parts) is not atomic and is not touched.
+  - **The on-screen keyboard:** its `set_visible` now swaps the flag in one exchange and tells the game of the change only when the old value differs, where it read and then wrote. Its parameter is renamed so it no longer hides the flag.
+  - **Tests:** behaviour is the same, and the overlays need a renderer to run, so there is no test of its own; a check fails if the flag goes back to `atomic_t`.
+
 - **`test_emu_waits` no longer fails about one run in fifteen.** Its wait of 30 frames was checked to end after exactly 30 of the test's retro_runs. The test fires a frame, yields 20000 times and fires the next, and when the waiter is not back in its wait by then, that frame is not one it saw and it takes another; it came out at 31, 33 or 40, here with the machine idle. What the wait must do is never end before its 30 frames, and the test already checks that it is still waiting after 29; it now checks no more than that. 30 runs in a row pass.
 
 - **The overlays' input flags and thread bits are `retro_atomic`, the third module off `atomic_t`.** Not yet run on a game.
