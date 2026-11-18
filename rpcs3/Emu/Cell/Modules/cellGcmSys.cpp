@@ -1602,9 +1602,15 @@ s32 cellGcmCallback(ppu_thread& ppu, vm::ptr<CellGcmContextData> context, u32 co
 			break;
 		}
 
+		// The PPU's own state too: a close changes the emulator's state first
+		// and tells the PPUs to stop after, and no frame comes then - on the
+		// get pointer and the frames alone a close could hang here
 		ppu.state += cpu_flag::wait;
-		atomic_wait::list<2> list(ctrl.get, g_libretro_events);
-		list.values(seen, events);
+		const auto old_state = +ppu.state;
+		if (::is_stopped(old_state))
+			continue;
+		atomic_wait::list<3> list(ctrl.get, ppu.state, g_libretro_events);
+		list.values(seen, old_state, events);
 		list.wait();
 	}
 

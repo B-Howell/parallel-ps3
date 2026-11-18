@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **A close while a game waits in `cellGcmCallback` no longer hangs.** Not yet run on a game; found looking for more of what hung closing content (0393).
+  - **Before:** the game's PPU waited for the RSX's get pointer to leave the new command buffer, or for a frame, or a change of the emulator's state, and then looked at whether it had been told to stop. A close changes the emulator's state first and tells the PPUs to stop after. A PPU woken by the first went back to waiting before the second, and the stop only wakes its own state word, which was not in the wait. The RSX had stopped and no frame comes then, so the close could hang there, as libmixer's could (0394).
+  - **Now:** the PPU's state is in the wait too.
+  - **Tests:** this needs a game's PPU in `cellGcmCallback` as it is closed, so there is no test of its own; a check fails if the PPU's state leaves the wait. Every other wait on a list of words in the core already has the thread's state in it, or leaves once the emulator stops.
+
 - **The close hang (0393) has a test that closes as Windows did, and the progress dialog's server no longer spins between a close's state change and its join.**
   - **The test:** `test_emu_waits` makes the progress dialog's server as a boot makes it, then joins it as `Emulator::Kill` does, with no retro_run at all. With the server waiting for frames alone, as before 0393, the join never ends and the test fails within seconds; it hung just so on Windows.
   - **The spin:** 0393 had the server wait through `libretro_wait_frame`, which returns at once once the emulator stops, and the server does not look at what it returns. So from a close's change of state until its join reached the server, it spun on it. It now waits on the frames and its own word (`thread_ctrl::wait_on`): untimed, and the join wakes it.
