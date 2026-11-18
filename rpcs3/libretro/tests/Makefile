@@ -1121,6 +1121,8 @@ check: all
 	@if awk '/void thread::fifo_wake_delay/,/u32 thread::get_fifo_cmd/' ../../Emu/RSX/RSXThread.cpp | grep -nE "busy_wait|yield|get_system_time|wait_for\("; then echo "RSX wake-up delay: the host's clock or a spin is back"; exit 1; else echo "RSX wake-up delay: the guest's time"; fi
 	@# the core's own files take no <mutex> or <condition_variable>
 	@if grep -nE "#include <(mutex|condition_variable)>" ../libretro_core.cpp ../libretro_video.h; then echo "libretro: <mutex> or <condition_variable> is included again"; exit 1; else echo "libretro: no <mutex>, no <condition_variable>"; fi
+	@# no host CPU and RAM monitor thread in the core: measuring goes in tools, not shipping code
+	@if test -e ../../Emu/perf_monitor.cpp || grep -n "perf_monitor" ../../../Makefile.common ../../Emu/System.cpp; then echo "perf_monitor is back: a thread that wakes twice a second to log the host's CPU and RAM use"; exit 1; else echo "no perf_monitor thread"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

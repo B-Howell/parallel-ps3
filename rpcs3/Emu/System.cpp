@@ -7,7 +7,6 @@
 #include "Emu/System.h"
 #include "Emu/system_progress.hpp"
 #include "Emu/system_utils.hpp"
-#include "Emu/perf_monitor.hpp"
 #include "Emu/vfs_config.h"
 #include "Emu/IPC_config.h"
 #include "Emu/savestate_utils.hpp"
@@ -966,9 +965,6 @@ bool Emulator::BootRsxCapture(const std::string& path)
 
 	// Initialize progress dialog
 	g_fxo->init<named_thread<progress_dialog_server>>();
-
-	// Initialize performance monitor
-	g_fxo->init<named_thread<perf_monitor>>();
 
 	// PS3 'executable'
 	m_state = system_state::ready;
@@ -2296,9 +2292,6 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 
 		// Initialize progress dialog
 		g_fxo->init<named_thread<progress_dialog_server>>();
-
-		// Initialize performance monitor
-		g_fxo->init<named_thread<perf_monitor>>();
 
 		const std::string disc_sfo_dir = vfs::get("/dev_bdvd/PS3_GAME/PARAM.SFO");
 

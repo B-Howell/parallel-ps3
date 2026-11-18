@@ -4,6 +4,8 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The performance monitor thread is gone from the core.** It woke every half second on the host's clock to read the host's per-core CPU use and the process's RAM use, and logged them every 10 seconds (every half second while RAM grew). This is measuring logged by shipping code, and it measured nothing of the game's. Nothing else used it. A check fails if it comes back.
+
 - **`libretro_core.cpp` and `libretro_video.h` no longer include `<mutex>` or `<condition_variable>`.** Nothing in them, or in the files that include `libretro_video.h`, used either. A check fails if they come back.
 
 - **The RSX's "Driver Wake-Up Delay" core option waits in the game's time, without a spin.** Not yet run on a game; it is off by default.

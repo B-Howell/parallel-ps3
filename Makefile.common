@@ -667,7 +667,6 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/rpcs3/Emu/cache_utils.cpp \
 	$(CORE_DIR)/rpcs3/Emu/games_config.cpp \
 	$(CORE_DIR)/rpcs3/Emu/localized_string.cpp \
-	$(CORE_DIR)/rpcs3/Emu/perf_monitor.cpp \
 	$(CORE_DIR)/rpcs3/Emu/savestate_utils.cpp \
 	$(CORE_DIR)/rpcs3/Emu/scoped_progress_dialog.cpp \
 	$(CORE_DIR)/rpcs3/Emu/system_config.cpp \
