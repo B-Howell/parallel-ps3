@@ -173,7 +173,7 @@ namespace utils
 		}
 
 		const usz pause_time_us = retro_atomic_load_acquire_size(&m_pause_time_us);
-		const usz elapsed_us = get_system_time() - m_start_time_us;
+		const usz elapsed_us = get_hw_clock_time() - m_start_time_us;
 		ensure(elapsed_us >= pause_time_us);
 
 		const usz timestamp_ms = (elapsed_us - pause_time_us) / 1000;
@@ -201,7 +201,7 @@ namespace utils
 			m_last_video_pts_incoming = -1;
 		}
 
-		const u64 current_time_us = get_system_time();
+		const u64 current_time_us = get_hw_clock_time();
 
 		if (m_start_time_us.compare_and_swap_test(umax, current_time_us))
 		{
@@ -253,7 +253,7 @@ namespace utils
 			m_last_audio_pts_incoming = -1;
 		}
 
-		const u64 current_time_us = get_system_time();
+		const u64 current_time_us = get_hw_clock_time();
 
 		if (m_start_time_us.compare_and_swap_test(umax, current_time_us))
 		{

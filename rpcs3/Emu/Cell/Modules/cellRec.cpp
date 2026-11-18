@@ -1,4 +1,6 @@
 #include "stdafx.h"
+#include "Emu/System.h"
+#include "cellAudio.h"
 #include "Emu/Cell/lv2/sys_memory.h"
 #include "Emu/Cell/timers.hpp"
 #include "Emu/Cell/PPUModule.h"
@@ -197,6 +199,12 @@ public:
 		m_flush = false;
 		m_paused = false;
 	}
+
+	// What the recorder's thread waits on when there is nothing to take:
+	// moved by every frame or block handed over, and by wake()
+	u32 seen() { return filled_seen(); }
+	void wait_new(u32 seen) { wait_filled(seen); }
+	void wake() { wake_consumer(); }
 };
 
 struct rec_info
@@ -542,7 +550,7 @@ void rec_info::start_video_provider()
 	if (video_provider_thread && was_paused)
 	{
 		// Resume
-		const u64 pause_time_end = get_system_time();
+		const u64 pause_time_end = get_hw_clock_time();
 		ensure(pause_time_end > pause_time_start);
 		pause_time_total += (pause_time_end - pause_time_start);
 
@@ -558,7 +566,7 @@ void rec_info::start_video_provider()
 
 	cellRec.notice("Starting video provider.");
 
-	recording_time_start = get_system_time();
+	recording_time_start = get_hw_clock_time();
 	pause_time_start = 0;
 	pause_time_total = 0;
 
@@ -570,6 +578,10 @@ void rec_info::start_video_provider()
 
 	video_provider_thread = std::make_unique<named_thread<std::function<void()>>>("cellRec video provider", [this]()
 	{
+		// Told of the audio thread's periods while this runs
+		retro_atomic_fetch_add_seq_cst_int(&g_audio_period_waiters, 1);
+		struct periods_waiter { ~periods_waiter() { retro_atomic_fetch_add_seq_cst_int(&g_audio_period_waiters, -1); } } periods_waiter_end;
+
 		const bool use_internal_audio = param.use_internal_audio();
 		const bool use_external_audio = param.use_external_audio();
 		const bool use_external_video = !param.use_internal_video();
@@ -591,6 +603,12 @@ void rec_info::start_video_provider()
 
 		while (thread_ctrl::state() != thread_state::aborting && encoder)
 		{
+			// Read before looking: anything handed over after it moves it
+			const u32 sink_seen = sink ? sink->seen() : 0;
+			const u32 frames_seen = g_libretro_events.load();
+			const u32 periods_seen = g_audio_periods.load();
+			bool progressed = false;
+
 			if (encoder->has_error)
 			{
 				cellRec.error("Encoder error. Sending error status.");
@@ -609,12 +627,13 @@ void rec_info::start_video_provider()
 
 			if (paused)
 			{
-				thread_ctrl::wait_for(10000);
+				// Until resumed or stopped, a look a frame (retro_run's), no clock
+				g_libretro_events.wait(frames_seen);
 				continue;
 			}
 
 			// We only care for new video frames or audio samples that can be properly encoded, so we check the timestamps and pts.
-			const usz timestamp_ms = (get_system_time() - recording_time_start - pause_time_total) / 1000;
+			const usz timestamp_ms = (get_hw_clock_time() - recording_time_start - pause_time_total) / 1000;
 
 			/////////////////
 			//    VIDEO    //
@@ -649,6 +668,8 @@ void rec_info::start_video_provider()
 							std::memcpy(frame_buffer.data(), video_input_buffer.get_ptr(), frame_buffer.size());
 							encoder->add_frame(frame_buffer, input_format.pitch, input_format.width, input_format.height, input_format.pixel_format, timestamp_ms);
 						}
+
+						progressed = true;
 					}
 
 					last_video_pts = pts;
@@ -659,7 +680,10 @@ void rec_info::start_video_provider()
 				// The video frames originate from our render pipeline.
 				utils::video_sink::encoder_frame& frame = rsx_frame;
 
-				if (!sink->pop_frame(frame))
+				const bool popped = sink->pop_frame(frame);
+				progressed |= popped;
+
+				if (!popped)
 				{
 					// None yet
 				}
@@ -687,7 +711,7 @@ void rec_info::start_video_provider()
 			//    AUDIO    //
 			/////////////////
 
-			const usz timestamp_us = get_system_time() - recording_time_start - pause_time_total;
+			const usz timestamp_us = get_hw_clock_time() - recording_time_start - pause_time_total;
 			bool got_new_samples = false;
 
 			if (use_external_audio)
@@ -791,7 +815,18 @@ void rec_info::start_video_provider()
 			// Update recording time
 			recording_time_total = encoder->get_timestamp_ms(encoder->last_video_pts());
 
-			thread_ctrl::wait_for(1);
+			// Took something: look again at once, it may not be the last.
+			// Took nothing: wait for the sink to be handed something, or
+			// without a sink (the game's own buffers) for the audio thread's
+			// next period, a block's worth of the game's audio - no spin, no
+			// clock
+			if (!progressed && !got_new_samples && thread_ctrl::state() != thread_state::aborting)
+			{
+				if (sink)
+					sink->wait_new(sink_seen);
+				else
+					g_audio_periods.wait(periods_seen);
+			}
 		}
 	});
 }
@@ -803,7 +838,7 @@ void rec_info::pause_video_provider()
 	if (video_provider_thread)
 	{
 		paused = true;
-		pause_time_start = get_system_time();
+		pause_time_start = get_hw_clock_time();
 	}
 }
 
@@ -811,7 +846,19 @@ void rec_info::stop_video_provider(bool flush)
 {
 	cellRec.notice("Stopping video provider.");
 
-	// Join thread
+	// Join thread: told to end, then woken from whichever it waits on
+	if (video_provider_thread)
+	{
+		*video_provider_thread = thread_state::aborting;
+
+		if (sink)
+			sink->wake();
+
+		g_audio_periods++;
+		g_audio_periods.notify_all();
+		libretro_event();
+	}
+
 	video_provider_thread.reset();
 
 	// Flush the ringbuffer if necessary.

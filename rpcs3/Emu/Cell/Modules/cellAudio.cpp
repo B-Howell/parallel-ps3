@@ -657,6 +657,9 @@ void cell_audio_thread::reset_ports(s32 offset)
 	}
 }
 
+atomic_t<u32> g_audio_periods{0};
+retro_atomic_int_t g_audio_period_waiters{0};
+
 void cell_audio_thread::advance(u64 timestamp)
 {
 	// update ports
@@ -690,6 +693,12 @@ void cell_audio_thread::advance(u64 timestamp)
 
 	m_counter++;
 	m_last_period_end = timestamp;
+
+	g_audio_periods++;
+	if (retro_atomic_load_seq_cst_int(&g_audio_period_waiters))
+	{
+		g_audio_periods.notify_all();
+	}
 	m_dynamic_period = 0;
 
 	// send aftermix event (normal audio event)

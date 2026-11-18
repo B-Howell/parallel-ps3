@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellRec's recorder thread waits on what it records instead of polling, and records in the guest's time.** Not yet run on a game; very few games record.
+  - **Before:** the thread that feeds the encoder slept 1 µs between turns, which was a spin for as long as a recording ran. It slept 10 ms a turn while paused. It stamped what it recorded with the host's clock.
+  - **Now, after a turn that took something:** it looks again at once, since that may not have been the last one.
+  - **Now, after a turn that took nothing:** it waits untimed for the sink (the game's frames or audio through the renderer and cellAudio) to be handed something. With no sink (the game's own buffers), it waits for the audio thread's next period (`g_audio_periods`, notified only while there is a waiter), one block of audio, so the game's own audio is still taken block by block.
+  - **Paused:** it looks once a frame.
+  - **Stopping:** this tells the thread to end and wakes it from whichever wait it is in before joining.
+  - **Timestamps:** cellRec's and the video provider's are now the guest's clock (`get_hw_clock_time`), in both at once since they compare against each other. A fast-forward records at the game's speed and a paused frontend leaves no gap.
+  - **Tests:** the sink's own wait is covered by `test_video_sink`. The recorder loop has no test of its own, since it needs a game that records; a check fails if a sleep or the host's clock comes back.
+
 - **A PPU's yield and hardware thread switch wait the guest's time.** Not yet run on a game.
   - **The switch delay:** this is what lv2 adds on `sys_ppu_thread_start`, and on every wake with "All Timers": 100 µs to 30 ms. It was a host-clock `wait_for_accurate`.
   - **The yield nap:** a PPU or SPU given the yield flag alone took an 80 µs nap, which was a timed wait on a word that never changed.

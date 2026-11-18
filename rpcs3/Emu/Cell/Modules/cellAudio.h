@@ -11,6 +11,12 @@
 #include "Emu/Audio/AudioDumper.h"
 #include "Emu/system_config_types.h"
 
+// The audio thread's periods (a block of 256 samples each), counted for a
+// host thread that paces itself by them (cellRec, sampling the game's own
+// audio): moved every period, and notified while there are waiters
+extern atomic_t<u32> g_audio_periods;
+extern retro_atomic_int_t g_audio_period_waiters;
+
 struct lv2_event_queue;
 struct lv2_memory;
 class ppu_thread;
