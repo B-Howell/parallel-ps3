@@ -17,6 +17,8 @@
 #include "Emu/NP/np_contexts.h"
 #include "Emu/Cell/timers.hpp"
 #include "Utilities/Thread.h"
+#include "Emu/IdManager.h"
+#include "Emu/system_progress.hpp"
 
 #include <atomic>
 #include <cstdio>
@@ -189,6 +191,47 @@ int main()
 		joiner.join();
 		delete waiter;
 		std::printf("test_emu_waits: a thread waiting for a frame is joined with no retro_run\n");
+	}
+
+	// A close's join of the progress dialog's server (Emulator::Kill's first
+	// loop joins every thread the emulator keeps), with no retro_run at all:
+	// by then the frontend's thread is in the close itself. It is made as a
+	// boot makes it and joined as Kill joins it. While it waited for frames
+	// alone it never ended, and the close hung
+	{
+		g_fxo->reset();
+		g_fxo->init<named_thread<progress_dialog_server>>();
+		usz threads = 0;
+		for (const auto& [type, data] : *g_fxo)
+		{
+			if (type.thread_op)
+				threads++;
+		}
+		// Let them all get to their waits
+		for (int i = 0; i < 2'000'000; i++)
+			std::this_thread::yield();
+		std::atomic<bool> joined{false};
+		std::thread joiner([&]
+		{
+			for (const auto& [type, data] : *g_fxo)
+			{
+				if (type.thread_op)
+					type.thread_op(data, thread_state::finished);
+			}
+			joined = true;
+		});
+		for (int i = 0; i < 20'000'000 && !joined; i++)
+			std::this_thread::yield();
+		CHECK(joined);
+		if (!joined)
+		{
+			std::fprintf(stderr, "test_emu_waits: a close's join of the progress dialog's server never ended\n");
+			std::_Exit(1);
+		}
+		joiner.join();
+		g_fxo->clear();
+		CHECK(threads > 0);
+		std::printf("test_emu_waits: a close joins the progress dialog's server (%zu thread) with no retro_run\n", threads);
 	}
 
 	// An NP transaction (np_contexts.cpp): no lock and no thread - finished

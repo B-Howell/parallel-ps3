@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The close hang (0393) has a test that closes as Windows did, and the progress dialog's server no longer spins between a close's state change and its join.**
+  - **The test:** `test_emu_waits` makes the progress dialog's server as a boot makes it, then joins it as `Emulator::Kill` does, with no retro_run at all. With the server waiting for frames alone, as before 0393, the join never ends and the test fails within seconds; it hung just so on Windows.
+  - **The spin:** 0393 had the server wait through `libretro_wait_frame`, which returns at once once the emulator stops, and the server does not look at what it returns. So from a close's change of state until its join reached the server, it spun on it. It now waits on the frames and its own word (`thread_ctrl::wait_on`): untimed, and the join wakes it.
+  - **Tests:** the join above; a check fails if the server goes back to waiting on the frames alone.
+
 - **A close during trophy registration no longer waits for frames that never come.** Not yet run on a game; found looking for more of what hung closing content (0393).
   - **Before:** `sceNpTrophyRegisterContext` paces its status callbacks by the game taking each one, or by six frames going by. While the game had not taken one, a close's change of state woke the wait once, and it went back to waiting for more frames. None comes once retro_run has stopped, so the close could hang there.
   - **Now:** it leaves once the emulator stops, as every dialog's wait does.

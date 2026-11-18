@@ -68,9 +68,13 @@ void progress_dialog_server::operator()()
 	// Until the next of retro_run's frames, a change of the emulator's state
 	// (a stop among them), or this thread being told to end: a close joins
 	// it after retro_run has stopped, so a frame alone would never come
+	// (this is a named thread, so its own word is in the wait). Not
+	// libretro_wait_frame: that returns at once once the emulator stops, and
+	// from a close's change of state to its join this would spin on it
 	const auto next_frame = []()
 	{
-		static_cast<void>(libretro_wait_frame());
+		const u32 events = g_libretro_events.load();
+		thread_ctrl::wait_on(g_libretro_events, events);
 	};
 
 	const auto create_native_dialog = [&native_dlg](const std::string& text, bool* show_overlay_message)
