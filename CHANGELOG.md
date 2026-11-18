@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **libmixer's mixing loop wakes when its PPU is told to stop.** Not yet run on a game; found while looking for more of what hung closing content (0393).
+  - **Before:** a block ahead of the audio port, the loop on the game's PPU thread waited for retro_run's next frame, or a change of the emulator's state, and then looked at whether its PPU had been told to stop. A close changes the emulator's state first and tells the PPUs to stop after. A loop woken by the first went back to waiting for a frame before the second came, and none comes after retro_run has stopped, so the close could hang as 0393's did.
+  - **Now:** it waits on its PPU's state as well, so being told to stop wakes it.
+  - **Tests:** the loop needs a game that uses libmixer's surround mixer, so there is no test of its own; `test_emu_waits` covers the same shape on a named thread, and a check fails if the PPU's state leaves the wait.
+
 - **Closing content hung, from the progress dialog's patch earlier today ("Progress dialog, pause message, home menu close: the game's frames").** Reported on Windows with the hang's backtraces; the fix is not yet run on a game.
   - **What hung:** at a close, `Emulator::Kill`'s join thread joins every thread the emulator keeps, telling each to end through the thread's own word and waiting for it. The progress dialog's server now waited for retro_run's frames alone. retro_run has stopped by then: the frontend's thread is in `stop_emulation`, waiting for the join. So nothing woke the server and the join waited for it for ever. The backtraces show it so: the frontend's thread in `stop_emulation`, the join thread in `thread_base::join`, the server parked on the frames.
   - **Now:** a frame wait on one of the core's named threads goes through `libretro_wait_frame` (System.cpp). It wakes for a frame, a change of the emulator's state, or the thread being told to end, as the overlays' waits already did (`overlay_wait`). It returns false for the last two, and `libretro_wait_frames` stops there too.

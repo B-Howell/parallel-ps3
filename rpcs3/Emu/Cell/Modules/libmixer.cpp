@@ -375,14 +375,22 @@ struct surmixer_thread : ppu_thread
 			if (g_surmx.mixcount > (port.active_counter + 0)) // adding positive value (1-15): preemptive buffer filling (hack)
 			{
 				// A block ahead of the port: until the next of retro_run's
-				// frames (the port takes about three blocks a frame), or a
-				// change of the emulator's state - no clock. Waiting as a
+				// frames (the port takes about three blocks a frame), a
+				// change of the emulator's state, or this PPU being told to
+				// stop (a close's join, after retro_run has stopped: on the
+				// frames alone it waited for ever) - no clock. Waiting as a
 				// PPU waits, so a suspend_all meanwhile does not wait on it
 				const bool flagged = !(state & cpu_flag::wait);
 				if (flagged)
 					state += cpu_flag::wait;
 				const u32 events = g_libretro_events.load();
-				g_libretro_events.wait(events);
+				const auto old_state = +state;
+				if (!::is_stopped(old_state))
+				{
+					atomic_wait::list<2> list(state, g_libretro_events);
+					list.values(old_state, events);
+					list.wait();
+				}
 				if (flagged)
 					check_state();
 				if (is_stopped())
