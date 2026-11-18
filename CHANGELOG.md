@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The progress counters are libretro-common's `retro_atomic`, a first module off RPCS3's `atomic_t`.** Part of replacing `atomic_t` everywhere (AGENTS.md), host-only state first. Not yet run on a game.
+  - **What changed:** the counters of files and modules to compile and compiled, the files' sizes, and the cancel and stop flags are now `retro_atomic_int_t` and `retro_atomic_64_t`. So are the "overlay message only" flag and the SPU cache's two progress words. Their readers and writers in the progress dialog, the PPU and SPU compilers and `Emulator::Kill` now load, add, subtract, exchange and compare-and-swap on them directly. Overloaded `progr_load`/`progr_add`/`progr_sub` keep the many call sites short; they are functions, not a wrapper class.
+  - **The wait:** the one wait on these, the PPU's wait for the progress dialog to close before it opens a game's dialog, is a `retro_waitaddr` wait, woken by the `retro_waitaddr_notify_all` the dialog makes as the count falls to none. This is the call `atomic_t` already forwarded to.
+  - **What is left in the module:** the dialog's text slot is a 16-byte word changed by a 128-bit compare-and-swap, and moves with the 128-bit conversion.
+  - **Tests:** behaviour is the same; `test_emu_waits`' progress dialog server reads these counters, and a check fails if any of them goes back to `atomic_t`.
+
 - **The PS Move camera tracker waits until each worker is done, and allocates nothing a frame.** Not yet run on a game; it runs only for a game that tracks a PS Move through the camera.
   - **The wait:** each frame it hands each lit controller's contours to a worker thread, then waited for it once, with a 5 s guard. A wait on an address can return early with nothing done (`retro_waitaddr_wait` says so), and it then read the worker's result while the worker was still writing it. It now looks again until the worker is done; the 5 s stays as the guard against a worker that never answers.
   - **The list:** the controllers it tracks were gathered into a `std::vector` made every frame. They are now an array on the stack, at most one entry each.

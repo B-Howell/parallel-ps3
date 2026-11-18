@@ -17,18 +17,18 @@ LOG_CHANNEL(sys_log, "SYS");
 // Progress display server synchronization variables
 lf_array<atomic_ptr<std::string>> g_progr_text_queue;
 progress_dialog_string_t g_progr_text{};
-atomic_t<u32> g_progr_ftotal{0};
-atomic_t<u32> g_progr_fdone{0};
-atomic_t<u64> g_progr_ftotal_bits{0};
-atomic_t<u64> g_progr_fknown_bits{0};
-atomic_t<u32> g_progr_ptotal{0};
-atomic_t<u32> g_progr_pdone{0};
+retro_atomic_int_t g_progr_ftotal{0};
+retro_atomic_int_t g_progr_fdone{0};
+retro_atomic_64_t g_progr_ftotal_bits{0};
+retro_atomic_64_t g_progr_fknown_bits{0};
+retro_atomic_int_t g_progr_ptotal{0};
+retro_atomic_int_t g_progr_pdone{0};
 
 // For Batch PPU Compilation
-atomic_t<bool> g_system_progress_canceled{false};
+retro_atomic_int_t g_system_progress_canceled{0};
 
 // For showing feedback while stopping emulation
-atomic_t<system_progress_stop_state> g_system_progress_stopping{system_progress_stop_state::stop_state_disabled};
+retro_atomic_int_t g_system_progress_stopping{system_progress_stop_state::stop_state_disabled};
 
 namespace rsx::overlays
 {
@@ -42,16 +42,16 @@ namespace rsx::overlays
 void progress_dialog_server::operator()()
 {
 	std::shared_ptr<rsx::overlays::progress_dialog> native_dlg;
-	g_system_progress_stopping = system_progress_stop_state::stop_state_disabled;
-	g_system_progress_canceled = false;
+	retro_atomic_store_release_int(&g_system_progress_stopping, system_progress_stop_state::stop_state_disabled);
+	retro_atomic_store_release_int(&g_system_progress_canceled, 0);
 
 	const auto get_state = []()
 	{
-		auto whole_state = std::make_tuple(g_progr_text.operator std::string(), +g_progr_ftotal, +g_progr_fdone, +g_progr_ftotal_bits, +g_progr_fknown_bits, +g_progr_ptotal, +g_progr_pdone);
+		auto whole_state = std::make_tuple(g_progr_text.operator std::string(), progr_load(g_progr_ftotal), progr_load(g_progr_fdone), progr_load(g_progr_ftotal_bits), progr_load(g_progr_fknown_bits), progr_load(g_progr_ptotal), progr_load(g_progr_pdone));
 
 		while (true)
 		{
-			auto new_state = std::make_tuple(g_progr_text.operator std::string(), +g_progr_ftotal, +g_progr_fdone, +g_progr_ftotal_bits, +g_progr_fknown_bits, +g_progr_ptotal, +g_progr_pdone);
+			auto new_state = std::make_tuple(g_progr_text.operator std::string(), progr_load(g_progr_ftotal), progr_load(g_progr_fdone), progr_load(g_progr_ftotal_bits), progr_load(g_progr_fknown_bits), progr_load(g_progr_ptotal), progr_load(g_progr_pdone));
 
 			if (new_state == whole_state)
 			{
@@ -105,7 +105,7 @@ void progress_dialog_server::operator()()
 
 			if (show_overlay_message)
 			{
-				*show_overlay_message = g_fxo->get<progress_dialog_workaround>().show_overlay_message_only;
+				*show_overlay_message = retro_atomic_load_acquire_int(&g_fxo->get<progress_dialog_workaround>().show_overlay_message_only) != 0;
 				if (*show_overlay_message)
 				{
 					return;
@@ -128,19 +128,19 @@ void progress_dialog_server::operator()()
 		}
 	};
 
-	while (!g_system_progress_stopping && thread_ctrl::state() != thread_state::aborting)
+	while (!progr_stopping() && thread_ctrl::state() != thread_state::aborting)
 	{
 		// Wait for the start condition
 		std::string text0 = g_progr_text;
 
 		while (text0.empty())
 		{
-			if (g_system_progress_stopping || thread_ctrl::state() == thread_state::aborting)
+			if (progr_stopping() || thread_ctrl::state() == thread_state::aborting)
 			{
 				break;
 			}
 
-			if (g_progr_ftotal || g_progr_fdone || g_progr_ptotal || g_progr_pdone)
+			if (progr_load(g_progr_ftotal) || progr_load(g_progr_fdone) || progr_load(g_progr_ptotal) || progr_load(g_progr_pdone))
 			{
 				const auto [text_new, ftotal, fdone, ftotal_bits, fknown_bits, ptotal, pdone] = get_state();
 
@@ -153,13 +153,13 @@ void progress_dialog_server::operator()()
 				if ((ftotal || ptotal) && ftotal == fdone && ptotal == pdone)
 				{
 					// Cleanup (missed message but do not cry over spilt milk)
-					g_progr_fdone -= fdone;
-					g_progr_pdone -= pdone;
-					g_progr_ftotal_bits -= ftotal_bits;
-					g_progr_fknown_bits -= fknown_bits;
-					g_progr_ftotal -= ftotal;
-					g_progr_ptotal -= ptotal;
-					g_progr_ptotal.notify_all();
+					progr_sub(g_progr_fdone, fdone);
+					progr_sub(g_progr_pdone, pdone);
+					progr_sub(g_progr_ftotal_bits, ftotal_bits);
+					progr_sub(g_progr_fknown_bits, fknown_bits);
+					progr_sub(g_progr_ftotal, ftotal);
+					progr_sub(g_progr_ptotal, ptotal);
+					retro_waitaddr_notify_all(&g_progr_ptotal);
 				}
 			}
 
@@ -168,12 +168,12 @@ void progress_dialog_server::operator()()
 			text0 = g_progr_text;
 		}
 
-		if (g_system_progress_stopping || thread_ctrl::state() == thread_state::aborting)
+		if (progr_stopping() || thread_ctrl::state() == thread_state::aborting)
 		{
 			break;
 		}
 
-		g_system_progress_canceled = false;
+		retro_atomic_store_release_int(&g_system_progress_canceled, 0);
 
 		// Initialize message dialog
 		bool show_overlay_message = false; // Only show an overlay message after initial loading is done.
@@ -195,7 +195,7 @@ void progress_dialog_server::operator()()
 					Emu.GracefulShutdown(false, true);
 				});
 
-				g_system_progress_canceled = true;
+				retro_atomic_store_release_int(&g_system_progress_canceled, 1);
 			};
 
 			Emu.CallFromMainThread([dlg, text0]()
@@ -223,7 +223,7 @@ void progress_dialog_server::operator()()
 		// Update progress
 		// An update a frame, as the dialog is drawn: retro_run's, no clock
 		for (;
-			!g_system_progress_stopping && thread_ctrl::state() != thread_state::aborting;
+			!progr_stopping() && thread_ctrl::state() != thread_state::aborting;
 			next_frame())
 		{
 			const auto [text_new, ftotal_new, fdone_new, ftotal_bits_new, fknown_bits_new, ptotal_new, pdone_new] = get_state();
@@ -423,7 +423,7 @@ void progress_dialog_server::operator()()
 			retro_atomic_store_release_int(ppu_cue_refs.get(), 0);
 		}
 
-		if (g_system_progress_stopping || thread_ctrl::state() == thread_state::aborting)
+		if (progr_stopping() || thread_ctrl::state() == thread_state::aborting)
 		{
 			break;
 		}
@@ -446,19 +446,19 @@ void progress_dialog_server::operator()()
 		}
 
 		// Cleanup
-		g_progr_fdone -= fdone;
-		g_progr_pdone -= pdone;
-		g_progr_ftotal_bits -= ftotal_bits;
-		g_progr_fknown_bits -= fknown_bits;
-		g_progr_ftotal -= ftotal;
-		g_progr_ptotal -= ptotal;
-		g_progr_ptotal.notify_all();
+		progr_sub(g_progr_fdone, fdone);
+		progr_sub(g_progr_pdone, pdone);
+		progr_sub(g_progr_ftotal_bits, ftotal_bits);
+		progr_sub(g_progr_fknown_bits, fknown_bits);
+		progr_sub(g_progr_ftotal, ftotal);
+		progr_sub(g_progr_ptotal, ptotal);
+		retro_waitaddr_notify_all(&g_progr_ptotal);
 	}
 
-	if (g_system_progress_stopping)
+	if (progr_stopping())
 	{
 		const std::string text = get_localized_string(
-			g_system_progress_stopping == system_progress_stop_state::stop_state_continuous_savestate
+			progr_stopping() == system_progress_stop_state::stop_state_continuous_savestate
 				? localized_string_id::PROGRESS_DIALOG_SAVESTATE_PLEASE_WAIT
 				: localized_string_id::PROGRESS_DIALOG_STOPPING_PLEASE_WAIT
 		);
@@ -476,19 +476,19 @@ void progress_dialog_server::operator()()
 		}
 	}
 
-	if (g_progr_ptotal.exchange(0))
+	if (retro_atomic_exchange_int(&g_progr_ptotal, 0))
 	{
-		g_progr_ptotal.notify_all();
+		retro_waitaddr_notify_all(&g_progr_ptotal);
 	}
 }
 
 progress_dialog_server::~progress_dialog_server()
 {
-	g_progr_ftotal.release(0);
-	g_progr_fdone.release(0);
-	g_progr_ftotal_bits.release(0);
-	g_progr_fknown_bits.release(0);
-	g_progr_ptotal.release(0);
-	g_progr_pdone.release(0);
+	retro_atomic_store_release_int(&g_progr_ftotal, 0);
+	retro_atomic_store_release_int(&g_progr_fdone, 0);
+	retro_atomic_store_release_64(&g_progr_ftotal_bits, 0);
+	retro_atomic_store_release_64(&g_progr_fknown_bits, 0);
+	retro_atomic_store_release_int(&g_progr_ptotal, 0);
+	retro_atomic_store_release_int(&g_progr_pdone, 0);
 	g_progr_text.data.release(std::common_type_t<progress_dialog_string_t::data_t>{});
 }

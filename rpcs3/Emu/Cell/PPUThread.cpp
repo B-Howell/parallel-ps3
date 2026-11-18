@@ -2796,17 +2796,18 @@ void ppu_thread::cpu_task()
 
 			// Wait until the progress dialog is closed.
 			// We don't want to open a cell dialog while a native progress dialog is still open.
-			while (u32 v = g_progr_ptotal)
+			while (u32 v = progr_load(g_progr_ptotal))
 			{
 				if (Emu.IsStopped())
 				{
 					return;
 				}
 
-				g_progr_ptotal.wait(v);
+				const retro_waitaddr_t w{&g_progr_ptotal, v};
+				retro_waitaddr_wait(&w, 1, -1);
 			}
 
-			g_fxo->get<progress_dialog_workaround>().show_overlay_message_only = true;
+			retro_atomic_store_release_int(&g_fxo->get<progress_dialog_workaround>().show_overlay_message_only, 1);
 
 			// Sadly we can't postpone initializing guest time because we need to run PPU threads
 			// (the farther it's postponed, the less accuracy of guest time has been lost)
@@ -4527,7 +4528,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 		}
 	}
 
-	g_progr_ftotal += ::size32(file_queue);
+	progr_add(g_progr_ftotal, ::size32(file_queue));
 
 	u64 total_files_size = 0;
 
@@ -4536,7 +4537,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 		total_files_size += info.file_size;
 	}
 
-	g_progr_ftotal_bits += total_files_size;
+	progr_add(g_progr_ftotal_bits, total_files_size);
 
 	*progress_dialog = get_localized_string(localized_string_id::PROGRESS_DIALOG_COMPILING_PPU_MODULES);
 
@@ -4610,7 +4611,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 		u32 inc_fdone = 1;
 		u32 restore_mem = 0;
 
-		for (usz func_i = fnext++; func_i < file_queue.size(); func_i = fnext++, g_progr_fdone += std::exchange(inc_fdone, 1))
+		for (usz func_i = fnext++; func_i < file_queue.size(); func_i = fnext++, progr_add(g_progr_fdone, std::exchange(inc_fdone, 1)))
 		{
 			if (Emu.IsStopped())
 			{
@@ -4678,7 +4679,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 					// Ignore executables larger than 500KB to prevent a long pause on exitspawn
 					if (src.size() >= 500000)
 					{
-						g_progr_ftotal_bits -= file_size;
+						progr_sub(g_progr_ftotal_bits, file_size);
 
 						continue;
 					}
@@ -4689,7 +4690,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 			{
 				ppu_log.notice("Failed to decrypt '%s'", path);
 
-				g_progr_ftotal_bits -= file_size;
+				progr_sub(g_progr_ftotal_bits, file_size);
 
 				continue;
 			}
@@ -4837,7 +4838,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 
 		auto main_module = std::move(g_fxo->get<main_ppu_module<lv2_obj>>());
 
-		for (; slice; slice.pop_front(), g_progr_fdone++)
+		for (; slice; slice.pop_front(), progr_add(g_progr_fdone, 1))
 		{
 			if (Emu.IsStopped())
 			{
@@ -4889,7 +4890,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 			{
 				ppu_log.notice("Failed to decrypt '%s'", path);
 
-				g_progr_ftotal_bits -= file_size;
+				progr_sub(g_progr_ftotal_bits, file_size);
 
 				continue;
 			}
@@ -5878,9 +5879,9 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 		return false;
 	}
 
-	if (g_progr_ftotal_bits && file_size)
+	if (progr_load(g_progr_ftotal_bits) && file_size)
 	{
-		g_progr_fknown_bits += file_size;
+		progr_add(g_progr_fknown_bits, file_size);
 	}
 
 	// Create worker threads for compilation
@@ -5891,7 +5892,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 		atomic_t<u64> work_done = 0;
 
 		// Update progress dialog
-		g_progr_ptotal += ::size32(workload);
+		progr_add(g_progr_ptotal, ::size32(workload));
 
 		*progress_dialog = get_localized_string(localized_string_id::PROGRESS_DIALOG_COMPILING_PPU_MODULES);
 
@@ -5969,7 +5970,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 #ifdef __APPLE__
 				pthread_jit_write_protect_np(false);
 #endif
-				for (usz i = (*work_cv)++; i < workload.size(); i = (*work_cv)++, (*work_done)++, g_progr_pdone++)
+				for (usz i = (*work_cv)++; i < workload.size(); i = (*work_cv)++, (*work_done)++, progr_add(g_progr_pdone, 1))
 				{
 					if (cpu ? cpu->state.all_of(cpu_flag::exit) : Emu.IsStopped())
 					{
@@ -6080,7 +6081,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 		const bool divide_by_twenty = !workload.empty();
 		const usz increment_link_count_at = (divide_by_twenty ? 20 : 1);
 
-		g_progr_ptotal += static_cast<u32>(utils::aligned_div<u64>(link_workload.size(), increment_link_count_at));
+		progr_add(g_progr_ptotal, static_cast<u32>(utils::aligned_div<u64>(link_workload.size(), increment_link_count_at)));
 
 		usz mod_index = umax;
 
@@ -6104,7 +6105,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 			if (mod_index % increment_link_count_at == (link_workload.size() - 1) % increment_link_count_at)
 			{
 				// Incremenet 'pdone' Nth times where N is link workload size ceil-divided by increment_link_count_at
-				g_progr_pdone++;
+				progr_add(g_progr_pdone, 1);
 			}
 
 			if (failed_to_load)
@@ -6131,7 +6132,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 	// Try to patch all single and unregistered BLRs with the same function (TODO: Maybe generalize it into PIC code detection and patching)
 	ppu_intrp_func_t BLR_func = nullptr;
 
-	const bool showing_only_apply_stage = !g_progr_text.operator bool() && !g_progr_ptotal && !g_progr_ftotal && g_progr_ptotal.compare_and_swap_test(0, 1);
+	const bool showing_only_apply_stage = !g_progr_text.operator bool() && !progr_load(g_progr_ptotal) && !progr_load(g_progr_ftotal) && retro_atomic_cas_int(&g_progr_ptotal, 0, 1);
 
 	progress_dialog = get_localized_string(localized_string_id::PROGRESS_DIALOG_APPLYING_PPU_CODE);
 
@@ -6237,7 +6238,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 	if (showing_only_apply_stage)
 	{
 		// Done
-		g_progr_pdone++;
+		progr_add(g_progr_pdone, 1);
 	}
 
 	return compiled_new;

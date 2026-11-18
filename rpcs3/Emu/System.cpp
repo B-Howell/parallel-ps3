@@ -3508,7 +3508,7 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 	if (g_fxo->try_get<named_thread<progress_dialog_server>>() && (continuous_savestate_mode || g_progr_text.operator bool()))
 	{
 		// Notify progress dialog that we are going to stop emulation
-		g_system_progress_stopping = continuous_savestate_mode ? system_progress_stop_state::stop_state_continuous_savestate : system_progress_stop_state::stop_state_stopping;
+		retro_atomic_store_release_int(&g_system_progress_stopping, continuous_savestate_mode ? system_progress_stop_state::stop_state_continuous_savestate : system_progress_stop_state::stop_state_stopping);
 	}
 
 	// Signal threads

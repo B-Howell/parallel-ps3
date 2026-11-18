@@ -977,13 +977,13 @@ void spu_cache::initialize(bool build_existing_cache)
 		worker_count = std::min<u32>(rpcs3::utils::get_max_threads(), ::narrow<u32>(add_count));
 	}
 
-	atomic_t<u32> pending_progress = 0;
-	atomic_t<bool> showing_progress = false;
+	retro_atomic_int_t pending_progress{0};
+	retro_atomic_int_t showing_progress{0}; // 0 or 1
 
-	if (!g_progr_ptotal)
+	if (!progr_load(g_progr_ptotal))
 	{
-		g_progr_ptotal += total_funcs;
-		showing_progress.release(true);
+		progr_add(g_progr_ptotal, total_funcs);
+		retro_atomic_store_release_int(&showing_progress, 1);
 		progress_dialog.emplace(get_localized_string(localized_string_id::PROGRESS_DIALOG_BUILDING_SPU_CACHE));
 	}
 
@@ -1055,7 +1055,7 @@ void spu_cache::initialize(bool build_existing_cache)
 		const bool is_first_thread = func_i == 0;
 
 		// Build functions
-		for (; func_i < func_list.size(); func_i = fnext++, (showing_progress ? g_progr_pdone : pending_progress) += build_existing_cache ? 1 : 0)
+		for (; func_i < func_list.size(); func_i = fnext++, progr_add(retro_atomic_load_acquire_int(&showing_progress) ? g_progr_pdone : pending_progress, build_existing_cache ? 1 : 0))
 		{
 			const spu_program& func = std::as_const(func_list)[func_i];
 
@@ -1123,26 +1123,26 @@ void spu_cache::initialize(bool build_existing_cache)
 
 			result++;
 
-			if (is_first_thread && !showing_progress)
+			if (is_first_thread && !retro_atomic_load_acquire_int(&showing_progress))
 			{
-				if (!g_progr_text && !g_progr_ptotal && !g_progr_ftotal)
+				if (!g_progr_text && !progr_load(g_progr_ptotal) && !progr_load(g_progr_ftotal))
 				{
-					showing_progress = true;
-					g_progr_pdone += pending_progress.exchange(0);
-					g_progr_ptotal += total_funcs;
+					retro_atomic_store_release_int(&showing_progress, 1);
+					progr_add(g_progr_pdone, static_cast<u32>(retro_atomic_exchange_int(&pending_progress, 0)));
+					progr_add(g_progr_ptotal, total_funcs);
 					progress_dialog.emplace(get_localized_string(localized_string_id::PROGRESS_DIALOG_BUILDING_SPU_CACHE));
 				}
 			}
-			else if (showing_progress && pending_progress)
+			else if (retro_atomic_load_acquire_int(&showing_progress) && progr_load(pending_progress))
 			{
 				// Cover missing progress due to a race
-				g_progr_pdone += pending_progress.exchange(0);
+				progr_add(g_progr_pdone, static_cast<u32>(retro_atomic_exchange_int(&pending_progress, 0)));
 			}
 		}
 
 		u32 last_sec_idx = umax;
 
-		for (func_i = data_indexer++;; func_i = data_indexer++, (showing_progress ? g_progr_pdone : pending_progress) += build_existing_cache ? 1 : 0)
+		for (func_i = data_indexer++;; func_i = data_indexer++, progr_add(retro_atomic_load_acquire_int(&showing_progress) ? g_progr_pdone : pending_progress, build_existing_cache ? 1 : 0))
 		{
 			usz passed_count = 0;
 			u32 func_addr = 0;
@@ -1300,28 +1300,28 @@ void spu_cache::initialize(bool build_existing_cache)
 				block_addr = new_entry;
 			}
 
-			if (is_first_thread && !showing_progress)
+			if (is_first_thread && !retro_atomic_load_acquire_int(&showing_progress))
 			{
-				if (!g_progr_text && !g_progr_ptotal && !g_progr_ftotal)
+				if (!g_progr_text && !progr_load(g_progr_ptotal) && !progr_load(g_progr_ftotal))
 				{
-					showing_progress = true;
-					g_progr_pdone += pending_progress.exchange(0);
-					g_progr_ptotal += total_funcs;
+					retro_atomic_store_release_int(&showing_progress, 1);
+					progr_add(g_progr_pdone, static_cast<u32>(retro_atomic_exchange_int(&pending_progress, 0)));
+					progr_add(g_progr_ptotal, total_funcs);
 
 					progress_dialog.emplace(get_localized_string(localized_string_id::PROGRESS_DIALOG_BUILDING_SPU_CACHE));
 				}
 			}
-			else if (showing_progress && pending_progress)
+			else if (retro_atomic_load_acquire_int(&showing_progress) && progr_load(pending_progress))
 			{
 				// Cover missing progress due to a race
-				g_progr_pdone += pending_progress.exchange(0);
+				progr_add(g_progr_pdone, static_cast<u32>(retro_atomic_exchange_int(&pending_progress, 0)));
 			}
 		}
 
-		if (showing_progress && pending_progress)
+		if (retro_atomic_load_acquire_int(&showing_progress) && progr_load(pending_progress))
 		{
 			// Cover missing progress due to a race
-			g_progr_pdone += pending_progress.exchange(0);
+			progr_add(g_progr_pdone, static_cast<u32>(retro_atomic_exchange_int(&pending_progress, 0)));
 		}
 
 		return result;
