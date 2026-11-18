@@ -5,7 +5,7 @@
 
 #include "Emu/RSX/Program/GLSLTypes.h"
 #include "Utilities/geometry.h"
-#include "Utilities/mutex.h"
+#include "util/atomic.hpp"
 
 #include <span>
 
@@ -22,8 +22,8 @@ namespace gl
 			fence m_compiled_fence;
 			fence m_init_fence;
 
-			shared_mutex m_compile_lock;
-			atomic_t<bool> m_is_compiled{};
+			// 0: not yet, 1: one thread compiling (the others wait for it), 2: compiled
+			atomic_t<u32> m_compile_state{};
 
 			void precompile();
 
@@ -61,7 +61,7 @@ namespace gl
 
 			bool created() const { return m_id != GL_NONE; }
 
-			bool compiled() const { return m_is_compiled; }
+			bool compiled() const { return m_compile_state == 2; }
 
 			explicit operator bool() const { return created(); }
 		};

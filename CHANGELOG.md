@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The file system's virtual devices and the GL shaders take no lock.** Not yet run on a game.
+  - **Virtual devices:** these are the mounted ISO's file system, looked up on every file call. They were a map under a shared mutex. The table is now published whole and never changed once published. Adding or removing a device copies the table, changes the copy and publishes it by compare-and-swap. The table it replaces is retired (`retro_retire`) and freed, with any device only it held, once no lookup is in it. The device's name is looked up in place, no longer copied out of the path on every call.
+  - **GL shaders:** a shader two threads could compile at once was under a mutex. The first thread to mark it compiles it, and any other waits untimed for that one.
+  - `std::lock_guard` count 6. A check fails if a lock comes back in either. `test_held_queues` adds and removes three devices 20000 times while two threads look them up, and checks each lookup finds its own device or none, the add-twice and remove-missing errors, and that every device removed is let go. It fails on a mutant that never retires the old table, and on one that adds over a name already there. The GL shader needs a real GL context and has no test.
+
 - **UPnP and the IPv6 address book take no lock.** Not yet run online.
   - **UPnP:** the gateway, the config and the port bindings were under a mutex, while each request to the gateway was already handed to the HTTP thread. Each call (enabling, adding or removing a mapping, and the removals as it goes) is now handed whole to the HTTP thread, which alone touches them.
   - **The IPv6 stand-ins:** the IPv4 addresses that stand in for IPv6 peers were a map and a vector under a mutex, and the reverse lookup read the vector without it. Each address now gets a slot of its own, claimed by a fetch-and-add and published by a flag once written. The table is made once, for all of them, and read in place. An address two threads register at once for the first time can get two stand-ins, and either one maps back to it.

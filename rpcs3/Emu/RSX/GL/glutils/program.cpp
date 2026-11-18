@@ -170,10 +170,14 @@ namespace gl
 
 		shader& shader::compile()
 		{
-			std::lock_guard lock(m_compile_lock);
-			if (m_is_compiled)
+			// The first thread to mark it compiles; any other waits for that one
+			if (!m_compile_state.compare_and_swap_test(0, 1))
 			{
-				// Another thread compiled this already
+				while (m_compile_state != 2)
+				{
+					m_compile_state.wait(1);
+				}
+
 				return *this;
 			}
 
@@ -204,7 +208,8 @@ namespace gl
 			m_compiled_fence.create();
 			flush_command_queue(m_compiled_fence);
 
-			m_is_compiled = true;
+			m_compile_state = 2;
+			m_compile_state.notify_all();
 			return *this;
 		}
 

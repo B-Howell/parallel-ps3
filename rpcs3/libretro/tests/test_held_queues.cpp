@@ -30,6 +30,12 @@
 //   maps back to its own address, and one registered again gets the
 //   address it got before.
 //
+// - the file system's virtual devices by name (Utilities/File.cpp): looked
+//   up from two threads while a third adds and removes them, each lookup
+//   finds the device the name has or none, never another; one added twice
+//   or removed when not there fails; and one removed is let go once no
+//   lookup holds the table it was in.
+//
 // sys_timer.cpp is compiled into this test (the timer thread is private to
 // it); the rest is the core's own objects and archives, the same link as
 // the core's with this main. Built by `make check`.
@@ -973,6 +979,80 @@ int main()
 
 		// A thread's own address registered once more gets the one it got
 		CHECK(translator->register_ipv6(address(0x10000 + 1)) == got[0][1]);
+	}
+
+	// The virtual devices by name
+	{
+		struct test_device : fs::device_base
+		{
+			bool stat(const std::string&, fs::stat_t&) override { return false; }
+			bool statfs(const std::string&, fs::device_stat&) override { return false; }
+			std::unique_ptr<fs::file_base> open(const std::string&, bs_t<fs::open_mode>) override { return {}; }
+			std::unique_ptr<fs::dir_base> open_dir(const std::string&) override { return {}; }
+		};
+
+		constexpr u32 count = 3;
+		shared_ptr<fs::device_base> devices[count];
+		std::string names[count], paths[count];
+		for (u32 i = 0; i < count; i++)
+		{
+			devices[i] = make_shared<test_device>();
+			names[i] = fmt::format("test_dev%u", i);
+			paths[i] = devices[i]->fs_prefix + names[i] + "/file";
+		}
+
+		// Added twice, removed when not there: both fail, nothing changes
+		CHECK(fs::set_virtual_device(names[0], devices[0]) == devices[0]);
+		CHECK(!fs::set_virtual_device(names[0], devices[1]) && fs::g_tls_error == fs::error::exist);
+		CHECK(fs::get_virtual_device(paths[0]) == devices[0]);
+		CHECK(fs::set_virtual_device(names[0], null_ptr) == devices[0]);
+		CHECK(!fs::set_virtual_device(names[0], null_ptr) && fs::g_tls_error == fs::error::noent);
+		CHECK(!fs::get_virtual_device(paths[0]));
+
+		retro_atomic_int_t stop;
+		retro_atomic_int_init(&stop, 0);
+		std::atomic<u64> found{0}, wrong{0};
+		std::thread readers[2];
+		for (auto& reader : readers)
+		{
+			reader = std::thread([&]()
+			{
+				while (!retro_atomic_load_acquire_int(&stop))
+				{
+					for (u32 i = 0; i < count; i++)
+					{
+						const auto device = fs::get_virtual_device(paths[i]);
+						if (device)
+							found++;
+						if (device && device != devices[i])
+							wrong++;
+					}
+				}
+			});
+		}
+
+		for (u32 round = 0; round < 6 * 3333; round++)
+		{
+			const u32 i = round % count;
+			if (round / count % 2 == 0)
+				CHECK(fs::set_virtual_device(names[i], devices[i]) == devices[i]);
+			else
+				CHECK(fs::set_virtual_device(names[i], null_ptr) == devices[i]);
+		}
+
+		retro_atomic_store_release_int(&stop, 1);
+		for (auto& reader : readers)
+			reader.join();
+
+		// All removed by now (rounds end on removals); each let go
+		for (u32 i = 0; i < count; i++)
+		{
+			CHECK(!fs::get_virtual_device(paths[i]));
+			CHECK(devices[i].use_count() == 1);
+		}
+
+		std::printf("test_held_queues: virtual devices: %llu found while changed, %llu wrong\n", static_cast<unsigned long long>(found.load()), static_cast<unsigned long long>(wrong.load()));
+		CHECK(wrong == 0);
 	}
 
 	std::printf("test_held_queues: %s\n", failures ? "FAIL" : "ok");

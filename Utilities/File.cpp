@@ -10,6 +10,8 @@
 #include <iostream>
 
 #include "util/asm.hpp"
+#include <retro_atomic.h>
+#include <queues/retro_retire.h>
 #include "util/coro.hpp"
 
 // Libretro VFS integration
@@ -321,13 +323,47 @@ namespace fs
 {
 	thread_local error g_tls_error = error::ok;
 
+	// The devices by name, read with no lock: every file call looks one up.
+	// The table is never changed once published; adding or removing one
+	// copies it, changes the copy and publishes it by compare-and-swap (one
+	// that lost to another is made again from the newer table). The table
+	// replaced is retired (retro_retire), freed with the devices only it
+	// holds once no lookup is in it.
 	class device_manager final
 	{
-		mutable shared_mutex m_mutex{};
+		struct name_hash
+		{
+			using is_transparent = void;
+			usz operator()(std::string_view name) const noexcept { return std::hash<std::string_view>{}(name); }
+		};
 
-		std::unordered_map<std::string, shared_ptr<device_base>> m_map{};
+		struct table
+		{
+			mpsc_stack_node_t link{}; // first: retired as this
+			std::unordered_map<std::string, shared_ptr<device_base>, name_hash, std::equal_to<>> map;
+		};
+
+		retro_atomic_ptr_t m_table{}; // table*, never null
+		retro_retire_t m_retire{};
+
+		static void free_table(mpsc_stack_node_t* node)
+		{
+			delete reinterpret_cast<table*>(node);
+		}
 
 	public:
+		device_manager()
+		{
+			retro_retire_init(&m_retire);
+			retro_atomic_ptr_init(&m_table, new table);
+		}
+
+		~device_manager()
+		{
+			retro_retire_drain(&m_retire, free_table);
+			delete static_cast<table*>(retro_atomic_load_acquire_ptr(&m_table));
+		}
+
 		shared_ptr<device_base> get_device(const std::string& path);
 		shared_ptr<device_base> set_device(const std::string& name, shared_ptr<device_base>);
 	};
@@ -983,48 +1019,63 @@ namespace fs
 
 shared_ptr<fs::device_base> fs::device_manager::get_device(const std::string& path)
 {
-	reader_lock lock(m_mutex);
-
 	const usz prefix = path.find_first_of('_', 7) + 1;
 
-	const auto found = m_map.find(path.substr(prefix, path.find_first_of('/', 1) - prefix));
+	// The name looked up in place, not copied out of the path
+	const std::string_view name = std::string_view(path).substr(prefix, path.find_first_of('/', 1) - prefix);
 
-	if (found == m_map.end() || !path.starts_with(found->second->fs_prefix))
-	{
-		return null_ptr;
-	}
+	retro_retire_enter(&m_retire);
+	const table* const t = static_cast<const table*>(retro_atomic_load_acquire_ptr(&m_table));
+	const auto found = t->map.find(name);
+	shared_ptr<device_base> device = found == t->map.end() || !path.starts_with(found->second->fs_prefix) ? null_ptr : found->second;
+	retro_retire_leave(&m_retire, free_table);
 
-	return found->second;
+	return device;
 }
 
 shared_ptr<fs::device_base> fs::device_manager::set_device(const std::string& name, shared_ptr<device_base> device)
 {
-	std::lock_guard lock(m_mutex);
+	retro_retire_enter(&m_retire);
 
-	if (device)
+	shared_ptr<device_base> result = null_ptr;
+
+	for (;;)
 	{
-		// Adding
-		if (auto [it, ok] = m_map.try_emplace(name, std::move(device)); ok)
+		table* const cur = static_cast<table*>(retro_atomic_load_acquire_ptr(&m_table));
+
+		if (device ? cur->map.contains(name) : !cur->map.contains(name))
 		{
-			return it->second;
+			// Adding one there, or removing one not there
+			g_tls_error = device ? error::exist : error::noent;
+			result = null_ptr;
+			retro_retire_leave(&m_retire, free_table);
+			return result;
 		}
 
-		g_tls_error = error::exist;
-	}
-	else
-	{
-		// Removing
-		if (auto found = m_map.find(name); found != m_map.end())
+		table* const next = new table;
+		next->map = cur->map;
+
+		if (device)
 		{
-			device = std::move(found->second);
-			m_map.erase(found);
-			return device;
+			result = next->map.try_emplace(name, device).first->second;
+		}
+		else
+		{
+			const auto found = next->map.find(name);
+			result = std::move(found->second);
+			next->map.erase(found);
 		}
 
-		g_tls_error = error::noent;
-	}
+		if (retro_atomic_cas_ptr(&m_table, cur, next))
+		{
+			retro_retire_leave(&m_retire, free_table);
+			retro_retire(&m_retire, &cur->link, free_table);
+			return result;
+		}
 
-	return null_ptr;
+		// Another change got in first: made again from its table
+		delete next;
+	}
 }
 
 shared_ptr<fs::device_base> fs::get_virtual_device(const std::string& path)

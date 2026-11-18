@@ -879,7 +879,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 8
+LOCK_GUARD_MAX := 6
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -1077,6 +1077,8 @@ check: all
 	@if grep -rnE "atomic_wait_timeout|wait_for\(|std::this_thread::sleep" ../../Emu/RSX/Overlays; then echo "overlays: a timed wait is back - wait untimed on the event (libretro_wait_on)"; exit 1; else echo "overlays: no timed wait"; fi
 	@# UPnP is the HTTP thread's; the IPv6 stand-ins are claimed slots; the IPv6 check is one thread's, the rest wait on its answer: no lock
 	@if grep -nE "mutex|lock_guard" ../../Emu/NP/upnp_handler.cpp ../../Emu/NP/upnp_handler.h ../../Emu/NP/ip_address.cpp ../../Emu/NP/ip_address.h; then echo "upnp / ip address: a lock is back"; exit 1; else echo "upnp / ip address: no lock"; fi
+	@# The virtual devices are a table published whole; a GL shader is compiled by the first thread to mark it: no lock
+	@if awk '/class device_manager final/,/^\tstatic device_manager& get_device_manager/' ../../../Utilities/File.cpp | grep -nE "mutex|lock_guard|reader_lock" || grep -nE "mutex|lock_guard" ../../Emu/RSX/GL/glutils/program.h ../../Emu/RSX/GL/glutils/program.cpp; then echo "virtual devices / GL shaders: a lock is back"; exit 1; else echo "virtual devices / GL shaders: no lock"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
