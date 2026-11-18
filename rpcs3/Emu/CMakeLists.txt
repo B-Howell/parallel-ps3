@@ -277,6 +277,7 @@ target_sources(rpcs3_emu PRIVATE
     Cell/Modules/cellKb.cpp
     Cell/Modules/hle_service.c
     Cell/Modules/osk_text.c
+    Cell/lv2/sys_net/net_wake.c
     Cell/Modules/cellKey2char.cpp
     Cell/Modules/cellL10n.cpp
     Cell/Modules/cellLibprof.cpp

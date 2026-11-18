@@ -800,6 +800,8 @@ error_code sys_net_bnet_recvfrom(ppu_thread& ppu, s32 s, vm::ptr<void> buf, u32 
 	s32 result = 0;
 	sys_net_sockaddr sn_addr{};
 
+	u64 timeout = 0;
+
 	const auto sock = idm::check_entered<lv2_socket>(s, [&, notify = lv2_obj::notify_all_t()](lv2_socket& sock)
 		{
 			auto lock = sock.lock();
@@ -841,19 +843,14 @@ error_code sys_net_bnet_recvfrom(ppu_thread& ppu, s32 s, vm::ptr<void> buf, u32 
 						}
 					}
 
-					if (sock.so_rcvtimeo && get_guest_system_time() - ppu.start_time > sock.so_rcvtimeo)
-					{
-						result = -SYS_NET_EWOULDBLOCK;
-						lv2_obj::awake(&ppu);
-						return true;
-					}
-
 					sock.set_poll_event(lv2_socket::poll_t::read);
 					return false;
 				});
 
+			// The socket's timeout is this thread's own wait's
+			timeout = sock.so_rcvtimeo;
 			lv2_obj::prepare_for_sleep(ppu);
-			lv2_obj::sleep(ppu);
+			lv2_obj::sleep(ppu, timeout);
 			return false;
 		});
 
@@ -877,7 +874,32 @@ error_code sys_net_bnet_recvfrom(ppu_thread& ppu, s32 s, vm::ptr<void> buf, u32 
 				break;
 			}
 
-			ppu.state.wait(state);
+			if (timeout)
+			{
+				if (lv2_obj::wait_timeout(timeout, &ppu))
+				{
+					// Wait for rescheduling
+					if (ppu.check_state())
+					{
+						return {};
+					}
+
+					// Timed out, unless the network thread's callback ran
+					// first (it is off the queue then, its result given)
+					if (network_clear_queue(ppu))
+					{
+						result = -SYS_NET_EWOULDBLOCK;
+					}
+
+					clear_ppu_to_awake(ppu);
+					ppu.state -= cpu_flag::signal;
+					break;
+				}
+			}
+			else
+			{
+				ppu.state.wait(state);
+			}
 		}
 
 		if (ppu.gpr[3] == static_cast<u64>(-SYS_NET_EINTR))
@@ -928,6 +950,8 @@ error_code sys_net_bnet_sendmsg(ppu_thread& ppu, s32 s, vm::cptr<sys_net_msghdr>
 
 	s32 result{};
 
+	u64 timeout = 0;
+
 	const auto sock = idm::check_entered<lv2_socket>(s, [&, notify = lv2_obj::notify_all_t()](lv2_socket& sock)
 		{
 			auto netmsg = msg.get_ptr();
@@ -956,19 +980,14 @@ error_code sys_net_bnet_sendmsg(ppu_thread& ppu, s32 s, vm::cptr<sys_net_msghdr>
 						}
 					}
 
-					if (sock.so_sendtimeo && get_guest_system_time() - ppu.start_time > sock.so_sendtimeo)
-					{
-						result = -SYS_NET_EWOULDBLOCK;
-						lv2_obj::awake(&ppu);
-						return true;
-					}
-
 					sock.set_poll_event(lv2_socket::poll_t::write);
 					return false;
 				});
 
+			// The socket's timeout is this thread's own wait's
+			timeout = sock.so_sendtimeo;
 			lv2_obj::prepare_for_sleep(ppu);
-			lv2_obj::sleep(ppu);
+			lv2_obj::sleep(ppu, timeout);
 			return false;
 		});
 
@@ -986,7 +1005,33 @@ error_code sys_net_bnet_sendmsg(ppu_thread& ppu, s32 s, vm::cptr<sys_net_msghdr>
 			{
 				break;
 			}
-			ppu.state.wait(state);
+
+			if (timeout)
+			{
+				if (lv2_obj::wait_timeout(timeout, &ppu))
+				{
+					// Wait for rescheduling
+					if (ppu.check_state())
+					{
+						return {};
+					}
+
+					// Timed out, unless the network thread's callback ran
+					// first (it is off the queue then, its result given)
+					if (network_clear_queue(ppu))
+					{
+						result = -SYS_NET_EWOULDBLOCK;
+					}
+
+					clear_ppu_to_awake(ppu);
+					ppu.state -= cpu_flag::signal;
+					break;
+				}
+			}
+			else
+			{
+				ppu.state.wait(state);
+			}
 		}
 
 		if (ppu.gpr[3] == static_cast<u64>(-SYS_NET_EINTR))
@@ -1033,6 +1078,8 @@ error_code sys_net_bnet_sendto(ppu_thread& ppu, s32 s, vm::cptr<void> buf, u32 l
 	const std::vector<u8> buf_copy(vm::_ptr<const char>(buf.addr()), vm::_ptr<const char>(buf.addr()) + len);
 	s32 result{};
 
+	u64 timeout = 0;
+
 	const auto sock = idm::check_entered<lv2_socket>(s, [&, notify = lv2_obj::notify_all_t()](lv2_socket& sock)
 		{
 			auto success = sock.sendto(flags, buf_copy, sn_addr);
@@ -1059,19 +1106,14 @@ error_code sys_net_bnet_sendto(ppu_thread& ppu, s32 s, vm::cptr<void> buf, u32 l
 						}
 					}
 
-					if (sock.so_sendtimeo && get_guest_system_time() - ppu.start_time > sock.so_sendtimeo)
-					{
-						result = -SYS_NET_EWOULDBLOCK;
-						lv2_obj::awake(&ppu);
-						return true;
-					}
-
 					sock.set_poll_event(lv2_socket::poll_t::write);
 					return false;
 				});
 
+			// The socket's timeout is this thread's own wait's
+			timeout = sock.so_sendtimeo;
 			lv2_obj::prepare_for_sleep(ppu);
-			lv2_obj::sleep(ppu);
+			lv2_obj::sleep(ppu, timeout);
 			return false;
 		});
 
@@ -1089,7 +1131,33 @@ error_code sys_net_bnet_sendto(ppu_thread& ppu, s32 s, vm::cptr<void> buf, u32 l
 			{
 				break;
 			}
-			ppu.state.wait(state);
+
+			if (timeout)
+			{
+				if (lv2_obj::wait_timeout(timeout, &ppu))
+				{
+					// Wait for rescheduling
+					if (ppu.check_state())
+					{
+						return {};
+					}
+
+					// Timed out, unless the network thread's callback ran
+					// first (it is off the queue then, its result given)
+					if (network_clear_queue(ppu))
+					{
+						result = -SYS_NET_EWOULDBLOCK;
+					}
+
+					clear_ppu_to_awake(ppu);
+					ppu.state -= cpu_flag::signal;
+					break;
+				}
+			}
+			else
+			{
+				ppu.state.wait(state);
+			}
 		}
 
 		if (ppu.gpr[3] == static_cast<u64>(-SYS_NET_EINTR))
@@ -1780,6 +1848,7 @@ error_code lv2_socket::abort_socket(s32 flags)
 		auto& nc = g_fxo->get<network_context>();
 		const u32 prev_value = nc.num_polls.fetch_sub(num_waiters);
 		ensure(prev_value >= num_waiters);
+		nc.poke();
 	}
 
 	lv2_obj::awake_all();

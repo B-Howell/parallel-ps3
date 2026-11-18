@@ -250,11 +250,7 @@ void windows_poll(std::vector<pollfd>& fds, unsigned long nfds, int timeout, std
 				return pfd.fd != INVALID_SOCKET;
 			}))
 	{
-		if (timeout > 0)
-		{
-			Sleep(timeout);
-		}
-
+		// Nothing to wait on: no sleep in its place
 		return;
 	}
 

@@ -174,10 +174,11 @@ void network_thread::operator()()
 		ppu_to_awake.clear();
 	}
 
-	std::vector<::pollfd> fds(lv2_socket::id_count);
+	// The sockets, and the wake-up last
+	std::vector<::pollfd> fds(lv2_socket::id_count + 1);
 #ifdef _WIN32
-	std::vector<bool> connecting(lv2_socket::id_count);
-	std::vector<bool> was_connecting(lv2_socket::id_count);
+	std::vector<bool> connecting(lv2_socket::id_count + 1);
+	std::vector<bool> was_connecting(lv2_socket::id_count + 1);
 #endif
 
 	while (thread_ctrl::state() != thread_state::aborting)
@@ -190,12 +191,22 @@ void network_thread::operator()()
 
 		ensure(socklist.size() <= lv2_socket::id_count);
 
-		// Wait with 1ms timeout
+		// Untimed: woken by the sockets, or by a poke as the set to poll
+		// changes or the thread is to stop. Socket timeouts are the waiting
+		// PPU threads' own (lv2_obj::wait_timeout)
+		const usz nwake = socklist.size();
+		fds[nwake].fd = static_cast<socket_type>(wake.fd);
+		fds[nwake].events = POLLIN;
+		fds[nwake].revents = 0;
 #ifdef _WIN32
-		windows_poll(fds, ::size32(socklist), 1, connecting);
+		connecting[nwake] = false;
+		windows_poll(fds, ::size32(socklist) + 1, -1, connecting);
 #else
-		::poll(fds.data(), socklist.size(), 1);
+		::poll(fds.data(), socklist.size() + 1, -1);
 #endif
+
+		// Then looked at again, whatever woke it
+		net_wake_drain(&wake);
 
 		std::lock_guard lock(mutex_thread_loop);
 
@@ -250,12 +261,16 @@ void p2p_thread::create_p2p_port(u16 p2p_port)
 		{
 			num_p2p_ports.notify_one();
 		}
+
+		// Polled from its next round
+		poke();
 	}
 }
 
 void p2p_thread::operator()()
 {
-	std::vector<::pollfd> p2p_fd(lv2_socket::id_count);
+	// The ports, and the wake-up last
+	std::vector<::pollfd> p2p_fd(lv2_socket::id_count + 1);
 
 	while (thread_ctrl::state() != thread_state::aborting)
 	{
@@ -284,12 +299,19 @@ void p2p_thread::operator()()
 			}
 		}
 
+		// Untimed: woken by the ports, or by a poke as a port is made or the
+		// thread is to stop
+		p2p_fd[num_p2p_sockets].events = POLLIN;
+		p2p_fd[num_p2p_sockets].revents = 0;
+		p2p_fd[num_p2p_sockets].fd = static_cast<socket_type>(wake.fd);
+
 #ifdef _WIN32
-		// WSAPoll seems to consume a lot of CPU time relative to its waiting duration, upping the timeout solves it
-		const auto ret_p2p = WSAPoll(p2p_fd.data(), num_p2p_sockets, 5);
+		const auto ret_p2p = WSAPoll(p2p_fd.data(), num_p2p_sockets + 1, -1);
 #else
-		const auto ret_p2p = ::poll(p2p_fd.data(), num_p2p_sockets, 1);
+		const auto ret_p2p = ::poll(p2p_fd.data(), num_p2p_sockets + 1, -1);
 #endif
+		net_wake_drain(&wake);
+
 		if (ret_p2p > 0)
 		{
 			std::scoped_lock lock(mutex_thread_loop, list_p2p_ports_mutex);

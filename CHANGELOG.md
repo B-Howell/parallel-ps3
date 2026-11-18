@@ -4,6 +4,17 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The network threads no longer poll on a timer.** The network thread called `poll()` with a 1 ms timeout and the P2P thread with a 1 ms one (5 ms on Windows), around and around, whenever anything was waited on. Both now wait in `poll()` untimed.
+  - **The wake-up:** each thread's poll set includes a wake-up socket, from a new C89 module, `net_wake.c`. It is a UDP socket on the loopback, connected to itself.
+    - It is poked when a socket is queued for polling or taken off, when a P2P port is made, and when the thread is to stop.
+    - Pokes made before the thread reads them off are one datagram.
+  - **Socket timeouts (`SO_RCVTIMEO`, `SO_SNDTIMEO`):** these were checked against the clock by the network thread on every 1 ms round. They are now the waiting PPU thread's own timed wait (`lv2_obj::wait_timeout`), as `poll` and `select` already were.
+    - When the wait ends, the thread takes itself off the socket's queue.
+    - If it was still on the queue, the call timed out.
+    - If it was not, the network thread got to it first and its result stands.
+  - **Windows:** with no socket to poll, `windows_poll` slept for the timeout; it no longer sleeps. A connect that fails silently, which `WSAPoll` did not report before Windows 10 2004, is now noticed at the thread's next wake-up rather than within 1 ms.
+  - The locks in sys_net are not touched here.
+  - `test_net_wake` checks that a poke wakes a thread blocked in `poll`, that pokes before a drain are one datagram, and that a poke after it wakes it again. It fails on a mutant that never sends, and on one that never clears. A check fails if a timed poll or sleep comes back in the network threads, or a clock check in the socket calls. Not yet run online.
 - **Trophies take no lock and no clock.**
   - **The manager:** every sceNpTrophy call took its `shared_mutex`, which kept a context alive while the call looked at it. The manager and its contexts now belong to the HLE thread, and each call looks at them there (`hle_call`). Unlocking a trophy reads the clock on the PPU thread first, since the HLE thread has no guest stack.
   - **Registering a context:** this runs in three parts on the HLE thread: before the game's callback, after it, and after the sync with the RPCN server. Neither the game nor the network is waited on in any of them.

@@ -78,6 +78,9 @@ void lv2_socket::poll_queue(shared_ptr<ppu_thread> ppu, bs_t<lv2_socket::poll_t>
 		{
 			nc.num_polls.notify_one();
 		}
+
+		// In poll() untimed: to poll this socket from its next round
+		nc.poke();
 	}
 }
 
@@ -109,6 +112,9 @@ u32 lv2_socket::clear_queue(ppu_thread* ppu)
 		// Makes sure network_context thread can go back to sleep if there is no active polling
 		const u32 prev_value = g_fxo->get<network_context>().num_polls.fetch_sub(cleared);
 		ensure(prev_value >= cleared);
+
+		// Not to poll it any more for these
+		g_fxo->get<network_context>().poke();
 	}
 
 	return cleared;
@@ -125,7 +131,9 @@ void lv2_socket::handle_events(const pollfd& native_pfd, [[maybe_unused]] bool u
 	if (native_pfd.revents & POLLERR && events.test_and_reset(lv2_socket::poll_t::error))
 		events_happening += lv2_socket::poll_t::error;
 
-	if (events_happening || (!queue.empty() && (so_rcvtimeo || so_sendtimeo)))
+	// A waiter's timeout is its own (lv2_obj::wait_timeout): looked at here
+	// only for the events
+	if (events_happening)
 	{
 		std::lock_guard lock(mutex);
 #ifdef _WIN32
