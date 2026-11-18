@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Writing a savestate no longer sleeps between looks.** Not yet run on a game.
+  - **Before:** the zstd writer's threads hand chunks to each other through one-chunk slots. A thread waiting for a slot to empty slept 0.5 to 2 ms a look, because an `atomic_ptr` can be waited on to fill but not to empty. This happened when handing a chunk to a compression thread, when a compression thread handed its output to the writer, and while finishing.
+  - **Now:** every take from a slot bumps a counter (`m_taken`) and wakes its waiters, and each of these waits on it untimed.
+  - **Tests:** `test_savestate_memory` writes and reads back a compressed state through these threads; it passes three runs in a row. A mutant that drops the writer's wake was not caught, because the waits happen only when a thread falls behind, and here none does. A check fails if a sleep comes back.
+
 - **The RSX thread, paused, draws its overlays once a frame.** Not yet run on a game.
   - **Pause:** while the emulation was paused, the RSX thread woke every 16 ms to draw the overlays. It now waits untimed for retro_run's next frame or a change of its state, whichever comes first. With the frontend paused, nothing is drawn and nothing wakes it.
   - **Frame capture:** the 30 ms sleep after a capture paused the emulation is now a wait for the next frame.

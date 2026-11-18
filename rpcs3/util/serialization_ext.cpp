@@ -882,11 +882,8 @@ bool compressed_zstd_serialization_file_handler::handle_file_op(utils::serial& a
 		const usz buffer_idx = m_input_buffer_index++ % m_compression_thread_count;
 		auto& input = m_compression_threads[buffer_idx].m_input;
 
-		while (input)
-		{
-			// No waiting support on non-null pointer
-			thread_ctrl::wait_for(2'000);
-		}
+		// Until the thread has taken what it had
+		wait_taken([&]() { return !!input; });
 
 		input.store(stx::make_single_value(std::move(ar.data)));
 		input.notify_all();
@@ -1150,8 +1147,9 @@ void compressed_zstd_serialization_file_handler::finalize(utils::serial& ar)
 	const stx::shared_ptr<std::vector<u8>> empty_data = stx::make_single<std::vector<u8>>();
 	const stx::shared_ptr<std::vector<u8>> null_ptr = stx::null_ptr;
 
-	for (bool has_pending_threads = true; has_pending_threads; thread_ctrl::wait_for(500))
+	for (bool has_pending_threads = true; has_pending_threads;)
 	{
+		const u32 seen = m_taken.load();
 		has_pending_threads = false;
 
 		// Try to notify all in bulk
@@ -1181,6 +1179,12 @@ void compressed_zstd_serialization_file_handler::finalize(utils::serial& ar)
 			{
 				has_pending_threads = true;
 			}
+		}
+
+		// Woken as a thread takes what it was given, or writes it out
+		if (has_pending_threads)
+		{
+			m_taken.wait(seen);
 		}
 	}
 
@@ -1247,6 +1251,7 @@ void compressed_zstd_serialization_file_handler::stream_data_prepare_thread_op()
 
 		auto data = input.exchange(stx::null_ptr);
 		input.notify_all();
+		taken();
 
 		if (data->empty())
 		{
@@ -1271,9 +1276,11 @@ void compressed_zstd_serialization_file_handler::stream_data_prepare_thread_op()
 
 		const stx::shared_ptr<std::vector<u8>> data_ptr = make_single<std::vector<u8>>(std::move(stream_data));
 
-		while (output || !output.compare_and_swap_test(null_ptr, data_ptr))
+		// Into the slot once the writer has emptied it
+		for (u32 seen = m_taken.load(); output || !output.compare_and_swap_test(null_ptr, data_ptr); seen = m_taken.load())
 		{
-			thread_ctrl::wait_for(1000);
+			if (output)
+				m_taken.wait(seen);
 		}
 
 		//if (m_output_buffer_index % m_compression_thread_count == thread_index)
@@ -1296,6 +1303,7 @@ void compressed_zstd_serialization_file_handler::file_writer_thread_op()
 
 		auto data = output.exchange(stx::null_ptr);
 		output.notify_all();
+		taken();
 
 		if (data->empty())
 		{

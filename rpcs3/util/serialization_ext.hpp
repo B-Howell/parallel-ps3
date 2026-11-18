@@ -174,6 +174,28 @@ private:
 	atomic_t<usz> m_output_buffer_index = 0;
 	atomic_t<usz> m_thread_buffer_index = 0;
 
+	// Bumped, and its waiters woken, as any thread takes data in or out of
+	// a context: what a thread waiting for a slot to empty waits on (an
+	// atomic_ptr can be waited on to fill, not to empty)
+	atomic_t<u32> m_taken = 0;
+
+	void taken()
+	{
+		m_taken++;
+		m_taken.notify_all();
+	}
+
+	// Until @busy() is false, woken as data is taken: no clock
+	template <typename F>
+	void wait_taken(F&& busy)
+	{
+		for (u32 seen = m_taken.load(); busy(); seen = m_taken.load())
+		{
+			if (busy())
+				m_taken.wait(seen);
+		}
+	}
+
 	struct compression_thread_context_t
 	{
 		atomic_ptr<std::vector<u8>> m_input;
