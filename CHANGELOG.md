@@ -4,6 +4,8 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **`test_emu_waits` no longer fails about one run in fifteen.** Its wait of 30 frames was checked to end after exactly 30 of the test's retro_runs. The test fires a frame, yields 20000 times and fires the next, and when the waiter is not back in its wait by then, that frame is not one it saw and it takes another; it came out at 31, 33 or 40, here with the machine idle. What the wait must do is never end before its 30 frames, and the test already checks that it is still waiting after 29; it now checks no more than that. 30 runs in a row pass.
+
 - **The overlays' input flags and thread bits are `retro_atomic`, the third module off `atomic_t`.** Not yet run on a game.
   - **The flags:** a dialog's stop, interactive, stop-pad-interception and detached flags are `retro_atomic_int_t`, with release stores and acquire loads, in the dialogs that use them (the message dialog, the on-screen keyboard, the media list).
   - **The thread bits:** the bits of the threads using a dialog are `retro_atomic_int_t` too. A bit is taken by a compare-and-swap loop (it was `fetch_op`), and given back by an atomic and with a `retro_waitaddr_notify_all`. Closing a dialog waits for the other threads' bits through `retro_waitaddr`, which is what `atomic_t` forwarded to.
