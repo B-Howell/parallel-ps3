@@ -2890,6 +2890,11 @@ bool retro_load_game(const struct retro_game_info* game)
     if (libretro_patches::any())
         publish_core_options(environ_cb);
 
+    // The patches turned on in the Patch Manager, for RPCS3 to read as it
+    // boots: before any boot (the null and software renderers boot just
+    // below, the others as their context comes)
+    libretro_patches::write_config([](const char* key) { return get_option_value(key, "disabled"); });
+
     // For null renderer, boot immediately. For OpenGL, defer until
     // context_reset(). The software path has no context coming, so it boots
     // here as well or it would wait forever.
@@ -2950,8 +2955,6 @@ static bool do_boot_game(const std::string& path)
 
     }
 
-    // The patches turned on in the Patch Manager, for RPCS3 to read as it boots
-    libretro_patches::write_config([](const char* key) { return get_option_value(key, "disabled"); });
 
 #ifdef HAVE_VULKAN
     if (g_cfg.video.renderer == video_renderer::vulkan && !vk::libretro::hw_present())

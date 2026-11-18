@@ -28,6 +28,7 @@
 
 #include "Utilities/bin_patch.h"
 #include "Utilities/File.h"
+#include "Emu/Cell/lv2/game_text_patch.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -78,6 +79,55 @@ static const std::map<std::string_view, std::vector<std::string_view>> s_multiga
     {"Disable SPU MLAA - LittleBigPlanet 2 (02)", {"BCAS20113", "BCES00850", "BCES01086", "BCES01693", "BCES01694", "BCUS98245", "BCUS98372", "NPEA00324", "NPEA00437", "NPUA80662"}},
     {"Disable SPU MLAA - LittleBigPlanet 2, LittleBigPlanet 3, LittleBigPlanet Hub", {"BCAS20113", "BCES00850", "BCES01086", "BCES01663", "BCES01693", "BCES01694", "BCES02068", "BCUS98245", "BCUS98362", "BCUS98372", "NPEA00324", "NPEA00437", "NPEA00515", "NPUA80662", "NPUA81116"}},
 };
+
+    // The core's own patches beside RPCS3's: lines of a settings text built
+    // into a game's executable, found by its bytes and rewritten in place as
+    // the executable loads (game_text_patch.c), so every version of the game
+    // that carries the text is patched. Listed for the games' serials.
+    struct text_edit
+    {
+        const char* victim; // a key the game does not read, whose line has room
+        const char* key;    // the key it becomes
+        unsigned long value;
+    };
+
+    struct text_patch
+    {
+        const char* name;
+        const char* info;
+        const char* serials; // separated by spaces
+        const char* anchor;  // bytes only the text holds
+        text_edit edits[2];  // a null victim ends them
+    };
+
+    static const text_patch s_text_patches[] = {
+        {"Reduce Audio Latency",
+         "The sound engine mixes into a ring of 8 blocks of 256 samples instead of 16, refilled every 2 blocks instead of every 4: the engine's PS3MixerBlockSize and PS3MixerUpdateFrewuency, set in the sound setup built into the game's executable.",
+         "BLUS30443 BLES00932 BCJS30022 BCAS20071 BLUD80018",
+         "PS3MixerCHStreap8Num",
+         {{"PS3MixerPriority", "PS3MixerBlockSize", 8}, {"PS3MultiStreamSpuPriority", "PS3MixerUpdateFrewuency", 2}}},
+    };
+
+    struct text_patch_option
+    {
+        std::string key;
+        const text_patch* patch;
+    };
+
+    std::vector<text_patch_option> s_text_options;
+
+    bool serial_listed(const char* serials, const std::string& serial)
+    {
+        const std::string_view list{serials};
+        for (usz pos = 0; pos < list.size();)
+        {
+            const usz end = std::min(list.find(' ', pos), list.size());
+            if (list.substr(pos, end - pos) == serial)
+                return true;
+            pos = end + 1;
+        }
+        return false;
+    }
 
     std::string s_serial;
     std::map<std::string, std::string> s_last_values; // what a group's switches were, to see which one was turned on
@@ -166,11 +216,19 @@ namespace libretro_patches
         s_serial = serial;
         s_map.clear();
         s_options.clear();
+        s_text_options.clear();
         s_definitions.clear();
         forget_strings();
+        game_text_patch_clear(); // what the game before had on
 
         if (serial.empty())
             return;
+
+        for (const text_patch& patch : s_text_patches)
+        {
+            if (serial_listed(patch.serials, serial))
+                s_text_options.push_back({"rpcs3_zpatch_" + key_hash(serial + '\x1f' + "t" + patch.name), &patch});
+        }
 
         const std::string dir = patch_engine::get_patches_path();
         for (const std::string& path : {dir + "patch.yml", patch_engine::get_imported_patch_path(), dir + serial + "_patch.yml"})
@@ -276,12 +334,27 @@ namespace libretro_patches
             }
         }
 
-        lr_patch_log.notice("%u patch options for %s", s_options.size(), serial);
+        // The core's text patches, first
+        std::vector<retro_core_option_v2_definition> text_defs;
+        for (const text_patch_option& option : s_text_options)
+        {
+            retro_core_option_v2_definition& def = text_defs.emplace_back();
+            def.key = keep(option.key);
+            def.category_key = "patches";
+            def.desc = option.patch->name;
+            def.info = keep(std::string(option.patch->info) + " Applies at the next start of the game.");
+            def.values[0] = {"disabled", nullptr};
+            def.values[1] = {"enabled", nullptr};
+            def.default_value = "disabled";
+        }
+        s_definitions.insert(s_definitions.begin(), text_defs.begin(), text_defs.end());
+
+        lr_patch_log.notice("%u patch options and %u text patches for %s", s_options.size(), s_text_options.size(), serial);
     }
 
     bool any()
     {
-        return !s_options.empty();
+        return !s_options.empty() || !s_text_options.empty();
     }
 
     const std::vector<retro_core_option_v2_definition>& definitions()
@@ -337,6 +410,19 @@ namespace libretro_patches
 
     void write_config(const option_getter& get)
     {
+        // The core's text patches turned on, for the PPU loader
+        game_text_patch_clear();
+        for (const text_patch_option& option : s_text_options)
+        {
+            if (get(option.key.c_str()) != "enabled")
+                continue;
+            for (const text_edit& edit : option.patch->edits)
+            {
+                if (edit.victim && !game_text_patch_add(option.patch->anchor, edit.victim, edit.key, edit.value))
+                    lr_patch_log.error("%s: no room for the edit of %s", option.patch->name, edit.key);
+            }
+        }
+
         // The whole file from the options: what standalone or an earlier game
         // left in it would otherwise stay on
         patch_engine::patch_map config;

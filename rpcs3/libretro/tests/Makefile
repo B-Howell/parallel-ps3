@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_DYLIB -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_jit_cores test_rpcn_signal test_rsx_wake test_rsx_wake_tsan test_rsx_hold test_rsx_hold_tsan test_rsx_timestamp test_rpcn_reply_slots test_rpcn_reply_slots_tsan test_osk_text test_osk_text_tsan test_net_wake test_vk_loader
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_jit_cores test_rpcn_signal test_rsx_wake test_rsx_wake_tsan test_rsx_hold test_rsx_hold_tsan test_rsx_timestamp test_rpcn_reply_slots test_rpcn_reply_slots_tsan test_osk_text test_osk_text_tsan test_game_text_patch test_net_wake test_vk_loader
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -639,6 +639,9 @@ NET_WAKE_SRC := ../../Emu/Cell/lv2/sys_net/net_wake.c $(LRC)/net/net_socket.c $(
 test_net_wake: test_net_wake.c test_common.h ../../Emu/Cell/lv2/sys_net/net_wake.c ../../Emu/Cell/lv2/sys_net/net_wake.h
 	$(CC) $(CFLAGS) -std=gnu89 -Wdeclaration-after-statement -DHAVE_THREADS $(SANITIZE) -o $@ test_net_wake.c $(NET_WAKE_SRC) $(LDFLAGS) $(LDLIBS) -lpthread
 
+test_game_text_patch: test_game_text_patch.c test_common.h ../../Emu/Cell/lv2/game_text_patch.c ../../Emu/Cell/lv2/game_text_patch.h
+	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -o $@ test_game_text_patch.c ../../Emu/Cell/lv2/game_text_patch.c $(LDFLAGS) $(LDLIBS)
+
 OSK_TEXT_DEPS := test_osk_text.c test_common.h ../../Emu/Cell/Modules/osk_text.c ../../Emu/Cell/Modules/osk_text.h
 OSK_TEXT_SRC  := ../../Emu/Cell/Modules/osk_text.c $(LRC)/rthreads/retro_waitaddr.c $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
 
@@ -983,6 +986,7 @@ check: all
 	./test_rpcn_reply_slots_tsan
 	./test_osk_text
 	./test_osk_text_tsan
+	./test_game_text_patch
 	./test_net_wake
 	./test_vk_loader
 	./test_eeprom_table
@@ -1171,6 +1175,8 @@ check: all
 	@if awk '/^struct osk_info/,/^};/' ../../Emu/Cell/Modules/cellOskDialog.h | grep -n "atomic_t<"; then echo "osk_info has atomic_t fields again"; exit 1; else echo "osk_info is retro_atomic"; fi
 	@# cellOskDialog and the OSK overlay are off atomic_t: it must not come back to them
 	@if grep -nw "atomic_t" ../../Emu/Cell/Modules/cellOskDialog.h ../../Emu/Cell/Modules/cellOskDialog.cpp ../../Emu/RSX/Overlays/overlay_osk.h ../../Emu/RSX/Overlays/overlay_osk.cpp; then echo "the OSK uses atomic_t again"; exit 1; else echo "the OSK is retro_atomic"; fi
+	@# the Patch Manager's choices are written before any boot: the null and software renderers boot inside retro_load_game
+	@if awk '/^bool retro_load_game/{f=1} f&&/libretro_patches::write_config/{w=NR} f&&/do_boot_game\(game_path\)/&&!b{b=NR} f&&/^}/{exit} END{exit !(w && b && w < b)}' ../../libretro/libretro_core.cpp; [ $$? -ne 0 ]; then echo "the Patch Manager's choices are written after the game may have booted"; exit 1; else echo "the Patch Manager's choices are written before any boot"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

@@ -6,6 +6,7 @@
 #include "Utilities/address_range.h"
 #include "Utilities/lf_u64_map.h"
 #include "Emu/Cell/Modules/hle_service.h"
+#include "Emu/Cell/lv2/game_text_patch.h"
 #include "util/serialization.hpp"
 #include <lrc_hash.h>
 #include "Crypto/unself.h"
@@ -2559,6 +2560,24 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 	else
 	{
 		ppu_loader.success("PPU executable hash: %s (<- %u)", hash, applied.size());
+	}
+
+	// The core's game text patches (game_text_patch.c): settings text built
+	// into the executable, found by its bytes and rewritten in place at the
+	// same length. Not data the PPU analysis reads, so after its check. Not
+	// on a savestate's load, whose memory is the game's as it was saved.
+	if (!ar && game_text_patch_count())
+	{
+		for (const auto& seg : _main.segs)
+		{
+			if (!seg.size)
+				continue;
+
+			if (const int changed = game_text_patch_apply(reinterpret_cast<char*>(_main.get_ptr<u8>(seg.addr, seg.size)), seg.size))
+			{
+				ppu_loader.success("Game text patch: %d line(s) changed in the segment at 0x%x", changed, seg.addr);
+			}
+		}
 	}
 
 	// Initialize HLE modules
