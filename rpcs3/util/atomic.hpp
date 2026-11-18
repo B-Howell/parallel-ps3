@@ -214,6 +214,18 @@ namespace atomic_wait
 			m_info[Index].old = std::bit_cast<u32>(value);
 		}
 
+		// A 32-bit word that is not an atomic_t (a retro_atomic_int_t),
+		// waited on by its address and woken by retro_waitaddr_notify_*:
+		// what lets code moved to retro_atomic still wait in a list
+		template <uint Index>
+		void set_raw(const void* word, u32 value)
+		{
+			static_assert(Index < Max);
+
+			m_info[Index].data = word;
+			m_info[Index].old = value;
+		}
+
 		template <uint Index, typename T2>
 		constexpr void set(lf_queue<T2>& var, std::nullptr_t = nullptr)
 		{

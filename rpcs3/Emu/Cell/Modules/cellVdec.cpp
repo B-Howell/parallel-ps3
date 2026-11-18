@@ -147,7 +147,7 @@ struct vdec_cmd
 struct vdec_pic_pool
 {
 	static constexpr usz size = 72; // the output queue's 60, and those in flight
-	atomic_t<vdc_pic*> slots[size]{};
+	retro_atomic_ptr_t slots[size]{}; // a vdc_pic*, or null
 
 	vdec_pic_pool() = default;
 	vdec_pic_pool(const vdec_pic_pool&) = delete;
@@ -156,7 +156,7 @@ struct vdec_pic_pool
 	~vdec_pic_pool()
 	{
 		for (auto& slot : slots)
-			free_pic(slot.exchange(nullptr));
+			free_pic(static_cast<vdc_pic*>(retro_atomic_exchange_ptr(&slot, nullptr)));
 	}
 
 	static void free_pic(vdc_pic* pic)
@@ -172,7 +172,7 @@ struct vdec_pic_pool
 	{
 		for (auto& slot : slots)
 		{
-			if (vdc_pic* pic = slot.exchange(nullptr))
+			if (vdc_pic* pic = static_cast<vdc_pic*>(retro_atomic_exchange_ptr(&slot, nullptr)))
 				return pic;
 		}
 
@@ -186,7 +186,7 @@ struct vdec_pic_pool
 
 		for (auto& slot : slots)
 		{
-			if (slot.compare_and_swap_test(nullptr, pic))
+			if (retro_atomic_cas_ptr(&slot, nullptr, pic))
 				return;
 		}
 
@@ -221,11 +221,29 @@ struct vdec_context final
 
 	u32 handle = 0;
 
-	atomic_t<u64> seq_id = 0; // The first sequence will have the ID 1
-	atomic_t<u64> next_cmd_id = 0;
-	atomic_t<bool> abort_decode = false; // Used for thread interaction
-	atomic_t<bool> is_running = false;   // Used for thread interaction
-	atomic_t<sequence_state> seq_state = sequence_state::closed;
+	retro_atomic_64_t seq_id{0}; // The first sequence will have the ID 1
+	retro_atomic_64_t next_cmd_id{0};
+	retro_atomic_int_t abort_decode{0}; // 0 or 1. Used for thread interaction
+	retro_atomic_int_t is_running{0};   // 0 or 1. Used for thread interaction
+	retro_atomic_int_t seq_state{static_cast<int>(sequence_state::closed)}; // a sequence_state
+
+	// One more AU queued, unless there are 4 already
+	bool au_count_try_inc()
+	{
+		for (int n = retro_atomic_load_acquire_int(&au_count); n < 4; n = retro_atomic_load_acquire_int(&au_count))
+		{
+			if (retro_atomic_cas_int(&au_count, n, n + 1))
+				return true;
+		}
+		return false;
+	}
+
+	u64 seq() const { return static_cast<u64>(retro_atomic_load_acquire_64(const_cast<retro_atomic_64_t*>(&seq_id))); }
+	u64 take_cmd_id() { return static_cast<u64>(retro_atomic_fetch_add_64(&next_cmd_id, 1)); }
+	bool aborting_decode() const { return retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&abort_decode)) != 0; }
+	sequence_state state() const { return static_cast<sequence_state>(retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&seq_state))); }
+	void set_state(sequence_state v) { retro_atomic_store_release_int(&seq_state, static_cast<int>(v)); }
+	bool state_cas(sequence_state from, sequence_state to) { return retro_atomic_cas_int(&seq_state, static_cast<int>(from), static_cast<int>(to)) != 0; }
 
 	vdc* dec{}; // libretro-common's decoder for the codec
 	vdec_pic_pool pic_pool; // outlives every frame: they are all in this context's queues, or a caller's that holds the context
@@ -253,7 +271,7 @@ struct vdec_context final
 	u32 frc_set{}; // Frame Rate Override
 	u64 next_pts{};
 	u64 next_dts{};
-	atomic_t<u32> ppu_tid{};
+	retro_atomic_int_t ppu_tid{0}; // the decoder's PPU thread, once it runs; -1 once closed (notified as it is set)
 
 	// Closed: the reaper's (vdec_context_reaper), until it lets go
 	struct reap_node
@@ -365,7 +383,7 @@ struct vdec_context final
 		}
 	}
 
-	atomic_t<s32> au_count{0};
+	retro_atomic_int_t au_count{0}; // AUs queued, at most 4
 
 	lf_queue<vdec_cmd> in_cmd;
 
@@ -398,7 +416,7 @@ struct vdec_context final
 			fmt::throw_exception("vdc_new() failed (type=0x%x)", type);
 		}
 
-		seq_state = sequence_state::dormant;
+		set_state(sequence_state::dormant);
 	}
 
 	~vdec_context()
@@ -433,8 +451,8 @@ struct vdec_context final
 	void exec(ppu_thread& ppu, u32 vid)
 	{
 
-		ppu_tid.release(ppu.id);
-		ppu_tid.notify_all(); // cellVdecClose may be waiting for it
+		retro_atomic_store_release_int(&ppu_tid, static_cast<int>(ppu.id));
+		retro_waitaddr_notify_all(&ppu_tid); // cellVdecClose may be waiting for it
 
 		for (auto slice = in_cmd.pop_all(); thread_ctrl::state() != thread_state::aborting; [&]
 		{
@@ -464,7 +482,7 @@ struct vdec_context final
 			{
 			case vdec_cmd_type::start_sequence:
 			{
-				if (seq_state == sequence_state::resetting)
+				if (state() == sequence_state::resetting)
 				{
 					cellVdec.trace("Reset sequence... (handle=0x%x, seq_id=%d, cmd_id=%d)", handle, cmd->seq_id, cmd->id);
 				}
@@ -483,15 +501,15 @@ struct vdec_context final
 				next_pts = 0;
 				next_dts = 0;
 
-				abort_decode = false;
-				is_running = true;
+				retro_atomic_store_release_int(&abort_decode, 0);
+				retro_atomic_store_release_int(&is_running, 1);
 				break;
 			}
 			case vdec_cmd_type::end_sequence:
 			{
 				cellVdec.trace("End sequence... (handle=0x%x, seq_id=%d, cmd_id=%d)", handle, cmd->seq_id, cmd->id);
 
-				seq_state = sequence_state::dormant;
+				set_state(sequence_state::dormant);
 
 				cellVdec.trace("Sending CELL_VDEC_MSG_TYPE_SEQDONE (handle=0x%x, seq_id=%d, cmd_id=%d)", handle, cmd->seq_id, cmd->id);
 				cb_func(ppu, vid, CELL_VDEC_MSG_TYPE_SEQDONE, CELL_OK, cb_arg);
@@ -525,7 +543,7 @@ struct vdec_context final
 				const CellVdecPicAttr attr = au_mode == CELL_VDEC_DEC_MODE_NORMAL ? CELL_VDEC_PICITEM_ATTR_NORMAL : CELL_VDEC_PICITEM_ATTR_SKIPPED;
 
 
-				if (!abort_decode && seq_id == cmd->seq_id)
+				if (!aborting_decode() && seq() == cmd->seq_id)
 				{
 					cellVdec.trace("AU decoding: handle=0x%x, seq_id=%d, cmd_id=%d, size=0x%x, pts=0x%llx, dts=0x%llx, userdata=0x%llx", handle, cmd->seq_id, cmd->id, au_size, au_pts, au_dts, au_usrd);
 
@@ -552,7 +570,7 @@ struct vdec_context final
 						}
 					}
 
-					while (!abort_decode && seq_id == cmd->seq_id)
+					while (!aborting_decode() && seq() == cmd->seq_id)
 					{
 						// Keep receiving pictures
 						vdec_frame frame;
@@ -655,13 +673,13 @@ struct vdec_context final
 					if (!drain)
 					{
 						cellVdec.trace("Sending CELL_VDEC_MSG_TYPE_AUDONE (handle=0x%x, seq_id=%d, cmd_id=%d)", handle, cmd->seq_id, cmd->id);
-						ensure(au_count.try_dec(0));
+						ensure(retro_atomic_fetch_sub_int(&au_count, 1) > 0);
 
 						cb_func(ppu, vid, CELL_VDEC_MSG_TYPE_AUDONE, CELL_OK, cb_arg);
 						lv2_obj::sleep(ppu);
 					}
 
-					while (!vdec_frames_empty(&decoded) && seq_id == cmd->seq_id)
+					while (!vdec_frames_empty(&decoded) && seq() == cmd->seq_id)
 					{
 						// Wait until there is free space in the image queue.
 						// Do this after pushing the frame to the queue. That way the game can consume the frame and we can move on.
@@ -671,7 +689,7 @@ struct vdec_context final
 						const u64 since = get_hw_clock_time();
 						u64 elapsed = 0;
 						const bool had_wait = ppu.state.test_and_set(cpu_flag::wait);
-						while (thread_ctrl::state() != thread_state::aborting && !abort_decode && seq_id == cmd->seq_id)
+						while (thread_ctrl::state() != thread_state::aborting && !aborting_decode() && seq() == cmd->seq_id)
 						{
 							const auto old_state = +ppu.state;
 
@@ -706,7 +724,7 @@ struct vdec_context final
 							ppu.state -= cpu_flag::wait;
 						}
 
-						if (thread_ctrl::state() == thread_state::aborting || abort_decode || seq_id != cmd->seq_id)
+						if (thread_ctrl::state() == thread_state::aborting || aborting_decode() || seq() != cmd->seq_id)
 						{
 							break;
 						}
@@ -728,7 +746,7 @@ struct vdec_context final
 				// What an aborted AU left: its pictures back to the pool
 				flush(decoded);
 
-				if (abort_decode || seq_id != cmd->seq_id)
+				if (aborting_decode() || seq() != cmd->seq_id)
 				{
 					cellVdec.warning("AU decoding: aborted (handle=0x%x, seq_id=%d, cmd_id=%d, abort_decode=%d)", handle, cmd->seq_id, cmd->id, abort_decode.load());
 				}
@@ -754,14 +772,14 @@ struct vdec_context final
 				break;
 			}
 
-			if (seq_state == sequence_state::closed)
+			if (state() == sequence_state::closed)
 			{
 				break;
 			}
 		}
 
 		// Make sure the state is closed at the end
-		seq_state = sequence_state::closed;
+		set_state(sequence_state::closed);
 	}
 };
 
@@ -772,7 +790,7 @@ struct vdec_context final
 struct vdec_context_reaper
 {
 	mpsc_stack_t contexts{};
-	atomic_t<u32> pushed = 0;
+	retro_atomic_int_t pushed{0}; // contexts pushed so far (notified)
 
 	vdec_context_reaper()
 	{
@@ -784,8 +802,8 @@ struct vdec_context_reaper
 		vdec_context* const ctx = vdec.get();
 		ctx->reap_ref = std::move(vdec);
 		mpsc_stack_push(&contexts, &ctx->reap_link.link);
-		pushed++;
-		pushed.notify_one();
+		retro_atomic_fetch_add_int(&pushed, 1);
+		retro_waitaddr_notify_one(&pushed);
 	}
 
 	void reap()
@@ -807,13 +825,16 @@ struct vdec_context_reaper
 	{
 		while (thread_ctrl::state() != thread_state::aborting)
 		{
-			const u32 seen = pushed.load();
+			const u32 seen = static_cast<u32>(retro_atomic_load_acquire_int(&pushed));
 
 			reap();
 
 			if (mpsc_stack_empty(&contexts))
 			{
-				thread_ctrl::wait_on(pushed, seen);
+				thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list)
+				{
+					list.template set_raw<0>(&pushed, seen);
+				});
 			}
 		}
 
@@ -1631,26 +1652,26 @@ error_code cellVdecClose(ppu_thread& ppu, u32 handle)
 		return { CELL_VDEC_ERROR_ARG, "vdec is nullptr" };
 	}
 
-	if (vdec->seq_state == sequence_state::closed)
+	if (vdec->state() == sequence_state::closed)
 	{
-		return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
+		return { CELL_VDEC_ERROR_SEQ, vdec->state() };
 	}
 
-	const u64 seq_id = vdec->seq_id;
-	const u64 cmd_id = vdec->next_cmd_id++;
+	const u64 seq_id = vdec->seq();
+	const u64 cmd_id = vdec->take_cmd_id();
 	cellVdec.trace("Adding close cmd (handle=0x%x, seq_id=%d, cmd_id=%d)", handle, seq_id, cmd_id);
 
 	lv2_obj::sleep(ppu);
-	vdec->abort_decode = true;
+	retro_atomic_store_release_int(&vdec->abort_decode, 1);
 	retro_waitaddr_notify_all(&vdec->out_taken); // a decoder thread waiting for room looks again
 	vdec->in_cmd.push(vdec_cmd(vdec_cmd_type::close, seq_id, cmd_id));
 
 	// Woken as its thread starts (exec), or as this one stops - no poll
-	while (!vdec->ppu_tid && !ppu.is_stopped())
+	while (!retro_atomic_load_acquire_int(&vdec->ppu_tid) && !ppu.is_stopped())
 	{
 		const auto old_state = +ppu.state;
 
-		if (vdec->ppu_tid || ::is_stopped(old_state))
+		if (retro_atomic_load_acquire_int(&vdec->ppu_tid) || ::is_stopped(old_state))
 		{
 			break;
 		}
@@ -1658,24 +1679,24 @@ error_code cellVdecClose(ppu_thread& ppu, u32 handle)
 		thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
 		{
 			list.template set<0>(ppu.state, old_state);
-			list.template set<1>(vdec->ppu_tid, 0u);
+			list.template set_raw<1>(&vdec->ppu_tid, 0u);
 		});
 	}
 
-	if (!vdec->ppu_tid)
+	if (!retro_atomic_load_acquire_int(&vdec->ppu_tid))
 	{
 		// The emulator is stopping (this waited forever before)
 		return {};
 	}
 
-	const u32 tid = vdec->ppu_tid.exchange(-1);
+	const u32 tid = static_cast<u32>(retro_atomic_exchange_int(&vdec->ppu_tid, -1));
 
 	if (tid != umax)
 	{
 		ppu_execute<&sys_interrupt_thread_disestablish>(ppu, tid);
 	}
 
-	vdec->seq_state = sequence_state::closed;
+	vdec->set_state(sequence_state::closed);
 
 	if (!idm::remove_verify<vdec_context>(handle, vdec))
 	{
@@ -1707,35 +1728,35 @@ error_code cellVdecStartSeq(ppu_thread& ppu, u32 handle)
 	// Dormant, or ready (then resetting), moved on by compare-and-swap
 	for (;;)
 	{
-		old_state = vdec->seq_state;
+		old_state = vdec->state();
 
 		if (old_state != sequence_state::dormant && old_state != sequence_state::ready)
 		{
 			return { CELL_VDEC_ERROR_SEQ, old_state };
 		}
 
-		if (old_state == sequence_state::dormant || vdec->seq_state.compare_and_swap_test(sequence_state::ready, sequence_state::resetting))
+		if (old_state == sequence_state::dormant || vdec->state_cas(sequence_state::ready, sequence_state::resetting))
 		{
 			break;
 		}
 	}
 
-	const u64 seq_id = ++vdec->seq_id;
-	const u64 cmd_id = vdec->next_cmd_id++;
+	const u64 seq_id = static_cast<u64>(retro_atomic_fetch_add_64(&vdec->seq_id, 1)) + 1;
+	const u64 cmd_id = vdec->take_cmd_id();
 	cellVdec.trace("Adding start cmd (handle=0x%x, seq_id=%d, cmd_id=%d)", handle, seq_id, cmd_id);
 
-	vdec->abort_decode = false;
-	vdec->is_running = false;
+	retro_atomic_store_release_int(&vdec->abort_decode, 0);
+	retro_atomic_store_release_int(&vdec->is_running, 0);
 	retro_waitaddr_notify_all(&vdec->out_taken); // a decoder thread waiting for room for the last sequence looks again
 	vdec->in_cmd.push(vdec_cmd(vdec_cmd_type::start_sequence, seq_id, cmd_id));
 
 	if (false) // TODO: set to old state in case of error
 	{
-		vdec->seq_state = old_state;
+		vdec->set_state(old_state);
 	}
 	else
 	{
-		vdec->seq_state = sequence_state::ready;
+		vdec->set_state(sequence_state::ready);
 	}
 
 	return CELL_OK;
@@ -1754,20 +1775,20 @@ error_code cellVdecEndSeq(ppu_thread& ppu, u32 handle)
 		return { CELL_VDEC_ERROR_ARG, "vdec is nullptr" };
 	}
 
-	if (!vdec->seq_state.compare_and_swap_test(sequence_state::ready, sequence_state::ending))
+	if (!vdec->state_cas(sequence_state::ready, sequence_state::ending))
 	{
-		return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
+		return { CELL_VDEC_ERROR_SEQ, vdec->state() };
 	}
 
-	const u64 seq_id = vdec->seq_id;
+	const u64 seq_id = vdec->seq();
 
 	// Output the pictures still held by the decoder before ending the sequence
-	const u64 drain_cmd_id = vdec->next_cmd_id++;
+	const u64 drain_cmd_id = vdec->take_cmd_id();
 	cellVdec.trace("Adding drain cmd (handle=0x%x, seq_id=%d, cmd_id=%d)", handle, seq_id, drain_cmd_id);
 
 	vdec->in_cmd.push(vdec_cmd(vdec_cmd_type::drain, seq_id, drain_cmd_id));
 
-	const u64 cmd_id = vdec->next_cmd_id++;
+	const u64 cmd_id = vdec->take_cmd_id();
 	cellVdec.trace("Adding end cmd (handle=0x%x, seq_id=%d, cmd_id=%d)", handle, seq_id, cmd_id);
 
 	vdec->in_cmd.push(vdec_cmd(vdec_cmd_type::end_sequence, seq_id, cmd_id));
@@ -1788,9 +1809,9 @@ error_code cellVdecDecodeAu(ppu_thread& ppu, u32 handle, CellVdecDecodeMode mode
 		return { CELL_VDEC_ERROR_ARG, "vdec=%d, auInfo=%d, size=%d, startAddr=0x%x", !!vdec, !!auInfo, auInfo ? auInfo->size.value() : 0, auInfo ? auInfo->startAddr.value() : 0 };
 	}
 
-	if (vdec->seq_state != sequence_state::ready)
+	if (vdec->state() != sequence_state::ready)
 	{
-		return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
+		return { CELL_VDEC_ERROR_SEQ, vdec->state() };
 	}
 
 	if (mode < 0 || mode > (CELL_VDEC_DEC_MODE_B_SKIP | CELL_VDEC_DEC_MODE_PB_SKIP))
@@ -1804,14 +1825,14 @@ error_code cellVdecDecodeAu(ppu_thread& ppu, u32 handle, CellVdecDecodeMode mode
 		return { CELL_VDEC_ERROR_ARG, "mode=%d, type=%d", +mode, vdec->type };
 	}
 
-	if (!vdec->au_count.try_inc(4))
+	if (!vdec->au_count_try_inc())
 	{
 		// The AU queue is full: BUSY asks the caller to retry, it is not an error
 		return not_an_error(CELL_VDEC_ERROR_BUSY);
 	}
 
-	const u64 seq_id = vdec->seq_id;
-	const u64 cmd_id = vdec->next_cmd_id++;
+	const u64 seq_id = vdec->seq();
+	const u64 cmd_id = vdec->take_cmd_id();
 	cellVdec.trace("Adding decode cmd (handle=0x%x, seq_id=%d, cmd_id=%d)", handle, seq_id, cmd_id);
 
 	// TODO: check info
@@ -1832,9 +1853,9 @@ error_code cellVdecDecodeAuEx2(ppu_thread& ppu, u32 handle, CellVdecDecodeMode m
 		return { CELL_VDEC_ERROR_ARG, "vdec=%d, auInfo=%d, size=%d, startAddr=0x%x", !!vdec, !!auInfo, auInfo ? auInfo->size.value() : 0, auInfo ? auInfo->startAddr.value() : 0 };
 	}
 
-	if (vdec->seq_state != sequence_state::ready)
+	if (vdec->state() != sequence_state::ready)
 	{
-		return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
+		return { CELL_VDEC_ERROR_SEQ, vdec->state() };
 	}
 
 	if (mode < 0 || mode > (CELL_VDEC_DEC_MODE_B_SKIP | CELL_VDEC_DEC_MODE_PB_SKIP))
@@ -1848,7 +1869,7 @@ error_code cellVdecDecodeAuEx2(ppu_thread& ppu, u32 handle, CellVdecDecodeMode m
 		return { CELL_VDEC_ERROR_ARG, "mode=%d, type=%d", +mode, vdec->type };
 	}
 
-	if (!vdec->au_count.try_inc(4))
+	if (!vdec->au_count_try_inc())
 	{
 		// The AU queue is full: BUSY asks the caller to retry, it is not an error
 		return not_an_error(CELL_VDEC_ERROR_BUSY);
@@ -1862,8 +1883,8 @@ error_code cellVdecDecodeAuEx2(ppu_thread& ppu, u32 handle, CellVdecDecodeMode m
 	au_info.userData = auInfo->userData;
 	au_info.codecSpecificData = auInfo->codecSpecificData;
 
-	const u64 seq_id = vdec->seq_id;
-	const u64 cmd_id = vdec->next_cmd_id++;
+	const u64 seq_id = vdec->seq();
+	const u64 cmd_id = vdec->take_cmd_id();
 	cellVdec.trace("Adding decode cmd (handle=0x%x, seq_id=%d, cmd_id=%d)", handle, seq_id, cmd_id);
 
 	// TODO: check info
@@ -1884,9 +1905,9 @@ error_code cellVdecGetPictureExt(ppu_thread& ppu, u32 handle, vm::cptr<CellVdecP
 		return { CELL_VDEC_ERROR_ARG, "vdec=%d, format=%d", !!vdec, !!format };
 	}
 
-	if (vdec->seq_state == sequence_state::closed || vdec->seq_state > sequence_state::ending)
+	if (vdec->state() == sequence_state::closed || vdec->state() > sequence_state::ending)
 	{
-		return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
+		return { CELL_VDEC_ERROR_SEQ, vdec->state() };
 	}
 
 	if (format->formatType > 4 || (format->formatType <= CELL_VDEC_PICFMT_RGBA32_ILV && format->colorMatrixType > CELL_VDEC_COLOR_MATRIX_TYPE_BT709))
@@ -1915,7 +1936,7 @@ error_code cellVdecGetPictureExt(ppu_thread& ppu, u32 handle, vm::cptr<CellVdecP
 	}
 
 	const bool took = vdec->out_take(frame);
-	sequence_id = vdec->seq_id;
+	sequence_id = vdec->seq();
 	vdec->out_end();
 
 	if (!took)
@@ -1995,12 +2016,12 @@ error_code cellVdecGetPicItem(ppu_thread& ppu, u32 handle, vm::pptr<CellVdecPicI
 		return { CELL_VDEC_ERROR_ARG, "vdec=%d, picItem=%d", !!vdec, !!picItem };
 	}
 
-	if (vdec->seq_state == sequence_state::closed || vdec->seq_state > sequence_state::ending)
+	if (vdec->state() == sequence_state::closed || vdec->state() > sequence_state::ending)
 	{
-		return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
+		return { CELL_VDEC_ERROR_SEQ, vdec->state() };
 	}
 
-	const u64 sequence_id = vdec->seq_id;
+	const u64 sequence_id = vdec->seq();
 
 	struct all_info_t
 	{
@@ -2237,13 +2258,13 @@ error_code cellVdecSetFrameRate(u32 handle, CellVdecFrameRate frameRateCode)
 		return { CELL_VDEC_ERROR_ARG, "vdec=%d, frameRateCode=0x%x", !!vdec, +frameRateCode };
 	}
 
-	if (vdec->seq_state == sequence_state::closed || vdec->seq_state >= sequence_state::invalid)
+	if (vdec->state() == sequence_state::closed || vdec->state() >= sequence_state::invalid)
 	{
-		return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
+		return { CELL_VDEC_ERROR_SEQ, vdec->state() };
 	}
 
-	const u64 seq_id = vdec->seq_id;
-	const u64 cmd_id = vdec->next_cmd_id++;
+	const u64 seq_id = vdec->seq();
+	const u64 cmd_id = vdec->take_cmd_id();
 	cellVdec.trace("Adding framerate cmd (handle=0x%x, seq_id=%d, cmd_id=%d)", handle, seq_id, cmd_id);
 
 	vdec->in_cmd.push(vdec_cmd(vdec_cmd_type::framerate, seq_id, cmd_id, frameRateCode & 0x87));
@@ -2312,9 +2333,9 @@ error_code cellVdecSetPts(u32 handle, vm::ptr<void> unk)
 		return { CELL_VDEC_ERROR_ARG, "vdec=%d, unk=%d", !!vdec, !!unk };
 	}
 
-	if (vdec->seq_state == sequence_state::closed || vdec->seq_state >= sequence_state::invalid)
+	if (vdec->state() == sequence_state::closed || vdec->state() >= sequence_state::invalid)
 	{
-		return { CELL_VDEC_ERROR_SEQ, vdec->seq_state.load() };
+		return { CELL_VDEC_ERROR_SEQ, vdec->state() };
 	}
 
 	return CELL_OK;

@@ -17,6 +17,8 @@
 #include "Emu/NP/np_contexts.h"
 #include "Emu/Cell/timers.hpp"
 #include "Utilities/Thread.h"
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 #include "Emu/IdManager.h"
 #include "Emu/system_progress.hpp"
 
@@ -235,6 +237,71 @@ int main()
 		g_fxo->clear();
 		CHECK(threads > 0);
 		std::printf("test_emu_waits: a close joins the progress dialog's server (%zu thread) with no retro_run\n", threads);
+	}
+
+	// A thread's wait list holding a retro_atomic word (atomic_wait::list's
+	// set_raw): woken by retro_waitaddr_notify_one on that word, and by the
+	// thread being told to end
+	{
+		static retro_atomic_int_t word{0};
+		std::atomic<int> woken{0};
+		auto* waiter = new named_thread("Raw Word Waiter"sv, [&]
+		{
+			while (thread_ctrl::state() != thread_state::aborting)
+			{
+				const u32 seen = static_cast<u32>(retro_atomic_load_acquire_int(&word));
+				if (seen >= 3)
+				{
+					woken = static_cast<int>(seen);
+					break;
+				}
+				thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list)
+				{
+					list.template set_raw<0>(&word, seen);
+				});
+			}
+		});
+		for (int i = 0; i < 200000; i++)
+			std::this_thread::yield();
+		CHECK(woken == 0); // nothing changed: still waiting
+		for (int k = 0; k < 3; k++)
+		{
+			retro_atomic_fetch_add_int(&word, 1);
+			retro_waitaddr_notify_one(&word);
+		}
+		for (int i = 0; i < 5'000'000 && woken == 0; i++)
+			std::this_thread::yield();
+		CHECK(woken == 3);
+		*waiter = thread_state::finished;
+		delete waiter;
+
+		// And a join wakes one that waits on a word nobody changes
+		std::atomic<bool> joined{false};
+		auto* idle = new named_thread("Raw Word Idle"sv, [&]
+		{
+			while (thread_ctrl::state() != thread_state::aborting)
+			{
+				const u32 seen = static_cast<u32>(retro_atomic_load_acquire_int(&word));
+				thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list)
+				{
+					list.template set_raw<0>(&word, seen);
+				});
+			}
+		});
+		for (int i = 0; i < 200000; i++)
+			std::this_thread::yield();
+		std::thread joiner([&] { *idle = thread_state::finished; joined = true; });
+		for (int i = 0; i < 5'000'000 && !joined; i++)
+			std::this_thread::yield();
+		CHECK(joined);
+		if (!joined)
+		{
+			std::fprintf(stderr, "test_emu_waits: a join of a thread waiting on a raw word never ended\n");
+			std::_Exit(1);
+		}
+		joiner.join();
+		delete idle;
+		std::printf("test_emu_waits: a wait list holding a retro_atomic word is woken by its notify and by a join\n");
 	}
 
 	// An NP transaction (np_contexts.cpp): no lock and no thread - finished
