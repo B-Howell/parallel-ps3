@@ -25,7 +25,7 @@
 
 LOG_CHANNEL(cellAudio);
 
-extern atomic_t<recording_mode> g_recording_mode;
+extern retro_atomic_int_t g_recording_mode; // a recording_mode
 
 extern void lv2_sleep(u64 timeout, ppu_thread* ppu = nullptr);
 
@@ -287,7 +287,7 @@ void audio_ringbuffer::commit_data(f32* buf, u32 sample_cnt)
 	m_dump.WriteData(buf, sample_cnt_in * static_cast<u32>(AudioSampleSize::FLOAT));
 
 	// Record audio if enabled
-	if (g_recording_mode != recording_mode::stopped)
+	if (static_cast<recording_mode>(retro_atomic_load_acquire_int(&g_recording_mode)) != recording_mode::stopped)
 	{
 		utils::video_provider& provider = g_fxo->get<utils::video_provider>();
 		provider.present_samples(reinterpret_cast<const u8*>(buf), sample_cnt, cfg.audio_channels);

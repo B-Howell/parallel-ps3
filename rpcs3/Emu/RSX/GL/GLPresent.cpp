@@ -19,7 +19,7 @@
 LOG_CHANNEL(screenshot_log, "SCREENSHOT");
 
 extern atomic_t<bool> g_user_asked_for_screenshot;
-extern atomic_t<recording_mode> g_recording_mode;
+extern retro_atomic_int_t g_recording_mode; // a recording_mode
 
 #ifndef RPCS3_LIBRETRO_RSX_PRESENT_TRACE
 #define RPCS3_LIBRETRO_RSX_PRESENT_TRACE 0
@@ -501,7 +501,7 @@ void GLGSRender::flip(const rsx::display_flip_info_t& info)
 		}
 		const bool user_asked_for_screenshot = g_user_asked_for_screenshot.exchange(false);
 
-		if (user_asked_for_screenshot || (g_recording_mode != recording_mode::stopped && m_frame->can_consume_frame()))
+		if (user_asked_for_screenshot || (static_cast<recording_mode>(retro_atomic_load_acquire_int(&g_recording_mode)) != recording_mode::stopped && m_frame->can_consume_frame()))
 		{
 			static const gl::pixel_pack_settings pack_settings{};
 

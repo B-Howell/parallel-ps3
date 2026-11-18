@@ -473,15 +473,15 @@ namespace utils
 	{
 		if (m_thread)
 		{
-			m_paused = true;
-			m_flush = flush;
+			retro_atomic_store_release_int(&m_paused, 1);
+			retro_atomic_store_release_int(&m_flush, (flush) ? 1 : 0);
 			wake_consumer();
 
 			if (flush)
 			{
 				// Woken as the encoder has flushed, or ended (it slept 1 us at
 				// a time before)
-				for (u32 seen = freed_seen(); m_flush && m_running; seen = freed_seen())
+				for (u32 seen = freed_seen(); retro_atomic_load_acquire_int(&m_flush) && m_running; seen = freed_seen())
 				{
 					wait_freed(seen);
 				}
@@ -495,13 +495,13 @@ namespace utils
 
 		if (m_thread)
 		{
-			m_flush = flush;
+			retro_atomic_store_release_int(&m_flush, (flush) ? 1 : 0);
 			wake_consumer();
 
 			if (flush)
 			{
 				// As in pause (it slept 1 ms at a time)
-				for (u32 seen = freed_seen(); m_flush && m_running; seen = freed_seen())
+				for (u32 seen = freed_seen(); retro_atomic_load_acquire_int(&m_flush) && m_running; seen = freed_seen())
 				{
 					wait_freed(seen);
 				}
@@ -512,9 +512,9 @@ namespace utils
 		}
 
 		clear_queues();
-		has_error = false;
-		m_flush = false;
-		m_paused = false;
+		retro_atomic_store_release_int(&has_error, 0);
+		retro_atomic_store_release_int(&m_flush, 0);
+		retro_atomic_store_release_int(&m_paused, 0);
 		m_running = false;
 	}
 
@@ -522,8 +522,8 @@ namespace utils
 	{
 		media_log.notice("video_encoder: Resuming video encoder");
 
-		m_flush = false;
-		m_paused = false;
+		retro_atomic_store_release_int(&m_flush, 0);
+		retro_atomic_store_release_int(&m_paused, 0);
 	}
 
 	void video_encoder::encode()
@@ -582,7 +582,7 @@ namespace utils
 			{
 				media_log.error("video_encoder: Could not start '%s'", path);
 				set_error();
-				m_flush = false;
+				retro_atomic_store_release_int(&m_flush, 0);
 				m_running = false;
 				wake_producer();
 				return;
@@ -594,7 +594,7 @@ namespace utils
 			// Its buffer goes back to the producer with the next frame
 			encoder_frame frame_data;
 
-			while ((thread_ctrl::state() != thread_state::aborting || m_flush) && !has_error)
+			while ((thread_ctrl::state() != thread_state::aborting || retro_atomic_load_acquire_int(&m_flush)) && !retro_atomic_load_acquire_int(&has_error))
 			{
 				// Read before looking: anything handed over, or asked, after
 				// this moves it, and the wait below returns
@@ -671,12 +671,12 @@ namespace utils
 
 				if (!got_frame && !got_sample)
 				{
-					if (m_flush)
+					if (retro_atomic_load_acquire_int(&m_flush))
 					{
-						m_flush = false;
+						retro_atomic_store_release_int(&m_flush, 0);
 						wake_producer();
 
-						if (!m_paused)
+						if (!retro_atomic_load_acquire_int(&m_paused))
 						{
 							// We only stop the thread after a flush if we are not paused
 							break;
@@ -700,7 +700,7 @@ namespace utils
 				media_log.error("video_encoder: Could not finish '%s'", path);
 			}
 
-			m_flush = false;
+			retro_atomic_store_release_int(&m_flush, 0);
 			m_running = false;
 			wake_producer();
 		});

@@ -21,7 +21,7 @@
 
 LOG_CHANNEL(sys_rsxaudio);
 
-extern atomic_t<recording_mode> g_recording_mode;
+extern retro_atomic_int_t g_recording_mode; // a recording_mode
 
 namespace rsxaudio_ringbuf_reader
 {
@@ -1961,7 +1961,7 @@ u32 rsxaudio_backend_thread::fill_from_ring(const callback_config& cb_cfg, u32 b
 	// backend (no recording, no downmix, volume at rest): they are
 	// converted straight out of the ring, where they lie. Otherwise they
 	// are copied out to be worked on.
-	const bool untouched = g_recording_mode == recording_mode::stopped && cb_cfg.input_ch_cnt == output_ch_cnt &&
+	const bool untouched = static_cast<recording_mode>(retro_atomic_load_acquire_int(&g_recording_mode)) == recording_mode::stopped && cb_cfg.input_ch_cnt == output_ch_cnt &&
 		cb_cfg.target_volume == cb_cfg.current_volume && cb_cfg.current_volume == callback_config::VOL_NOMINAL;
 
 	const void* lent = nullptr;
@@ -1988,7 +1988,7 @@ u32 rsxaudio_backend_thread::fill_from_ring(const callback_config& cb_cfg, u32 b
 	if (!direct)
 	{
 		// Record audio if enabled
-		if (g_recording_mode != recording_mode::stopped)
+		if (static_cast<recording_mode>(retro_atomic_load_acquire_int(&g_recording_mode)) != recording_mode::stopped)
 		{
 			utils::video_provider& provider = g_fxo->get<utils::video_provider>();
 			provider.present_samples(reinterpret_cast<const u8*>(callback_tmp_buf.data()), sample_cnt / cb_cfg.input_ch_cnt, cb_cfg.input_ch_cnt);

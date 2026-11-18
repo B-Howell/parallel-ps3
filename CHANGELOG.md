@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The recording state is `retro_atomic`, the second module off `atomic_t`.** Not yet run on a game.
+  - **What changed:** cellRec's state, pause flag and four timestamps, the video sink's error, pause and flush flags, and the recording mode (`g_recording_mode`) are now `retro_atomic_int_t` or `retro_atomic_64_t`. The recording mode is read by cellAudio, `sys_rsxaudio` and the GL and Vulkan presenters. Every read is an acquire load cast back to its type, every write a release store, the pause total an atomic add, and the two exchanges atomic exchanges.
+  - **One read fewer:** ending a pause read the pause's start twice; it is read once.
+  - **Tests:** behaviour is the same; `test_video_sink` and `test_record` cover the sink, and a check fails if any of these goes back to `atomic_t`.
+
 - **The progress counters are libretro-common's `retro_atomic`, a first module off RPCS3's `atomic_t`.** Part of replacing `atomic_t` everywhere (AGENTS.md), host-only state first. Not yet run on a game.
   - **What changed:** the counters of files and modules to compile and compiled, the files' sizes, and the cancel and stop flags are now `retro_atomic_int_t` and `retro_atomic_64_t`. So are the "overlay message only" flag and the SPU cache's two progress words. Their readers and writers in the progress dialog, the PPU and SPU compilers and `Emulator::Kill` now load, add, subtract, exchange and compare-and-swap on them directly. Overloaded `progr_load`/`progr_add`/`progr_sub` keep the many call sites short; they are functions, not a wrapper class.
   - **The wait:** the one wait on these, the PPU's wait for the progress dialog to close before it opens a game's dialog, is a `retro_waitaddr` wait, woken by the `retro_waitaddr_notify_all` the dialog makes as the count falls to none. This is the call `atomic_t` already forwarded to.

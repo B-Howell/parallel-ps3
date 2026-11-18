@@ -15,7 +15,7 @@
 #include "util/video_provider.h"
 
 extern atomic_t<bool> g_user_asked_for_screenshot;
-extern atomic_t<recording_mode> g_recording_mode;
+extern retro_atomic_int_t g_recording_mode; // a recording_mode
 
 namespace
 {
@@ -812,7 +812,7 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 
 	const bool has_overlay = (m_overlay_manager && m_overlay_manager->has_visible());
 	const bool user_asked_for_screenshot = g_user_asked_for_screenshot.exchange(false);
-	const bool user_is_recording = ((g_recording_mode != recording_mode::stopped || g_libretro_software_present) && m_frame->can_consume_frame());
+	const bool user_is_recording = ((static_cast<recording_mode>(retro_atomic_load_acquire_int(&g_recording_mode)) != recording_mode::stopped || g_libretro_software_present) && m_frame->can_consume_frame());
 	const bool need_media_capture = user_asked_for_screenshot || user_is_recording;
 
 	const auto render_overlays = [&](vk::framebuffer_holder* fbo, const areau& area)
@@ -846,7 +846,7 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, 0, VMM_ALLOCATION_POOL_UNDEFINED);
 		};
 
-		libretro_readback_t* readback = (!user_asked_for_screenshot && g_recording_mode == recording_mode::stopped) ?
+		libretro_readback_t* readback = (!user_asked_for_screenshot && static_cast<recording_mode>(retro_atomic_load_acquire_int(&g_recording_mode)) == recording_mode::stopped) ?
 			libretro_readback_for(m_current_frame) : nullptr;
 		std::unique_ptr<vk::buffer> temp_vkbuf;
 

@@ -81,13 +81,13 @@ namespace utils
 		bool add_frame(std::vector<u8>& frame, u32 pitch, u32 width, u32 height, s32 pixel_format, usz timestamp_ms, bool wait = false)
 		{
 			// Do not allow new frames while flushing or paused
-			if (m_flush || m_paused)
+			if (retro_atomic_load_acquire_int(&m_flush) || (retro_atomic_load_acquire_int(&m_paused) != 0))
 				return false;
 
 			u32 index;
 			for (u32 freed = freed_seen(); !take(m_frame_free, index); freed = freed_seen())
 			{
-				if (!wait || has_error)
+				if (!wait || (retro_atomic_load_acquire_int(&has_error) != 0))
 					return false;
 				wait_freed(freed);
 			}
@@ -113,7 +113,7 @@ namespace utils
 		bool add_audio_samples(const u8* buf, u32 sample_count, u16 channels, usz timestamp_us, bool wait = false)
 		{
 			// Do not allow new samples while flushing or paused
-			if (m_flush || m_paused || !buf || !sample_count || !channels || channels > max_channels)
+			if (retro_atomic_load_acquire_int(&m_flush) || (retro_atomic_load_acquire_int(&m_paused) != 0) || !buf || !sample_count || !channels || channels > max_channels)
 				return false;
 
 			const usz epoch = retro_atomic_load_acquire_size(&m_epoch);
@@ -125,7 +125,7 @@ namespace utils
 
 				for (u32 freed = freed_seen(); !take(m_sample_free, index); freed = freed_seen())
 				{
-					if (!wait || has_error)
+					if (!wait || (retro_atomic_load_acquire_int(&has_error) != 0))
 						return false;
 					wait_freed(freed);
 				}
@@ -228,12 +228,12 @@ namespace utils
 			return static_cast<usz>(pts * us_per_block);
 		}
 
-		atomic_t<bool> has_error{false};
+		retro_atomic_int_t has_error{0}; // 0 or 1
 
 		// The encoder failed: a producer waiting for a free slot gives up
 		void set_error()
 		{
-			has_error = true;
+			retro_atomic_store_release_int(&has_error, 1);
 			retro_atomic_fetch_add_seq_cst_int(&m_freed, 1);
 			retro_waitaddr_notify_all(&m_freed);
 		}
@@ -256,8 +256,8 @@ namespace utils
 			retro_atomic_fetch_add_size(&m_epoch, 1);
 		}
 
-		atomic_t<bool> m_paused = false;
-		atomic_t<bool> m_flush = false;
+		retro_atomic_int_t m_paused{0}; // 0 or 1
+		retro_atomic_int_t m_flush{0}; // 0 or 1
 		u32 m_framerate = 30;
 		u32 m_sample_rate = 48000;
 		static constexpr u32 m_samples_per_block = 256;

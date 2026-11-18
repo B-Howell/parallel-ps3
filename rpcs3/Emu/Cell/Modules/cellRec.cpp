@@ -20,7 +20,7 @@ extern "C"
 
 LOG_CHANNEL(cellRec);
 
-extern atomic_t<recording_mode> g_recording_mode;
+extern retro_atomic_int_t g_recording_mode; // a recording_mode
 
 template<>
 void fmt_class_string<CellRecError>::format(std::string& out, u64 arg)
@@ -178,26 +178,26 @@ public:
 	{
 		cellRec.notice("Stopping video sink. flush=%d", flush);
 
-		m_flush = flush;
-		m_paused = false;
+		retro_atomic_store_release_int(&m_flush, (flush) ? 1 : 0);
+		retro_atomic_store_release_int(&m_paused, 0);
 		clear_queues();
-		has_error = false;
+		retro_atomic_store_release_int(&has_error, 0);
 	}
 
 	void pause(bool flush = true) override
 	{
 		cellRec.notice("Pausing video sink. flush=%d", flush);
 
-		m_flush = flush;
-		m_paused = true;
+		retro_atomic_store_release_int(&m_flush, (flush) ? 1 : 0);
+		retro_atomic_store_release_int(&m_paused, 1);
 	}
 
 	void resume() override
 	{
 		cellRec.notice("Resuming video sink");
 
-		m_flush = false;
-		m_paused = false;
+		retro_atomic_store_release_int(&m_flush, 0);
+		retro_atomic_store_release_int(&m_paused, 0);
 	}
 
 	// What the recorder's thread waits on when there is nothing to take:
@@ -211,7 +211,7 @@ struct rec_info
 {
 	vm::ptr<CellRecCallback> cb{};
 	vm::ptr<void> cbUserData{};
-	atomic_t<rec_state> state = rec_state::closed;
+	retro_atomic_int_t state{static_cast<int>(rec_state::closed)}; // a rec_state
 	rec_param param{};
 
 	// These buffers are used by the game to inject one frame into the recording.
@@ -253,7 +253,7 @@ struct rec_info
 	std::shared_ptr<rec_video_sink> sink;
 	std::shared_ptr<utils::video_encoder> encoder;
 	std::unique_ptr<named_thread<std::function<void()>>> video_provider_thread;
-	atomic_t<bool> paused = false;
+	retro_atomic_int_t paused{0}; // 0 or 1
 
 	// Video parameters
 	utils::video_encoder::frame_format output_format{};
@@ -269,10 +269,10 @@ struct rec_info
 	static constexpr u32 channels = rec_channels; // Always 2 channels
 
 	// Recording duration
-	atomic_t<u64> recording_time_start = 0;
-	atomic_t<u64> pause_time_start = 0;
-	atomic_t<u64> pause_time_total = 0;
-	atomic_t<u64> recording_time_total = 0;
+	retro_atomic_64_t recording_time_start{0};
+	retro_atomic_64_t pause_time_start{0};
+	retro_atomic_64_t pause_time_total{0};
+	retro_atomic_64_t recording_time_total{0};
 
 	void set_video_params(s32 video_format);
 	void set_audio_params(s32 audio_format);
@@ -545,19 +545,20 @@ void rec_info::set_audio_params(s32 audio_format)
 
 void rec_info::start_video_provider()
 {
-	const bool was_paused = paused.exchange(false);
+	const bool was_paused = (retro_atomic_exchange_int(&paused, 0) != 0);
 
 	if (video_provider_thread && was_paused)
 	{
 		// Resume
 		const u64 pause_time_end = get_hw_clock_time();
-		ensure(pause_time_end > pause_time_start);
-		pause_time_total += (pause_time_end - pause_time_start);
+		const u64 paused_at = static_cast<u64>(retro_atomic_load_acquire_64(&pause_time_start));
+		ensure(pause_time_end > paused_at);
+		retro_atomic_fetch_add_64(&pause_time_total, static_cast<s64>(pause_time_end - paused_at));
 
 		if (param.use_internal_video() || param.use_internal_audio())
 		{
 			utils::video_provider& video_provider = g_fxo->get<utils::video_provider>();
-			video_provider.set_pause_time_us(pause_time_total);
+			video_provider.set_pause_time_us(static_cast<u64>(retro_atomic_load_acquire_64(&pause_time_total)));
 		}
 
 		cellRec.notice("Resuming video provider.");
@@ -566,9 +567,9 @@ void rec_info::start_video_provider()
 
 	cellRec.notice("Starting video provider.");
 
-	recording_time_start = get_hw_clock_time();
-	pause_time_start = 0;
-	pause_time_total = 0;
+	retro_atomic_store_release_64(&recording_time_start, static_cast<s64>(get_hw_clock_time()));
+	retro_atomic_store_release_64(&pause_time_start, 0);
+	retro_atomic_store_release_64(&pause_time_total, 0);
 
 	if (param.use_internal_video() || param.use_internal_audio())
 	{
@@ -609,7 +610,7 @@ void rec_info::start_video_provider()
 			const u32 periods_seen = g_audio_periods.load();
 			bool progressed = false;
 
-			if (encoder->has_error)
+			if (retro_atomic_load_acquire_int(&encoder->has_error))
 			{
 				cellRec.error("Encoder error. Sending error status.");
 
@@ -625,7 +626,7 @@ void rec_info::start_video_provider()
 				return;
 			}
 
-			if (paused)
+			if (retro_atomic_load_acquire_int(&paused))
 			{
 				// Until resumed or stopped, a look a frame (retro_run's), no clock
 				g_libretro_events.wait(frames_seen);
@@ -633,7 +634,7 @@ void rec_info::start_video_provider()
 			}
 
 			// We only care for new video frames or audio samples that can be properly encoded, so we check the timestamps and pts.
-			const usz timestamp_ms = (get_hw_clock_time() - recording_time_start - pause_time_total) / 1000;
+			const usz timestamp_ms = (get_hw_clock_time() - static_cast<u64>(retro_atomic_load_acquire_64(&recording_time_start)) - static_cast<u64>(retro_atomic_load_acquire_64(&pause_time_total))) / 1000;
 
 			/////////////////
 			//    VIDEO    //
@@ -711,7 +712,7 @@ void rec_info::start_video_provider()
 			//    AUDIO    //
 			/////////////////
 
-			const usz timestamp_us = get_hw_clock_time() - recording_time_start - pause_time_total;
+			const usz timestamp_us = get_hw_clock_time() - static_cast<u64>(retro_atomic_load_acquire_64(&recording_time_start)) - static_cast<u64>(retro_atomic_load_acquire_64(&pause_time_total));
 			bool got_new_samples = false;
 
 			if (use_external_audio)
@@ -813,7 +814,7 @@ void rec_info::start_video_provider()
 			}
 
 			// Update recording time
-			recording_time_total = encoder->get_timestamp_ms(encoder->last_video_pts());
+			retro_atomic_store_release_64(&recording_time_total, static_cast<s64>(encoder->get_timestamp_ms(encoder->last_video_pts())));
 
 			// Took something: look again at once, it may not be the last.
 			// Took nothing: wait for the sink to be handed something, or
@@ -837,8 +838,8 @@ void rec_info::pause_video_provider()
 
 	if (video_provider_thread)
 	{
-		paused = true;
-		pause_time_start = get_hw_clock_time();
+		retro_atomic_store_release_int(&paused, 1);
+		retro_atomic_store_release_64(&pause_time_start, static_cast<s64>(get_hw_clock_time()));
 	}
 }
 
@@ -949,7 +950,7 @@ error_code cellRecOpen(vm::cptr<char> pDirName, vm::cptr<char> pFileName, vm::cp
 
 	auto& rec = g_fxo->get<rec_info>();
 
-	if (rec.state != rec_state::closed)
+	if (static_cast<rec_state>(retro_atomic_load_acquire_int(&rec.state)) != rec_state::closed)
 	{
 		return CELL_REC_ERROR_INVALID_STATE;
 	}
@@ -1287,11 +1288,11 @@ error_code cellRecOpen(vm::cptr<char> pDirName, vm::cptr<char> pFileName, vm::cp
 	rec.audio_ring_pos = 0;
 	rec.video_ring_frame_count = 0;
 	rec.audio_ring_block_count = 0;
-	rec.recording_time_start = 0;
-	rec.recording_time_total = 0;
-	rec.pause_time_start = 0;
-	rec.pause_time_total = 0;
-	rec.paused = false;
+	retro_atomic_store_release_64(&rec.recording_time_start, 0);
+	retro_atomic_store_release_64(&rec.recording_time_total, 0);
+	retro_atomic_store_release_64(&rec.pause_time_start, 0);
+	retro_atomic_store_release_64(&rec.pause_time_total, 0);
+	retro_atomic_store_release_int(&rec.paused, 0);
 
 	rec.set_video_params(pParam->videoFmt);
 	rec.set_audio_params(pParam->audioFmt);
@@ -1330,7 +1331,7 @@ error_code cellRecOpen(vm::cptr<char> pDirName, vm::cptr<char> pFileName, vm::cp
 
 	sysutil_register_cb([&rec](ppu_thread& ppu) -> s32
 	{
-		rec.state = rec_state::stopped;
+		retro_atomic_store_release_int(&rec.state, static_cast<int>(rec_state::stopped));
 		rec.cb(ppu, CELL_REC_STATUS_OPEN, CELL_OK, rec.cbUserData);
 		return CELL_OK;
 	});
@@ -1344,7 +1345,7 @@ error_code cellRecClose(s32 isDiscard)
 
 	auto& rec = g_fxo->get<rec_info>();
 
-	if (rec.state == rec_state::closed)
+	if (static_cast<rec_state>(retro_atomic_load_acquire_int(&rec.state)) == rec_state::closed)
 	{
 		return CELL_REC_ERROR_INVALID_STATE;
 	}
@@ -1379,7 +1380,7 @@ error_code cellRecClose(s32 isDiscard)
 			// Flush to make sure we encode all remaining frames
 			rec.stop_video_provider(true);
 			rec.encoder->stop(true);
-			rec.recording_time_total = rec.encoder->get_timestamp_ms(rec.encoder->last_video_pts());
+			retro_atomic_store_release_64(&rec.recording_time_total, static_cast<s64>(rec.encoder->get_timestamp_ms(rec.encoder->last_video_pts())));
 
 			if (rec.sink)
 			{
@@ -1399,7 +1400,7 @@ error_code cellRecClose(s32 isDiscard)
 		// Release the video sink if it was used
 		if (rec.param.use_internal_video() || rec.param.use_internal_audio())
 		{
-			const recording_mode old_mode = g_recording_mode.exchange(recording_mode::stopped);
+			const recording_mode old_mode = static_cast<recording_mode>(retro_atomic_exchange_int(&g_recording_mode, static_cast<int>(recording_mode::stopped)));
 
 			if (old_mode == recording_mode::rpcs3)
 			{
@@ -1419,7 +1420,7 @@ error_code cellRecClose(s32 isDiscard)
 		rec.sink.reset();
 		rec.audio_ringbuffer.clear();
 		rec.video_ringbuffer.clear();
-		rec.state = rec_state::closed;
+		retro_atomic_store_release_int(&rec.state, static_cast<int>(rec_state::closed));
 
 		if (is_valid_range)
 		{
@@ -1441,7 +1442,7 @@ error_code cellRecStop()
 
 	auto& rec = g_fxo->get<rec_info>();
 
-	if (rec.state != rec_state::started)
+	if (static_cast<rec_state>(retro_atomic_load_acquire_int(&rec.state)) != rec_state::started)
 	{
 		return CELL_REC_ERROR_INVALID_STATE;
 	}
@@ -1459,8 +1460,8 @@ error_code cellRecStop()
 		ensure(!!rec.encoder);
 		rec.encoder->pause(true);
 
-		rec.recording_time_total = rec.encoder->get_timestamp_ms(rec.encoder->last_video_pts());
-		rec.state = rec_state::stopped;
+		retro_atomic_store_release_64(&rec.recording_time_total, static_cast<s64>(rec.encoder->get_timestamp_ms(rec.encoder->last_video_pts())));
+		retro_atomic_store_release_int(&rec.state, static_cast<int>(rec_state::stopped));
 
 		rec.cb(ppu, CELL_REC_STATUS_STOP, CELL_OK, rec.cbUserData);
 		return CELL_OK;
@@ -1475,7 +1476,7 @@ error_code cellRecStart()
 
 	auto& rec = g_fxo->get<rec_info>();
 
-	if (rec.state != rec_state::stopped)
+	if (static_cast<rec_state>(retro_atomic_load_acquire_int(&rec.state)) != rec_state::stopped)
 	{
 		return CELL_REC_ERROR_INVALID_STATE;
 	}
@@ -1503,12 +1504,12 @@ error_code cellRecStart()
 			}
 
 			// Force rsx recording
-			g_recording_mode = recording_mode::cell;
+			retro_atomic_store_release_int(&g_recording_mode, static_cast<int>(recording_mode::cell));
 		}
 		else
 		{
 			// Force stop rsx recording
-			g_recording_mode = recording_mode::stopped;
+			retro_atomic_store_release_int(&g_recording_mode, static_cast<int>(recording_mode::stopped));
 		}
 
 		rec.start_video_provider();
@@ -1518,13 +1519,13 @@ error_code cellRecStart()
 			rec.sink->resume();
 		}
 
-		if (rec.encoder->has_error)
+		if (retro_atomic_load_acquire_int(&rec.encoder->has_error))
 		{
 			rec.cb(ppu, CELL_REC_STATUS_ERR, CELL_REC_ERROR_FILE_OPEN, rec.cbUserData);
 		}
 		else
 		{
-			rec.state = rec_state::started;
+			retro_atomic_store_release_int(&rec.state, static_cast<int>(rec_state::started));
 			rec.cb(ppu, CELL_REC_STATUS_START, CELL_OK, rec.cbUserData);
 		}
 		return CELL_OK;
@@ -1741,9 +1742,9 @@ void cellRecGetInfo(s32 info, vm::ptr<u64> pValue)
 	}
 	case CELL_REC_INFO_MOVIE_TIME_MSEC:
 	{
-		if (rec.state == rec_state::stopped)
+		if (static_cast<rec_state>(retro_atomic_load_acquire_int(&rec.state)) == rec_state::stopped)
 		{
-			*pValue = rec.recording_time_total;
+			*pValue = static_cast<u64>(retro_atomic_load_acquire_64(&rec.recording_time_total));
 		}
 		break;
 	}
@@ -1770,7 +1771,7 @@ error_code cellRecSetInfo(s32 setInfo, u64 value)
 
 	auto& rec = g_fxo->get<rec_info>();
 
-	if (rec.state != rec_state::stopped)
+	if (static_cast<rec_state>(retro_atomic_load_acquire_int(&rec.state)) != rec_state::stopped)
 	{
 		return CELL_REC_ERROR_INVALID_STATE;
 	}

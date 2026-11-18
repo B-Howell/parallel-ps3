@@ -11,7 +11,7 @@
 
 LOG_CHANNEL(media_log, "Media");
 
-atomic_t<recording_mode> g_recording_mode = recording_mode::stopped;
+retro_atomic_int_t g_recording_mode{static_cast<int>(recording_mode::stopped)}; // a recording_mode
 
 template <>
 void fmt_class_string<recording_mode>::format(std::string& out, u64 arg)
@@ -60,7 +60,7 @@ namespace utils
 
 	video_provider::~video_provider()
 	{
-		g_recording_mode = recording_mode::stopped;
+		retro_atomic_store_release_int(&g_recording_mode, static_cast<int>(recording_mode::stopped));
 	}
 
 	bool video_provider::set_video_sink(std::shared_ptr<video_sink> sink, recording_mode type)
@@ -134,9 +134,9 @@ namespace utils
 
 	recording_mode video_provider::check_mode(video_sink& sink)
 	{
-		if (sink.has_error)
+		if (retro_atomic_load_acquire_int(&sink.has_error))
 		{
-			g_recording_mode = recording_mode::stopped;
+			retro_atomic_store_release_int(&g_recording_mode, static_cast<int>(recording_mode::stopped));
 
 			if (g_cfg.misc.show_capture_hints)
 			{
@@ -144,12 +144,12 @@ namespace utils
 			}
 		}
 
-		if (g_recording_mode == recording_mode::stopped)
+		if (static_cast<recording_mode>(retro_atomic_load_acquire_int(&g_recording_mode)) == recording_mode::stopped)
 		{
 			m_active = false;
 		}
 
-		return g_recording_mode;
+		return static_cast<recording_mode>(retro_atomic_load_acquire_int(&g_recording_mode));
 	}
 
 	bool video_provider::can_consume_frame()
