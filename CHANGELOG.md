@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **A thread opening a dialog waits for it untimed.** Not yet run on a game.
+  - The on-screen keyboard, the message dialog, the home menu, the friends, user and trophy lists and the receive and send message dialogs each woke every millisecond to see whether the dialog had been taken up or closed. They now wait untimed (`libretro_wait_on`) on the dialog's own word, woken by it or by any change of the emulator's state, a stop among them.
+  - The receive and send message dialogs also look at `sceNpBasicAbortGui`'s flag, and the send dialog at the press asking for its confirmation. Both now wake the waiter (`libretro_event`) as they are set.
+  - A check fails if a timed wait comes back anywhere in the overlays. This was tested against a mutant that puts one back. No test drives a dialog's waiting thread: it needs the renderer and the overlay input thread.
+
 - **A dialog belongs to the renderer: its input and its news are handed over, with no lock.** Not yet run on a game; the friends list and message dialogs not yet run online.
   - **Input:** the overlay input thread called each dialog's button and key handlers itself, while the renderer drew the same dialog. So the on-screen keyboard, the home menu's tabs, the friends list and the receive and send message dialogs each held a mutex. Each press is now handed to the renderer on a lock-free stack (`user_interface::post_call`, an `mpsc_stack`). The renderer runs them, in order, just before it updates the dialog (`take_input`), so it alone touches the dialog's elements. Calls never taken up are dropped with the dialog.
   - **The game's calls and the server's news** go the same way: `cellOskDialog`'s clear, set-text, insert and close, the friend and message callbacks from RPCN, and the lists the dialogs open with.

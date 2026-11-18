@@ -89,6 +89,7 @@ namespace rsx
 					// (seen by it with the flag below)
 					m_chosen_npid = std::move(selection);
 					m_open_confirmation_dialog = true;
+					libretro_event(); // the dialog's thread waits untimed: woken to open it
 					m_confirmation_dialog_open = true; // Ignore input while the confirmation dialog is open. Set this here due to avoid a race condition.
 					break;
 				}
@@ -276,7 +277,7 @@ namespace rsx
 					input::SetIntercepted(true);
 				}
 
-				notify->wait(0, atomic_wait_timeout{1'000'000});
+				libretro_wait_on(*notify, u32{0});
 			}
 
 			m_rpcn->remove_friend_cb(sendmessage_friend_callback, this);

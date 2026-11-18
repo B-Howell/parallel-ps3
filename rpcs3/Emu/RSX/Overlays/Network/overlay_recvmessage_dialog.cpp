@@ -262,7 +262,7 @@ namespace rsx
 
 			while (!Emu.IsStopped() && !*notify && !nps.abort_gui_flag)
 			{
-				notify->wait(0, atomic_wait_timeout{1'000'000});
+				libretro_wait_on(*notify, u32{0});
 			}
 
 			m_rpcn->remove_message_cb(recvmessage_callback, this);

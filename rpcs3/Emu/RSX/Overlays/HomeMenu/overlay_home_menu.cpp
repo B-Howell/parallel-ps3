@@ -184,7 +184,7 @@ namespace rsx
 
 			while (!Emu.IsStopped() && !*notify)
 			{
-				notify->wait(false, atomic_wait_timeout{1'000'000});
+				libretro_wait_on(*notify, u32{0});
 			}
 
 			return CELL_OK;

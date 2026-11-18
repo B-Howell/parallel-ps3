@@ -1763,6 +1763,9 @@ error_code sceNpBasicAbortGui()
 
 	g_fxo->get<np_state>().abort_gui_flag = true;
 
+	// The dialog's thread waits untimed: woken to see it
+	libretro_event();
+
 	return CELL_OK;
 }
 
