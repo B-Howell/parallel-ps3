@@ -469,6 +469,42 @@ int main()
 		CHECK(z[0] == 2.0f && z[1] == 0.0f && z[2] == 2.0f && z[3] == 8.0f);
 	}
 
+	// Names a module calls that nothing placed get a null function each
+	// (JITLLVM.cpp, make_null_function), one per name however many modules
+	// ask for it at once: four compilers on four threads, each calling one
+	// name of its own and one all four call, add five
+	{
+		const u32 before = jit_compiler::null_functions();
+		std::thread compilers[4];
+		for (u32 t = 0; t < 4; t++)
+		{
+			compilers[t] = std::thread([t]()
+			{
+				jit_compiler unplaced({}, jit_compiler::cpu(""));
+				llvm::LLVMContext& ctx = unplaced.get_context();
+				auto m = std::make_unique<llvm::Module>("test_null_functions", ctx);
+				llvm::IRBuilder<> b(ctx);
+				llvm::FunctionType* const fn_type = llvm::FunctionType::get(b.getVoidTy(), {}, false);
+				llvm::Function* const shared = llvm::Function::Create(fn_type, llvm::Function::ExternalLinkage, "test_unplaced_shared", *m);
+				llvm::Function* const own = llvm::Function::Create(fn_type, llvm::Function::ExternalLinkage, fmt::format("test_unplaced_%u", t), *m);
+				llvm::Function* const caller = llvm::Function::Create(fn_type, llvm::Function::ExternalLinkage, "calls_unplaced", *m);
+				b.SetInsertPoint(llvm::BasicBlock::Create(ctx, "", caller));
+				b.CreateCall(shared);
+				b.CreateCall(own);
+				b.CreateRetVoid();
+				CHECK(!llvm::verifyModule(*m, &llvm::errs()));
+				unplaced.add(std::move(m));
+				unplaced.fin();
+				// Linked (to null functions, never called)
+				CHECK(unplaced.get("calls_unplaced") != 0);
+			});
+		}
+		for (auto& compiler : compilers)
+			compiler.join();
+		std::printf("test_llvm_jit: unplaced names: %u null functions made for 5 names from 4 threads\n", jit_compiler::null_functions() - before);
+		CHECK(jit_compiler::null_functions() == before + 5);
+	}
+
 	// The object cache. A directory's objects are in one file, the pack, not
 	// a file each, stored as the objects they are (not compressed: inflating
 	// one on every boot cost many times what reading it does). An object

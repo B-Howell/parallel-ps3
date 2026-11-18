@@ -12,6 +12,7 @@
 #include "object_pack.h"
 
 #include <retro_atomic.h>
+#include <queues/retro_retire.h>
 
 #include <charconv>
 
@@ -193,9 +194,36 @@ namespace vm
 	extern u8* const g_sudo_addr;
 }
 
-static shared_mutex null_mtx;
+// The names given a null function, read with no lock: a table published
+// whole, never changed once published. A name added copies it and
+// publishes the copy by compare-and-swap; the table replaced is retired
+// (retro_retire) and freed once no lookup is in it. Zero-filled: no table
+// yet, and the retire state ready.
+struct null_table
+{
+	mpsc_stack_node_t link{}; // first: retired as this
+	std::unordered_map<std::string, u64> funcs;
+};
 
-static std::unordered_map<std::string, u64> null_funcs;
+static retro_atomic_ptr_t null_table_ptr;
+static retro_retire_t null_retire;
+
+static void free_null_table(mpsc_stack_node_t* node)
+{
+	delete reinterpret_cast<null_table*>(node);
+}
+
+// The name's null function, or 0; within an enter and leave of null_retire
+static u64 find_null_function(const null_table* table, const std::string& name)
+{
+	if (!table)
+	{
+		return 0;
+	}
+
+	const auto found = table->funcs.find(name);
+	return found == table->funcs.end() ? 0 : found->second;
+}
 
 // How many names were given a null function: names an object asked for that
 // nothing placed
@@ -219,18 +247,17 @@ static u64 make_null_function(const std::string& name)
 		}
 	}
 
-	std::lock_guard lock(null_mtx);
+	retro_retire_enter(&null_retire);
 
-	if (u64& func_ptr = null_funcs[name]) [[likely]]
+	if (const u64 func_ptr = find_null_function(static_cast<const null_table*>(retro_atomic_load_acquire_ptr(&null_table_ptr)), name)) [[likely]]
 	{
 		// Already exists
+		retro_retire_leave(&null_retire, free_null_table);
 		return func_ptr;
 	}
 	else
 	{
 		using namespace asmjit;
-
-		retro_atomic_fetch_add_int(&null_funcs_made, 1);
 
 		// Build a "null" function that contains its name
 		const auto func = build_function_asm<void (*)()>("NULL", [&](native_asm& c, auto& args)
@@ -268,8 +295,45 @@ static u64 make_null_function(const std::string& name)
 #endif
 		});
 
-		func_ptr = reinterpret_cast<u64>(func);
-		return func_ptr;
+		const u64 made = reinterpret_cast<u64>(func);
+
+		for (;;)
+		{
+			null_table* const cur = static_cast<null_table*>(retro_atomic_load_acquire_ptr(&null_table_ptr));
+
+			if (const u64 other = find_null_function(cur, name))
+			{
+				// Another thread gave it one first: that one stands (this one,
+				// a few bytes of code, is never called)
+				retro_retire_leave(&null_retire, free_null_table);
+				return other;
+			}
+
+			null_table* const next = new null_table;
+
+			if (cur)
+			{
+				next->funcs = cur->funcs;
+			}
+
+			next->funcs.emplace(name, made);
+
+			if (retro_atomic_cas_ptr(&null_table_ptr, cur, next))
+			{
+				retro_atomic_fetch_add_int(&null_funcs_made, 1);
+				retro_retire_leave(&null_retire, free_null_table);
+
+				if (cur)
+				{
+					retro_retire(&null_retire, &cur->link, free_null_table);
+				}
+
+				return made;
+			}
+
+			// Another name got in first: made again from its table
+			delete next;
+		}
 	}
 }
 

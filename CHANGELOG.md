@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The LLVM JIT's null functions take no lock.** Not yet run on a game.
+  - A name a compiled module calls that nothing placed gets a stand-in function that reports it if called. These were a map under a mutex, taken on every such name as each object was linked, by the PPU and SPU compiler threads at once.
+  - The names are now a table published whole and never changed once published. A new name copies the table, adds itself and publishes it by compare-and-swap. The table replaced is retired (`retro_retire`) and freed once no lookup is in it. A thread that loses the race to another giving the same name a function takes that one, and its own few bytes of code are never called.
+  - `std::lock_guard` count 5. A check fails if the lock comes back. `test_llvm_jit` links four modules on four threads at once, each calling one name of its own and one all four call, and checks exactly five null functions are made. It fails on a mutant that never looks a name up.
+
 - **The file system's virtual devices and the GL shaders take no lock.** Not yet run on a game.
   - **Virtual devices:** these are the mounted ISO's file system, looked up on every file call. They were a map under a shared mutex. The table is now published whole and never changed once published. Adding or removing a device copies the table, changes the copy and publishes it by compare-and-swap. The table it replaces is retired (`retro_retire`) and freed, with any device only it held, once no lookup is in it. The device's name is looked up in place, no longer copied out of the path on every call.
   - **GL shaders:** a shader two threads could compile at once was under a mutex. The first thread to mark it compiles it, and any other waits untimed for that one.
