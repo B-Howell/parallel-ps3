@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellVdec's decoder thread waits for room for a picture without a timeout.** Not yet run on a game.
+  - **Before:** while the game's picture queue was full, it looked again every 10 ms to see whether it had been told to stop, and counted those looks to time its "waiting 5 seconds" report.
+  - **Now:** it waits untimed. The game taking a picture wakes it, as before. A close wakes it, as before. A new sequence now wakes it too (`cellVdecStartSeq` notifies the queue); before, that waited on the poll. A stop wakes it through the PPU's own state, since it waits as a PPU waits (`cpu_flag::wait`).
+  - **The report:** it is timed on the guest's clock (`get_hw_clock_time`), so a paused frontend does not count.
+  - **Tests:** the thread loop needs a game that plays video, so there is no test of its own; `test_vdec` covers the decoders. A check fails if the wait gets a timeout again or stops waiting on the PPU's state.
+
 - **cellRec's recorder thread waits on what it records instead of polling, and records in the guest's time.** Not yet run on a game; very few games record.
   - **Before:** the thread that feeds the encoder slept 1 µs between turns, which was a spin for as long as a recording ran. It slept 10 ms a turn while paused. It stamped what it recorded with the host's clock.
   - **Now, after a turn that took something:** it looks again at once, since that may not have been the last one.

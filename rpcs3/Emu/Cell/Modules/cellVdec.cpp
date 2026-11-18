@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "Emu/IdManager.h"
+#include "Emu/Cell/timers.hpp"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/lv2/sys_sync.h"
 #include "Emu/Cell/lv2/sys_ppu_thread.h"
@@ -664,9 +665,21 @@ struct vdec_context final
 					{
 						// Wait until there is free space in the image queue.
 						// Do this after pushing the frame to the queue. That way the game can consume the frame and we can move on.
-						u32 elapsed = 0;
+						// Waiting here as a PPU waits (cpu_flag::wait), so a stop
+						// wakes it through ppu.state; the guest's clock times the
+						// report
+						const u64 since = get_hw_clock_time();
+						u64 elapsed = 0;
+						const bool had_wait = ppu.state.test_and_set(cpu_flag::wait);
 						while (thread_ctrl::state() != thread_state::aborting && !abort_decode && seq_id == cmd->seq_id)
 						{
+							const auto old_state = +ppu.state;
+
+							if (::is_stopped(old_state))
+							{
+								break;
+							}
+
 							const s32 taken = retro_atomic_load_acquire_int(&out_taken);
 
 							if (static_cast<u32>(retro_atomic_load_acquire_int(&out_put) - taken) <= out_max)
@@ -674,16 +687,23 @@ struct vdec_context final
 								break;
 							}
 
-							// Until the game takes one (or a close wakes it), looking
-							// again every 10 ms for an abort
-							const retro_waitaddr_t room[1] = {{&out_taken, static_cast<u32>(taken)}};
-							retro_waitaddr_wait(room, 1, 10000);
+							// Until the game takes one, a close or a new sequence
+							// wakes it (both notify out_taken) or the PPU is told to stop
+							const retro_waitaddr_t room[2] = {{&out_taken, static_cast<u32>(taken)}, {&ppu.state, std::bit_cast<u32>(old_state)}};
+							retro_waitaddr_wait(room, 2, -1);
 
 							// Report a wait once: a game may keep the pictures of a decoder it does not display for a long time
-							if (++elapsed == 500) // 5 seconds
+							const u64 now = get_hw_clock_time() - since;
+							if (elapsed < 5'000'000 && now >= 5'000'000)
 							{
 								cellVdec.warning("Video au decode has been waiting for a consumer for 5 seconds. (handle=0x%x, seq_id=%d, cmd_id=%d, queue_size=%d)", handle, cmd->seq_id, cmd->id, out_count());
 							}
+							elapsed = now;
+						}
+
+						if (!had_wait)
+						{
+							ppu.state -= cpu_flag::wait;
 						}
 
 						if (thread_ctrl::state() == thread_state::aborting || abort_decode || seq_id != cmd->seq_id)
@@ -691,9 +711,9 @@ struct vdec_context final
 							break;
 						}
 
-						if (elapsed >= 500)
+						if (elapsed >= 5'000'000)
 						{
-							cellVdec.notice("Video au decode resumed after waiting %d seconds for a consumer. (handle=0x%x, seq_id=%d, cmd_id=%d)", elapsed / 100, handle, cmd->seq_id, cmd->id);
+							cellVdec.notice("Video au decode resumed after waiting %d seconds for a consumer. (handle=0x%x, seq_id=%d, cmd_id=%d)", elapsed / 1'000'000, handle, cmd->seq_id, cmd->id);
 						}
 
 						out_push(*vdec_frames_front(&decoded));
@@ -1706,6 +1726,7 @@ error_code cellVdecStartSeq(ppu_thread& ppu, u32 handle)
 
 	vdec->abort_decode = false;
 	vdec->is_running = false;
+	retro_waitaddr_notify_all(&vdec->out_taken); // a decoder thread waiting for room for the last sequence looks again
 	vdec->in_cmd.push(vdec_cmd(vdec_cmd_type::start_sequence, seq_id, cmd_id));
 
 	if (false) // TODO: set to old state in case of error
