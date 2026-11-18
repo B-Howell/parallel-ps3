@@ -4,7 +4,7 @@
 shared_ptr<std::string> progress_dialog_string_t::get_string_ptr() const noexcept
 {
 	shared_ptr<std::string> text;
-	data_t old_val = data.load();
+	data_t old_val = load();
 
 	while (true)
 	{
@@ -37,7 +37,7 @@ shared_ptr<std::string> progress_dialog_string_t::get_string_ptr() const noexcep
 			}
 		}
 
-		auto new_val = data.load();
+		const data_t new_val = load();
 
 		if (old_val.update_id == new_val.update_id)
 		{
@@ -81,12 +81,23 @@ scoped_progress_dialog::scoped_progress_dialog(std::string text) noexcept
 		}
 	}
 
-	g_progr_text.data.atomic_op([&](std::common_type_t<progress_dialog_string_t::data_t>& progr)
+	// One more open, showing this one's text
+	ensure(m_text_index < progress_dialog_string_t::c_field_mask);
+
+	for (progress_dialog_string_t::data_t progr = g_progr_text.load();;)
 	{
-		progr.update_id++;
-		progr.text_index = m_text_index;
-		progr.text_count++;
-	});
+		progress_dialog_string_t::data_t next = progr;
+		next.update_id++;
+		next.text_index = m_text_index;
+		next.text_count++;
+
+		if (g_progr_text.cas(progr, next))
+		{
+			break;
+		}
+
+		progr = g_progr_text.load();
+	}
 }
 
 scoped_progress_dialog& scoped_progress_dialog::operator=(std::string text) noexcept
@@ -101,16 +112,13 @@ scoped_progress_dialog::~scoped_progress_dialog() noexcept
 	// Deallocate memory
 	g_progr_text_queue[m_text_index].reset();
 
-	auto progr = g_progr_text.data.load();
-
-	while (true)
+	for (progress_dialog_string_t::data_t progr = g_progr_text.load();;)
 	{
 		u64 restored_text_index = umax;
 
 		if (progr.text_index == m_text_index && !g_progr_text_queue[m_text_index])
 		{
 			// Search for available text
-			// Out of scope of atomic loop to keep atomic_op as clean as possible (for potential future enhacements)
 			const u64 queue_size = g_progr_text_queue.size();
 
 			for (u64 i = queue_size - 1;; i--)
@@ -129,39 +137,23 @@ scoped_progress_dialog::~scoped_progress_dialog() noexcept
 			}
 		}
 
-		auto [old, ok] = g_progr_text.data.fetch_op([&](std::common_type_t<progress_dialog_string_t::data_t>& progr0)
+		// One fewer open; if it showed this one's text, the text found
+		// instead (or none)
+		progress_dialog_string_t::data_t next = progr;
+		next.text_count--;
+
+		if (next.text_index == m_text_index)
 		{
-			if (progr.update_id != progr0.update_id)
-			{
-				// Repeat the loop
-				return false;
-			}
-
-			progr0.text_count--;
-
-			if (progr0.text_index == m_text_index)
-			{
-				if (restored_text_index == umax)
-				{
-					progr0.text_index = umax;
-					progr0.update_id++;
-					return true;
-				}
-
-				progr0.text_index = ::narrow<u32>(restored_text_index);
-				progr0.update_id++;
-			}
-
-			return true;
-		});
-
-		progr = old;
-
-		if (!ok)
-		{
-			continue;
+			next.text_index = restored_text_index == umax ? umax : ::narrow<u32>(restored_text_index);
+			next.update_id++;
 		}
 
-		break;
+		if (g_progr_text.cas(progr, next))
+		{
+			break;
+		}
+
+		// Changed in between: looked at again, the search too
+		progr = g_progr_text.load();
 	}
 }

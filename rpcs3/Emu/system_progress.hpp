@@ -9,16 +9,43 @@
 
 extern lf_array<atomic_ptr<std::string>> g_progr_text_queue;
 
-struct alignas(16) progress_dialog_string_t
+struct progress_dialog_string_t
 {
-	struct alignas(16) data_t
+	// What the dialog shows, unpacked: a count of updates (only compared
+	// between two reads), the index in g_progr_text_queue of the text shown
+	// (umax: none) and how many dialogs are open
+	struct data_t
 	{
-		usz update_id = 0;
+		u32 update_id = 0;
 		u32 text_index = umax;
 		u32 text_count = 0;
 	};
 
-	atomic_t<data_t> data{};
+	// All three in one word: update_id in the top 24 bits, text_index in the
+	// next 20 (all ones: none), text_count in the low 20
+	static constexpr u32 c_field_mask = 0xfffff;
+
+	static constexpr u64 pack(const data_t& d)
+	{
+		const u64 index = d.text_index == umax ? c_field_mask : (d.text_index & c_field_mask);
+		return (static_cast<u64>(d.update_id & 0xffffff) << 40) | (index << 20) | (d.text_count & c_field_mask);
+	}
+
+	static constexpr data_t unpack(u64 word)
+	{
+		data_t d;
+		const u32 index = static_cast<u32>(word >> 20) & c_field_mask;
+		d.update_id = static_cast<u32>(word >> 40);
+		d.text_index = index == c_field_mask ? umax : index;
+		d.text_count = static_cast<u32>(word) & c_field_mask;
+		return d;
+	}
+
+	mutable retro_atomic_64_t data{static_cast<s64>(pack(data_t{}))};
+
+	data_t load() const noexcept { return unpack(static_cast<u64>(retro_atomic_load_acquire_64(&data))); }
+	bool cas(const data_t& from, const data_t& to) noexcept { return retro_atomic_cas_64(&data, static_cast<s64>(pack(from)), static_cast<s64>(pack(to))) != 0; }
+	void reset() noexcept { retro_atomic_store_release_64(&data, static_cast<s64>(pack(data_t{}))); }
 
 	shared_ptr<std::string> get_string_ptr() const noexcept;
 
@@ -34,7 +61,7 @@ struct alignas(16) progress_dialog_string_t
 
 	explicit operator bool() const noexcept
 	{
-		return data.load().text_count != 0;
+		return load().text_count != 0;
 	}
 };
 

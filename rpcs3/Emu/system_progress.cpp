@@ -490,5 +490,5 @@ progress_dialog_server::~progress_dialog_server()
 	retro_atomic_store_release_64(&g_progr_fknown_bits, 0);
 	retro_atomic_store_release_int(&g_progr_ptotal, 0);
 	retro_atomic_store_release_int(&g_progr_pdone, 0);
-	g_progr_text.data.release(std::common_type_t<progress_dialog_string_t::data_t>{});
+	g_progr_text.reset();
 }

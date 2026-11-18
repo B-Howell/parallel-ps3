@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The progress dialog's text slot is one 64-bit `retro_atomic` word, where it was a 16-byte `atomic_t`.** Not yet run on a game.
+  - **What changed:** the slot holds a count of updates, the index of the text shown and how many dialogs are open. They are packed into one `retro_atomic_64_t` (24, 20 and 20 bits), so it is a plain 64-bit compare-and-swap, not a 16-byte one (`cmpxchg16b`). The update count is only compared between two reads, so its wrapping does no harm. Opening and closing a dialog are compare-and-swap loops where they were `atomic_op` and `fetch_op`.
+  - **Tests:** `test_emu_waits` packs and unpacks the slot, opens an outer and an inner dialog and checks the inner's text is shown, then the outer's, then none, and has two threads open and close 12000 dialogs and end with none open. It was shown to fail with a close that does not take one from the count. A check fails if the 16-byte `atomic_t` comes back.
+
+
 - **The RSX thread's flags and counters are off `atomic_t`.** Not yet run on a game.
   - **What changed:** the frame-limit switch, the count of VBLANKs retro_run asks for, the RSX's running, initialized, vsync, second-VBLANK-handler and sync-point flags, the VBLANK count, the idle time, the pending GET/PUT pair, the ZCULL queue depth and the cached display rate (kept as the bits of its `f64`) are `retro_atomic_int_t` and `retro_atomic_64_t`.
   - **Waits:** the VBLANK thread waits for retro_run's next VBLANK request through `wait_on_custom` and `set_raw`, so a join still wakes it. The progress dialog's wait for the renderer to start holds `is_initialized` the same way.

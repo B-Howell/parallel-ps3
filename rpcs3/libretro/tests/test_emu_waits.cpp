@@ -387,6 +387,43 @@ int main()
 		std::printf("test_emu_waits: NP transactions finished once (20000 races), woken by the reply, timed out at the deadline\n");
 	}
 
+	// The progress dialog's text slot, one word: the inner dialog's text is
+	// shown, then the outer's again, then none; open and closed from two
+	// threads at once it ends with none open
+	{
+		using pd = progress_dialog_string_t;
+		pd::data_t d;
+		d.update_id = 0xabcdef;
+		d.text_index = 77;
+		d.text_count = 3;
+		const pd::data_t r = pd::unpack(pd::pack(d));
+		CHECK(r.update_id == 0xabcdef && r.text_index == 77 && r.text_count == 3);
+		CHECK(pd::unpack(pd::pack(pd::data_t{})).text_index == umax);
+
+		CHECK(!g_progr_text);
+		{
+			scoped_progress_dialog outer("outer");
+			CHECK(std::string(g_progr_text) == "outer");
+			{
+				scoped_progress_dialog inner("inner");
+				CHECK(std::string(g_progr_text) == "inner");
+				CHECK(g_progr_text.load().text_count == 2);
+			}
+			CHECK(std::string(g_progr_text) == "outer");
+			CHECK(g_progr_text.load().text_count == 1);
+		}
+		CHECK(!g_progr_text);
+		CHECK(g_progr_text.load().text_index == umax);
+
+		auto churn = [] { for (int i = 0; i < 3000; i++) { scoped_progress_dialog a("a"); scoped_progress_dialog b("b"); } };
+		std::thread t1(churn), t2(churn);
+		t1.join();
+		t2.join();
+		CHECK(!g_progr_text);
+		CHECK(g_progr_text.load().text_index == umax);
+		std::printf("test_emu_waits: progress text: inner then outer then none, 12000 opens from two threads end with none\n");
+	}
+
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");
 	return failures ? 1 : 0;
 }
