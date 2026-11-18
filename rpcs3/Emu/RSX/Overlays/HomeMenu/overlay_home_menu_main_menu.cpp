@@ -61,13 +61,8 @@ namespace rsx
 			}
 
 			// get current trophy name for trophy list overlay
-			std::string trop_name;
-			{
-				current_trophy_name& current_id = g_fxo->get<current_trophy_name>();
-				std::lock_guard lock(current_id.mtx);
-				trop_name = current_id.name;
-			}
-			if (!trop_name.empty())
+			// The name published held, not copied: the menu keeps it alive
+			if (auto trop_name = g_fxo->get<current_trophy_name>().name.load(); trop_name && !trop_name->empty())
 			{
 				add_item(home_menu::fa_icon::trophy, get_localized_string(localized_string_id::HOME_MENU_TROPHIES), [trop_name = std::move(trop_name)](pad_button btn) -> page_navigation
 				{
@@ -78,7 +73,7 @@ namespace rsx
 					{
 						if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
 						{
-							manager->create<rsx::overlays::trophy_list_dialog>()->show(trop_name);
+							manager->create<rsx::overlays::trophy_list_dialog>()->show(*trop_name);
 						}
 					});
 					return page_navigation::stay;

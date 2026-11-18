@@ -4,7 +4,8 @@
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/Cell/ErrorCodes.h"
 #include <vector>
-#include <mutex>
+#include <string>
+#include "util/shared_ptr.hpp"
 
 // Error codes
 enum SceNpTrophyError : u32
@@ -169,8 +170,8 @@ public:
 	virtual s32 ShowTrophyNotification(const SceNpTrophyDetails& trophy, const std::vector<uchar>& trophyIconBfr) = 0;
 };
 
+// The name for the home menu's trophy list: published whole with no lock
 struct current_trophy_name
 {
-	std::mutex mtx;
-	std::string name;
+	atomic_ptr<std::string> name;
 };

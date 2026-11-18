@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Trophies take no lock and no clock.**
+  - **The manager:** every sceNpTrophy call took its `shared_mutex`, which kept a context alive while the call looked at it. The manager and its contexts now belong to the HLE thread, and each call looks at them there (`hle_call`). Unlocking a trophy reads the clock on the PPU thread first, since the HLE thread has no guest stack.
+  - **Registering a context:** this runs in three parts on the HLE thread: before the game's callback, after it, and after the sync with the RPCN server. Neither the game nor the network is waited on in any of them.
+  - **Registering's pacing:** it took at least 2 seconds by the wall clock, and sent each event after a 50 ms timeout if the game had not taken it. Now each event goes once the game has taken the one before (`cellSysutilCheckCallback`). If the game has not taken it within a few `retro_run` frames, the rest go anyway. There is no minimum time.
+  - **The home menu's trophy name:** this was a string under a mutex. It is now published whole (`atomic_ptr`), and the menu holds the published string rather than copying it.
+  - `std::lock_guard` count 170. A check fails if a lock or the clock comes back. No new test: only a game with trophies drives it. Not yet run on a game.
 - Four more places take no lock:
   - **The PPU JIT's modules:** 256 maps, each under a mutex, now belong to the HLE thread, and a module is added and removed there (`hle_call`). The entries stay in place, so a caller keeps its own entry. A removed module is still destroyed on the caller's thread.
   - **The shared memory area (`sys_mmapper_get_shared_memory_area`):** it was made once, under a mutex. Now the first caller to finish publishes it with a compare-and-swap. A caller that loses gives its own area back and uses the winner's.
