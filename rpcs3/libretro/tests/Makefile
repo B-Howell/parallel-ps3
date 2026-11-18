@@ -879,7 +879,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 62
+LOCK_GUARD_MAX := 45
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -1065,6 +1065,8 @@ check: all
 	@if grep -nE "std::vector<u8> (res_buf|dest_buf|p2p_data)\(|buf_copy\(" ../../Emu/Cell/lv2/sys_net.cpp ../../Emu/Cell/lv2/sys_net/*.cpp || grep -nE "while \(np::sendto_possibly_ipv6" ../../Emu/Cell/lv2/sys_net/*.cpp; then echo "sys_net: a copy in between is back"; exit 1; else echo "sys_net: sent and received in place"; fi
 	@# The NP handler's state is its thread's (on_np_thread); sceNpInit/Term one at a time by compare-and-swap; the signaling callbacks one word each: no lock in any
 	@if grep -nE "mutex|lock_guard|scoped_lock|unique_lock|reader_lock" ../../Emu/NP/np_handler.cpp ../../Emu/NP/np_handler.h ../../Emu/NP/np_requests.cpp ../../Emu/NP/np_requests_gui.cpp ../../Emu/NP/np_notifications.cpp ../../Emu/NP/np_contexts.h ../../Emu/Cell/Modules/sceNp.cpp ../../Emu/Cell/Modules/sceNp2.cpp; then echo "NP handler: a lock is back"; exit 1; else echo "NP handler: no lock"; fi
+	@# The signaling handler's peers and packets are its thread's (on_thread): no lock
+	@if grep -nE "mutex|lock_guard|scoped_lock|unique_lock|reader_lock" ../../Emu/NP/signaling_handler.cpp ../../Emu/NP/signaling_handler.h; then echo "signaling handler: a lock is back"; exit 1; else echo "signaling handler: no lock"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

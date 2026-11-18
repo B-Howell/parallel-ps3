@@ -2,7 +2,8 @@
 #include "Emu/Cell/Modules/sceNp.h"
 #include "Emu/Cell/Modules/sceNp2.h"
 #include "Utilities/Thread.h"
-#include "Utilities/mutex.h"
+#include "Emu/CPU/owner_calls.h"
+#include "Emu/Cell/Modules/hle_service.h"
 #include <unordered_map>
 #include <chrono>
 #include <optional>
@@ -128,8 +129,20 @@ private:
 	void retire_all_packets(std::shared_ptr<signaling_info>& si);
 	void stop_sig_nl(u32 conn_id, bool forceful);
 
-	mutable shared_mutex data_mutex;
+	// The peers, packets and contexts are this thread's alone: other threads
+	// hand it what they need (on_thread), so it takes no lock
+	mutable owner_calls_t calls{};
 	atomic_t<u32> wakey = 0;
+
+	static bool on_owner();
+
+	// @f run on the signaling thread, its result given back; at once there
+	template <typename F>
+	auto on_thread(F&& f) const -> decltype(f())
+	{
+		const bool here = on_owner();
+		return cpu_owner_call(here ? nullptr : &calls, here, std::forward<F>(f));
+	}
 
 	signaling_packet sig_packet{};
 

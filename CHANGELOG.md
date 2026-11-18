@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The signaling handler takes no lock.**
+  - **The handler's state:** its one mutex, over the peers, the queued packets and the contexts, was taken by 19 calls and by its thread's whole round. All of it now belongs to its thread, and calls are handed over (`on_thread`, on `owner_calls`, whose waker wakes the thread's timed wait).
+  - **Asking RPCN for a peer's details:** `init_sig1` now does this from its caller's thread, not from the signaling thread. The NP thread may itself be waiting on the signaling thread, so the two never wait on each other.
+  - **Retransmit timing:** the signaling protocol's retransmits stay on the host's clock. The peers on the other end of the network keep real time.
+  - `std::lock_guard` count 45. A check fails if a lock comes back. No new test: only a game online drives it. Not yet run online.
 - **The NP handler takes no lock.**
   - **The handler's state:** it had 14 mutexes, over the requests pending, the Matching2 results, the basic events and their handler, the messages selected, the players' history, the GUI's requests, notifications and result, the quick matches and the custom menu. All of it now belongs to the NP handler's thread, and each change is handed there (`on_np_thread`, on `owner_calls`).
   - **The NP handler's thread** now runs with RPCN or without: it returned at once before when RPCN was off. It wakes on a call handed over as well as on the client's packets and the emulator's state.

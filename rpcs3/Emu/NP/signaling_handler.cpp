@@ -41,6 +41,13 @@ void fmt_class_string<SignalingCommand>::format(std::string& out, u64 arg)
 
 signaling_handler::signaling_handler()
 {
+	owner_calls_init(&calls);
+
+	// A call handed over wakes the thread out of its timed wait
+	owner_calls_set_waker(&calls, [](void* self)
+	{
+		static_cast<signaling_handler*>(self)->wake_up();
+	}, this);
 }
 
 /////////////////////////////
@@ -49,38 +56,50 @@ signaling_handler::signaling_handler()
 
 void signaling_handler::add_sig_ctx(u32 ctx_id)
 {
-	std::lock_guard lock(data_mutex);
-	sig_ctx_lst.insert(ctx_id);
+	on_thread([&]()
+	{
+		sig_ctx_lst.insert(ctx_id);
+	});
 }
 
 void signaling_handler::remove_sig_ctx(u32 ctx_id)
 {
-	std::lock_guard lock(data_mutex);
-	sig_ctx_lst.erase(ctx_id);
+	on_thread([&]()
+	{
+		sig_ctx_lst.erase(ctx_id);
+	});
 }
 
 void signaling_handler::clear_sig_ctx()
 {
-	std::lock_guard lock(data_mutex);
-	sig_ctx_lst.clear();
+	on_thread([&]()
+	{
+		sig_ctx_lst.clear();
+	});
 }
 
 void signaling_handler::add_match2_ctx(u16 ctx_id)
 {
-	std::lock_guard lock(data_mutex);
-	match2_ctx_lst.insert(ctx_id);
+	on_thread([&]()
+	{
+		match2_ctx_lst.insert(ctx_id);
+	});
 }
 
 void signaling_handler::remove_match2_ctx(u16 ctx_id)
 {
-	std::lock_guard lock(data_mutex);
-	match2_ctx_lst.erase(ctx_id);
+	on_thread([&]()
+	{
+		match2_ctx_lst.erase(ctx_id);
+	});
 }
 
 void signaling_handler::clear_match2_ctx()
 {
-	std::lock_guard lock(data_mutex);
-	match2_ctx_lst.clear();
+	on_thread([&]()
+	{
+		match2_ctx_lst.clear();
+	});
 }
 
 void signaling_handler::signal_sig_callback(u32 conn_id, s32 event, s32 error_code)
@@ -405,8 +424,17 @@ void signaling_handler::process_incoming_messages()
 	}
 }
 
+static thread_local bool t_on_signaling_thread = false;
+
+bool signaling_handler::on_owner()
+{
+	return t_on_signaling_thread;
+}
+
 void signaling_handler::operator()()
 {
+	t_on_signaling_thread = true;
+
 	atomic_wait_timeout timeout = atomic_wait_timeout::inf;
 
 	while (thread_ctrl::state() != thread_state::aborting)
@@ -419,9 +447,10 @@ void signaling_handler::operator()()
 		wakey = 0;
 
 		if (thread_ctrl::state() == thread_state::aborting)
-			return;
+			break;
 
-		std::lock_guard lock(data_mutex);
+		// What other threads handed over, then what came in
+		owner_calls_run(&calls);
 
 		process_incoming_messages();
 
@@ -518,6 +547,11 @@ void signaling_handler::operator()()
 			timeout = atomic_wait_timeout::inf;
 		}
 	}
+
+	// No more calls: those made are run, and one made after runs on its
+	// caller's thread
+	owner_calls_close(&calls);
+	t_on_signaling_thread = false;
 }
 
 void signaling_handler::wake_up()
@@ -638,8 +672,10 @@ void signaling_handler::update_ext_si_status(std::shared_ptr<signaling_info>& si
 
 void signaling_handler::set_self_sig_info(SceNpId& npid)
 {
-	std::lock_guard lock(data_mutex);
-	sig_packet.npid = npid;
+	on_thread([&]()
+	{
+		sig_packet.npid = npid;
+	});
 }
 
 void signaling_handler::send_signaling_packet(signaling_packet& sp, u32 addr, u16 port) const
@@ -706,27 +742,29 @@ std::shared_ptr<signaling_info> signaling_handler::get_signaling_ptr(const signa
 
 void signaling_handler::start_sig(u32 conn_id, u32 addr, u16 port)
 {
-	std::lock_guard lock(data_mutex);
-	auto& sent_packet = sig_packet;
-	sent_packet.command = signal_connect;
-	sent_packet.timestamp_sender = get_micro_timestamp(steady_clock::now());
-
-	std::shared_ptr<signaling_info> si = ::at32(sig_peers, conn_id);
-
-	const auto now = steady_clock::now();
-
-	si->time_last_msg_recvd = now;
-
-	// Only update if those haven't been set before(possible we received a signal_info before)
-	if (si->addr == 0 || si->port == 0)
+	on_thread([&]()
 	{
-		si->addr = addr;
-		si->port = port;
-	}
+		auto& sent_packet = sig_packet;
+		sent_packet.command = signal_connect;
+		sent_packet.timestamp_sender = get_micro_timestamp(steady_clock::now());
 
-	send_signaling_packet(sent_packet, si->addr, si->port);
-	queue_signaling_packet(sent_packet, si, now + REPEAT_CONNECT_DELAY);
-	wake_up();
+		std::shared_ptr<signaling_info> si = ::at32(sig_peers, conn_id);
+
+		const auto now = steady_clock::now();
+
+		si->time_last_msg_recvd = now;
+
+		// Only update if those haven't been set before(possible we received a signal_info before)
+		if (si->addr == 0 || si->port == 0)
+		{
+			si->addr = addr;
+			si->port = port;
+		}
+
+		send_signaling_packet(sent_packet, si->addr, si->port);
+		queue_signaling_packet(sent_packet, si, now + REPEAT_CONNECT_DELAY);
+		wake_up();
+	});
 }
 
 void signaling_handler::stop_sig_nl(u32 conn_id, bool forceful)
@@ -759,40 +797,44 @@ void signaling_handler::stop_sig_nl(u32 conn_id, bool forceful)
 
 void signaling_handler::stop_sig(u32 conn_id, bool forceful)
 {
-	std::lock_guard lock(data_mutex);
-	stop_sig_nl(conn_id, forceful);
+	on_thread([&]()
+	{
+		stop_sig_nl(conn_id, forceful);
+	});
 }
 
 void signaling_handler::disconnect_sig2_users(u64 room_id)
 {
-	std::lock_guard lock(data_mutex);
-
-	for (auto& [conn_id, si] : sig_peers)
+	on_thread([&]()
 	{
-		if (si->room_id == room_id)
+		for (auto& [conn_id, si] : sig_peers)
 		{
-			stop_sig_nl(conn_id, false);
+			if (si->room_id == room_id)
+			{
+				stop_sig_nl(conn_id, false);
+			}
 		}
-	}
+	});
 }
 
 void signaling_handler::send_information_packets(u32 addr, u16 port, const SceNpId& npid)
 {
-	std::lock_guard lock(data_mutex);
+	on_thread([&]()
+	{
+		const u32 conn_id = get_always_conn_id(npid);
+		std::shared_ptr<signaling_info> si = ::at32(sig_peers, conn_id);
+		si->addr = addr;
+		si->port = port;
+		si->info_counter = 10;
 
-	const u32 conn_id = get_always_conn_id(npid);
-	std::shared_ptr<signaling_info> si = ::at32(sig_peers, conn_id);
-	si->addr = addr;
-	si->port = port;
-	si->info_counter = 10;
+		auto& sent_packet = sig_packet;
+		sent_packet.command = signal_info;
 
-	auto& sent_packet = sig_packet;
-	sent_packet.command = signal_info;
-
-	retire_packet(si, signal_info);
-	send_signaling_packet(sent_packet, addr, port);
-	queue_signaling_packet(sent_packet, si, steady_clock::now() + REPEAT_INFO_DELAY);
-	wake_up();
+		retire_packet(si, signal_info);
+		send_signaling_packet(sent_packet, addr, port);
+		queue_signaling_packet(sent_packet, si, steady_clock::now() + REPEAT_INFO_DELAY);
+		wake_up();
+	});
 }
 
 u32 signaling_handler::get_always_conn_id(const SceNpId& npid)
@@ -813,16 +855,26 @@ u32 signaling_handler::get_always_conn_id(const SceNpId& npid)
 
 u32 signaling_handler::init_sig1(const SceNpId& npid)
 {
-	std::lock_guard lock(data_mutex);
+	bool request = false;
 
-	const u32 conn_id = get_always_conn_id(npid);
-
-	if (sig_peers[conn_id]->conn_status == SCE_NP_SIGNALING_CONN_STATUS_INACTIVE)
+	const u32 conn_id = on_thread([&]() -> u32
 	{
-		sign_log.trace("Creating new sig1 connection and requesting infos from RPCN");
-		sig_peers[conn_id]->conn_status = SCE_NP_SIGNALING_CONN_STATUS_PENDING;
+		const u32 conn_id = get_always_conn_id(npid);
 
-		// Request peer infos from RPCN
+		if (sig_peers[conn_id]->conn_status == SCE_NP_SIGNALING_CONN_STATUS_INACTIVE)
+		{
+			sign_log.trace("Creating new sig1 connection and requesting infos from RPCN");
+			sig_peers[conn_id]->conn_status = SCE_NP_SIGNALING_CONN_STATUS_PENDING;
+			request = true;
+		}
+
+		return conn_id;
+	});
+
+	// Request peer infos from RPCN: from here, not from the signaling
+	// thread, which the NP thread may be waiting on
+	if (request)
+	{
 		auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 		nph.req_sign_infos(np::npid_to_string(npid), conn_id);
 	}
@@ -832,52 +884,58 @@ u32 signaling_handler::init_sig1(const SceNpId& npid)
 
 u32 signaling_handler::init_sig2(const SceNpId& npid, u64 room_id, u16 member_id)
 {
-	std::lock_guard lock(data_mutex);
-	u32 conn_id = get_always_conn_id(npid);
-	auto& si = ::at32(sig_peers, conn_id);
-	si->room_id = room_id;
-	si->member_id = member_id;
+	return on_thread([&]() -> u32
+	{
+		u32 conn_id = get_always_conn_id(npid);
+		auto& si = ::at32(sig_peers, conn_id);
+		si->room_id = room_id;
+		si->member_id = member_id;
 
-	// If connection exists from prior state notify
-	if (si->conn_status == SCE_NP_SIGNALING_CONN_STATUS_ACTIVE)
-		signal_sig2_callback(si->room_id, si->member_id, SCE_NP_MATCHING2_SIGNALING_EVENT_Established, CELL_OK);
-	else
-		si->conn_status = SCE_NP_SIGNALING_CONN_STATUS_PENDING;
+		// If connection exists from prior state notify
+		if (si->conn_status == SCE_NP_SIGNALING_CONN_STATUS_ACTIVE)
+			signal_sig2_callback(si->room_id, si->member_id, SCE_NP_MATCHING2_SIGNALING_EVENT_Established, CELL_OK);
+		else
+			si->conn_status = SCE_NP_SIGNALING_CONN_STATUS_PENDING;
 
-	return conn_id;
+		return conn_id;
+	});
 }
 
 std::optional<u32> signaling_handler::get_conn_id_from_npid(const SceNpId& npid) const
 {
-	std::lock_guard lock(data_mutex);
+	return on_thread([&]() -> std::optional<u32>
+	{
+		std::string npid_str = np::npid_to_string(npid);
+		if (npid_to_conn_id.contains(npid_str))
+			return ::at32(npid_to_conn_id, npid_str);
 
-	std::string npid_str = np::npid_to_string(npid);
-	if (npid_to_conn_id.contains(npid_str))
-		return ::at32(npid_to_conn_id, npid_str);
-
-	return std::nullopt;
+		return std::nullopt;
+	});
 }
 
 std::optional<signaling_info> signaling_handler::get_sig_infos(u32 conn_id) const
 {
-	std::lock_guard lock(data_mutex);
-	if (sig_peers.contains(conn_id))
-		return *::at32(sig_peers, conn_id);
+	return on_thread([&]() -> std::optional<signaling_info>
+	{
+		if (sig_peers.contains(conn_id))
+			return *::at32(sig_peers, conn_id);
 
-	return std::nullopt;
+		return std::nullopt;
+	});
 }
 
 std::optional<u32> signaling_handler::get_conn_id_from_addr(u32 addr, u16 port) const
 {
-	std::lock_guard lock(data_mutex);
-
-	for (const auto& [conn_id, conn_info] : sig_peers)
+	return on_thread([&]() -> std::optional<u32>
 	{
-		if (conn_info && std::bit_cast<u32, be_t<u32>>(conn_info->addr) == addr && conn_info->port == port)
+		for (const auto& [conn_id, conn_info] : sig_peers)
 		{
-			return conn_id;
+			if (conn_info && std::bit_cast<u32, be_t<u32>>(conn_info->addr) == addr && conn_info->port == port)
+			{
+				return conn_id;
+			}
 		}
-	}
 
-	return std::nullopt;
+		return std::nullopt;
+	});
 }
