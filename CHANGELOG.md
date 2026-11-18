@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellGem's thread is paced by retro_run's frames, not a host timer.** Not yet run on a game; it matters only to games that use the PlayStation Move.
+  - **Before:** it woke on a host timeout to update the controllers' connections and calibration 10 times a second. After loading a savestate made during a video conversion, it waited up to 5 seconds of the host's time for the game to finish it.
+  - **Now:** it wakes once a frame, or when the game asks, and updates when 100 ms of the game's time (`get_hw_clock_time`) has passed since the last update. The savestate wait is up to 5 seconds of the game's time, looked at once a frame. A paused frontend now pauses both.
+  - **Tests:** the thread needs a game that uses the Move, so there is no test of its own; a check fails if either host timeout comes back.
+
 - **cellVdec's decoder thread waits for room for a picture without a timeout.** Not yet run on a game.
   - **Before:** while the game's picture queue was full, it looked again every 10 ms to see whether it had been told to stop, and counted those looks to time its "waiting 5 seconds" report.
   - **Now:** it waits untimed. The game taking a picture wakes it, as before. A close wakes it, as before. A new sequence now wakes it too (`cellVdecStartSeq` notifies the queue); before, that waited on the poll. A stop wakes it through the PPU's own state, since it waits as a PPU waits (`cpu_flag::wait`).

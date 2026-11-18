@@ -1456,8 +1456,24 @@ void gem_config_data::operator()()
 	if (initialized() && video_conversion_in_progress)
 	{
 		// Wait for cellGemConvertVideoFinish. The initial savestate loading may take a while.
+		// For up to 5 seconds of the game's time, looked at a frame at a time
 		m_done = 2; // Use special value 2 for this case
-		thread_ctrl::wait_on(m_done, 2, 5'000'000);
+		const u64 since = get_hw_clock_time();
+		while (m_done == 2u && get_hw_clock_time() - since < 5'000'000 && thread_ctrl::state() != thread_state::aborting && !Emu.IsStopped())
+		{
+			const u32 frames_seen = g_libretro_events.load();
+
+			if (m_done != 2u)
+			{
+				break;
+			}
+
+			thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+			{
+				list.template set<0>(m_done, 2u);
+				list.template set<1>(g_libretro_events, frames_seen);
+			});
+		}
 
 		// Just mark this conversion as complete (there's no real downside to this, except for a black image)
 		video_conversion_in_progress = false;
@@ -1466,21 +1482,20 @@ void gem_config_data::operator()()
 
 	while (thread_ctrl::state() != thread_state::aborting && !Emu.IsStopped())
 	{
-		u64 timeout = umax;
+		// Read before the look, so a frame after it is not missed
+		const u32 frames_seen = g_libretro_events.load();
+		bool by_frame = false;
 
 		if (initialized() && !video_conversion_in_progress)
 		{
-			constexpr u64 update_timeout_us = 100'000; // Update controllers at 10Hz
+			// Update controllers at 10Hz of the game's time, looked at
+			// once a frame (retro_run), not on a host timer
+			constexpr u64 update_timeout_us = 100'000;
 			const u64 now_us = get_hw_clock_time();
-			const u64 elapsed_us = now_us - last_update_us;
+			by_frame = true;
 
-			if (elapsed_us < update_timeout_us)
+			if (now_us - last_update_us >= update_timeout_us)
 			{
-				timeout = update_timeout_us - elapsed_us;
-			}
-			else
-			{
-				timeout = update_timeout_us;
 				last_update_us = now_us;
 
 				change([this](gem_shared& gs)
@@ -1494,7 +1509,18 @@ void gem_config_data::operator()()
 
 		if (!m_wake_up)
 		{
-			thread_ctrl::wait_on(m_wake_up, 0, timeout);
+			if (by_frame)
+			{
+				thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+				{
+					list.template set<0>(m_wake_up, 0u);
+					list.template set<1>(g_libretro_events, frames_seen);
+				});
+			}
+			else
+			{
+				thread_ctrl::wait_on(m_wake_up, 0);
+			}
 		}
 
 		m_wake_up = 0;
