@@ -186,9 +186,9 @@ void Emulator::CallFromMainThread(std::function<void()>&& func, atomic_t<u32>* w
 	ensure(func);
 
 	std::function<void()> final_func = [this, before = IsStopped(true), track_emu_state, thread_name = thread_ctrl::get_name(), src = src_loc
-		, count = (stop_ctr == umax ? +m_stop_ctr : stop_ctr), func = std::move(func)]
+		, count = (stop_ctr == umax ? this->stop_ctr() : stop_ctr), func = std::move(func)]
 	{
-		const bool call_it = (!track_emu_state || (count == m_stop_ctr && before == IsStopped(true)));
+		const bool call_it = (!track_emu_state || (count == this->stop_ctr() && before == IsStopped(true)));
 
 		sys_log.trace("Callback from thread '%s' at [%s] is %s", thread_name, src, call_it ? "called" : "skipped");
 
@@ -889,7 +889,7 @@ game_boot_result Emulator::BootGame(const std::string& path, const std::string& 
 {
 	sys_log.notice("Emulator::BootGame: path='%s', title_id='%s', direct=%d, config_mode='%s', config_path='%s', db_config=(set=%d, valid=%d)", path, title_id, direct, config_mode, config_path, db_config.has_value(), db_config && !db_config->empty());
 
-	if (m_restrict_emu_state_change)
+	if (retro_atomic_load_acquire_64(&m_restrict_emu_state_change))
 	{
 		return game_boot_result::currently_restricted;
 	}
@@ -898,11 +898,11 @@ game_boot_result Emulator::BootGame(const std::string& path, const std::string& 
 
 	auto restore_on_no_boot = [&](game_boot_result result)
 	{
-		if (m_state == system_state::stopped || result != game_boot_result::no_errors)
+		if (state() == system_state::stopped || result != game_boot_result::no_errors)
 		{
 			ensure(IsStopped());
 
-			if (m_state == system_state::stopped)
+			if (state() == system_state::stopped)
 			{
 				std::tie(m_path, m_path_original, argv, envp, data, disc, klic, hdd1, m_config_mode, m_config_path, m_db_config) = std::move(save_args);
 
@@ -914,7 +914,7 @@ game_boot_result Emulator::BootGame(const std::string& path, const std::string& 
 			}
 			else
 			{
-				ensure(m_state == system_state::stopping);
+				ensure(state() == system_state::stopping);
 
 				// Execute after Kill() is done
 				Emu.after_kill_callback = [this, result, save_args = std::move(save_args)]() mutable
@@ -1013,12 +1013,12 @@ static game_boot_result check_disc_key(const std::string& path)
 
 game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch, usz recursion_count)
 {
-	if (recursion_count == 0 && m_restrict_emu_state_change)
+	if (recursion_count == 0 && retro_atomic_load_acquire_64(&m_restrict_emu_state_change))
 	{
 		return game_boot_result::currently_restricted;
 	}
 
-	if (recursion_count == 0 && m_state != system_state::stopped)
+	if (recursion_count == 0 && state() != system_state::stopped)
 	{
 		return game_boot_result::still_running;
 	}
@@ -1035,7 +1035,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 				return;
 			}
 
-			_this->m_state.compare_and_swap_test(system_state::loading, system_state::stopped);
+			_this->state_cas(system_state::loading, system_state::stopped);
 			_this->state_changed();
 
 			if (_this->IsStopped())
@@ -1045,7 +1045,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 		}
 	} cleanup{this, recursion_count};
 
-	ensure(recursion_count != 0 || m_state.compare_and_swap_test(system_state::stopped, system_state::loading));
+	ensure(recursion_count != 0 || state_cas(system_state::stopped, system_state::loading));
 	state_changed();
 
 	const auto guard = MakeEmulationStateGuard();
@@ -1752,7 +1752,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 		// Special boot mode (directory scan)
 		if (!launching_from_disc_archive && fs::is_dir(m_path))
 		{
-			m_state = system_state::ready;
+			set_state(system_state::ready);
 			state_changed();
 			g_emu_callbacks.on_ready();
 			ensure(g_fxo->init<main_ppu_module<lv2_obj>>());
@@ -2430,7 +2430,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 			}
 		}
 
-		m_state = system_state::ready;
+		set_state(system_state::ready);
 		state_changed();
 
 		ppu_prx_object ppu_prx;
@@ -2698,15 +2698,15 @@ void Emulator::Run(bool start_playtime)
 
 	g_emu_callbacks.on_run(start_playtime);
 
-	m_pause_start_time = 0;
-	m_pause_amend_time = 0;
+	retro_atomic_store_release_64(&m_pause_start_time, 0);
+	retro_atomic_store_release_64(&m_pause_amend_time, 0);
 
 
 	rpcs3::utils::configure_logs();
 
-	m_state = system_state::starting;
+	set_state(system_state::starting);
 	state_changed();
-	m_state.notify_all();
+	retro_waitaddr_notify_all(&m_state);
 
 	if (g_cfg.misc.prevent_display_sleep)
 	{
@@ -2841,7 +2841,7 @@ void Emulator::FinalizeRunRequest()
 
 	lv2_obj::make_scheduler_ready();
 
-	m_state.compare_and_swap_test(system_state::starting, system_state::running);
+	state_cas(system_state::starting, system_state::running);
 	state_changed();
 
 	m_ar.reset();
@@ -2876,27 +2876,19 @@ bool Emulator::Pause(bool freeze_emulation, bool show_resume_message)
 	const system_state pause_state = freeze_emulation ? system_state::frozen : system_state::paused;
 
 	// Try to pause
-	const auto [old_state, done] = m_state.fetch_op([&](system_state& state)
+	system_state old_state = state();
+	bool done = false;
+
+	while (old_state == system_state::running || (freeze_emulation && (old_state == system_state::ready || old_state == system_state::paused)))
 	{
-		if (state == system_state::running)
+		if (state_cas(old_state, pause_state))
 		{
-			state = pause_state;
-			return true;
+			done = true;
+			break;
 		}
 
-		if (!freeze_emulation)
-		{
-			return false;
-		}
-
-		if (state == system_state::ready || state == system_state::paused)
-		{
-			state = pause_state;
-			return true;
-		}
-
-		return false;
-	});
+		old_state = state();
+	}
 
 	if (!done)
 	{
@@ -2998,7 +2990,7 @@ bool Emulator::Pause(bool freeze_emulation, bool show_resume_message)
 	}
 
 	// Update pause start time
-	if (m_pause_start_time.exchange(start))
+	if (retro_atomic_exchange_64(&m_pause_start_time, static_cast<s64>(start)))
 	{
 		sys_log.error("Emulator::Pause() error: concurrent access");
 	}
@@ -3011,7 +3003,7 @@ bool Emulator::Pause(bool freeze_emulation, bool show_resume_message)
 
 void Emulator::Resume()
 {
-	if (m_state != system_state::paused)
+	if (state() != system_state::paused)
 	{
 		return;
 	}
@@ -3049,7 +3041,7 @@ void Emulator::Resume()
 	}
 
 	// Try to resume
-	if (!m_state.compare_and_swap_test(system_state::paused, system_state::running))
+	if (!state_cas(system_state::paused, system_state::running))
 	{
 		return;
 	}
@@ -3057,12 +3049,12 @@ void Emulator::Resume()
 	state_changed();
 
 	// Get pause start time
-	const u64 time = m_pause_start_time.exchange(0);
+	const u64 time = static_cast<u64>(retro_atomic_exchange_64(&m_pause_start_time, 0));
 
 	// Try to increment summary pause time
 	if (time)
 	{
-		m_pause_amend_time += get_system_time() - time;
+		retro_atomic_fetch_add_64(&m_pause_amend_time, static_cast<s64>(get_system_time() - time));
 	}
 	else
 	{
@@ -3127,9 +3119,9 @@ void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savesta
 	do
 	{
 		old_emu_id = GetEmulationIdentifier();
-		old_state = m_state.load();
+		old_state = state();
 	}
-	while (old_emu_id != GetEmulationIdentifier() || old_state != m_state.load());
+	while (old_emu_id != GetEmulationIdentifier() || old_state != state());
 
 	if (old_state == system_state::stopped || old_state == system_state::stopping)
 	{
@@ -3137,20 +3129,20 @@ void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savesta
 		{
 			qt_events_aware_op(5, [&]()
 			{
-				return old_emu_id != GetEmulationIdentifier() || m_state != system_state::stopping;
+				return old_emu_id != GetEmulationIdentifier() || state() != system_state::stopping;
 			});
 		}
 
 		return;
 	}
 
-	if (!savestate && m_emu_state_close_pending)
+	if (!savestate && IsClosePending())
 	{
 		if (!async_op)
 		{
 			qt_events_aware_op(5, [&]()
 			{
-				return old_emu_id != GetEmulationIdentifier() || m_state != system_state::stopping;
+				return old_emu_id != GetEmulationIdentifier() || state() != system_state::stopping;
 			});
 		}
 
@@ -3185,7 +3177,7 @@ void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savesta
 		{
 			qt_events_aware_op(5, [&]()
 			{
-				return (old_emu_id != GetEmulationIdentifier() || m_state == system_state::stopped);
+				return (old_emu_id != GetEmulationIdentifier() || state() == system_state::stopped);
 			});
 		}
 
@@ -3231,7 +3223,7 @@ void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savesta
 				});
 			}
 
-			if (static_cast<u64>(info) != m_stop_ctr || Emu.IsStopped())
+			if (static_cast<u64>(info) != stop_ctr() || Emu.IsStopped())
 			{
 				return true;
 			}
@@ -3289,7 +3281,7 @@ void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savesta
 
 		qt_events_aware_op(5, [&]()
 		{
-			return (old_emu_id != GetEmulationIdentifier() || m_state == system_state::stopped);
+			return (old_emu_id != GetEmulationIdentifier() || state() == system_state::stopped);
 		});
 	}
 }
@@ -3313,7 +3305,7 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 
 		if (!save_stage || !save_stage->prepared)
 		{
-			if (m_emu_state_close_pending.exchange(true))
+			if (retro_atomic_exchange_int(&m_emu_state_close_pending, 1))
 			{
 				return;
 			}
@@ -3356,7 +3348,7 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 						rsx::overlays::queue_message(localized_string_id::SAVESTATE_FAILED_DUE_TO_SPU);
 					}
 
-					m_emu_state_close_pending = false;
+					retro_atomic_store_release_int(&m_emu_state_close_pending, 0);
 					state_changed();
 
 					CallFromMainThread([pause = std::move(pause_thread)]()
@@ -3401,7 +3393,7 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 							"\nThe game is probably displaying a saving cicrle or other gesture to indicate that it is saving.");
 					}
 
-					m_emu_state_close_pending = false;
+					retro_atomic_store_release_int(&m_emu_state_close_pending, 0);
 					state_changed();
 
 					CallFromMainThread([pause = std::move(pause_thread)]()
@@ -3441,7 +3433,7 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 	{
 		//
 	}
-	else if (m_emu_state_close_pending.exchange(true))
+	else if (retro_atomic_exchange_int(&m_emu_state_close_pending, 1))
 	{
 		return;
 	}
@@ -3463,21 +3455,19 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 		m_config_mode = cfg_mode::custom;
 		read_used_savestate_versions();
 		m_savestate_extension_flags1 = {};
-		m_emu_state_close_pending = false;
+		retro_atomic_store_release_int(&m_emu_state_close_pending, 0);
 		state_changed();
 		m_precompilation_option = {};
 	};
 
-	if (system_state old_state = m_state.fetch_op([](system_state& state)
-	{
-		if (state == system_state::stopping || state == system_state::stopped)
-		{
-			return false;
-		}
+	system_state old_state = state();
 
-		state = system_state::stopping;
-		return true;
-	}).first; old_state <= system_state::stopping)
+	while (old_state != system_state::stopping && old_state != system_state::stopped && !state_cas(old_state, system_state::stopping))
+	{
+		old_state = state();
+	}
+
+	if (old_state <= system_state::stopping)
 	{
 		if (old_state == system_state::stopping)
 		{
@@ -3512,7 +3502,7 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 	}
 
 	// Signal threads
-	m_state.notify_all();
+	retro_waitaddr_notify_all(&m_state);
 
 	if (auto rsx = g_fxo->try_get<rsx::thread>())
 	{
@@ -3952,8 +3942,8 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 
 			jit_runtime::finalize();
 
-			m_stop_ctr++;
-			m_stop_ctr.notify_all();
+			// Nothing waits on it: a stop wakes waiters through m_state
+			retro_atomic_fetch_add_64(&m_stop_ctr, 1);
 
 			// Boot arg cleanup (preserved in the case restarting)
 			reset_emu_state();
@@ -3966,7 +3956,7 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 			initialize_timebased_time(0, true);
 
 			// Complete the operation
-			m_state = system_state::stopped;
+			set_state(system_state::stopped);
 			state_changed();
 
 			g_emu_callbacks.on_stop();
@@ -3998,7 +3988,7 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 
 game_boot_result Emulator::Restart(bool graceful, bool reset_path)
 {
-	if (m_state == system_state::stopping)
+	if (state() == system_state::stopping)
 	{
 		// Emulation stop is in progress
 		return game_boot_result::still_running;
@@ -4023,7 +4013,7 @@ game_boot_result Emulator::Restart(bool graceful, bool reset_path)
 		}
 
 		// Allow Boot (guarded by GracefulShutdown, which is the scope of this callback)
-		m_restrict_emu_state_change = 0;
+		retro_atomic_store_release_64(&m_restrict_emu_state_change, 0);
 
 		// Reload with prior configs.
 		if (const auto error = Load(m_title_id); error != game_boot_result::no_errors)

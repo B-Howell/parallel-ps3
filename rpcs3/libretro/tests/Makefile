@@ -1159,6 +1159,10 @@ check: all
 	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/cellVdec.cpp; then echo "cellVdec has an atomic_t again"; exit 1; else echo "cellVdec: retro_atomic"; fi
 	@# g_libretro_events is a retro_atomic word: atomic_t must not come back to it
 	@if grep -rnE --exclude=Makefile "atomic_t<u32> g_libretro_events|g_libretro_events(\.|->)(load|wait|notify|store)\(" ../../Emu ../../libretro ../../Input; then echo "g_libretro_events is atomic_t again"; exit 1; else echo "g_libretro_events is retro_atomic"; fi
+	@# Kill moves every state but stopping and stopped to stopping: loading (below stopping in the enum) is one of them
+	@if ! grep -q "while (old_state != system_state::stopping && old_state != system_state::stopped && !state_cas(old_state, system_state::stopping))" ../../Emu/System.cpp; then echo "Kill: a loading emulator may no longer be moved to stopping"; exit 1; else echo "Kill moves loading to stopping"; fi
+	@# the Emulator's state fields are retro_atomic: atomic_t must not come back to them
+	@if grep -nE "atomic_t<(system_state|u64|bool)> m_(state|pause_start_time|pause_amend_time|stop_ctr|emu_state_close_pending|restrict_emu_state_change)\b" ../../Emu/System.h; then echo "the Emulator's state fields are atomic_t again"; exit 1; else echo "the Emulator's state fields are retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

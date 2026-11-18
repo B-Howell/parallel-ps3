@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The emulator's own state is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** `Emulator`'s state (stopped, loading, running, paused and so on), its pause start and pause total times, its stop counter, its close-pending flag and its count of guards against a boot are `retro_atomic_int_t` and `retro_atomic_64_t`. The class has `state()`, `set_state()` and `state_cas()` for the state; `Pause` and `Kill`, which changed it with a `fetch_op`, now do it with a compare-and-swap loop. The guard count's "down by one unless 0" is a compare-and-swap loop too.
+  - **Waits:** `WaitReady` (the RSX thread waiting for the emulator to leave ready) waits on the state word with `retro_waitaddr`; `Run` and `Kill` wake it as before. The stop counter's wake is gone, since nothing waits on it.
+  - **Tests:** the changes of state need a booted game, so there is no test of the swaps themselves. `test_emu_waits` still covers a wait for the state woken by the change. A check fails if `Kill` stops moving a loading emulator to stopping (`loading` sits below `stopping` in the enum, so an ordered test would miss it); it was shown to fail on that change. A check fails if `atomic_t` comes back to these fields.
+
+
+
 - **`g_libretro_events`, the frame counter every wait for a retro_run is paced by, is off `atomic_t`.** Not yet run on a game.
   - **What changed:** it is a `retro_atomic_int_t`. `System.h` has four small functions for it: `libretro_event()` (count a frame and wake every waiter), `libretro_events_seen()`, `libretro_events_wait()` for a thread that is not a named thread, and `libretro_events_wait_named()`, whose wait a join also wakes. Wait lists that held it hold it through `set_raw`. The 18 files that read or waited on it use these; nothing else changed in how they wait.
   - **Tests:** `test_emu_waits` covers a frame wait woken by a frame, a named thread waiting for a frame being joined with no retro_run, and a wait list holding a `retro_atomic` word. The close-hang check now also fails if the progress dialog's thread waits with `libretro_events_wait` (which a join does not wake); it was shown to fail on that change. A check fails if `atomic_t` comes back to the counter.

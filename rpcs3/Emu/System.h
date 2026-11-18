@@ -124,13 +124,21 @@ inline void libretro_wait_on(atomic_t<T>& word, T old)
 
 class Emulator final
 {
-	atomic_t<system_state> m_state{system_state::stopped};
+	// The emulator's state (system_state). WaitReady waits on it; Run and
+	// Kill wake it
+	mutable retro_atomic_int_t m_state{static_cast<int>(system_state::stopped)};
 
-	atomic_t<u64> m_pause_start_time{0}; // set when paused
-	atomic_t<u64> m_pause_amend_time{0}; // increased when resumed
-	atomic_t<u64> m_stop_ctr{1}; // Increments when emulation is stopped
-	atomic_t<bool> m_emu_state_close_pending = false;
-	atomic_t<u64> m_restrict_emu_state_change{0};
+	system_state state() const { return static_cast<system_state>(retro_atomic_load_acquire_int(&m_state)); }
+	void set_state(system_state to) { retro_atomic_store_release_int(&m_state, static_cast<int>(to)); }
+	bool state_cas(system_state from, system_state to) { return retro_atomic_cas_int(&m_state, static_cast<int>(from), static_cast<int>(to)) != 0; }
+
+	retro_atomic_64_t m_pause_start_time{0}; // set when paused
+	mutable retro_atomic_64_t m_pause_amend_time{0}; // increased when resumed
+	mutable retro_atomic_64_t m_stop_ctr{1}; // Increments when emulation is stopped
+	mutable retro_atomic_int_t m_emu_state_close_pending{0};
+	mutable retro_atomic_64_t m_restrict_emu_state_change{0};
+
+	u64 stop_ctr() const { return static_cast<u64>(retro_atomic_load_acquire_64(&m_stop_ctr)); }
 
 	// The state or a stop pending changed
 	void state_changed()
@@ -225,10 +233,10 @@ public:
 	{
 		if (subtract_one)
 		{
-			return stop_counter_t{m_stop_ctr - 1};
+			return stop_counter_t{stop_ctr() - 1};
 		}
 
-		return stop_counter_t{+m_stop_ctr};
+		return stop_counter_t{stop_ctr()};
 	}
 
 	void CallFromMainThread(std::function<void()>&& func, stop_counter_t counter,
@@ -247,7 +255,7 @@ public:
 	 */
 	void SetTestMode()
 	{
-		m_state = system_state::running;
+		set_state(system_state::running);
 		state_changed();
 	}
 
@@ -354,7 +362,7 @@ public:
 
 	u64 GetPauseTime() const
 	{
-		return m_pause_amend_time;
+		return static_cast<u64>(retro_atomic_load_acquire_64(&m_pause_amend_time));
 	}
 
 	const std::string& GetUsedConfig() const
@@ -391,14 +399,18 @@ public:
 		explicit emulation_state_guard_t(Emulator* this0) noexcept
 			: _this(this0)
 		{
-			_this->m_restrict_emu_state_change++;
+			retro_atomic_fetch_add_64(&_this->m_restrict_emu_state_change, 1);
 		}
 
 		~emulation_state_guard_t() noexcept
 		{
 			if (active)
 			{
-				_this->m_restrict_emu_state_change.try_dec(0);
+				// Down by one unless already 0
+				for (s64 n = retro_atomic_load_acquire_64(&_this->m_restrict_emu_state_change); n > 0 && !retro_atomic_cas_64(&_this->m_restrict_emu_state_change, n, n - 1);)
+				{
+					n = retro_atomic_load_acquire_64(&_this->m_restrict_emu_state_change);
+				}
 			}
 		}
 
@@ -433,7 +445,7 @@ public:
 
 	bool IsBootingRestricted() const
 	{
-		return m_restrict_emu_state_change != 0;
+		return retro_atomic_load_acquire_64(&m_restrict_emu_state_change) != 0;
 	}
 
 private:
@@ -452,16 +464,22 @@ public:
 	bool Quit(bool force_quit);
 	static void CleanUp();
 
-	bool IsRunning() const { return m_state == system_state::running; }
-	bool IsPaused() const { system_state state = m_state; return state >= system_state::paused && state <= system_state::frozen; }
-	bool IsPausedOrReady() const { return m_state >= system_state::paused; }
-	bool IsStopped(bool test_fully = false) const { return test_fully ? m_state == system_state::stopped : m_state <= system_state::stopping; }
-	bool IsReady()   const { return m_state == system_state::ready; }
-	bool IsStarting() const { return m_state == system_state::starting; }
+	bool IsRunning() const { return state() == system_state::running; }
+	bool IsPaused() const { const system_state s = state(); return s >= system_state::paused && s <= system_state::frozen; }
+	bool IsPausedOrReady() const { return state() >= system_state::paused; }
+	bool IsStopped(bool test_fully = false) const { return test_fully ? state() == system_state::stopped : state() <= system_state::stopping; }
+	bool IsReady()   const { return state() == system_state::ready; }
+	bool IsStarting() const { return state() == system_state::starting; }
 	// A stop (or a savestate's preparation for one) is under way
-	bool IsClosePending() const { return m_emu_state_close_pending; }
-	void WaitReady() const { m_state.wait(system_state::ready); }
-	auto GetStatus(bool fixup = true) const { system_state state = m_state; return fixup && state == system_state::frozen ? system_state::paused : fixup && state == system_state::stopping ? system_state::stopped : state; }
+	bool IsClosePending() const { return retro_atomic_load_acquire_int(&m_emu_state_close_pending) != 0; }
+
+	// Until the state leaves ready (a wake may be spurious: the caller looks again)
+	void WaitReady() const
+	{
+		const retro_waitaddr_t w{&m_state, static_cast<u32>(system_state::ready)};
+		retro_waitaddr_wait(&w, 1, -1);
+	}
+	auto GetStatus(bool fixup = true) const { const system_state s = state(); return fixup && s == system_state::frozen ? system_state::paused : fixup && s == system_state::stopping ? system_state::stopped : s; }
 
 	bool HasGui() const { return m_has_gui; }
 	void SetHasGui(bool has_gui) { m_has_gui = has_gui; }
