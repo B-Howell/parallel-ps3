@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **libretro-common's rslc synced from RetroArch: types are found by a hash, and the SPIR-V reader's context is off the stack.**
+  - **Types by hash (RetroArch's "rslc: types found by a hash, not a walk of every type"):** rslc found each type it was asked for by walking every type made in the compile so far. On this core's decompiled programs that was several percent of a compile. Measured on the 1774 stages `test_shader_corpus` gathers (SHADER_CORPUS_DIR), compiled in one process best of 5: 0.181 to 0.170 ms a stage, about 6%, and the SPIR-V is the same word for word. The fixed and known-module tables (`vk_fixed_spirv.c`, `vk_known_spirv_data.c`) are unchanged, which their checks hold.
+  - **The reader's context (RetroArch's "rslc: the SPIR-V reader's context off the stack"):** this came in with the sync; the core does not read SPIR-V.
+  - **Where a compile's time goes now:** the preprocessor and lexer are about 60% of it and the parser about 20%; about 93% of a program's GLSL is the shared helpers the decompilers put in every program. That is what building the programs by calls instead of writing them (AGENTS.md) takes away.
+
 - **An overlay's `visible` flag is `retro_atomic`, which finishes the overlays' move off `atomic_t`.** Not yet run on a game.
   - **What changed:** each overlay's "drawn" flag (dialogs, messages, the trophy notice, the performance overlay, the cursors) is `retro_atomic_int_t`, with release stores and acquire loads in the sixteen files that set or read it. The plain `visible` of an overlay element (a message box inside a dialog, a slider's parts) is not atomic and is not touched.
   - **The on-screen keyboard:** its `set_visible` now swaps the flag in one exchange and tells the game of the change only when the old value differs, where it read and then wrote. Its parameter is renamed so it no longer hides the flag.
