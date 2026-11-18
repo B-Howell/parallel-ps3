@@ -34,6 +34,17 @@ namespace rsx
 			return m_iotable->get_addr(address);
 		}
 
+		retro_atomic_int_t g_get_waiters{0};
+
+		// A waiter on get, if there is one, told it moved
+		static inline void notify_get(RsxDmaControl* ctrl)
+		{
+			if (retro_atomic_load_seq_cst_int(&g_get_waiters))
+			{
+				ctrl->get.notify_all();
+			}
+		}
+
 		void FIFO_control::sync_get() const
 		{
 			if (m_fifo_pos - m_cache_addr <= m_cache_size)
@@ -45,6 +56,8 @@ namespace rsx
 			{
 				m_ctrl->get.release(m_fifo_pos);
 			}
+
+			notify_get(m_ctrl);
 		}
 
 		void FIFO_control::restore_state(u32 cmd, u32 count, u32 position)
@@ -229,12 +242,14 @@ namespace rsx
 				m_memwatch_addr = get;
 				m_memwatch_cmp = spin_cmd;
 				m_ctrl->get.release(get);
+				notify_get(m_ctrl);
 				return;
 			}
 
 			// Update ctrl registers
 			m_ctrl->get.release(m_fifo_pos = get);
 			m_remaining_commands = 0;
+			notify_get(m_ctrl);
 		}
 
 		std::span<const u32> FIFO_control::get_current_arg_ptr(u32 length_in_words) const

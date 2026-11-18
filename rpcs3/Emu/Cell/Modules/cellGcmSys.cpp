@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "Emu/IdManager.h"
+#include "Emu/System.h"
 #include "Emu/Cell/PPUModule.h"
 
 #include "Emu/Memory/vm.h"
@@ -1580,22 +1581,42 @@ s32 cellGcmCallback(ppu_thread& ppu, vm::ptr<CellGcmContextData> context, u32 co
 	context->current.set(newCommandBuffer.first);
 	context->end.set(newCommandBuffer.second);
 
-	// Wait for rsx to "release" the new command buffer
+	// Wait for rsx to "release" the new command buffer: woken as it moves
+	// its get pointer (it notifies while anyone waits here), or by a change
+	// of the emulator's state - no spin. Counted in first, so a move after
+	// the look below is seen by the wait
+	retro_atomic_fetch_add_seq_cst_int(&rsx::FIFO::g_get_waiters, 1);
+	s32 result = CELL_OK;
+
 	while (true)
 	{
-		u32 getPos = ctrl.get.load();
+		const u32 events = g_libretro_events.load();
+		const be_t<u32> seen = ctrl.get.load();
+		const u32 getPos = seen;
 		if (isInCommandBufferExcept(getPos, newCommandBuffer.first, newCommandBuffer.second))
 			break;
 
 		if (ppu.test_stopped())
 		{
-			return 0;
+			result = 0;
+			break;
 		}
 
-		busy_wait();
+		ppu.state += cpu_flag::wait;
+		atomic_wait::list<2> list(ctrl.get, g_libretro_events);
+		list.values(seen, events);
+		list.wait();
 	}
 
-	return CELL_OK;
+	retro_atomic_fetch_add_seq_cst_int(&rsx::FIFO::g_get_waiters, -1);
+
+	// Done waiting (as a PPU waiting counts, so a suspend_all went ahead)
+	if (ppu.state & cpu_flag::wait)
+	{
+		ppu.check_state();
+	}
+
+	return result;
 }
 
 //----------------------------------------------------------------------------

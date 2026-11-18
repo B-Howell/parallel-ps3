@@ -1105,6 +1105,8 @@ check: all
 	@if grep -nE "thread_ctrl::wait_for\(" ../../Emu/Cell/Modules/libmixer.cpp; then echo "libmixer: a sleep is back"; exit 1; else echo "libmixer: paced by frames"; fi
 	@# A blocking message dialog is waited for untimed (libretro_wait_on), not a millisecond at a time
 	@if grep -nE "atomic_wait_timeout" ../../Emu/Cell/Modules/cellMsgDialog.cpp; then echo "cellMsgDialog: a timed wait is back"; exit 1; else echo "cellMsgDialog: no timed wait"; fi
+	@# cellGcmCallback waits for the RSX to leave the new command buffer on its get pointer (notified while it waits), not in a spin
+	@if awk '/^s32 cellGcmCallback/,/^}/' ../../Emu/Cell/Modules/cellGcmSys.cpp | grep -nE "busy_wait|yield"; then echo "cellGcmCallback: the spin is back"; exit 1; else echo "cellGcmCallback: waits on get"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

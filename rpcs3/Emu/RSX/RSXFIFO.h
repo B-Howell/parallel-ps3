@@ -126,6 +126,11 @@ namespace rsx
 			inline flatten_op test(register_pair& command);
 		};
 
+		// Threads waiting for the RSX to move its get pointer (cellGcmCallback,
+		// for a command buffer to be left): while there are any, each move is
+		// notified on the pointer itself, and not otherwise
+		extern retro_atomic_int_t g_get_waiters;
+
 		class FIFO_control
 		{
 		private:

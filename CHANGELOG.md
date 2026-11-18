@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellGcmCallback waits for the RSX instead of spinning.** Not yet run on a game.
+  - **Before:** this is the default callback a game gets when its command buffer wraps. The PPU busy-spun on the RSX's get pointer until the RSX had left the buffer it was moving to.
+  - **Now:** it counts itself in as a waiter and waits untimed on the get pointer and `g_libretro_events` together, counted as a waiting PPU. While anyone waits, the RSX thread notifies the pointer each time it moves it (`rsx::FIFO::g_get_waiters`). With nobody waiting, that costs the RSX one atomic load.
+  - **AGENTS.md:** now records why the other direction stays a spin. The game moves the FIFO's put pointer and writes the RSX semaphores' labels with plain stores that nothing signals. A once-a-frame wait, a write-protected page or HLE wakes would each cost smooth play, so these stay an exception like the vm reservations, until a hardware cache-line wait has been measured.
+  - **Tests:** none of its own, since it needs the RSX and a game wrapping its command buffer; a check fails if the spin comes back.
+
 - **A blocking message dialog is waited for untimed.** Not yet run on a game.
   - **Before:** `open_msg_dialog`, which other HLE dialogs use (the NP send-message confirmation, for one), woke every millisecond to see whether the dialog had closed.
   - **Now:** it waits untimed (`libretro_wait_on`), woken by the dialog's close or by any change of the emulator's state, as the overlays' openers do. A PPU waiting there counts as waiting, so a suspend_all does not wait on it.
