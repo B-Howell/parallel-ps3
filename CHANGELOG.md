@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The RSX thread's wait for the game to set it up, and the progress dialog's wait for the renderer, no longer poll or time out on the host's clock.** Not yet run on a game.
+  - **Before:** the RSX thread looked every 1 ms, until the game set the RSX up and the emulator ran. The progress dialog waited up to 5 seconds of the host's time for the renderer to finish starting.
+  - **Now:** the RSX thread waits for a frame of retro_run's, a change of the emulator's state, or the RSX being set up (both places that set it up now notify). It still runs its own tasks once a frame, as it does while paused. The dialog waits up to 300 frames, woken as the renderer finishes starting.
+  - **Tests:** this is the boot path, which needs a game; a check fails if the 1 ms poll or the host timeout comes back.
+
 - **cellGem's thread is paced by retro_run's frames, not a host timer.** Not yet run on a game; it matters only to games that use the PlayStation Move.
   - **Before:** it woke on a host timeout to update the controllers' connections and calibration 10 times a second. After loading a savestate made during a video conversion, it waited up to 5 seconds of the host's time for the game to finish it.
   - **Now:** it wakes once a frame, or when the game asks, and updates when 100 ms of the game's time (`get_hw_clock_time`) has passed since the last update. The savestate wait is up to 5 seconds of the game's time, looked at once a frame. A paused frontend now pauses both.

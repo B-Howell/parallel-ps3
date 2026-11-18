@@ -892,6 +892,7 @@ namespace rsx
 		{
 			ctrl = vm::_ptr<RsxDmaControl>(dma_address);
 			rsx_thread_running = true;
+			libretro_event(); // the RSX thread waiting for startup looks again
 		}
 
 		if (g_cfg.savestate.start_paused)
@@ -1145,21 +1146,34 @@ namespace rsx
 			});
 		}
 
-		// Wait for startup (TODO)
+		// Until the game sets the RSX up and the emulator runs: looked at
+		// once a frame (retro_run's, g_libretro_events), as the emulator's
+		// state changes or as the RSX is set up (both notify it), or a stop
 		while (!rsx_thread_running || Emu.IsPausedOrReady())
 		{
+			const u32 events = g_libretro_events.load();
+
 			// Execute backend-local tasks first
 			do_local_task(performance_counters.state);
 
 			// Update sub-units
 			zcull_ctrl->update(this);
 
-			if (is_stopped())
+			const bs_t<cpu_flag> now = state;
+
+			if (is_stopped(now))
 			{
 				return;
 			}
 
-			thread_ctrl::wait_for(1000);
+			if (rsx_thread_running && !Emu.IsPausedOrReady())
+			{
+				break;
+			}
+
+			atomic_wait::list<2> list(state, g_libretro_events);
+			list.values(now, events);
+			list.wait();
 		}
 
 		performance_counters.state = FIFO::state::running;
@@ -2637,6 +2651,7 @@ namespace rsx
 		std::memset(display_buffers, 0, sizeof(display_buffers));
 
 		rsx_thread_running = true;
+		libretro_event(); // the RSX thread waiting for startup looks again
 	}
 
 	std::pair<u32, u32> thread::calculate_memory_requirements(const vertex_input_layout& layout, u32 first_vertex, u32 vertex_count)

@@ -78,8 +78,13 @@ void progress_dialog_server::operator()()
 		if (const auto renderer = rsx::get_current_renderer())
 		{
 			// Some backends like OpenGL actually initialize a lot of driver objects in the "on_init" method.
-			// Wait for init to complete within reasonable time. Abort just in case we have hardware/driver issues.
-			renderer->is_initialized.wait(0, atomic_wait_timeout(5 * 1000000000ull));
+			// Wait for init to complete within 300 of retro_run's frames (5 seconds of the game's
+			// time), as it is set or a frame passes, never the host's clock. Abort just in case
+			// we have hardware/driver issues.
+			for (u32 frames = 0; frames < 300 && !renderer->is_initialized && !Emu.IsStopped(); frames++)
+			{
+				libretro_wait_on(renderer->is_initialized, 0u);
+			}
 
 			auto manager = g_fxo->try_get<rsx::overlays::display_manager>();
 
