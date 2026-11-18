@@ -1136,7 +1136,7 @@ namespace rsx
 			.min_scalable_dimension = static_cast<u16>(g_cfg.video.min_scalable_dimension),
 		};
 
-		last_guest_flip_timestamp = get_system_time() - 1000000;
+		last_guest_flip_timestamp = utils::sub_saturate<u64>(get_guest_system_time(), 1000000); // the game's own time, as sys_time_get_system_time gives it
 
 		vblank_count = 0;
 
@@ -3558,7 +3558,7 @@ namespace rsx
 		flip(m_queued_flip);
 		libretro_guest_flipped();
 
-		last_guest_flip_timestamp = get_system_time() - 1000000;
+		last_guest_flip_timestamp = utils::sub_saturate<u64>(get_guest_system_time(), 1000000); // the game's own time, as sys_time_get_system_time gives it
 		flip_status = CELL_GCM_DISPLAY_FLIP_STATUS_DONE;
 		m_queued_flip.in_progress = false;
 

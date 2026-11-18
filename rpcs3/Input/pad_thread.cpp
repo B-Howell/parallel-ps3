@@ -199,7 +199,8 @@ void pad_thread::Init()
 			// If the user changes the emulated controller, then simulate unplugging and plugging in a new controller
 			if (m_pads_connected[i] && (pad_settings[i].class_type != pad->m_class_type || pad_settings[i].vendor_id != pad->m_vendor_id || pad_settings[i].product_id != pad->m_product_id))
 			{
-				pad->m_disconnection_timer = get_system_time() + 30'000ull;
+				// 30 ms of the guest's time unplugged, as the game sees it
+				pad->m_disconnection_timer = get_hw_clock_time() + 30'000ull;
 			}
 		}
 
@@ -441,7 +442,7 @@ void pad_thread::update_pad_states()
 		if (pad && pad->m_disconnection_timer > 0)
 		{
 			const bool is_connected = pad->is_connected();
-			const u64 now = get_system_time();
+			const u64 now = get_hw_clock_time();
 
 			if (is_connected && now < pad->m_disconnection_timer)
 			{

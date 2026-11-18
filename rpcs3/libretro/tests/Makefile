@@ -1135,6 +1135,8 @@ check: all
 	@if test -e ../../Emu/RSX/Capture || grep -rnE "capture_current_frame|rsx_replay|BootRsxCapture|frame_capture_data" ../../Emu; then echo "the RSX capture or replay is back"; exit 1; else echo "no RSX capture or replay"; fi
 	@# no CPU profiler thread in the core: measuring goes in tools, not shipping code
 	@if grep -nE "cpu_prof|flush_profilers|get_cpu_program_usage_percent" ../../Emu/CPU/CPUThread.cpp ../../Emu/CPU/CPUThread.h ../../Emu/System.cpp; then echo "the CPU profiler is back"; exit 1; else echo "no CPU profiler"; fi
+	@# the last flip's time is the game's own clock, and the AV hardware's events and a pad's replug go by the guest's clock
+	@if grep -n "last_guest_flip_timestamp = get_system_time" ../../Emu/RSX/RSXThread.cpp || awk '/vuart_hdmi_event_handler::time_until_next|vuart_hdmi_event_handler::schedule_next/,/^}/' ../../Emu/Cell/lv2/sys_uart.cpp | grep -n "get_system_time" || grep -n "get_system_time" ../../Input/pad_thread.cpp; then echo "the host's clock is back in the flip time, the AV events or a pad's replug"; exit 1; else echo "flip time, AV events, pad replug: the guest's clock"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

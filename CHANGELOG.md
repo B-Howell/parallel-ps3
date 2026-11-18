@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Three things the game sees now go by the game's own clock instead of the host's.** Not yet run on a game.
+  - **`cellGcmGetLastFlipTime`:** this hands the game the time of the last flip, and it was the host's microseconds. Games set it against `sys_time_get_system_time`, which in this core is the guest's clock that retro_run drives (the VBLANK's time already is). The two drifted apart with every frontend pause, fast-forward or slow frame. It is now the guest's time, as `sys_time_get_system_time` gives it, a second earlier as before (now floored at zero, since the guest's clock starts near it).
+  - **The AV hardware's HDMI events:** `sys_uart` timed these 20 ms apart on the host's clock. They are now 20 ms of the guest's time, and its thread waits for that much of it.
+  - **A pad's replug:** when the emulated controller changes, the pad is shown to the game as unplugged for 30 ms. That was the host's time; it is now the guest's.
+  - **Tests:** each needs a running game (the RSX thread, the AV thread, the pads), so there is no test of its own; a check fails if any of them goes back to the host's clock.
+  - **What is left on the host's clock:** what measures the host (the RSX's load and idle counters, the save timings logged), the RSX's guesses at what costs the host GPU (how often it flushes zcull queries or reads conditional-render results back), and the overlays' animation, which goes by real time.
+
 - **The CPU profiler thread is gone from the core.** With the PPU or SPU profiler setting on (or SPU debug), it looked at every PPU's or SPU's current address every 20 to 60 µs of the host's time and logged what it found. This is measuring logged by shipping code, sampled on the host's clock. The settings themselves stay, since the SPU recompiler still reads them for what it emits. Its thread was there in every game, parked when no setting was on. The spu.log dump at the end of a game no longer has the profiler's usage figures added to it. A check fails if the profiler comes back.
 
 - **The RSX frame capture and its replay are gone from the core.** Not yet run on a game.

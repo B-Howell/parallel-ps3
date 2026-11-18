@@ -2072,7 +2072,7 @@ void vuart_av_thread::operator()()
 
 		if (!uart_ring_used(tx_buf))
 		{
-			thread_ctrl::wait_on(tx_put_seq, seen, wait_time ? wait_time : -1);
+			thread_ctrl::wait_on(tx_put_seq, seen, wait_time ? libretro_guest_wait_as_host(wait_time) : -1);
 		}
 
 		if (u32 read_size = read_tx_data(temp_tx_buf, PS3AV_TX_BUF_SIZE))
@@ -2493,9 +2493,11 @@ bool vuart_hdmi_event_handler::events_available()
 	return time_of_next_event != 0;
 }
 
+// The AV hardware's events, timed by the guest's clock (retro_run's pace),
+// as the hardware it emulates is
 u64 vuart_hdmi_event_handler::time_until_next()
 {
-	const u64 current_time = get_system_time();
+	const u64 current_time = get_hw_clock_time();
 
 	if (!events_available() || current_time + EVENT_TIME_THRESHOLD >= time_of_next_event)
 	{
@@ -2520,7 +2522,7 @@ UartHdmiEvent vuart_hdmi_event_handler::get_occured_event()
 
 void vuart_hdmi_event_handler::schedule_next()
 {
-	time_of_next_event = get_system_time() + (EVENT_TIME_DURATION + time_offset) * 100 / g_cfg.core.clocks_scale;
+	time_of_next_event = get_hw_clock_time() + (EVENT_TIME_DURATION + time_offset) * 100 / g_cfg.core.clocks_scale;
 }
 
 void vuart_hdmi_event_handler::advance_state()
