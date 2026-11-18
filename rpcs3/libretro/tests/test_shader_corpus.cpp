@@ -95,6 +95,17 @@
 #include "shader_runner.h"
 
 static int failures = 0;
+
+// The fixed shaders' sources, as vk_fixed_spirv.c was made from them: a
+// copy of it of the test's own, with them in
+#include "libretro/vk_fixed_shaders.h"
+namespace fixed_copy
+{
+#define VK_FIXED_SOURCES
+#include "libretro/vk_fixed_spirv.c"
+#undef VK_FIXED_SOURCES
+}
+static u64 s_fixed_seen = 0; // each one checked, by its bit
 #define CHECK(cond) do { if (!(cond)) { std::fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #cond); failures++; } } while (0)
 
 struct gathered
@@ -398,12 +409,27 @@ static void built_compute_source(Text&& text)
 	shader.destroy();
 }
 
+// A pass's stages, compiled when the core was built (vk_fixed_spirv.c):
+// each is what its source compiles to now, word for word, and goes on
+// through the corpus as the source the renderer compiled itself before
 template <typename T>
 static void overlay_source()
 {
 	T pass;
-	compile_now(::glsl::program_domain::glsl_vertex_program, pass.vs_src);
-	compile_now(::glsl::program_domain::glsl_fragment_program, pass.fs_src);
+	for (const vk_fixed_shader id : {pass.vs_fixed, pass.fs_fixed})
+	{
+		CHECK(id < VK_FIXED_COUNT);
+		if (id >= VK_FIXED_COUNT)
+			continue;
+		const vk_fixed_spirv& made = vk_fixed_spirv_table[id];
+		const ::glsl::program_domain domain = made.stage == VK_FIXED_VERTEX ? ::glsl::program_domain::glsl_vertex_program
+			: made.stage == VK_FIXED_FRAGMENT ? ::glsl::program_domain::glsl_fragment_program : ::glsl::program_domain::glsl_compute_program;
+		std::string source = fixed_copy::vk_fixed_source[id];
+		std::vector<u32> now;
+		CHECK(spirv::compile_glsl_to_spv(now, source, domain, ::glsl::glsl_rules_vulkan));
+		CHECK(now == std::vector<u32>(made.words, made.words + made.count));
+		s_fixed_seen |= u64{1} << id;
+	}
 }
 
 // A game's own fragment programs, written here as the console's microcode:
@@ -1764,6 +1790,8 @@ int main()
 	overlay_source<vk::attachment_clear_pass>();
 	overlay_source<vk::stencil_clear_pass>();
 	overlay_source<vk::video_out_calibration_pass>();
+	// every one the core keeps, and each through the pass that draws with it
+	CHECK(s_fixed_seen == (u64{1} << VK_FIXED_COUNT) - 1);
 	compute_source<vk::FidelityFX::easu_pass>();
 	compute_source<vk::FidelityFX::rcas_pass>();
 

@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The Vulkan renderer's overlay passes are compiled when the core is built.** Not yet run on a game.
+  - **What changed:** the passes are the on-screen UI overlay, the attachment and stencil clears, the video-out calibration pass, and the six depth/stencil multisample resolve and unresolve passes. Each compiled its GLSL to SPIR-V the first time it drew, which could be in the middle of a game. Their 14 stages are now compiled to SPIR-V ahead of time and kept in the core (`rpcs3/libretro/vk_fixed_spirv.c`). The module goes to the driver straight from the core's memory, so there is no compile, no copy, and no source string built and replaced at run time.
+  - **How it's made:** `vk_fixed_shaders.h` lists each stage: its GLSL file and the same markers the renderer filled in itself. `make vk-fixed-shaders` compiles them with the core's rslc (`rpcs3/libretro/make/vk_fixed_shaders_gen.c`, a C89 tool built for the build machine) and writes the file again. It is kept in the tree, so a cross-compile or a CMake build needs no shader compiler.
+  - **Moved:** the four clear stages that were written inline are now `.glsl` files beside the others.
+  - **Tests:** `make check` fails when the file in the tree is not what the shaders and rslc make now. All 14 modules are byte-identical to what the renderer compiled itself before, checked against the shader corpus test's modules. The corpus test compiles each stage's source again, holds it word for word to the kept module, and runs it on the driver. It checks every kept stage is reached through the pass that draws with it, and fails on a kept module changed by one word, as does `make check`. A check fails if a Vulkan overlay pass compiles GLSL again.
+
 - **libretro-common: rslc takes specialization constants**, synced from RetroArch's. It now accepts `layout(constant_id)` on a global const scalar and `local_size_x_id` to `_z_id`. They are SPIR-V only and never folded to their defaults, which lets the Vulkan renderer's fixed compute shaders be compiled once and still be sized for the GPU they run on.
   - A stage without one compiles word for word as before: all 1814 modules the shader corpus test makes are byte-identical. RetroArch's `rslc_ext_test` covers the new code; nothing in the core uses it yet.
 

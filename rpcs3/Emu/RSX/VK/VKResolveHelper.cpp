@@ -296,47 +296,20 @@ namespace vk
 
 	void depth_resolve_base::build(bool resolve_depth, bool resolve_stencil, bool is_unresolve)
 	{
-		vs_src =
-			#include "Emu/RSX/Program/GLSLSnippets/GenericVSPassthrough.glsl"
-			;
-
-		static const char* depth_resolver =
-			#include "Emu/RSX/Program/MSAA/DepthResolvePass.glsl"
-			;
-
-		static const char* depth_unresolver =
-			#include "Emu/RSX/Program/MSAA/DepthUnresolvePass.glsl"
-			;
-
-		static const char* stencil_resolver =
-			#include "Emu/RSX/Program/MSAA/StencilResolvePass.glsl"
-			;
-
-		static const char* stencil_unresolver =
-			#include "Emu/RSX/Program/MSAA/StencilUnresolvePass.glsl"
-			;
-
-		static const char* depth_stencil_resolver =
-			#include "Emu/RSX/Program/MSAA/DepthStencilResolvePass.glsl"
-			;
-
-		static const char* depth_stencil_unresolver =
-			#include "Emu/RSX/Program/MSAA/DepthStencilUnresolvePass.glsl"
-			;
+		// Compiled when the core was built (vk_fixed_shaders.h)
+		vs_fixed = VK_FIXED_passthrough_vs;
 
 		if (resolve_depth && resolve_stencil)
 		{
-			fs_src = is_unresolve ? depth_stencil_unresolver : depth_stencil_resolver;
+			fs_fixed = is_unresolve ? VK_FIXED_depth_stencil_unresolve_fs : VK_FIXED_depth_stencil_resolve_fs;
 		}
 		else if (resolve_depth)
 		{
-			fs_src = is_unresolve ? depth_unresolver : depth_resolver;
+			fs_fixed = is_unresolve ? VK_FIXED_depth_unresolve_fs : VK_FIXED_depth_resolve_fs;
 		}
 		else if (resolve_stencil)
 		{
-			fs_src = is_unresolve ? stencil_unresolver : stencil_resolver;
+			fs_fixed = is_unresolve ? VK_FIXED_stencil_unresolve_fs : VK_FIXED_stencil_resolve_fs;
 		}
-
-		rsx_log.notice("Resolve shader:\n%s", fs_src);
 	}
 }

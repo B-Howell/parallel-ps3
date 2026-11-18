@@ -573,6 +573,27 @@ $(EMBED): $(CORE_DIR)/rpcs3/libretro/make/embed.c $(EMBED_LRC)
 	@mkdir -p $(GEN_DIR)
 	$(HOST_CC) -O2 -std=gnu99 -w -I$(CORE_DIR)/rpcs3/libretro/libretro-common/include -o $@ $^
 
+# The Vulkan renderer's fixed shaders, compiled to SPIR-V when they change
+# and kept in the tree (rpcs3/libretro/vk_fixed_spirv.c), so no build -
+# cross-compiled, or by CMake - needs a compiler of shaders: `make
+# vk-fixed-shaders` writes it again, and `make check` fails while it is
+# not what the shaders and rslc make
+VK_FIXED_GEN := $(GEN_DIR)/vk_fixed_shaders_gen$(if $(findstring win,$(platform)),.exe)
+VK_FIXED_LRC := $(addprefix $(CORE_DIR)/rpcs3/libretro/libretro-common/gfx/shaders/,rslc_front.c rslc_ir.c)
+
+$(VK_FIXED_GEN): $(CORE_DIR)/rpcs3/libretro/make/vk_fixed_shaders_gen.c $(CORE_DIR)/rpcs3/libretro/vk_fixed_shaders.h $(VK_FIXED_LRC)
+	@mkdir -p $(GEN_DIR)
+	$(HOST_CC) -O2 -w -DRSLC_EXTENDED -DRSLC_NO_DXBC -DRSLC_NO_TEXT -DRSLC_BUILD \
+		-I$(CORE_DIR)/rpcs3/libretro/libretro-common/include -I$(CORE_DIR)/rpcs3/libretro/libretro-common/gfx/shaders \
+		-o $@ $(CORE_DIR)/rpcs3/libretro/make/vk_fixed_shaders_gen.c $(VK_FIXED_LRC) -lm
+
+.PHONY: vk-fixed-shaders vk-fixed-shaders-check
+vk-fixed-shaders: $(VK_FIXED_GEN)
+	$(VK_FIXED_GEN) write $(CORE_DIR)/rpcs3 $(CORE_DIR)/rpcs3/libretro/vk_fixed_spirv.c
+
+vk-fixed-shaders-check: $(VK_FIXED_GEN)
+	$(VK_FIXED_GEN) check $(CORE_DIR)/rpcs3 $(CORE_DIR)/rpcs3/libretro/vk_fixed_spirv.c
+
 ICON_DIR   := $(CORE_DIR)/bin/Icons/ui
 ICON_NAMES := $(sort $(patsubst $(ICON_DIR)/%,%,$(wildcard $(ICON_DIR)/*.png $(ICON_DIR)/home/32/*.png)))
 
@@ -901,6 +922,8 @@ $(GEN_DIR)/test_llvm_jit: $(OBJ_LLVM_JIT_TEST) $(OBJ_LIBRETRO) $(ARCHIVES)
 check: $(TARGET) $(SAVESTATE_TEST) $(DECODERS_TEST) $(PATCHES_TEST) $(AUDIO_TEST) $(VK_HANDOFF_TEST) $(VK_NEGOTIATION_TEST) $(PAD_HANDOFF_TEST) $(PAD_GUEST_TEST) $(PAD_BUTTONS_TEST) $(GEM_SHARED_TEST) $(MOUSE_HANDOFF_TEST) $(SYS_IO_GATE_TEST) $(LV2_EVENTS_TEST) $(IDM_TEST) $(PLAIN_QUEUES_TEST) $(HELD_QUEUES_TEST) $(VDEC_FRAMES_TEST) $(RSXAUDIO_RING_TEST) $(SHADER_CORPUS_TEST) $(EMU_WAITS_TEST) $(FAILED_BOOT_TEST) $(GUEST_CLOCK_TEST) $(VFS_POSITIONAL_TEST) $(GL_CONTEXTS_TEST) $(LLVM_JIT_TEST) $(CRYPTO_CORE_TEST)
 	@$(MAKE) -q $(EMBED_STAMPS) || { echo "check: the embedded sources are made again on every build"; exit 1; }
 	@for f in $(EMBED_STAMPS:.stamp=.cpp); do [ -f $$f ] || { echo "check: $$f was deleted after the build"; exit 1; }; done
+	@# the Vulkan renderer's fixed shaders in the tree are what they make now
+	$(MAKE) vk-fixed-shaders-check
 	$(HOST_CC) -O2 -o $(GEN_DIR)/load_test $(CORE_DIR)/rpcs3/libretro/make/load_test.c -ldl
 	$(GEN_DIR)/load_test ./$(TARGET)
 	$(SAVESTATE_TEST)

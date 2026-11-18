@@ -1,0 +1,291 @@
+/* Makes rpcs3/libretro/vk_fixed_spirv.c: the Vulkan renderer's fixed
+ * shaders (vk_fixed_shaders.h) compiled to SPIR-V by libretro-common's
+ * rslc, as the renderer compiled them itself before: the same source, the
+ * same markers put in, the same options. Built for the machine that runs
+ * the build (HOST_CC). C89.
+ *
+ *   vk_fixed_shaders_gen write ROOT OUT   writes OUT when it differs
+ *   vk_fixed_shaders_gen check ROOT OUT   fails when OUT is not what the
+ *                                         shaders under ROOT make
+ *
+ * ROOT is the rpcs3/ directory the shaders' paths are under. With
+ * VK_FIXED_SOURCES defined, OUT also holds each source as compiled, for
+ * the core's tests. */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <gfx/shaders/rslc.h>
+
+#include "../vk_fixed_shaders.h"
+
+struct fixed
+{
+   const char *name;
+   int         stage;
+   const char *file;
+   const char *markers;
+};
+
+#define VK_FIXED_ENTRY(name, stage, file, markers) { #name, stage, file, markers },
+static const struct fixed shaders[] = { VK_FIXED_SHADERS(VK_FIXED_ENTRY) };
+#undef VK_FIXED_ENTRY
+
+/* A growing text */
+struct buf
+{
+   char  *p;
+   size_t len, cap;
+};
+
+static int put(struct buf *b, const char *s, size_t n)
+{
+   if (b->len + n + 1 > b->cap)
+   {
+      size_t ncap = (b->len + n + 1) * 2 + 4096;
+      char  *np   = (char*)realloc(b->p, ncap);
+      if (!np)
+         return 0;
+      b->p   = np;
+      b->cap = ncap;
+   }
+   memcpy(b->p + b->len, s, n);
+   b->len += n;
+   b->p[b->len] = 0;
+   return 1;
+}
+
+static int puts_(struct buf *b, const char *s)
+{
+   return put(b, s, strlen(s));
+}
+
+static char *slurp(const char *path, size_t *len)
+{
+   char *p;
+   long  n;
+   FILE *f = fopen(path, "rb");
+   *len    = 0;
+   if (!f)
+      return NULL;
+   fseek(f, 0, SEEK_END);
+   n = ftell(f);
+   fseek(f, 0, SEEK_SET);
+   p = (char*)malloc((size_t)(n > 0 ? n : 0) + 1);
+   if (p && n > 0 && fread(p, 1, (size_t)n, f) != (size_t)n)
+      n = 0;
+   fclose(f);
+   if (!p)
+      return NULL;
+   *len    = (size_t)(n > 0 ? n : 0);
+   p[*len] = 0;
+   return p;
+}
+
+/* The source as the renderer's C++ saw it: inside R"( and the last )",
+ * with each line's end a single newline (a raw string's lines end so
+ * whatever the file's do) */
+static int source_of(const char *raw, size_t len, struct buf *out)
+{
+   const char *begin = strstr(raw, "R\"(");
+   const char *end   = NULL;
+   const char *s;
+   if (!begin)
+      return 0;
+   begin += 3;
+   for (s = raw + len; s > begin + 1; s--)
+      if (s[-2] == ')' && s[-1] == '"')
+      {
+         end = s - 2;
+         break;
+      }
+   if (!end)
+      return 0;
+   for (s = begin; s < end; s++)
+      if (!(s[0] == '\r' && s + 1 < end && s[1] == '\n') && !put(out, s, 1))
+         return 0;
+   return 1;
+}
+
+/* fmt::replace_all's list form: at each place, the first marker that
+ * matches there is replaced, and what it is replaced with is not looked
+ * at again */
+static int put_markers(const char *src, size_t len, const char *markers, struct buf *out)
+{
+   size_t i = 0;
+   while (i < len)
+   {
+      const char *m = markers;
+      int         done = 0;
+      while (*m)
+      {
+         const char  *with = m + strlen(m) + 1;
+         const size_t n    = strlen(m);
+         if (len - i >= n && !memcmp(src + i, m, n))
+         {
+            if (!puts_(out, with))
+               return 0;
+            i   += n;
+            done = 1;
+            break;
+         }
+         m = with + strlen(with) + 1;
+      }
+      if (!done)
+      {
+         if (!put(out, src + i, 1))
+            return 0;
+         i++;
+      }
+   }
+   return 1;
+}
+
+static int put_c_string(struct buf *out, const char *s, size_t n)
+{
+   size_t i;
+   char   tmp[8];
+   if (!puts_(out, "   \""))
+      return 0;
+   for (i = 0; i < n; i++)
+   {
+      const unsigned char c = (unsigned char)s[i];
+      if (c == '\n')
+      {
+         if (!puts_(out, i + 1 < n ? "\\n\"\n   \"" : "\\n"))
+            return 0;
+         continue;
+      }
+      if (c == '\\' || c == '"')
+         tmp[0] = '\\', tmp[1] = (char)c, tmp[2] = 0;
+      else if (c == '\t')
+         strcpy(tmp, "\\t");
+      else if (c < 32 || c > 126)
+         sprintf(tmp, "\\%03o", c);
+      else
+         tmp[0] = (char)c, tmp[1] = 0;
+      if (!puts_(out, tmp))
+         return 0;
+   }
+   return puts_(out, "\"");
+}
+
+int main(int argc, char **argv)
+{
+   const size_t count = sizeof(shaders) / sizeof(shaders[0]);
+   struct buf   out;
+   struct buf   sources;
+   size_t       i;
+   int          check;
+   char         line[160];
+
+   if (argc != 4 || (strcmp(argv[1], "write") && strcmp(argv[1], "check")))
+   {
+      fprintf(stderr, "usage: %s write|check ROOT OUT\n", argv[0]);
+      return 2;
+   }
+   check = !strcmp(argv[1], "check");
+   memset(&out, 0, sizeof(out));
+   memset(&sources, 0, sizeof(sources));
+
+   puts_(&out,
+      "/* Generated by rpcs3/libretro/make/vk_fixed_shaders_gen.c from the\n"
+      " * shaders vk_fixed_shaders.h names: do not edit. `make vk-fixed-shaders`\n"
+      " * writes it again. C89. */\n\n"
+      "#include \"vk_fixed_shaders.h\"\n\n");
+   puts_(&sources, "#ifdef VK_FIXED_SOURCES\n/* Each source as it was compiled, for the core's tests */\n"
+      "const char *const vk_fixed_source[VK_FIXED_COUNT] =\n{\n");
+
+   for (i = 0; i < count; i++)
+   {
+      char               path[1024];
+      char              *raw;
+      size_t             raw_len, w;
+      struct buf         src, text;
+      struct rslc_opts   opts;
+      struct rslc_result res;
+      char               err[512];
+
+      memset(&src, 0, sizeof(src));
+      memset(&text, 0, sizeof(text));
+      if (strlen(argv[2]) + strlen(shaders[i].file) + 2 > sizeof(path))
+         return 1;
+      strcpy(path, argv[2]);
+      strcat(path, "/");
+      strcat(path, shaders[i].file);
+      raw = slurp(path, &raw_len);
+      if (!raw || !source_of(raw, raw_len, &src))
+      {
+         fprintf(stderr, "%s: no R\"( ... )\" source in %s\n", shaders[i].name, path);
+         return 1;
+      }
+      if (!put(&text, "", 0) || !put_markers(src.p, src.len, shaders[i].markers, &text))
+         return 1;
+
+      memset(&opts, 0, sizeof(opts));
+      memset(&res, 0, sizeof(res));
+      err[0]       = 0;
+      opts.dst     = RSLC_DST_SPIRV;
+      opts.err     = err;
+      opts.err_cap = sizeof(err);
+      if (!rslc_compile(text.p, text.len, (enum rslc_stage)shaders[i].stage, &opts, &res))
+      {
+         fprintf(stderr, "%s (%s): %s\n", shaders[i].name, path, err);
+         return 1;
+      }
+
+      sprintf(line, "static const uint32_t %s[%u] =\n{", shaders[i].name, (unsigned)res.spirv_len);
+      puts_(&out, line);
+      for (w = 0; w < res.spirv_len; w++)
+      {
+         sprintf(line, "%s0x%08lx,", w % 8 ? " " : "\n   ", (unsigned long)res.spirv[w]);
+         puts_(&out, line);
+      }
+      puts_(&out, "\n};\n\n");
+
+      sprintf(line, "   /* %s */\n", shaders[i].name);
+      puts_(&sources, line);
+      put_c_string(&sources, text.p, text.len);
+      puts_(&sources, ",\n");
+
+      rslc_result_free(&res, &opts);
+      free(raw);
+      free(src.p);
+      free(text.p);
+   }
+
+   puts_(&out, "const struct vk_fixed_spirv vk_fixed_spirv_table[VK_FIXED_COUNT] =\n{\n");
+   for (i = 0; i < count; i++)
+   {
+      sprintf(line, "   { %s, sizeof(%s) / sizeof(%s[0]), %d },\n",
+            shaders[i].name, shaders[i].name, shaders[i].name, shaders[i].stage);
+      puts_(&out, line);
+   }
+   puts_(&out, "};\n\n");
+   puts_(&sources, "};\n#endif\n");
+   put(&out, sources.p, sources.len);
+
+   {
+      size_t old_len;
+      char  *old = slurp(argv[3], &old_len);
+      int    same = old && old_len == out.len && !memcmp(old, out.p, out.len);
+      free(old);
+      if (check)
+      {
+         if (!same)
+            fprintf(stderr, "%s is not what the shaders make: run `make vk-fixed-shaders`\n", argv[3]);
+         return same ? 0 : 1;
+      }
+      if (!same)
+      {
+         FILE *f = fopen(argv[3], "wb");
+         if (!f || fwrite(out.p, 1, out.len, f) != out.len)
+            return 1;
+         fclose(f);
+      }
+   }
+   free(out.p);
+   free(sources.p);
+   return 0;
+}

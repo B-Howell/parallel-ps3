@@ -12,6 +12,8 @@
 
 #include "Emu/IdManager.h"
 
+#include "libretro/vk_fixed_shaders.h"
+
 #include <unordered_map>
 
 namespace rsx
@@ -56,8 +58,9 @@ namespace vk
 		vk::data_heap m_ubo;
 		const vk::render_device* m_device = nullptr;
 
-		std::string vs_src;
-		std::string fs_src;
+		// The stages, compiled when the core was built (vk_fixed_shaders.h)
+		vk_fixed_shader vs_fixed = VK_FIXED_COUNT;
+		vk_fixed_shader fs_fixed = VK_FIXED_COUNT;
 
 		graphics_pipeline_state renderpass_config;
 

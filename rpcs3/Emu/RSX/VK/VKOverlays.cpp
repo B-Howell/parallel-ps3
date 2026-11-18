@@ -90,10 +90,15 @@ namespace vk
 	{
 		if (!compiled)
 		{
-			m_vertex_shader.create(::glsl::program_domain::glsl_vertex_program, vs_src);
+			// Made when the core was built: nothing is compiled here, and the
+			// words go to the driver from the core's own memory
+			ensure(vs_fixed < VK_FIXED_COUNT && fs_fixed < VK_FIXED_COUNT);
+			const vk_fixed_spirv& vs = vk_fixed_spirv_table[vs_fixed];
+			const vk_fixed_spirv& fs = vk_fixed_spirv_table[fs_fixed];
+			m_vertex_shader.create(::glsl::program_domain::glsl_vertex_program, vs.words, vs.count);
 			m_vertex_shader.compile();
 
-			m_fragment_shader.create(::glsl::program_domain::glsl_fragment_program, fs_src);
+			m_fragment_shader.create(::glsl::program_domain::glsl_fragment_program, fs.words, fs.count);
 			m_fragment_shader.compile();
 
 			compiled = true;
@@ -284,26 +289,8 @@ namespace vk
 	ui_overlay_renderer::ui_overlay_renderer()
 		: m_texture_type(rsx::overlays::texture_sampling_mode::none)
 	{
-		vs_src =
-		#include "../Program/GLSLSnippets/OverlayRenderVS.glsl"
-		;
-
-		fs_src =
-		#include "../Program/GLSLSnippets/OverlayRenderFS.glsl"
-		;
-
-		vs_src = fmt::replace_all(vs_src,
-		{
-			{ "%preprocessor", "// %preprocessor" },
-			{ "%push_block", "push_constant" }
-		});
-
-		fs_src = fmt::replace_all(fs_src,
-		{
-			{ "%preprocessor", "// %preprocessor" },
-			{ "%push_block_offset", "layout(offset=68)" },
-			{ "%push_block", "push_constant" }
-		});
+		vs_fixed = VK_FIXED_overlay_vs;
+		fs_fixed = VK_FIXED_overlay_fs;
 
 		// 2 input textures
 		m_num_usable_samplers = 2;
@@ -712,29 +699,8 @@ namespace vk
 
 	attachment_clear_pass::attachment_clear_pass()
 	{
-		vs_src =
-			"#version 450\n"
-			"#extension GL_ARB_separate_shader_objects : enable\n"
-			"layout(push_constant) uniform static_data{ vec4 regs[2]; };\n"
-			"layout(location=0) out vec4 color;\n"
-			"\n"
-			"void main()\n"
-			"{\n"
-			"	vec2 positions[] = {vec2(-1., -1.), vec2(1., -1.), vec2(-1., 1.), vec2(1., 1.)};\n"
-			"	color = regs[0];\n"
-			"	gl_Position = vec4(positions[gl_VertexIndex % 4], 0., 1.);\n"
-			"}\n";
-
-		fs_src =
-			"#version 420\n"
-			"#extension GL_ARB_separate_shader_objects : enable\n"
-			"layout(location=0) in vec4 color;\n"
-			"layout(location=0) out vec4 out_color;\n"
-			"\n"
-			"void main()\n"
-			"{\n"
-			"	out_color = color;\n"
-			"}\n";
+		vs_fixed = VK_FIXED_attachment_clear_vs;
+		fs_fixed = VK_FIXED_attachment_clear_fs;
 
 		// Disable samplers
 		m_num_usable_samplers = 0;
@@ -820,25 +786,8 @@ namespace vk
 
 	stencil_clear_pass::stencil_clear_pass()
 	{
-		vs_src =
-			"#version 450\n"
-			"#extension GL_ARB_separate_shader_objects : enable\n"
-			"\n"
-			"void main()\n"
-			"{\n"
-			"	vec2 positions[] = {vec2(-1., -1.), vec2(1., -1.), vec2(-1., 1.), vec2(1., 1.)};\n"
-			"	gl_Position = vec4(positions[gl_VertexIndex % 4], 0., 1.);\n"
-			"}\n";
-
-		fs_src =
-			"#version 420\n"
-			"#extension GL_ARB_separate_shader_objects : enable\n"
-			"layout(location=0) out vec4 out_color;\n"
-			"\n"
-			"void main()\n"
-			"{\n"
-			"	out_color = vec4(0.);\n"
-			"}\n";
+		vs_fixed = VK_FIXED_stencil_clear_vs;
+		fs_fixed = VK_FIXED_stencil_clear_fs;
 
 		m_num_uniform_buffers = 0;
 		m_num_usable_samplers = 0;
@@ -880,20 +829,8 @@ namespace vk
 
 	video_out_calibration_pass::video_out_calibration_pass()
 	{
-		vs_src =
-		#include "../Program/GLSLSnippets/GenericVSPassthrough.glsl"
-		;
-
-		fs_src =
-		#include "../Program/GLSLSnippets/VideoOutCalibrationPass.glsl"
-		;
-
-		std::pair<std::string_view, std::string> repl_list[] =
-		{
-			{ "%sampler_binding", "x" },
-			{ "%set_decorator", "set=0" },
-		};
-		fs_src = fmt::replace_all(fs_src, repl_list);
+		vs_fixed = VK_FIXED_passthrough_vs;
+		fs_fixed = VK_FIXED_video_out_calibration_fs;
 
 		renderpass_config.set_depth_mask(false);
 		renderpass_config.set_color_mask(0, true, true, true, true);

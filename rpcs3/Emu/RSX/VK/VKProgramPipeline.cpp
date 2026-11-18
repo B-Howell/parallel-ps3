@@ -107,9 +107,14 @@ namespace vk
 
 		void shader::create(::glsl::program_domain domain, const std::vector<u32>& spirv)
 		{
+			create(domain, spirv.data(), spirv.size());
+		}
+
+		void shader::create(::glsl::program_domain domain, const u32* words, usz count)
+		{
 			type         = domain;
-			m_module     = spirv.data();
-			m_module_len = spirv.size();
+			m_module     = words;
+			m_module_len = count;
 			m_source.clear();
 		}
 

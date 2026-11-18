@@ -1083,6 +1083,8 @@ check: all
 	@if grep -nE "null_mtx|lock_guard" ../../../Utilities/JITLLVM.cpp; then echo "LLVM null functions: a lock is back"; exit 1; else echo "LLVM null functions: no lock"; fi
 	@# The guest's process-shared objects: a table read in place, changed by the HLE thread alone: no lock
 	@if grep -nE "mutex|lock_guard|reader_lock" ../../Emu/IPC.h; then echo "IPC objects: a lock is back"; exit 1; else echo "IPC objects: no lock"; fi
+	@# The Vulkan overlay passes draw with stages compiled when the core was built (vk_fixed_spirv.c): no GLSL compiled for them while a game runs
+	@if grep -nE "vs_src|fs_src" ../../Emu/RSX/VK/VKOverlays.h ../../Emu/RSX/VK/VKOverlays.cpp ../../Emu/RSX/VK/VKResolveHelper.h ../../Emu/RSX/VK/VKResolveHelper.cpp; then echo "Vulkan overlay passes: GLSL compiled at run time again - add the stage to vk_fixed_shaders.h"; exit 1; else echo "Vulkan overlay passes: stages made when the core was built"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

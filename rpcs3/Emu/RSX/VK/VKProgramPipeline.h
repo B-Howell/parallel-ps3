@@ -131,6 +131,8 @@ namespace vk
 			// A stage that was built, not written: its module as it is. The
 			// words are the caller's and stay where they are until compile().
 			void create(::glsl::program_domain domain, const std::vector<u32>& spirv);
+			// A module made ahead of time (vk_fixed_spirv.c), lent as it is
+			void create(::glsl::program_domain domain, const u32* words, usz count);
 
 			VkShaderModule compile();
 
