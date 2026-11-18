@@ -222,11 +222,20 @@ error_code open_msg_dialog(bool is_blocking, u32 type, vm::cptr<char> msgString,
 			}
 		});
 
-		// Wait for on_close
+		// Wait for on_close: untimed, woken by it or any change of the
+		// emulator's state; a PPU waiting here counts as waiting
+		cpu_thread* const cpu = is_blocking ? cpu_thread::get_current() : nullptr;
+		const bool flagged = cpu && !(cpu->state & cpu_flag::wait);
+		if (flagged)
+			cpu->state += cpu_flag::wait;
+
 		while (is_blocking && !Emu.IsStopped() && !*notify)
 		{
-			notify->wait(false, atomic_wait_timeout{1'000'000});
+			libretro_wait_on(*notify, u32{0});
 		}
+
+		if (flagged)
+			cpu->check_state();
 
 		return res;
 	}

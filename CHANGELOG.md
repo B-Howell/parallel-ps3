@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **A blocking message dialog is waited for untimed.** Not yet run on a game.
+  - **Before:** `open_msg_dialog`, which other HLE dialogs use (the NP send-message confirmation, for one), woke every millisecond to see whether the dialog had closed.
+  - **Now:** it waits untimed (`libretro_wait_on`), woken by the dialog's close or by any change of the emulator's state, as the overlays' openers do. A PPU waiting there counts as waiting, so a suspend_all does not wait on it.
+  - **Tests:** none of its own, since it needs the overlay renderer; a check fails if a timed wait comes back.
+
 - **libmixer's surround mixer no longer sleeps while it is ahead.** Not yet run on a game.
   - **Before:** the mixer's PPU thread, once a block ahead of its audio port, slept a millisecond and looked again, for as long as the game played.
   - **Now:** it waits untimed for retro_run's next frame (the port takes about three blocks a frame) or a change of the emulator's state. It counts as waiting meanwhile, as a PPU waiting does, so a suspend_all does not wait on it, and it ends when the thread is stopped.
