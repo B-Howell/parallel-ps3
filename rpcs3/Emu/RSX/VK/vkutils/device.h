@@ -140,6 +140,7 @@ namespace vk
 		operator VkInstance() const;
 
 		VkPhysicalDeviceType get_type() const { return props.deviceType; }
+		const VkPhysicalDeviceProperties& get_properties() const { return props; }
 	};
 
 	class render_device

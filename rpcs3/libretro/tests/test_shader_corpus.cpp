@@ -124,6 +124,7 @@ static std::vector<gathered> s_corpus;
 namespace vk
 {
 	extern driver_vendor g_driver_vendor;
+	extern VkPipelineCache g_pipeline_cache;
 }
 
 static usz s_lent = 0, s_compiles = 0;
@@ -1222,6 +1223,81 @@ struct shader_corpus_test
 	// when they all give the same four keys programs at once. Giving a
 	// key a program only if it has none leaves it with the first. A shader
 	// built twice at once ends as one shader.
+	// The driver's pipelines kept between boots (keep_pipeline_cache): a
+	// pipeline made in one is in the cache written at its end, and that is
+	// in the cache of the next as it starts; a cache another GPU made is
+	// not taken
+	static VkPipeline make_pipeline(VkPipelineLayout layout)
+	{
+		std::vector<u32> words;
+		std::string source = "#version 450\nlayout(local_size_x = 1) in;\nvoid main() { }\n";
+		CHECK(spirv::compile_glsl_to_spv_core(words, source, ::glsl::glsl_compute_program, ::glsl::glsl_rules_vulkan));
+		VkShaderModuleCreateInfo mi{ VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+		mi.codeSize = words.size() * 4;
+		mi.pCode = words.data();
+		VkShaderModule module = VK_NULL_HANDLE;
+		CHECK(vkCreateShaderModule(*vk::g_render_device, &mi, nullptr, &module) == VK_SUCCESS);
+		VkComputePipelineCreateInfo ci{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+		ci.stage = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, module, "main", nullptr };
+		ci.layout = layout;
+		VkPipeline pipeline = VK_NULL_HANDLE;
+		CHECK(vkCreateComputePipelines(*vk::g_render_device, vk::g_pipeline_cache, 1, &ci, nullptr, &pipeline) == VK_SUCCESS);
+		vkDestroyShaderModule(*vk::g_render_device, module, nullptr);
+		return pipeline;
+	}
+
+	static usz cache_size()
+	{
+		usz size = 0;
+		CHECK(vkGetPipelineCacheData(*vk::g_render_device, vk::g_pipeline_cache, &size, nullptr) == VK_SUCCESS);
+		return size;
+	}
+
+	static void pipeline_cache_kept()
+	{
+		const std::string path = fmt::format("%s/vk_pipeline_cache_%u.bin", std::filesystem::temp_directory_path().string(), static_cast<u32>(getpid()));
+		fs::remove_file(path);
+
+		VkPipelineLayoutCreateInfo li{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+		VkPipelineLayout layout = VK_NULL_HANDLE;
+		CHECK(vkCreatePipelineLayout(*vk::g_render_device, &li, nullptr, &layout) == VK_SUCCESS);
+
+		// A first boot: nothing kept yet; a pipeline made, and the cache
+		// written at the end whole, as the driver gives it
+		vk::initialize_pipe_compiler(1, VK_NULL_HANDLE);
+		vk::keep_pipeline_cache(path);
+		vkDestroyPipeline(*vk::g_render_device, make_pipeline(layout), nullptr);
+		std::vector<u8> data(cache_size());
+		usz size = data.size();
+		CHECK(vkGetPipelineCacheData(*vk::g_render_device, vk::g_pipeline_cache, &size, data.data()) == VK_SUCCESS);
+		vk::destroy_pipe_compiler();
+		const std::vector<u8> kept = fs::file(path).to_vector<u8>();
+		CHECK(kept == data);
+
+		// The next boot takes what this GPU and driver made, and nothing
+		// another one did: a header off by one in any of its fields
+		const VkPhysicalDeviceProperties& props = vk::g_render_device->gpu().get_properties();
+		CHECK(vk::pipeline_cache_fits(kept.data(), kept.size(), props));
+		for (usz at : {usz{0}, usz{4}, usz{8}, usz{12}, usz{16}, usz{31}})
+		{
+			std::vector<u8> other = kept;
+			other[at] ^= 1;
+			CHECK(!vk::pipeline_cache_fits(other.data(), other.size(), props));
+		}
+		CHECK(!vk::pipeline_cache_fits(kept.data(), 31, props));
+		vk::initialize_pipe_compiler(1, VK_NULL_HANDLE);
+		vk::keep_pipeline_cache(path);
+		const usz taken = cache_size();
+		vk::keep_pipeline_cache(std::string());
+		vk::destroy_pipe_compiler();
+		// (a software driver may keep no pipeline in it: the header alone)
+		std::printf("  pipeline cache: %u bytes kept, %u in the cache at the next boot\n", static_cast<u32>(kept.size()), static_cast<u32>(taken));
+		CHECK(taken >= kept.size());
+
+		vkDestroyPipelineLayout(*vk::g_render_device, layout, nullptr);
+		fs::remove_file(path);
+	}
+
 	static void interpreter_caches()
 	{
 		using si = vk::shader_interpreter;
@@ -1798,6 +1874,7 @@ int main()
 	const bool can_run = shader_run_start(gpu, graphics) != 0;
 	shader_corpus_test::interpreter(device);
 	shader_corpus_test::interpreter_dynamic(device);
+	shader_corpus_test::pipeline_cache_kept();
 
 	// The compute tasks
 	compute_source<vk::cs_shuffle_16>();

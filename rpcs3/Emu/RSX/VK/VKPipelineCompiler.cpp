@@ -15,6 +15,9 @@ namespace vk
 	atomic_t<int> g_compiler_index{};
 	VkPipelineCache g_pipeline_cache = VK_NULL_HANDLE;
 
+	// Where g_pipeline_cache is kept between boots; empty when it is not
+	std::string g_pipeline_cache_file;
+
 	pipe_compiler::pipe_compiler()
 	{
 		// TODO: Initialize workqueue
@@ -349,9 +352,72 @@ namespace vk
 		initialize_pipe_compiler(num_worker_threads, g_pipeline_cache);
 	}
 
+	bool pipeline_cache_fits(const u8* data, usz size, const VkPhysicalDeviceProperties& props)
+	{
+		u32 head[4]{};
+		if (size < 32)
+		{
+			return false;
+		}
+		std::memcpy(head, data, sizeof(head));
+		return head[0] >= 32 && head[0] <= size && head[1] == VK_PIPELINE_CACHE_HEADER_VERSION_ONE
+			&& head[2] == props.vendorID && head[3] == props.deviceID
+			&& std::memcmp(data + 16, props.pipelineCacheUUID, VK_UUID_SIZE) == 0;
+	}
+
+	void keep_pipeline_cache(const std::string& path)
+	{
+		g_pipeline_cache_file = path;
+
+		if (path.empty() || !g_pipeline_cache)
+		{
+			return;
+		}
+
+		// Read once, at boot
+		fs::file file(path);
+		const std::vector<u8> data = file ? file.to_vector<u8>() : std::vector<u8>{};
+
+		// Taken only when this GPU and driver made it (the driver checks it
+		// too, but not every driver checks it well)
+		if (!pipeline_cache_fits(data.data(), data.size(), g_render_device->gpu().get_properties()))
+		{
+			return;
+		}
+
+		VkPipelineCacheCreateInfo info{ VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+		info.initialDataSize = data.size();
+		info.pInitialData = data.data();
+		VkPipelineCache kept = VK_NULL_HANDLE;
+		if (vkCreatePipelineCache(*g_render_device, &info, nullptr, &kept) == VK_SUCCESS && kept)
+		{
+			// Into the cache the compilers already use
+			vkMergePipelineCaches(*g_render_device, g_pipeline_cache, 1, &kept);
+			vkDestroyPipelineCache(*g_render_device, kept, nullptr);
+		}
+	}
+
 	void destroy_pipe_compiler()
 	{
 		g_pipe_compilers.reset();
+
+		if (g_pipeline_cache && !g_pipeline_cache_file.empty())
+		{
+			// Kept for the next boot, written whole and swapped in
+			usz size = 0;
+			std::vector<u8> data;
+			if (vkGetPipelineCacheData(*g_render_device, g_pipeline_cache, &size, nullptr) == VK_SUCCESS && size)
+			{
+				data.resize(size);
+				if (vkGetPipelineCacheData(*g_render_device, g_pipeline_cache, &size, data.data()) == VK_SUCCESS)
+				{
+					fs::pending_file file(g_pipeline_cache_file);
+					if (!file.file || file.file.write(data.data(), size) != size || !file.commit())
+						rsx_log.error("The Vulkan pipeline cache was not kept in %s", g_pipeline_cache_file);
+				}
+			}
+			g_pipeline_cache_file.clear();
+		}
 
 		if (g_pipeline_cache)
 		{

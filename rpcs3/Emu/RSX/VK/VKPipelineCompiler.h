@@ -218,6 +218,15 @@ namespace vk
 	void initialize_pipe_compiler(int num_worker_threads = 0, VkPipelineCache pipe_cache = VK_NULL_HANDLE);
 	void resize_pipe_compiler(int num_worker_threads = 0);
 	void destroy_pipe_compiler();
+
+	// The driver's pipelines kept between boots in @path: what is there
+	// (made by this GPU and driver) is taken into the cache now, and the
+	// cache is written there as the compiler is destroyed. Empty: not kept
+	void keep_pipeline_cache(const std::string& path);
+
+	// Whether a kept cache was made by this GPU and driver: its header's
+	// length, version, vendor, device and cache UUID
+	bool pipeline_cache_fits(const u8* data, usz size, const VkPhysicalDeviceProperties& props);
 	pipe_compiler* get_pipe_compiler();
 }
 

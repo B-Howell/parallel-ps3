@@ -630,6 +630,12 @@ VKGSRender::VKGSRender(utils::serial* ar) noexcept : GSRender(ar)
 
 	m_shaders_cache = std::make_unique<vk::shader_cache>(*m_prog_buffer, "vulkan", "v1.95");
 
+	// The driver's pipelines from the last boot, beside the programs they
+	// were made for: a pipeline seen before is not compiled by the driver
+	// again
+	if (const std::string dir = m_shaders_cache->directory(); !dir.empty())
+		vk::keep_pipeline_cache(dir + "/vk_pipeline_cache.bin");
+
 	for (u32 i = 0; i < m_swapchain->get_swap_image_count(); ++i)
 	{
 		const auto target_layout = m_swapchain->get_optimal_present_layout();

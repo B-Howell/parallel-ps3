@@ -90,6 +90,15 @@ namespace rsx
 			return root_path + "/pipelines/" + pipeline_class_name + "/" + version_prefix;
 		}
 
+	public:
+		// This cache's directory; empty when the on-disk cache is off
+		std::string directory() const
+		{
+			return root_path.empty() ? std::string() : pipelines_path();
+		}
+
+	protected:
+
 		void open_pack()
 		{
 			fs::create_path(pipelines_path());

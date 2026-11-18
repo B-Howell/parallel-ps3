@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The Vulkan driver's pipelines are kept between boots.** Not yet run on a game, and not yet run on a driver that keeps pipelines in its cache: the software driver the tests run on keeps none.
+  - **Before:** the pipeline cache was made empty at every boot and never written. Every pipeline a game had used was compiled by the driver again each session, at the first draw that needed it. This is the costly part of a shader hitch: milliseconds to tens of milliseconds, against rslc's 0.24 ms average for a stage.
+  - **Now:** the cache is kept beside the game's shader cache (`shaders_cache/pipelines/vulkan/v1.95/vk_pipeline_cache.bin`). It is read once at boot and merged into the cache the compilers use, before the shader cache's pipelines are made. As the compiler is destroyed, it is written whole and swapped in (`fs::pending_file`).
+  - **Another GPU's cache:** it is taken only when this GPU and driver made it, by its header's length, version, vendor, device and cache UUID, since not every driver checks this well itself. Nothing is kept when the on-disk shader cache is off.
+  - **Tests:** the shader corpus test makes a pipeline, and checks the file at the end is the driver's cache data byte for byte and that the next boot takes it. It also checks a header off by one in any field, or cut short, is refused. It fails on a mutant that does not compare the device. A check fails if the renderer stops keeping the cache.
+
 - **The Vulkan renderer's compute tasks are compiled when the core is built.** Not yet run on a game.
   - **The source:** the byte shuffles, depth-stencil gather and scatter, float conversions, texture deswizzles, tile copies, multisample resolve and unresolve, and the FSR upscaler's two passes each wrote their GLSL and compiled it to SPIR-V the first time they ran, mid-game. The source had the GPU's best work group size written into it, so it was a different text on every GPU. That size is now a specialization constant (`local_size_x_id`, and `_y_id` for the resolves), set as the pipeline is made, so the text is the same on every GPU.
   - **The modules:** they are made ahead of time and kept in the core (`rpcs3/libretro/vk_known_spirv_data.c`, 39 of them). A task finds its module by its text's SHA-256 and length and lends it to the driver from the core's memory. A text not there is compiled as before.

@@ -133,6 +133,7 @@ extern "C" {
    X(vkGetDeviceQueue) \
    X(vkGetEventStatus) \
    X(vkGetFenceStatus) \
+   X(vkGetPipelineCacheData) \
    X(vkGetImageMemoryRequirements) \
    X(vkGetImageSubresourceLayout) \
    X(vkGetPhysicalDeviceFeatures) \
@@ -148,6 +149,7 @@ extern "C" {
    X(vkGetQueryPoolResults) \
    X(vkGetSwapchainImagesKHR) \
    X(vkMapMemory) \
+   X(vkMergePipelineCaches) \
    X(vkQueuePresentKHR) \
    X(vkQueueSubmit) \
    X(vkQueueWaitIdle) \
