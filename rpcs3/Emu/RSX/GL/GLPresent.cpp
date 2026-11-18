@@ -432,18 +432,19 @@ void GLGSRender::flip(const rsx::display_flip_info_t& info)
 
 	if (m_overlay_manager && m_overlay_manager->has_dirty())
 	{
-		m_overlay_manager->lock_shared();
-
 		std::vector<u32> uids_to_dispose;
-		uids_to_dispose.reserve(m_overlay_manager->get_dirty().size());
-
-		for (const auto& view : m_overlay_manager->get_dirty())
 		{
-			m_ui_renderer.remove_temp_resources(view->uid);
-			uids_to_dispose.push_back(view->uid);
+			// Read with no lock: the lists published, alive while read
+			const rsx::overlays::display_manager::reader lists(*m_overlay_manager);
+			uids_to_dispose.reserve(lists.dirty().size());
+
+			for (const auto& view : lists.dirty())
+			{
+				m_ui_renderer.remove_temp_resources(view->uid);
+				uids_to_dispose.push_back(view->uid);
+			}
 		}
 
-		m_overlay_manager->unlock_shared();
 		m_overlay_manager->dispose(uids_to_dispose);
 	}
 
@@ -462,11 +463,12 @@ void GLGSRender::flip(const rsx::display_flip_info_t& info)
 			else
 				libretro_bind_hw_fbo();
 
-			// Lock to avoid modification during run-update chain
-			std::lock_guard lock(*m_overlay_manager);
+			// The lists published, read with no lock: a change made meanwhile
+			// is drawn from the next flip
+			const rsx::overlays::display_manager::reader lists(*m_overlay_manager);
 
 			const areau display_area = {0, 0, static_cast<u32>(m_frame->client_width()), static_cast<u32>(m_frame->client_height())};
-			for (const auto& view : m_overlay_manager->get_views())
+			for (const auto& view : lists.views())
 			{
 				const areau render_area = view->use_window_space ? display_area : aspect_ratio;
 				m_ui_renderer.run(cmd, render_area, target, *view.get(), flip_vertically);

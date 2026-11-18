@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The overlays take no lock on the draw path.** The Vulkan and OpenGL presents took the overlay manager's mutex while they drew the overlays and freed the removed ones, so a dialog opened or closed on another thread could hold up a flip.
+  - **The lists:** the overlays shown, and those taken off whose resources are yet to be freed, are now published whole. A change (add, remove, dispose) is made to a copy and published by compare-and-swap; it is made again from the newer lists if another change got in first. The lists it replaces go once no reader is in (`retro_retire`).
+  - **The renderer** reads the lists as they were when its draw began (`display_manager::reader`) and never waits; a change is drawn from the next flip. The queue of removals deferred while the lock was taken is gone, as removing no longer waits either.
+  - **The input thread** keeps its own stack of the dialogs it runs, rather than pushing the interrupted ones back on the shared queue under a mutex. Another thread's push can no longer get in between, and the order is as before.
+  - **The performance overlay** is set up on the RSX thread, which draws it, so it no longer takes the manager's lock.
+  - `std::lock_guard` count 38. A check fails if a lock comes back in the overlay manager or the presents. No new test: the publishing is the pattern the VFS and RPCN states use. Not yet run on a game.
 - **The Windows build is whole again.** Two of the last patches broke it, unseen by the Linux build:
   - **The network thread:** its `windows_poll` call gave `::size32` a count rather than a container.
   - **The TUS manager:** its `std::mutex` lost the header that brought in `<mutex>`. The mutex was never taken, so it is gone rather than included for.

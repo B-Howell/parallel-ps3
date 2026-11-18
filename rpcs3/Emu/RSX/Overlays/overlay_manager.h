@@ -4,7 +4,7 @@
 #include "overlay_audio.h"
 
 #include "Emu/IdManager.h"
-#include "Utilities/mutex.h"
+#include <queues/retro_retire.h>
 #include "Utilities/Thread.h"
 #include "Utilities/lockless.h"
 
@@ -18,21 +18,75 @@ namespace rsx
 		{
 		private:
 			atomic_t<u32> m_uid_ctr = 0;
-			std::vector<std::shared_ptr<overlay>> m_iface_list;
-			std::vector<std::shared_ptr<overlay>> m_dirty_list;
 
-			mutable shared_mutex m_list_mutex;
-			lf_queue<u32> m_uids_to_remove;
-			lf_queue<u32> m_type_ids_to_remove;
-			atomic_t<u32> m_pending_removals_count = 0;
+			// The overlays shown, and those taken off whose resources the
+			// renderer has yet to free: published whole, with no lock. A
+			// change is made to a copy, which is published by compare-and-swap
+			// (made again from the newer one if another change got in first);
+			// the one replaced goes once no reader is in (retro_retire). The
+			// renderer reads them as it draws, never waiting on a change
+		public:
+			struct lists_t
+			{
+				mpsc_stack_node_t node{}; // first: retired as it is
+				std::vector<std::shared_ptr<overlay>> views;
+				std::vector<std::shared_ptr<overlay>> dirty;
+			};
+
+		private:
+			mutable retro_atomic_ptr_t m_lists{}; // lists_t*, never null
+			mutable retro_retire_t m_retire{};
+
+			static void free_lists(mpsc_stack_node_t* node)
+			{
+				delete reinterpret_cast<lists_t*>(node);
+			}
+
+			// @f(lists_t&) on a copy of the lists published, which is then
+			// published in their place
+			template <typename F>
+			void change(F&& f)
+			{
+				retro_retire_enter(&m_retire);
+
+				for (;;)
+				{
+					lists_t* const old = static_cast<lists_t*>(retro_atomic_load_acquire_ptr(&m_lists));
+					lists_t* const now = new lists_t(*old);
+					f(*now);
+
+					if (retro_atomic_cas_ptr(&m_lists, old, now))
+					{
+						retro_retire(&m_retire, &old->node, free_lists);
+						break;
+					}
+
+					delete now;
+				}
+
+				retro_retire_leave(&m_retire, free_lists);
+			}
+
+			// @f(const lists_t&) on the lists published, with no lock
+			template <typename F>
+			auto read(F&& f) const -> decltype(f(std::declval<const lists_t&>()))
+			{
+				retro_retire_enter(&m_retire);
+				struct leave_t
+				{
+					retro_retire_t* r;
+					~leave_t() { retro_retire_leave(r, free_lists); }
+				} leave{&m_retire};
+
+				return f(*static_cast<const lists_t*>(retro_atomic_load_acquire_ptr(&m_lists)));
+			}
 
 			std::unique_ptr<audio_player> m_audio_player;
 
-			bool remove_type(u32 type_id);
+			// On a copy of the lists: those taken off go to @removed
+			static bool remove_type(lists_t& lists, u32 type_id, std::vector<std::shared_ptr<overlay>>& removed);
 
-			bool remove_uid(u32 uid);
-
-			void cleanup_internal();
+			static bool remove_uid(lists_t& lists, u32 uid, std::vector<std::shared_ptr<overlay>>& removed);
 
 			void on_overlay_activated(const std::shared_ptr<overlay>& item);
 
@@ -49,28 +103,40 @@ namespace rsx
 			template <typename T>
 			std::shared_ptr<T> add(std::shared_ptr<T>& entry, bool remove_existing = true)
 			{
-				std::lock_guard lock(m_list_mutex);
-
 				entry->uid = m_uid_ctr.fetch_add(1);
 				entry->type_index = stx::typeindex<id_manager::typeinfo, T>();
 
-				if (remove_existing)
+				const std::shared_ptr<overlay> added = std::move(entry);
+				bool replaced = false;
+
+				change([&](lists_t& lists)
 				{
-					for (auto It = m_iface_list.begin(); It != m_iface_list.end(); It++)
+					replaced = false;
+
+					if (remove_existing)
 					{
-						if (It->get()->type_index == entry->type_index)
+						for (auto It = lists.views.begin(); It != lists.views.end(); It++)
 						{
-							// Replace
-							m_dirty_list.push_back(std::move(*It));
-							*It = std::move(entry);
-							return std::static_pointer_cast<T>(*It);
+							if (It->get()->type_index == added->type_index)
+							{
+								// Replace
+								lists.dirty.push_back(std::move(*It));
+								*It = added;
+								replaced = true;
+								return;
+							}
 						}
 					}
+
+					lists.views.push_back(added);
+				});
+
+				if (!replaced)
+				{
+					on_overlay_activated(added);
 				}
 
-				m_iface_list.push_back(std::move(entry));
-				on_overlay_activated(m_iface_list.back());
-				return std::static_pointer_cast<T>(m_iface_list.back());
+				return std::static_pointer_cast<T>(added);
 			}
 
 			// Allocates object and adds to internal list. Returns pointer to created object
@@ -89,42 +155,58 @@ namespace rsx
 			void remove()
 			{
 				const auto type_id = stx::typeindex<id_manager::typeinfo, T>();
-				if (m_list_mutex.try_lock())
-				{
-					remove_type(type_id);
-					m_list_mutex.unlock();
-					return;
-				}
+				std::vector<std::shared_ptr<overlay>> removed;
 
-				// Enqueue
-				m_type_ids_to_remove.push(type_id);
-				m_pending_removals_count++;
+				change([&](lists_t& lists)
+				{
+					removed.clear();
+					remove_type(lists, type_id, removed);
+				});
+
+				for (const auto& item : removed)
+				{
+					on_overlay_removed(item);
+				}
 			}
 
 			// True if any visible elements to draw exist
 			bool has_visible() const
 			{
-				return !m_iface_list.empty();
+				return read([](const lists_t& l) { return !l.views.empty(); });
 			}
 
 			// True if any elements have been deleted but their resources may not have been cleaned up
 			bool has_dirty() const
 			{
-				return !m_dirty_list.empty();
+				return read([](const lists_t& l) { return !l.dirty.empty(); });
 			}
 
-			// Returns current list for reading. Caller must ensure synchronization by first locking the list
-			const std::vector<std::shared_ptr<overlay>>& get_views() const
+			// The lists published, read while it lives with no lock: those it
+			// holds stay alive until it goes, whatever is changed meanwhile
+			class reader
 			{
-				return m_iface_list;
-			}
+				const display_manager& m;
+				const lists_t* l;
 
-			// Returns current list of removed objects not yet deallocated for reading.
-			// Caller must ensure synchronization by first locking the list
-			const std::vector<std::shared_ptr<overlay>>& get_dirty() const
-			{
-				return m_dirty_list;
-			}
+			public:
+				explicit reader(const display_manager& m)
+					: m(m)
+				{
+					retro_retire_enter(&m.m_retire);
+					l = static_cast<const lists_t*>(retro_atomic_load_acquire_ptr(&m.m_lists));
+				}
+
+				reader(const reader&) = delete;
+				reader& operator=(const reader&) = delete;
+
+				~reader()
+				{
+					retro_retire_leave(&m.m_retire, free_lists);
+				}
+
+				const std::vector<std::shared_ptr<overlay>>& views() const { return l->views; }
+				const std::vector<std::shared_ptr<overlay>>& dirty() const { return l->dirty; }
+			};
 
 			// Deallocate object. Object must first be removed via the remove() functions
 			void dispose(const std::vector<u32>& uids);
@@ -136,31 +218,21 @@ namespace rsx
 			template <typename T>
 			std::shared_ptr<T> get() const
 			{
-				reader_lock lock(m_list_mutex);
-
 				const auto type_id = stx::typeindex<id_manager::typeinfo, T>();
-				for (const auto& iface : m_iface_list)
+
+				return read([&](const lists_t& lists) -> std::shared_ptr<T>
 				{
-					if (iface->type_index == type_id)
+					for (const auto& iface : lists.views)
 					{
-						return std::static_pointer_cast<T>(iface);
+						if (iface->type_index == type_id)
+						{
+							return std::static_pointer_cast<T>(iface);
+						}
 					}
-				}
 
-				return {};
+					return {};
+				});
 			}
-
-			// Lock for exclusive access (BasicLockable)
-			void lock();
-
-			// Release lock (BasicLockable). May perform internal cleanup before returning
-			void unlock();
-
-			// Lock for shared access (reader-lock)
-			void lock_shared();
-
-			// Unlock for shared access (reader-lock)
-			void unlock_shared();
 
 			// Enable input thread attach to the specified interface
 			void attach_thread_input(
@@ -207,10 +279,11 @@ namespace rsx
 				bool prologue_completed;
 			};
 
+			// Pushed by any thread; the input thread keeps its own stack of
+			// what it has taken, so nothing is pushed back here
 			lf_queue<input_thread_context_t> m_input_token_stack;
 			atomic_t<bool> m_input_thread_abort = false;
 			atomic_t<bool> m_input_thread_interrupted = false;
-			shared_mutex m_input_stack_guard;
 
 			std::shared_ptr<named_thread<overlay_input_thread>> m_input_thread;
 			void input_thread_loop();

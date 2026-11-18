@@ -332,18 +332,20 @@ void VKGSRender::frame_context_cleanup(vk::frame_context_t *ctx)
 		if (m_overlay_manager && m_overlay_manager->has_dirty())
 		{
 			auto ui_renderer = vk::get_overlay_pass<vk::ui_overlay_renderer>();
-			m_overlay_manager->lock_shared();
 
 			std::vector<u32> uids_to_dispose;
-			uids_to_dispose.reserve(m_overlay_manager->get_dirty().size());
-
-			for (const auto& view : m_overlay_manager->get_dirty())
 			{
-				ui_renderer->remove_temp_resources(view->uid);
-				uids_to_dispose.push_back(view->uid);
+				// Read with no lock: the lists published, alive while read
+				const rsx::overlays::display_manager::reader lists(*m_overlay_manager);
+				uids_to_dispose.reserve(lists.dirty().size());
+
+				for (const auto& view : lists.dirty())
+				{
+					ui_renderer->remove_temp_resources(view->uid);
+					uids_to_dispose.push_back(view->uid);
+				}
 			}
 
-			m_overlay_manager->unlock_shared();
 			m_overlay_manager->dispose(uids_to_dispose);
 		}
 
@@ -817,12 +819,13 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 	{
 		if (!has_overlay) return;
 
-		// Lock to avoid modification during run-update chain
+		// The lists published, read with no lock: a change made meanwhile
+		// is drawn from the next flip
 		auto ui_renderer = vk::get_overlay_pass<vk::ui_overlay_renderer>();
-		std::lock_guard lock(*m_overlay_manager);
+		const rsx::overlays::display_manager::reader lists(*m_overlay_manager);
 
 		const areau display_area = {0, 0, static_cast<u32>(m_swapchain_dims.width), static_cast<u32>(m_swapchain_dims.height)};
-		for (const auto& view : m_overlay_manager->get_views())
+		for (const auto& view : lists.views())
 		{
 			const areau render_area = view->use_window_space ? display_area : area;
 			ui_renderer->run(*m_current_command_buffer, render_area, fbo, single_target_pass, m_texture_upload_buffer_ring_info, *view.get());

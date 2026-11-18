@@ -942,8 +942,7 @@ namespace rsx
 						perf_overlay = manager->create<rsx::overlays::perf_metrics_overlay>();
 					}
 
-					std::lock_guard lock(*manager);
-
+					// On the RSX thread, which draws it: no lock
 					perf_overlay->set_detail_level(perf_settings.level);
 					perf_overlay->set_position(perf_settings.position);
 					perf_overlay->set_update_interval(perf_settings.update_interval);

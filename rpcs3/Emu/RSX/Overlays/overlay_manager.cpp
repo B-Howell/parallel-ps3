@@ -8,6 +8,9 @@ namespace rsx
 	{
 		display_manager::display_manager(int) noexcept
 		{
+			retro_retire_init(&m_retire);
+			retro_atomic_ptr_init(&m_lists, new lists_t);
+
 			m_input_thread = std::make_shared<named_thread<overlay_input_thread>>();
 			(*m_input_thread)([this]()
 			{
@@ -38,89 +41,67 @@ namespace rsx
 				// no spin
 				*m_input_thread = thread_state::finished;
 			}
-		}
 
-		void display_manager::lock()
-		{
-			m_list_mutex.lock();
-		}
-
-		void display_manager::unlock()
-		{
-			if (m_pending_removals_count > 0)
-			{
-				cleanup_internal();
-			}
-
-			m_list_mutex.unlock();
-		}
-
-		void display_manager::lock_shared()
-		{
-			m_list_mutex.lock_shared();
-		}
-
-		void display_manager::unlock_shared()
-		{
-			m_list_mutex.unlock_shared();
+			// No reader is left: the lists retired, and the ones published
+			retro_retire_drain(&m_retire, free_lists);
+			delete static_cast<lists_t*>(retro_atomic_exchange_ptr(&m_lists, nullptr));
 		}
 
 		std::shared_ptr<overlay> display_manager::get(u32 uid) const
 		{
-			reader_lock lock(m_list_mutex);
-
-			for (const auto& iface : m_iface_list)
+			return read([&](const lists_t& lists) -> std::shared_ptr<overlay>
 			{
-				if (iface->uid == uid)
-					return iface;
-			}
+				for (const auto& iface : lists.views)
+				{
+					if (iface->uid == uid)
+						return iface;
+				}
 
-			return {};
+				return {};
+			});
 		}
 
 		void display_manager::remove(u32 uid)
 		{
-			if (m_list_mutex.try_lock())
-			{
-				remove_uid(uid);
-				m_list_mutex.unlock();
-				return;
-			}
+			std::vector<std::shared_ptr<overlay>> removed;
 
-			// Enqueue
-			m_uids_to_remove.push(uid);
-			m_pending_removals_count++;
+			change([&](lists_t& lists)
+			{
+				removed.clear();
+				remove_uid(lists, uid, removed);
+			});
+
+			for (const auto& item : removed)
+			{
+				on_overlay_removed(item);
+			}
 		}
 
 		void display_manager::dispose(const std::vector<u32>& uids)
 		{
-			std::lock_guard lock(m_list_mutex);
-
-			if (m_pending_removals_count > 0)
+			change([&](lists_t& lists)
 			{
-				cleanup_internal();
-			}
-
-			m_dirty_list.erase
-			(
-				std::remove_if(m_dirty_list.begin(), m_dirty_list.end(), [&uids](std::shared_ptr<overlay>& e)
-				{
-					return std::find(uids.begin(), uids.end(), e->uid) != uids.end();
-				}),
-				m_dirty_list.end()
-			);
+				lists.dirty.erase
+				(
+					std::remove_if(lists.dirty.begin(), lists.dirty.end(), [&uids](std::shared_ptr<overlay>& e)
+					{
+						return std::find(uids.begin(), uids.end(), e->uid) != uids.end();
+					}),
+					lists.dirty.end()
+				);
+			});
 		}
 
-		bool display_manager::remove_type(u32 type_id)
+		bool display_manager::remove_type(lists_t& lists, u32 type_id, std::vector<std::shared_ptr<overlay>>& removed)
 		{
 			bool found = false;
-			for (auto It = m_iface_list.begin(); It != m_iface_list.end();)
+			for (auto It = lists.views.begin(); It != lists.views.end();)
 			{
 				if (It->get()->type_index == type_id)
 				{
-					on_overlay_removed(*It);
-					m_dirty_list.push_back(std::move(*It));
-					It = m_iface_list.erase(It);
+					removed.push_back(*It);
+					lists.dirty.push_back(std::move(*It));
+					It = lists.views.erase(It);
 					found = true;
 				}
 				else
@@ -132,36 +113,21 @@ namespace rsx
 			return found;
 		}
 
-		bool display_manager::remove_uid(u32 uid)
+		bool display_manager::remove_uid(lists_t& lists, u32 uid, std::vector<std::shared_ptr<overlay>>& removed)
 		{
-			for (auto It = m_iface_list.begin(); It != m_iface_list.end(); It++)
+			for (auto It = lists.views.begin(); It != lists.views.end(); It++)
 			{
 				const auto e = It->get();
 				if (e->uid == uid)
 				{
-					on_overlay_removed(*It);
-					m_dirty_list.push_back(std::move(*It));
-					m_iface_list.erase(It);
+					removed.push_back(*It);
+					lists.dirty.push_back(std::move(*It));
+					lists.views.erase(It);
 					return true;
 				}
 			}
 
 			return false;
-		}
-
-		void display_manager::cleanup_internal()
-		{
-			for (auto&& uid : m_uids_to_remove.pop_all())
-			{
-				remove_uid(uid);
-				m_pending_removals_count--;
-			}
-
-			for (auto&& type_id : m_type_ids_to_remove.pop_all())
-			{
-				remove_type(type_id);
-				m_pending_removals_count--;
-			}
 		}
 
 		void display_manager::start_audio(const std::string& audio_path)
@@ -201,9 +167,7 @@ namespace rsx
 		{
 			if (auto iface = std::dynamic_pointer_cast<user_interface>(get(uid)))
 			{
-				std::lock_guard lock(m_input_stack_guard);
-
-				// Add our interface to the queue
+				// Add our interface to the queue: the input thread takes it up
 				m_input_token_stack.push(
 					name,
 					std::move(iface),
@@ -234,12 +198,27 @@ namespace rsx
 			// Avoid tail recursion by reinserting pushed-down items
 			std::vector<input_thread_context_t> interrupted_items;
 
+			// This thread's own stack, oldest first: what it took from the
+			// queue and what was interrupted, kept here rather than pushed
+			// back, so no other thread's push gets in between
+			std::vector<input_thread_context_t> own_stack;
+			std::vector<input_thread_context_t> to_run;
+
 			while (!m_input_thread_abort)
 			{
 				// We're about to load the whole list, interruption makes no sense before this point
 				m_input_thread_interrupted = false;
 
-				for (auto&& input_context : m_input_token_stack.pop_all_reversed())
+				// Those pushed since, after those kept; then run newest first
+				for (auto&& input_context : m_input_token_stack.pop_all())
+				{
+					own_stack.push_back(input_context);
+				}
+
+				to_run.assign(own_stack.rbegin(), own_stack.rend());
+				own_stack.clear();
+
+				for (auto&& input_context : to_run)
 				{
 					if (!input_context.target || input_context.target->is_detached())
 					{
@@ -303,21 +282,11 @@ namespace rsx
 
 				if (!interrupted_items.empty())
 				{
-					std::lock_guard lock(m_input_stack_guard);
-
-					// We need to rebuild the stack in reverse order here
-					const auto current_stack = m_input_token_stack.pop_all();
-
-					// Re-insert interrupted list
+					// Kept in this thread's stack, below what was pushed since,
+					// which the next round takes up after them
 					for (auto it = interrupted_items.crbegin(); it != interrupted_items.crend(); ++it)
 					{
-						m_input_token_stack.push(*it);
-					}
-
-					// Re-insert the 'new' list oldest-first
-					for (const auto& iface : current_stack)
-					{
-						m_input_token_stack.push(iface);
+						own_stack.push_back(*it);
 					}
 
 					// Clear
