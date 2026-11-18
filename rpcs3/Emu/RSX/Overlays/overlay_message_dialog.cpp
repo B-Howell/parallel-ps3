@@ -278,14 +278,14 @@ namespace rsx
 				}
 				else
 				{
-					while (!m_stop_input_loop)
+					while (!retro_atomic_load_acquire_int(&m_stop_input_loop))
 					{
 						const u32 seen = overlay_seen();
 
 						refresh();
 
 						// Updated once a frame, woken by it (or the dialog closed), no sleep
-						if (!m_stop_input_loop)
+						if (!retro_atomic_load_acquire_int(&m_stop_input_loop))
 						{
 							overlay_wait(seen);
 						}
@@ -294,7 +294,7 @@ namespace rsx
 			}
 			else
 			{
-				if (!m_stop_input_loop)
+				if (!retro_atomic_load_acquire_int(&m_stop_input_loop))
 				{
 					const auto notify = std::make_shared<atomic_t<u32>>(0);
 					auto& overlayman = g_fxo->get<display_manager>();
@@ -314,7 +314,7 @@ namespace rsx
 							nullptr,
 							[&]()
 							{
-								while (!m_stop_input_loop && thread_ctrl::state() != thread_state::aborting)
+								while (!retro_atomic_load_acquire_int(&m_stop_input_loop) && thread_ctrl::state() != thread_state::aborting)
 								{
 									const u32 seen = overlay_seen();
 
@@ -322,7 +322,7 @@ namespace rsx
 
 									// Updated once a frame, woken by it (or the dialog closed, or
 									// this thread told to end), no sleep
-									if (!m_stop_input_loop)
+									if (!retro_atomic_load_acquire_int(&m_stop_input_loop))
 									{
 										overlay_wait(seen);
 									}

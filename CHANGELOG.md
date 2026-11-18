@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The overlays' input flags and thread bits are `retro_atomic`, the third module off `atomic_t`.** Not yet run on a game.
+  - **The flags:** a dialog's stop, interactive, stop-pad-interception and detached flags are `retro_atomic_int_t`, with release stores and acquire loads, in the dialogs that use them (the message dialog, the on-screen keyboard, the media list).
+  - **The thread bits:** the bits of the threads using a dialog are `retro_atomic_int_t` too. A bit is taken by a compare-and-swap loop (it was `fetch_op`), and given back by an atomic and with a `retro_waitaddr_notify_all`. Closing a dialog waits for the other threads' bits through `retro_waitaddr`, which is what `atomic_t` forwarded to.
+  - **What stays for now:** the overlays' `visible` flag is read by several dialogs through other types, and moves in a patch of its own.
+  - **Tests:** behaviour is the same, and the overlays need a renderer to run, so there is no test of its own; a check fails if any of these goes back to `atomic_t`.
+
 - **The recording state is `retro_atomic`, the second module off `atomic_t`.** Not yet run on a game.
   - **What changed:** cellRec's state, pause flag and four timestamps, the video sink's error, pause and flush flags, and the recording mode (`g_recording_mode`) are now `retro_atomic_int_t` or `retro_atomic_64_t`. The recording mode is read by cellAudio, `sys_rsxaudio` and the GL and Vulkan presenters. Every read is an acquire load cast back to its type, every write a release store, the pause total an atomic add, and the two exchanges atomic exchanges.
   - **One read fewer:** ending a pause read the pause's start twice; it is read once.

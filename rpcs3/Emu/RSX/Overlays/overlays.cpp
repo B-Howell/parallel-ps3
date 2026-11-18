@@ -49,17 +49,19 @@ namespace rsx
 
 		u32 user_interface::alloc_thread_bit()
 		{
-			auto [_old, ok] = this->thread_bits.fetch_op([](u32& bits)
+			// Set lowest clear bit, by compare-and-swap
+			u32 _old = static_cast<u32>(retro_atomic_load_acquire_int(&thread_bits));
+			bool ok = false;
+			while (~_old)
 			{
-				if (~bits)
+				if (retro_atomic_cas_int(&thread_bits, static_cast<int>(_old), static_cast<int>(_old | (_old + 1))))
 				{
-					// Set lowest clear bit
-					bits |= bits + 1;
-					return true;
+					ok = true;
+					break;
 				}
 
-				return false;
-			});
+				_old = static_cast<u32>(retro_atomic_load_acquire_int(&thread_bits));
+			}
 
 			if (!ok)
 			{
@@ -133,7 +135,7 @@ namespace rsx
 		{
 			user_interface::thread_bits_allocator thread_bits_alloc(this);
 
-			m_interactive = true;
+			retro_atomic_store_release_int(&m_interactive, 1);
 
 			std::array<steady_clock::time_point, CELL_PAD_MAX_PORT_NUM> timestamp;
 			timestamp.fill(steady_clock::now());
@@ -208,7 +210,7 @@ namespace rsx
 				last_state = pressed;
 			};
 
-			while (!m_stop_input_loop)
+			while (!retro_atomic_load_acquire_int(&m_stop_input_loop))
 			{
 				const u32 seen = overlay_seen();
 
@@ -312,7 +314,7 @@ namespace rsx
 				int pad_index = -1;
 				for (const auto& pad : handler->GetPads())
 				{
-					if (m_stop_input_loop)
+					if (retro_atomic_load_acquire_int(&m_stop_input_loop))
 						break;
 
 					if (++pad_index >= CELL_PAD_MAX_PORT_NUM)
@@ -503,7 +505,7 @@ namespace rsx
 
 						handle_button_press(button_id, button.m_pressed, pad_index);
 
-						if (m_stop_input_loop)
+						if (retro_atomic_load_acquire_int(&m_stop_input_loop))
 							break;
 					}
 
@@ -543,7 +545,7 @@ namespace rsx
 						// Handle currently pressed stick direction
 						handle_button_press(button_id, pressed, pad_index);
 
-						if (m_stop_input_loop)
+						if (retro_atomic_load_acquire_int(&m_stop_input_loop))
 							break;
 					}
 				}
@@ -562,12 +564,12 @@ namespace rsx
 
 			// Disable pad interception since this user interface has to be interactive.
 			// Non-interactive user intefaces handle this in close.
-			if (m_stop_pad_interception)
+			if (retro_atomic_load_acquire_int(&m_stop_pad_interception))
 			{
 				input::SetIntercepted(false);
 			}
 
-			return !m_stop_input_loop
+			return !retro_atomic_load_acquire_int(&m_stop_input_loop)
 				? selection_code::interrupted
 				: selection_code::ok;
 		}
@@ -575,11 +577,11 @@ namespace rsx
 		void user_interface::close(bool use_callback, bool stop_pad_interception)
 		{
 			// Force unload
-			m_stop_pad_interception.release(stop_pad_interception);
-			m_stop_input_loop.release(true);
+			retro_atomic_store_release_int(&m_stop_pad_interception, stop_pad_interception ? 1 : 0);
+			retro_atomic_store_release_int(&m_stop_input_loop, 1);
 			overlay_changed();
 
-			while (u32 b = thread_bits)
+			while (u32 b = static_cast<u32>(retro_atomic_load_acquire_int(&thread_bits)))
 			{
 				if (b == g_thread_bit)
 				{
@@ -587,12 +589,13 @@ namespace rsx
 					break;
 				}
 
-				thread_bits.wait(b);
+				const retro_waitaddr_t w{&thread_bits, b};
+				retro_waitaddr_wait(&w, 1, -1);
 			}
 
 			// Only disable pad interception if this user interface is not interactive.
 			// Interactive user interfaces handle this in run_input_loop.
-			if (!m_interactive && m_stop_pad_interception)
+			if (!retro_atomic_load_acquire_int(&m_interactive) && (retro_atomic_load_acquire_int(&m_stop_pad_interception) != 0))
 			{
 				input::SetIntercepted(false);
 			}

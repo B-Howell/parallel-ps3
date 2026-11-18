@@ -526,7 +526,7 @@ namespace rsx
 			m_update = true;
 			set_visible(continuous_mode != CELL_OSKDIALOG_CONTINUOUS_MODE_HIDE);
 
-			m_stop_input_loop = false;
+			retro_atomic_store_release_int(&m_stop_input_loop, 0);
 
 			fade_animation.current = color4f(0.f);
 			fade_animation.end = color4f(1.f);

@@ -150,13 +150,13 @@ namespace rsx
 				if (m_no_media_text)
 					break;
 				return_code = m_list->get_selected_index();
-				m_stop_input_loop = true;
+				retro_atomic_store_release_int(&m_stop_input_loop, 1);
 				play_cursor_sound = false;
 				play_sound(sound_effect::accept);
 				break;
 			case pad_button::circle:
 				return_code = selection_code::canceled;
-				m_stop_input_loop = true;
+				retro_atomic_store_release_int(&m_stop_input_loop, 1);
 				play_cursor_sound = false;
 				play_sound(sound_effect::cancel);
 				break;
@@ -221,7 +221,7 @@ namespace rsx
 			while (thread_ctrl::state() != thread_state::aborting && return_code >= 0 && m_media && m_media->type == media_list_dialog::media_type::directory)
 			{
 				reload(title, focused);
-				m_stop_input_loop = false;
+				retro_atomic_store_release_int(&m_stop_input_loop, 0);
 
 				if (const auto error = run_input_loop())
 				{
@@ -260,7 +260,7 @@ namespace rsx
 				break;
 			}
 
-			m_interactive = false; // KLUDGE: Set interactive to false in order to stop pad interaction properly in close.
+			retro_atomic_store_release_int(&m_interactive, 0); // KLUDGE: Set interactive to false in order to stop pad interaction properly in close.
 			close(false, true);
 
 			if (return_code >= 0 && m_media && m_media->type != media_list_dialog::media_type::directory)

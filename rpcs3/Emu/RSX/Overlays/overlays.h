@@ -1,4 +1,6 @@
 #pragma once
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 #include "overlay_animation.h"
 #include "overlay_controls.h"
 
@@ -109,12 +111,12 @@ namespace rsx
 				pad_button::ls_right
 			};
 
-			atomic_t<bool> m_stop_input_loop = false;
-			atomic_t<bool> m_interactive = false;
+			retro_atomic_int_t m_stop_input_loop{0}; // 0 or 1
+			retro_atomic_int_t m_interactive{0}; // 0 or 1
 			bool m_start_pad_interception = true;
-			atomic_t<bool> m_stop_pad_interception = false;
-			atomic_t<bool> m_input_thread_detached = false;
-			atomic_t<u32> thread_bits = 0;
+			retro_atomic_int_t m_stop_pad_interception{0}; // 0 or 1
+			retro_atomic_int_t m_input_thread_detached{0}; // 0 or 1
+			retro_atomic_int_t thread_bits{0}; // the threads using it, a bit each (notified as one goes)
 			bool m_keyboard_input_enabled = false; // Allow keyboard input
 			bool m_keyboard_pad_handler_active = true; // Initialized as true to prevent keyboard input until proven otherwise.
 			bool m_allow_input_on_pause = false;
@@ -137,8 +139,8 @@ namespace rsx
 
 				~thread_bits_allocator()
 				{
-					m_parent->thread_bits &= ~m_thread_bit;
-					m_parent->thread_bits.notify_all();
+					retro_atomic_fetch_and_int(&m_parent->thread_bits, static_cast<int>(~m_thread_bit));
+					retro_waitaddr_notify_all(&m_parent->thread_bits);
 				}
 
 			private:
