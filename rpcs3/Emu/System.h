@@ -482,3 +482,24 @@ public:
 };
 
 extern Emulator Emu;
+
+// A host thread's wait for @frames of the game's time: retro_run's frames
+// (g_libretro_events), never the host's clock. False when the emulator
+// stopped first. Where standalone RPCS3 sleeps some milliseconds to let
+// the game get on, this lets it get on that many frames
+inline bool libretro_wait_frames(u32 frames)
+{
+	for (u32 n = 0; n < frames; n++)
+	{
+		const u32 events = g_libretro_events.load();
+
+		if (Emu.IsStopped())
+		{
+			return false;
+		}
+
+		g_libretro_events.wait(events);
+	}
+
+	return !Emu.IsStopped();
+}

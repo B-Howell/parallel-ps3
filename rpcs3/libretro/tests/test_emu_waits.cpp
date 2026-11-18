@@ -120,6 +120,39 @@ int main()
 		std::printf("test_emu_waits: libretro_wait_on returned %d time(s) idle, woken by the word and by an event\n", idle);
 	}
 
+	// A wait for some of the game's time (libretro_wait_frames): that many
+	// retro_runs, whatever the host's clock does
+	{
+		std::atomic<bool> done{false};
+		std::thread waiter([&]
+		{
+			CHECK(libretro_wait_frames(30));
+			done = true;
+		});
+		for (int i = 0; i < 200000; i++)
+			std::this_thread::yield();
+		CHECK(!done); // no frame yet: still waiting
+		int runs = 0;
+		for (; runs < 29; runs++)
+		{
+			libretro_event();
+			for (int i = 0; i < 20000; i++)
+				std::this_thread::yield();
+		}
+		CHECK(!done); // 29 frames: still waiting
+		for (int i = 0; i < 1000 && !done; i++)
+		{
+			libretro_event();
+			runs++;
+			for (int k = 0; k < 20000 && !done; k++)
+				std::this_thread::yield();
+		}
+		CHECK(done);
+		waiter.join();
+		std::printf("test_emu_waits: a wait of 30 frames done after %d retro_runs\n", runs);
+		CHECK(runs == 30);
+	}
+
 	// An NP transaction (np_contexts.cpp): no lock and no thread - finished
 	// once, by the first of its reply, an abort or its timeout to claim it
 	{

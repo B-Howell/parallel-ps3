@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Emu/System.h"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/IdManager.h"
 
@@ -294,7 +295,12 @@ struct netstart_hack
 
 	void operator()(int) const
 	{
-		thread_ctrl::wait_for(500'000);
+		// Half a second at 60 frames, by the game's frames, not the host's
+		// clock: what the game needs is to have run a while
+		if (!libretro_wait_frames(30))
+		{
+			return;
+		}
 
 		sysutil_send_system_cmd(CELL_SYSUTIL_NET_CTL_NETSTART_LOADED, 0);
 		sysutil_send_system_cmd(CELL_SYSUTIL_NET_CTL_NETSTART_FINISHED, 0);

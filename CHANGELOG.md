@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The NetStart dialog's delay is counted in the game's frames.** Not yet run on a game.
+  - **Before:** `cellNetCtlNetStartDialogLoadAsync` sent its loaded and finished events from a thread that slept half a second on the host's clock first. Diva F 2nd needs that delay, because it registers its sysutil callback only after the call.
+  - **Now:** the thread waits 30 of retro_run's frames, half a second at 60, through the new `libretro_wait_frames` (System.h). It is a wait on `g_libretro_events`, untimed, and ends early if the emulator stops. A paused, fast-forwarded or slowed-down game takes the dialog along with it.
+  - **Tests:** `test_emu_waits` checks a wait of 30 frames is still waiting after none and after 29, and done after the 30th. It fails on a mutant that counts one frame short. A check fails if `cellNetCtl` sleeps on the host's clock again.
+
 - **The PPU JIT's stubs take no lock.** Not yet run on a game.
   - **What they are:** as each PPU object is linked, a call to a function by its address (`__0x...`) is given a small stub that jumps into the guest's code there. The stubs were a map under a shared mutex, taken by every compiling thread for every such name, with the shared jump sample under it too.
   - **Now:** the stubs are an add-only map (`lf_u64_map`) with room for four times the modules' functions. A thread that finds one takes it. A thread that makes one keeps it unless another thread kept one first, in which case it takes that one; its own few bytes are never called. The jump sample is an atomic, read once per stub. A map that is full still hands out the stub it made, just without keeping it.
