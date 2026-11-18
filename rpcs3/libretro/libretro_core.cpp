@@ -584,7 +584,7 @@ static void libretro_apply_core_options()
     // emulated hardware, not by a timer. No frame limit of the host's clock,
     // and no vsync of RPCS3's own.
     g_cfg.video.vsync.set(vsync_mode::off);
-    g_disable_frame_limit = false;
+    retro_atomic_store_release_int(&g_disable_frame_limit, 0);
     g_cfg.video.frame_limit.set(frame_limit_type::_ps3);
     g_cfg.video.second_frame_limit.set(0);
 
@@ -3219,8 +3219,8 @@ void retro_run(void)
     // list). The frontend paces; nothing in the core does.
     if (frame_due && Emu.IsRunning())
     {
-        g_libretro_vblank_requests += s_output_hz ? std::max<u32>(1, g_cfg.video.vblank_rate.get() / s_output_hz) : 1;
-        g_libretro_vblank_requests.notify_one();
+        retro_atomic_fetch_add_int(&g_libretro_vblank_requests, static_cast<int>(s_output_hz ? std::max<u32>(1, g_cfg.video.vblank_rate.get() / s_output_hz) : 1));
+        retro_waitaddr_notify_one(&g_libretro_vblank_requests);
     }
 
     // Process audio

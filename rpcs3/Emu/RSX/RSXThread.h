@@ -35,8 +35,8 @@
 
 #include "NV47/FW/GRAPH_backend.h"
 
-extern atomic_t<bool> g_disable_frame_limit;
-extern atomic_t<u32> g_libretro_vblank_requests;
+extern retro_atomic_int_t g_disable_frame_limit;
+extern retro_atomic_int_t g_libretro_vblank_requests;
 
 namespace rsx
 {
@@ -128,7 +128,7 @@ namespace rsx
 		// FIFO
 	public:
 		std::unique_ptr<FIFO::FIFO_control> fifo_ctrl;
-		atomic_t<bool> rsx_thread_running{ false };
+		retro_atomic_int_t rsx_thread_running{0};
 		std::vector<std::pair<u32, u32>> dump_callstack_list() const override;
 		void dump_misc(std::string& ret, std::any& custom_data) const override;
 
@@ -152,8 +152,8 @@ namespace rsx
 		// Overlays
 		rsx::overlays::display_manager* m_overlay_manager = nullptr;
 
-		atomic_t<u64> m_display_rate_fetch_count = 0;
-		atomic_t<f64> m_cached_display_rate = 60.;
+		retro_atomic_64_t m_display_rate_fetch_count{0};
+		retro_atomic_64_t m_cached_display_rate{std::bit_cast<s64>(60.)}; // the f64's bits
 		f64 get_cached_display_refresh_rate();
 		virtual f64 get_display_refresh_rate() const = 0;
 
@@ -199,7 +199,7 @@ namespace rsx
 		draw_command_processor m_draw_processor;
 
 	public:
-		atomic_t<u64> new_get_put = u64{umax};
+		retro_atomic_64_t new_get_put{-1}; // u64{umax}: none
 		// Counts the GET/PUT pairs the RSX thread took out of new_get_put, for
 		// a thread waiting to store the next to wait on
 		retro_atomic_int_t get_put_taken{};
@@ -212,7 +212,7 @@ namespace rsx
 		// Other threads holding the renderer still (rsx::eng_lock): what
 		// pause asks and waits on, and wait_pause answers
 		rsx_hold_t m_hold{};
-		atomic_t<u32> is_initialized{0};
+		retro_atomic_int_t is_initialized{0};
 
 		bool is_fifo_idle() const;
 		void flush_fifo();
@@ -233,7 +233,7 @@ namespace rsx
 		// Performance approximation counters
 		struct
 		{
-			atomic_t<u64> idle_time{ 0 };  // Time spent idling in microseconds
+			retro_atomic_64_t idle_time{0};  // Time spent idling in microseconds
 			u64 last_update_timestamp = 0; // Timestamp of last load update
 			u64 FIFO_idle_timestamp = 0;   // Timestamp of when FIFO queue becomes idle
 			FIFO::state state = FIFO::state::running;
@@ -269,8 +269,8 @@ namespace rsx
 		u32 flip_status = CELL_GCM_DISPLAY_FLIP_STATUS_DONE;
 		int debug_level = CELL_GCM_DEBUG_LEVEL0;
 
-		atomic_t<bool> requested_vsync{true};
-		atomic_t<bool> enable_second_vhandler{false};
+		retro_atomic_int_t requested_vsync{1};
+		retro_atomic_int_t enable_second_vhandler{0};
 
 		bool send_event(u64, u64, u64);
 
@@ -343,15 +343,14 @@ namespace rsx
 		vm::ptr<void(u32)> user_handler = vm::null;
 		vm::ptr<void(u32)> vblank_handler = vm::null;
 		vm::ptr<void(u32)> queue_handler = vm::null;
-		atomic_t<u64> vblank_count{0};
+		retro_atomic_64_t vblank_count{0};
 
 		u64 vblank_at_flip = umax;
 		u64 flip_notification_count = 0;
 		void post_vblank_event();
 
 	public:
-		atomic_t<bool> sync_point_request = false;
-		atomic_t<bool> pause_on_draw = false;
+		retro_atomic_int_t sync_point_request{0};
 		bool in_begin_end = false;
 
 		rsx_fifo_recoveries_t recovered_fifo_cmds_history{}; // the last 20
@@ -359,7 +358,7 @@ namespace rsx
 		u32 prevent_preempt_increase_tickets = 0;
 		u64 preempt_fail_old_preempt_count = 0;
 
-		atomic_t<s32> async_tasks_pending{ 0 };
+		retro_atomic_int_t async_tasks_pending{0};
 
 		reports::conditional_render_eval cond_render_ctrl;
 

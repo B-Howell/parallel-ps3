@@ -42,8 +42,8 @@ class GSRender;
 
 atomic_t<bool> g_user_asked_for_recording = false;
 atomic_t<bool> g_user_asked_for_screenshot = false;
-atomic_t<bool> g_disable_frame_limit = false;
-atomic_t<u32> g_libretro_vblank_requests = 0;
+retro_atomic_int_t g_disable_frame_limit{0};
+retro_atomic_int_t g_libretro_vblank_requests{0};
 
 extern CellGcmOffsetTable offsetTable;
 extern thread_local std::string(*g_tls_log_prefix)();
@@ -745,7 +745,14 @@ namespace rsx
 
 		ar(m_draw_processor.m_element_push_buffer, fifo_ret_addr, saved_fifo_ret, zcull_surface_active, m_surface_info, m_depth_surface_info, m_framebuffer_layout);
 		ar(dma_address, iomap_table, restore_point, tiles, zculls, display_buffers, display_buffers_count, current_display_buffer);
-		ar(enable_second_vhandler, requested_vsync);
+		{
+			// As the bools they were (one byte each in the savestate)
+			bool second_vhandler = retro_atomic_load_acquire_int(&enable_second_vhandler) != 0;
+			bool vsync = retro_atomic_load_acquire_int(&requested_vsync) != 0;
+			ar(second_vhandler, vsync);
+			retro_atomic_store_release_int(&enable_second_vhandler, second_vhandler ? 1 : 0);
+			retro_atomic_store_release_int(&requested_vsync, vsync ? 1 : 0);
+		}
 		ar(device_addr, label_addr, main_mem_size, local_mem_size, rsx_event_port, driver_info);
 		ar(in_begin_end);
 		ar(display_buffers, display_buffers_count, current_display_buffer);
@@ -753,7 +760,9 @@ namespace rsx
 
 		if (ar.is_writing() || version >= 2)
 		{
-			ar(vblank_count);
+			u64 vblanks = static_cast<u64>(retro_atomic_load_acquire_64(&vblank_count));
+			ar(vblanks);
+			retro_atomic_store_release_64(&vblank_count, static_cast<s64>(vblanks));
 
 			b8 flip_pending{};
 
@@ -860,7 +869,7 @@ namespace rsx
 		if (dma_address)
 		{
 			ctrl = vm::_ptr<RsxDmaControl>(dma_address);
-			rsx_thread_running = true;
+			retro_atomic_store_release_int(&rsx_thread_running, 1);
 			libretro_event(); // the RSX thread waiting for startup looks again
 		}
 
@@ -1016,7 +1025,7 @@ namespace rsx
 
 	void thread::post_vblank_event()
 	{
-		vblank_count++;
+		retro_atomic_fetch_add_64(&vblank_count, 1);
 
 		if (isHLE)
 		{
@@ -1058,7 +1067,7 @@ namespace rsx
 		rsx::overlays::reset_performance_overlay();
 		rsx::overlays::reset_debug_overlay();
 
-		if (!is_initialized)
+		if (!static_cast<u32>(retro_atomic_load_acquire_int(&is_initialized)))
 		{
 			g_fxo->get<rsx::dma_manager>().init();
 			on_init_thread();
@@ -1072,8 +1081,8 @@ namespace rsx
 			}
 		}
 
-		is_initialized = true;
-		is_initialized.notify_all();
+		retro_atomic_store_release_int(&is_initialized, 1);
+		retro_waitaddr_notify_all(&is_initialized);
 
 		if (!zcull_ctrl)
 		{
@@ -1099,7 +1108,7 @@ namespace rsx
 		// Until the game sets the RSX up and the emulator runs: looked at
 		// once a frame (retro_run's, g_libretro_events), as the emulator's
 		// state changes or as the RSX is set up (both notify it), or a stop
-		while (!rsx_thread_running || Emu.IsPausedOrReady())
+		while (!(retro_atomic_load_acquire_int(&rsx_thread_running) != 0) || Emu.IsPausedOrReady())
 		{
 			const u32 events = libretro_events_seen();
 
@@ -1116,7 +1125,7 @@ namespace rsx
 				return;
 			}
 
-			if (rsx_thread_running && !Emu.IsPausedOrReady())
+			if ((retro_atomic_load_acquire_int(&rsx_thread_running) != 0) && !Emu.IsPausedOrReady())
 			{
 				break;
 			}
@@ -1140,7 +1149,7 @@ namespace rsx
 
 		last_guest_flip_timestamp = utils::sub_saturate<u64>(get_guest_system_time(), 1000000); // the game's own time, as sys_time_get_system_time gives it
 
-		vblank_count = 0;
+		retro_atomic_store_release_64(&vblank_count, static_cast<s64>(0));
 
 		if (serialized)
 		{
@@ -1154,7 +1163,7 @@ namespace rsx
 
 		g_fxo->get<vblank_thread>().set_thread(std::shared_ptr<named_thread<std::function<void()>>>(new named_thread<std::function<void()>>("VBlank Thread"sv, [this]() -> void
 		{
-			u32 frontend_vblanks = g_libretro_vblank_requests; // wraps; only compared for equality
+			u32 frontend_vblanks = static_cast<u32>(retro_atomic_load_acquire_int(&g_libretro_vblank_requests)); // wraps; only compared for equality
 
 			// TODO: exit condition
 			while (!is_stopped() && !unsent_gcm_events && thread_ctrl::state() != thread_state::aborting)
@@ -1165,13 +1174,16 @@ namespace rsx
 				// are the frontend's. RPCS3's own timer, which posted VBLANK by
 				// the host's clock, is not in the core.
 				{
-					const u32 requested = g_libretro_vblank_requests;
+					const u32 requested = static_cast<u32>(retro_atomic_load_acquire_int(&g_libretro_vblank_requests));
 
 					if (requested == frontend_vblanks)
 					{
 						// Until retro_run asks for one, or the thread is told to
 						// stop: no timeout, no polling
-						thread_ctrl::wait_on(g_libretro_vblank_requests, requested);
+						thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list)
+						{
+							list.template set_raw<0>(&g_libretro_vblank_requests, requested);
+						});
 					}
 					else if (Emu.IsPaused())
 					{
@@ -1217,18 +1229,18 @@ namespace rsx
 			{
 				wait_pause();
 
-				if (!rsx_thread_running)
+				if (!(retro_atomic_load_acquire_int(&rsx_thread_running) != 0))
 				{
 					return;
 				}
 			}
 
 			// Note a possible rollback address
-			if (sync_point_request && !in_begin_end)
+			if ((retro_atomic_load_acquire_int(&sync_point_request) != 0) && !in_begin_end)
 			{
 				restore_point = ctrl->get;
 				saved_fifo_ret = fifo_ret_addr;
-				sync_point_request.release(false);
+				retro_atomic_store_release_int(&sync_point_request, 0);
 			}
 
 			// Update sub-units every 64 cycles. The local handler is invoked for other functions externally on-demand anyway.
@@ -1316,7 +1328,7 @@ namespace rsx
 
 			if (m_eng_interrupt_mask & rsx::dma_control_interrupt && !is_stopped())
 			{
-				if (const u64 get_put = new_get_put.exchange(u64{umax});
+				if (const u64 get_put = static_cast<u64>(retro_atomic_exchange_64(&new_get_put, -1));
 					get_put != umax)
 				{
 					vm::_ptr<atomic_be_t<u64>>(dma_address + ::offset32(&RsxDmaControl::put))->release(get_put);
@@ -1324,7 +1336,7 @@ namespace rsx
 					fifo_ctrl->abort();
 					fifo_ret_addr = RSX_CALL_STACK_EMPTY;
 					last_known_code_start = static_cast<u32>(get_put);
-					sync_point_request.release(true);
+					retro_atomic_store_release_int(&sync_point_request, 1);
 
 					// A thread waiting to store the next is woken
 					retro_atomic_fetch_add_int(&get_put_taken, 1);
@@ -2601,7 +2613,7 @@ namespace rsx
 		vm::write32(device_addr + 0x30, 1);
 		std::memset(display_buffers, 0, sizeof(display_buffers));
 
-		rsx_thread_running = true;
+		retro_atomic_store_release_int(&rsx_thread_running, 1);
 		libretro_event(); // the RSX thread waiting for startup looks again
 	}
 
@@ -2795,7 +2807,7 @@ namespace rsx
 
 		//TODO: On sync every sub-unit should finish any pending tasks
 		//Might cause zcull lockup due to zombie 'unclaimed reports' which are not forcefully removed currently
-		//ensure(async_tasks_pending.load() == 0);
+		//ensure(static_cast<s32>(retro_atomic_load_acquire_int(&async_tasks_pending)) == 0);
 	}
 
 	void thread::sync_hint(FIFO::interrupt_hint /*hint*/, rsx::reports::sync_hint_payload_t payload)
@@ -3067,7 +3079,7 @@ namespace rsx
 		// we must block until RSX has invalidated the memory
 		// (the renderer handles it, and this thread waits for it to)
 
-		if (!rsx_thread_running)
+		if (!(retro_atomic_load_acquire_int(&rsx_thread_running) != 0))
 			return;
 
 		// Nearly always there is no unmap waiting to be handled: one load.
@@ -3139,7 +3151,7 @@ namespace rsx
 
 	void thread::on_notify_pre_memory_unmapped(u32 address, u32 size, std::vector<std::pair<u64, u64>>& event_data)
 	{
-		if (rsx_thread_running && address < rsx::constants::local_mem_base)
+		if ((retro_atomic_load_acquire_int(&rsx_thread_running) != 0) && address < rsx::constants::local_mem_base)
 		{
 			// Each bit represents io entry to be unmapped
 			u64 unmap_status[512 / 64]{};
@@ -3327,7 +3339,7 @@ namespace rsx
 		if (!performance_counters.last_update_timestamp || performance_counters.sampled_frames > 30)
 		{
 			const auto timestamp = get_system_time();
-			const auto idle = performance_counters.idle_time.load();
+			const auto idle = static_cast<u64>(retro_atomic_load_acquire_64(&performance_counters.idle_time));
 			const auto elapsed = timestamp - performance_counters.last_update_timestamp;
 
 			if (elapsed > idle)
@@ -3335,7 +3347,7 @@ namespace rsx
 			else
 				performance_counters.approximate_load = 0u;
 
-			performance_counters.idle_time = 0;
+			retro_atomic_store_release_64(&performance_counters.idle_time, static_cast<s64>(0));
 			performance_counters.sampled_frames = 0;
 			performance_counters.last_update_timestamp = timestamp;
 		}
@@ -3401,21 +3413,21 @@ namespace rsx
 	{
 		constexpr u64 uses_per_query = 512;
 
-		f64 result = m_cached_display_rate;
-		u64 count = m_display_rate_fetch_count++;
+		f64 result = std::bit_cast<f64>(retro_atomic_load_acquire_64(&m_cached_display_rate));
+		u64 count = static_cast<u64>(retro_atomic_fetch_add_64(&m_display_rate_fetch_count, 1));
 
 		while (true)
 		{
 			if (count % 512 == 0)
 			{
 				result = get_display_refresh_rate();
-				m_cached_display_rate.store(result);
-				m_display_rate_fetch_count += uses_per_query; // Notify users of the new value
+				retro_atomic_store_release_64(&m_cached_display_rate, std::bit_cast<s64>(result));
+				retro_atomic_fetch_add_64(&m_display_rate_fetch_count, static_cast<s64>(uses_per_query)); // Notify users of the new value
 				break;
 			}
 
-			const u64 new_count = m_display_rate_fetch_count;
-			const f64 new_cached = m_cached_display_rate;
+			const u64 new_count = static_cast<u64>(retro_atomic_load_acquire_64(&m_display_rate_fetch_count));
+			const f64 new_cached = std::bit_cast<f64>(retro_atomic_load_acquire_64(&m_cached_display_rate));
 
 			if (result == new_cached && count / uses_per_query == new_count / uses_per_query)
 			{
@@ -3477,7 +3489,7 @@ namespace rsx
 		}
 
 		double limit = 0.;
-		const auto frame_limit = g_disable_frame_limit ? frame_limit_type::none : g_cfg.video.frame_limit;
+		const auto frame_limit = (retro_atomic_load_acquire_int(&g_disable_frame_limit) != 0) ? frame_limit_type::none : g_cfg.video.frame_limit;
 
 		switch (frame_limit)
 		{
@@ -3511,7 +3523,7 @@ namespace rsx
 				{
 					const auto delay_us = target_rsx_flip_time - time;
 					lv2_obj::wait_timeout(delay_us, nullptr, false);
-					performance_counters.idle_time += delay_us;
+					retro_atomic_fetch_add_64(&performance_counters.idle_time, static_cast<s64>(delay_us));
 				}
 			}
 
@@ -3524,17 +3536,17 @@ namespace rsx
 
 			if (vblank_at_flip == umax)
 			{
-				vblank_at_flip = +vblank_count;
+				vblank_at_flip = static_cast<u64>(retro_atomic_load_acquire_64(&vblank_count));
 				flip_notification_count = 1;
 				exit = true;
 
 				// In fast-forward retro_run grants the frame it waits for
 				// when it sees this (libretro_guest_frame_due)
-				if (requested_vsync)
+				if ((retro_atomic_load_acquire_int(&requested_vsync) != 0))
 					libretro_guest_flip_waits();
 			}
 
-			if (requested_vsync && (exit || vblank_at_flip == vblank_count))
+			if ((retro_atomic_load_acquire_int(&requested_vsync) != 0) && (exit || vblank_at_flip == static_cast<u64>(retro_atomic_load_acquire_64(&vblank_count))))
 			{
 				// Not yet signaled, handle it later
 				async_flip_requested |= flip_request::emu_requested;

@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The RSX thread's flags and counters are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the frame-limit switch, the count of VBLANKs retro_run asks for, the RSX's running, initialized, vsync, second-VBLANK-handler and sync-point flags, the VBLANK count, the idle time, the pending GET/PUT pair, the ZCULL queue depth and the cached display rate (kept as the bits of its `f64`) are `retro_atomic_int_t` and `retro_atomic_64_t`.
+  - **Waits:** the VBLANK thread waits for retro_run's next VBLANK request through `wait_on_custom` and `set_raw`, so a join still wakes it. The progress dialog's wait for the renderer to start holds `is_initialized` the same way.
+  - **Savestates:** the vsync flags and the VBLANK count are saved through a `bool` and a `u64`, the types they were, so the format is unchanged.
+  - **Removed:** `pause_on_draw`, a debugger's pause after a draw that nothing sets any more.
+  - **Tests:** these need the RSX running a game, so there is no new test of their own. `test_emu_waits` covers a named thread waiting on a `retro_atomic` word woken by a notify and by a join, which is the VBLANK thread's wait. A check fails if `atomic_t` comes back to these fields.
+
+
 - **The emulator's own state is off `atomic_t`.** Not yet run on a game.
   - **What changed:** `Emulator`'s state (stopped, loading, running, paused and so on), its pause start and pause total times, its stop counter, its close-pending flag and its count of guards against a boot are `retro_atomic_int_t` and `retro_atomic_64_t`. The class has `state()`, `set_state()` and `state_cas()` for the state; `Pause` and `Kill`, which changed it with a `fetch_op`, now do it with a compare-and-swap loop. The guard count's "down by one unless 0" is a compare-and-swap loop too.
   - **Waits:** `WaitReady` (the RSX thread waiting for the emulator to leave ready) waits on the state word with `retro_waitaddr`; `Run` and `Kill` wake it as before. The stop counter's wake is gone, since nothing waits on it.

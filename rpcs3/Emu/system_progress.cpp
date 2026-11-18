@@ -85,18 +85,18 @@ void progress_dialog_server::operator()()
 			// Wait for init to complete within 300 of retro_run's frames (5 seconds of the game's
 			// time), as it is set or a frame passes, never the host's clock. Abort just in case
 			// we have hardware/driver issues.
-			for (u32 frames = 0; frames < 300 && !renderer->is_initialized && !Emu.IsStopped() && thread_ctrl::state() != thread_state::aborting; frames++)
+			for (u32 frames = 0; frames < 300 && !static_cast<u32>(retro_atomic_load_acquire_int(&renderer->is_initialized)) && !Emu.IsStopped() && thread_ctrl::state() != thread_state::aborting; frames++)
 			{
 				const u32 events = libretro_events_seen();
 
-				if (renderer->is_initialized)
+				if (static_cast<u32>(retro_atomic_load_acquire_int(&renderer->is_initialized)))
 				{
 					break;
 				}
 
 				thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
 				{
-					list.template set<0>(renderer->is_initialized, 0u);
+					list.template set_raw<0>(&renderer->is_initialized, 0u);
 					list.template set_raw<1>(&g_libretro_events, events);
 				});
 			}

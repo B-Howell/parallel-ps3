@@ -500,13 +500,6 @@ namespace rsx
 			{
 				RSX(ctx)->in_begin_end = false;
 			}
-
-			if (RSX(ctx)->pause_on_draw && RSX(ctx)->pause_on_draw.exchange(false))
-			{
-				RSX(ctx)->state -= cpu_flag::dbg_step;
-				RSX(ctx)->state += cpu_flag::dbg_pause;
-				RSX(ctx)->check_state();
-			}
 		}
 
 		void clear(context* ctx, u32 /*reg*/, u32 arg)

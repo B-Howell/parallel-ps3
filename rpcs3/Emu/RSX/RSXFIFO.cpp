@@ -208,7 +208,7 @@ namespace rsx
 
 						const auto then = std::exchange(now, get_system_time());
 						start_time = now;
-						m_thread->performance_counters.idle_time += now - then;
+						retro_atomic_fetch_add_64(&m_thread->performance_counters.idle_time, static_cast<s64>(now - then));
 					}
 					else
 					{
@@ -740,7 +740,7 @@ namespace rsx
 					if (performance_counters.state == FIFO::state::running)
 					{
 						performance_counters.FIFO_idle_timestamp = get_system_time();
-						sync_point_request.release(true);
+						retro_atomic_store_release_int(&sync_point_request, 1);
 					}
 
 					performance_counters.state = FIFO::state::spinning;
@@ -820,7 +820,7 @@ namespace rsx
 			}
 
 			// Update performance counters with time spent in idle mode
-			performance_counters.idle_time += (get_system_time() - performance_counters.FIFO_idle_timestamp);
+			retro_atomic_fetch_add_64(&performance_counters.idle_time, static_cast<s64>((get_system_time() - performance_counters.FIFO_idle_timestamp)));
 		}
 
 		do

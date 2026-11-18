@@ -162,7 +162,7 @@ static void set_rsx_dmactl(rsx::thread* render, u64 get_put)
 		{
 			const u32 seen = static_cast<u32>(retro_atomic_load_acquire_int(&render->get_put_taken));
 
-			if (render->new_get_put.compare_and_swap_test(u64{umax}, get_put))
+			if (retro_atomic_cas_64(&render->new_get_put, -1, static_cast<s64>(get_put)))
 			{
 				break;
 			}
@@ -189,14 +189,14 @@ static void set_rsx_dmactl(rsx::thread* render, u64 get_put)
 		{
 			const u32 seen = static_cast<u32>(retro_atomic_load_acquire_int(&render->get_put_taken));
 
-			if (render->new_get_put != get_put)
+			if (static_cast<u64>(retro_atomic_load_acquire_64(&render->new_get_put)) != get_put)
 			{
 				break;
 			}
 
 			if (cpu->state & cpu_flag::exit)
 			{
-				if (render->new_get_put.compare_and_swap_test(get_put, umax))
+				if (retro_atomic_cas_64(&render->new_get_put, static_cast<s64>(get_put), -1))
 				{
 					// Retry
 					cpu->state += cpu_flag::again;
@@ -631,7 +631,7 @@ error_code sys_rsx_context_free(ppu_thread& ppu, u32 context_id)
 	render->display_buffers_count = 0;
 	render->current_display_buffer = 0;
 	render->ctrl = nullptr;
-	render->rsx_thread_running = false;
+	retro_atomic_store_release_int(&render->rsx_thread_running, 0);
 	render->serialized = false;
 
 	ensure(vm::get(vm::rsx_context)->dealloc(dma_address));
@@ -803,7 +803,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		break;
 	case 0x101: // Display sync set, cellGcmSetFlipMode
 		// a4 == 2 is vsync, a4 == 1 is hsync
-		render->requested_vsync.store(a4 == 2);
+		retro_atomic_store_release_int(&render->requested_vsync, (a4 == 2) ? 1 : 0);
 		break;
 
 	case 0x102: // Display flip
@@ -913,14 +913,14 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		if (a5 == 1u)
 		{
 			// This function resets vsync state to enabled
-			render->requested_vsync = true;
+			retro_atomic_store_release_int(&render->requested_vsync, 1);
 
 			// TODO: Set vblank frequency
 		}
 		else if (ensure(a5 == 2u))
 		{
 			// TODO: Implement its frequency as well
-			render->enable_second_vhandler.store(a4 != 4);
+			retro_atomic_store_release_int(&render->enable_second_vhandler, (a4 != 4) ? 1 : 0);
 		}
 
 		break;
@@ -1177,7 +1177,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 
 		u64 event_flags = SYS_RSX_EVENT_VBLANK;
 
-		if (render->enable_second_vhandler)
+		if ((retro_atomic_load_acquire_int(&render->enable_second_vhandler) != 0))
 			event_flags |= SYS_RSX_EVENT_SECOND_VBLANK_BASE << a3; // second vhandler
 
 		render->send_event(0, event_flags, 0);

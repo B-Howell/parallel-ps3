@@ -23,7 +23,7 @@ namespace rsx
 
 		void semaphore_acquire(context* ctx, u32 /*reg*/, u32 arg)
 		{
-			RSX(ctx)->sync_point_request.release(true);
+			retro_atomic_store_release_int(&RSX(ctx)->sync_point_request, 1);
 			const u32 addr = get_address(REGS(ctx)->semaphore_offset_406e(), REGS(ctx)->semaphore_context_dma_406e());
 
 			// Syncronization point, may be associated with memory changes without actually changing addresses
@@ -101,7 +101,7 @@ namespace rsx
 			}
 
 			RSX(ctx)->fifo_wake_delay();
-			RSX(ctx)->performance_counters.idle_time += (get_system_time() - start);
+			retro_atomic_fetch_add_64(&RSX(ctx)->performance_counters.idle_time, static_cast<s64>((get_system_time() - start)));
 		}
 
 		void semaphore_release(context* ctx, u32 reg, u32 arg)
@@ -121,7 +121,7 @@ namespace rsx
 			if (const bool is_flip_sema = (offset == 0x10 && ctxt == CELL_GCM_CONTEXT_DMA_SEMAPHORE_R);
 				!is_flip_sema)
 			{
-				RSX(ctx)->sync_point_request.release(true);
+				retro_atomic_store_release_int(&RSX(ctx)->sync_point_request, 1);
 			}
 
 			const u32 addr = get_address(offset, ctxt);

@@ -235,7 +235,7 @@ error_code cellVideoOutConfigure(u32 videoOut, vm::ptr<CellVideoOutConfiguration
 	cellSysutil.notice("Selected video configuration: resolutionId=0x%x, aspect=0x%x=>0x%x, format=0x%x", config->resolutionId, config->aspect, conf.aspect, config->format);
 
 	// This function resets VSYNC to be enabled
-	rsx::get_current_renderer()->requested_vsync = true;
+	retro_atomic_store_release_int(&rsx::get_current_renderer()->requested_vsync, 1);
 	return CELL_OK;
 }
 

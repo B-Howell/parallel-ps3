@@ -64,7 +64,7 @@ namespace rsx
 
 						m_pending_writes.push_back({});
 						m_pending_writes.back().query = m_current_task;
-						ptimer->async_tasks_pending++;
+						retro_atomic_fetch_add_int(&ptimer->async_tasks_pending, 1);
 					}
 					else
 					{
@@ -193,7 +193,7 @@ namespace rsx
 
 			on_report_enqueued(sink);
 
-			ptimer->async_tasks_pending++;
+			retro_atomic_fetch_add_int(&ptimer->async_tasks_pending, 1);
 
 			if (m_statistics_map[m_statistics_tag_id].result != 0)
 			{
@@ -283,7 +283,7 @@ namespace rsx
 						discard_occlusion_query(It->query);
 						free_query(It->query);
 						valid_size--;
-						ptimer->async_tasks_pending--;
+						retro_atomic_fetch_sub_int(&ptimer->async_tasks_pending, 1);
 						continue;
 					}
 
@@ -517,7 +517,7 @@ namespace rsx
 			}
 
 			//Decrement jobs counter
-			ptimer->async_tasks_pending -= processed;
+			retro_atomic_fetch_sub_int(&ptimer->async_tasks_pending, static_cast<int>(processed));
 		}
 
 		void ZCULL_control::update(::rsx::thread* ptimer, u32 sync_address, bool hint)
@@ -536,7 +536,7 @@ namespace rsx
 
 			if (!sync_address)
 			{
-				if (hint || ptimer->async_tasks_pending + 0u >= max_safe_queue_depth)
+				if (hint || static_cast<s32>(retro_atomic_load_acquire_int(&ptimer->async_tasks_pending)) + 0u >= max_safe_queue_depth)
 				{
 					// Prepare the whole queue for reading. This happens when zcull activity is disabled or queue is too long
 					for (auto It = m_pending_writes.rbegin(); It != m_pending_writes.rend(); ++It)
@@ -646,7 +646,7 @@ namespace rsx
 					m_pending_writes.clear();
 				}
 
-				ptimer->async_tasks_pending -= processed;
+				retro_atomic_fetch_sub_int(&ptimer->async_tasks_pending, static_cast<int>(processed));
 			}
 		}
 

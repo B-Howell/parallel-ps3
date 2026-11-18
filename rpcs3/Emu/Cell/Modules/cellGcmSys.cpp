@@ -545,7 +545,7 @@ void cellGcmSetFlipHandler(vm::ptr<void(u32)> handler)
 {
 	cellGcmSys.warning("cellGcmSetFlipHandler(handler=*0x%x)", handler);
 
-	if (const auto rsx = rsx::get_current_renderer(); rsx->is_initialized)
+	if (const auto rsx = rsx::get_current_renderer(); static_cast<u32>(retro_atomic_load_acquire_int(&rsx->is_initialized)))
 	{
 		rsx->flip_handler = handler;
 	}
@@ -561,7 +561,7 @@ void cellGcmSetFlipMode(u32 mode)
 {
 	cellGcmSys.warning("cellGcmSetFlipMode(mode=%d)", mode);
 
-	rsx::get_current_renderer()->requested_vsync.store(mode == CELL_GCM_DISPLAY_VSYNC);
+	retro_atomic_store_release_int(&rsx::get_current_renderer()->requested_vsync, (mode == CELL_GCM_DISPLAY_VSYNC) ? 1 : 0);
 }
 
 error_code cellGcmSetFlipMode2()
@@ -697,7 +697,7 @@ void cellGcmSetUserHandler(vm::ptr<void(u32)> handler)
 {
 	cellGcmSys.warning("cellGcmSetUserHandler(handler=*0x%x)", handler);
 
-	if (const auto rsx = rsx::get_current_renderer(); rsx->is_initialized)
+	if (const auto rsx = rsx::get_current_renderer(); static_cast<u32>(retro_atomic_load_acquire_int(&rsx->is_initialized)))
 	{
 		rsx->user_handler = handler;
 	}
@@ -723,7 +723,7 @@ void cellGcmSetVBlankHandler(vm::ptr<void(u32)> handler)
 {
 	cellGcmSys.warning("cellGcmSetVBlankHandler(handler=*0x%x)", handler);
 
-	if (const auto rsx = rsx::get_current_renderer(); rsx->is_initialized)
+	if (const auto rsx = rsx::get_current_renderer(); static_cast<u32>(retro_atomic_load_acquire_int(&rsx->is_initialized)))
 	{
 		rsx->vblank_handler = handler;
 	}
@@ -883,7 +883,7 @@ u64 cellGcmGetVBlankCount()
 {
 	cellGcmSys.trace("cellGcmGetVBlankCount()");
 
-	return rsx::get_current_renderer()->vblank_count;
+	return static_cast<u64>(retro_atomic_load_acquire_64(&rsx::get_current_renderer()->vblank_count));
 }
 
 error_code cellGcmGetVBlankCount2()
@@ -936,7 +936,7 @@ void cellGcmSetQueueHandler(vm::ptr<void(u32)> handler)
 {
 	cellGcmSys.warning("cellGcmSetQueueHandler(handler=*0x%x)", handler);
 
-	if (const auto rsx = rsx::get_current_renderer(); rsx->is_initialized)
+	if (const auto rsx = rsx::get_current_renderer(); static_cast<u32>(retro_atomic_load_acquire_int(&rsx->is_initialized)))
 	{
 		rsx->queue_handler = handler;
 	}
