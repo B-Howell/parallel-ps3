@@ -4,6 +4,8 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The CPU profiler thread is gone from the core.** With the PPU or SPU profiler setting on (or SPU debug), it looked at every PPU's or SPU's current address every 20 to 60 µs of the host's time and logged what it found. This is measuring logged by shipping code, sampled on the host's clock. The settings themselves stay, since the SPU recompiler still reads them for what it emits. Its thread was there in every game, parked when no setting was on. The spu.log dump at the end of a game no longer has the profiler's usage figures added to it. A check fails if the profiler comes back.
+
 - **The RSX frame capture and its replay are gone from the core.** Not yet run on a game.
   - **What they were:** the capture wrote a frame's RSX commands and memory to a `.rrc.gz` file when the user asked; the replay booted such a file in place of a game. Its thread waited 10 ms at a time and yielded on the host's clock between frames.
   - **Why they went:** in the core nothing asked for a capture (standalone RPCS3 has a hotkey for it) and nothing booted one, so both were dead code.

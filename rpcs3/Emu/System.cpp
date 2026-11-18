@@ -103,7 +103,6 @@ thread_local std::string_view g_tls_serialize_name;
 
 extern thread_local std::string(*g_tls_log_prefix)();
 
-extern f64 get_cpu_program_usage_percent(u64 hash);
 
 // Report error and call std::abort(), defined in main.cpp
 [[noreturn]] void report_fatal_error(std::string_view text, bool is_html = false, bool include_help_text = true);
@@ -2921,9 +2920,6 @@ bool Emulator::Pause(bool freeze_emulation, bool show_resume_message)
 		});
 	}
 
-	// Signal profilers to print results (if enabled)
-	cpu_thread::flush_profilers();
-
 	auto on_select = [](u32, cpu_thread& cpu)
 	{
 		cpu.state += cpu_flag::dbg_global_pause;
@@ -3918,56 +3914,6 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 						to_remove = to_log.size();
 
 						std::string new_log(to_log);
-
-						for (usz iter = 0, out_added = 0; iter < to_log.size();)
-						{
-							const usz index = to_log.find(") ==========", iter);
-
-							if (index == umax)
-							{
-								break;
-							}
-
-							const std::string_view until = to_log.substr(0, index);
-							const usz seperator = until.rfind(", ");
-
-							if (seperator == umax)
-							{
-								iter = index + 1;
-								continue;
-							}
-
-							const std::string_view prog_hash = until.substr(seperator + 2);
-
-							if (prog_hash.empty())
-							{
-								iter = index + 1;
-								continue;
-							}
-
-							const fmt::base57_result result = fmt::base57_result::from_string(prog_hash);
-
-							if (result.size < sizeof(be_t<u64>))
-							{
-								iter = index + 1;
-								continue;
-							}
-
-							const u64 hash_val = read_from_ptr_unsafe<be_t<u64>>(result.data) & -65536;
-							const f64 usage = get_cpu_program_usage_percent(hash_val);
-
-							if (usage == 0)
-							{
-								iter = index + 1;
-								continue;
-							}
-
-							const std::string text_append = fmt::format("usage %%%g, ", usage);
-							new_log.insert(new_log.begin() + seperator + out_added + 2, text_append.begin(), text_append.end());
-
-							out_added += text_append.size();
-							iter = index + 1;
-						}
 
 						if (!new_log.empty() && utils::isspace(new_log.back()))
 						{

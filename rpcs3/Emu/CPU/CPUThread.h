@@ -296,8 +296,6 @@ public:
 	// Cleanup thread counting information
 	static void cleanup() noexcept;
 
-	// Send signal to the profiler(s) to flush results
-	static void flush_profilers() noexcept;
 
 	template <DerivedFrom<cpu_thread> T = cpu_thread>
 	static inline T* get_current() noexcept
