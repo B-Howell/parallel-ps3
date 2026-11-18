@@ -21,6 +21,7 @@
 #include <rthreads/retro_waitaddr.h>
 #include "Emu/IdManager.h"
 #include "Emu/system_progress.hpp"
+#include "Emu/Cell/Modules/cellOskDialog.h"
 
 #include <atomic>
 #include <cstdio>
@@ -422,6 +423,32 @@ int main()
 		CHECK(!g_progr_text);
 		CHECK(g_progr_text.load().text_index == umax);
 		std::printf("test_emu_waits: progress text: inner then outer then none, 12000 opens from two threads end with none\n");
+	}
+
+	// The OSK's settings as the game sets them: the colour and the pointer's
+	// x and y come back as set, each value in its own place, and a reset
+	// gives the defaults back
+	{
+		auto info = std::make_unique<osk_info>();
+		const OskDialogBase::color c0 = info->get_base_color();
+		CHECK(c0.r == 0.2f && c0.g == 0.2f && c0.b == 0.2f && c0.a == 1.0f);
+		info->set_base_color(OskDialogBase::color{0.1f, 0.5f, -0.25f, 0.75f});
+		const OskDialogBase::color c = info->get_base_color();
+		CHECK(c.r == 0.1f && c.g == 0.5f && c.b == -0.25f && c.a == 0.75f);
+
+		retro_atomic_store_release_64(&info->pointer_pos, osk_info::pack_f32s(-12.5f, 640.0f));
+		const s64 pos = retro_atomic_load_acquire_64(&info->pointer_pos);
+		CHECK(osk_info::f32_hi(pos) == -12.5f && osk_info::f32_lo(pos) == 640.0f);
+
+		retro_atomic_store_release_int(&info->initial_scale, static_cast<int>(std::bit_cast<u32>(2.0f)));
+		retro_atomic_store_release_int(&info->use_separate_windows, 1);
+		info->reset();
+		CHECK(std::bit_cast<f32>(static_cast<u32>(retro_atomic_load_acquire_int(&info->initial_scale))) == 1.0f);
+		CHECK(std::bit_cast<f32>(static_cast<u32>(retro_atomic_load_acquire_int(&info->input_field_background_transparency))) == 1.0f);
+		CHECK(retro_atomic_load_acquire_int(&info->use_separate_windows) == 0);
+		CHECK(retro_atomic_load_acquire_64(&info->pointer_pos) == 0);
+		CHECK(info->get_base_color().a == 1.0f);
+		std::printf("test_emu_waits: OSK settings: colour and pointer back as set, reset gives the defaults\n");
 	}
 
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");

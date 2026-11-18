@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The on-screen keyboard's settings (`osk_info`) are off `atomic_t`, the first half of cellOskDialog.** Not yet run on a game.
+  - **What changed:** what the game sets with `cellOskDialogSet*` and the dialog reads as it loads is now `retro_atomic_int_t` and `retro_atomic_64_t`. That covers the separate-window and device options, layout, languages, dimmer, scale, transparency, the last dialog state and the three guest callbacks. Flags are 0 or 1, `f32`s are kept as their bits, and callbacks as their guest addresses.
+  - **Packed:** the pointer's x and y are one 64-bit word, so the overlay never reads an x from one update with a y from another. The colour is two words (red and green, blue and alpha) where it was one 16-byte `atomic_t`.
+  - **Not yet:** the dialog's own state and input flags (`OskDialogBase`) are the second half.
+  - **Tests:** `test_emu_waits` checks that the colour and the pointer come back as set, and that a reset gives the defaults back. Its first run failed: the colour started at zero instead of the default 0.2, 0.2, 0.2, 1.0, which the declaration now sets. A check fails if `atomic_t` comes back to `osk_info`.
+
+
 - **The progress dialog's text slot is one 64-bit `retro_atomic` word, where it was a 16-byte `atomic_t`.** Not yet run on a game.
   - **What changed:** the slot holds a count of updates, the index of the text shown and how many dialogs are open. They are packed into one `retro_atomic_64_t` (24, 20 and 20 bits), so it is a plain 64-bit compare-and-swap, not a 16-byte one (`cmpxchg16b`). The update count is only compared between two reads, so its wrapping does no harm. Opening and closing a dialog are compare-and-swap loops where they were `atomic_op` and `fetch_op`.
   - **Tests:** `test_emu_waits` packs and unpacks the slot, opens an outer and an inner dialog and checks the inner's text is shown, then the outer's, then none, and has two threads open and close 12000 dialogs and end with none open. It was shown to fail with a close that does not take one from the count. A check fails if the 16-byte `atomic_t` comes back.

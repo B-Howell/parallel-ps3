@@ -345,39 +345,62 @@ struct osk_info
 	osk_info(const osk_info&) = delete;
 	osk_info& operator=(const osk_info&) = delete;
 
-	atomic_t<bool> use_separate_windows = false;
+	// What the game set up (cellOskDialogSet*), read as the dialog loads and
+	// by the overlay: bools are 0 or 1, f32s their bits, callbacks their
+	// guest addresses
+	retro_atomic_int_t use_separate_windows{0};
 
-	atomic_t<bool> lock_ext_input_device = false;
-	atomic_t<u32> device_mask = 0; // OSK ignores input from the specified devices. 0 means all devices can influence the OSK
-	atomic_t<u32> input_field_window_width = 0;
-	atomic_t<f32> input_field_background_transparency = 1.0f;
+	retro_atomic_int_t lock_ext_input_device{0};
+	retro_atomic_int_t device_mask{0}; // OSK ignores input from the specified devices. 0 means all devices can influence the OSK
+	retro_atomic_int_t input_field_window_width{0};
+	retro_atomic_int_t input_field_background_transparency{0x3f800000}; // 1.0f
 	osk_window_layout input_field_layout_info{};
 	osk_window_layout input_panel_layout_info{};
-	atomic_t<u32> key_layout_options = CELL_OSKDIALOG_10KEY_PANEL;
-	atomic_t<CellOskDialogInitialKeyLayout> initial_key_layout = CELL_OSKDIALOG_INITIAL_PANEL_LAYOUT_SYSTEM; // TODO: use
-	atomic_t<CellOskDialogInputDevice> initial_input_device = CELL_OSKDIALOG_INPUT_DEVICE_PAD; // OSK at first only receives input from the initial device
+	retro_atomic_int_t key_layout_options{CELL_OSKDIALOG_10KEY_PANEL};
+	retro_atomic_int_t initial_key_layout{CELL_OSKDIALOG_INITIAL_PANEL_LAYOUT_SYSTEM}; // TODO: use
+	retro_atomic_int_t initial_input_device{CELL_OSKDIALOG_INPUT_DEVICE_PAD}; // OSK at first only receives input from the initial device
 
-	atomic_t<bool> clipboard_enabled = false; // For copy and paste
-	atomic_t<bool> half_byte_kana_enabled = false;
-	atomic_t<u32> supported_languages = 0; // Used to enable non-default languages in the OSK
+	retro_atomic_int_t clipboard_enabled{0}; // For copy and paste
+	retro_atomic_int_t half_byte_kana_enabled{0};
+	retro_atomic_int_t supported_languages{0}; // Used to enable non-default languages in the OSK
 
-	atomic_t<bool> dimmer_enabled = true;
-	atomic_t<OskDialogBase::color> base_color = OskDialogBase::color{ 0.2f, 0.2f, 0.2f, 1.0f };
+	retro_atomic_int_t dimmer_enabled{1};
 
-	atomic_t<bool> pointer_enabled = false;
-	atomic_t<f32> pointer_x = 0.0f;
-	atomic_t<f32> pointer_y = 0.0f;
-	atomic_t<f32> initial_scale = 1.0f;
+	// The colour, two f32s' bits a word (red and green, blue and alpha)
+	retro_atomic_64_t base_color_rg{pack_f32s(0.2f, 0.2f)};
+	retro_atomic_64_t base_color_ba{pack_f32s(0.2f, 1.0f)};
+
+	static constexpr s64 pack_f32s(f32 hi, f32 lo) { return static_cast<s64>((u64{std::bit_cast<u32>(hi)} << 32) | std::bit_cast<u32>(lo)); }
+	static f32 f32_hi(s64 word) { return std::bit_cast<f32>(static_cast<u32>(static_cast<u64>(word) >> 32)); }
+	static f32 f32_lo(s64 word) { return std::bit_cast<f32>(static_cast<u32>(static_cast<u64>(word))); }
+
+	void set_base_color(const OskDialogBase::color& c)
+	{
+		retro_atomic_store_release_64(&base_color_rg, pack_f32s(c.r, c.g));
+		retro_atomic_store_release_64(&base_color_ba, pack_f32s(c.b, c.a));
+	}
+
+	OskDialogBase::color get_base_color() const
+	{
+		const s64 rg = retro_atomic_load_acquire_64(&base_color_rg);
+		const s64 ba = retro_atomic_load_acquire_64(&base_color_ba);
+		return OskDialogBase::color{f32_hi(rg), f32_lo(rg), f32_hi(ba), f32_lo(ba)};
+	}
+
+	retro_atomic_int_t pointer_enabled{0};
+	// The pointer's x and y, set and read as one (x's bits high, y's low)
+	retro_atomic_64_t pointer_pos{0};
+	retro_atomic_int_t initial_scale{0x3f800000}; // 1.0f
 
 	osk_window_layout layout = {};
 
-	atomic_t<CellOskDialogContinuousMode> osk_continuous_mode = CELL_OSKDIALOG_CONTINUOUS_MODE_NONE;
-	atomic_t<u32> last_dialog_state = CELL_SYSUTIL_OSKDIALOG_UNLOADED; // Used for continuous seperate window dialog
+	retro_atomic_int_t osk_continuous_mode{CELL_OSKDIALOG_CONTINUOUS_MODE_NONE};
+	retro_atomic_int_t last_dialog_state{CELL_SYSUTIL_OSKDIALOG_UNLOADED}; // Used for continuous seperate window dialog
 
-	atomic_t<vm::ptr<cellOskDialogConfirmWordFilterCallback>> osk_confirm_callback{};
-	atomic_t<vm::ptr<cellOskDialogForceFinishCallback>> osk_force_finish_callback{};
-	atomic_t<vm::ptr<cellOskDialogHardwareKeyboardEventHookCallback>> osk_hardware_keyboard_event_hook_callback{};
-	atomic_t<u16> hook_event_mode{0};
+	retro_atomic_int_t osk_confirm_callback{0};
+	retro_atomic_int_t osk_force_finish_callback{0};
+	retro_atomic_int_t osk_hardware_keyboard_event_hook_callback{0};
+	retro_atomic_int_t hook_event_mode{0};
 
 	stx::init_mutex init;
 

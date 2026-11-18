@@ -1170,14 +1170,16 @@ namespace rsx
 
 			osk_info& info = g_fxo->get<osk_info>();
 
-			if (const bool pointer_enabled = info.pointer_enabled; pointer_enabled != m_pointer.visible())
+			if (const bool pointer_enabled = retro_atomic_load_acquire_int(&info.pointer_enabled) != 0; pointer_enabled != m_pointer.visible())
 			{
 				m_pointer.set_expiration(pointer_enabled ? u64{umax} : 0);
 				m_pointer.update_visibility(get_system_time());
 				m_update = true;
 			}
 
-			if (m_pointer.visible() && m_pointer.set_position(static_cast<s16>(info.pointer_x), static_cast<s16>(info.pointer_y)))
+			const s64 pointer_pos = retro_atomic_load_acquire_64(&info.pointer_pos);
+
+			if (m_pointer.visible() && m_pointer.set_position(static_cast<s16>(osk_info::f32_hi(pointer_pos)), static_cast<s16>(osk_info::f32_lo(pointer_pos))))
 			{
 				m_update = true;
 			}
