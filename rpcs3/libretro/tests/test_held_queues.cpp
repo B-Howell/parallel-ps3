@@ -25,6 +25,11 @@
 //   renderer takes them up (take_input), each once; those never taken up
 //   are dropped with the dialog, not run.
 //
+// - the IPv6 addresses the NP code stands in IPv4 ones for
+//   (Emu/NP/ip_address.cpp): registered from several threads at once, each
+//   maps back to its own address, and one registered again gets the
+//   address it got before.
+//
 // sys_timer.cpp is compiled into this test (the timer thread is private to
 // it); the rest is the core's own objects and archives, the same link as
 // the core's with this main. Built by `make check`.
@@ -34,6 +39,7 @@
 #include "../../Emu/Cell/lv2/sys_spu.cpp"
 #include "Emu/Cell/Modules/cellVoice.h"
 #include "Emu/NP/np_dnshook.h"
+#include "Emu/NP/ip_address.h"
 #include "Emu/RSX/Overlays/overlay_message.h"
 #include "Emu/RSX/Overlays/overlays.h"
 #include "Emu/RSX/VK/vkutils/memory.h"
@@ -911,6 +917,62 @@ int main()
 		}
 
 		CHECK(runs == 1);
+	}
+
+	// The IPv6 addresses stood in for by IPv4 ones
+	{
+		auto translator = std::make_unique<np::ip_address_translator>();
+		constexpr u32 threads = 4, per_thread = 3000, shared = 500;
+
+		// Each thread: some addresses of its own, and some all register
+		const auto address = [](u32 n)
+		{
+			std::array<u8, 16> a{};
+			a[0] = 0x20; a[1] = 0x01;
+			std::memcpy(&a[12], &n, sizeof(n));
+			return a;
+		};
+
+		std::vector<u32> got[threads];
+		std::vector<u32> asked[threads];
+		std::thread workers[threads];
+		for (u32 t = 0; t < threads; t++)
+		{
+			workers[t] = std::thread([&, t]()
+			{
+				for (u32 i = 0; i < per_thread; i++)
+				{
+					const u32 n = (i % 3 == 0) ? (i % shared) : (0x10000 + t * per_thread + i);
+					asked[t].push_back(n);
+					got[t].push_back(translator->register_ipv6(address(n)));
+				}
+			});
+		}
+		for (auto& worker : workers)
+			worker.join();
+
+		u32 wrong = 0, moved = 0;
+		for (u32 t = 0; t < threads; t++)
+		{
+			for (u32 i = 0; i < per_thread; i++)
+			{
+				const std::array<u8, 16> a = address(asked[t][i]);
+				CHECK(np::ip_address_translator::is_ipv6(got[t][i]));
+				const sockaddr_in6 back = translator->get_ipv6_sockaddr(got[t][i], 0);
+				wrong += std::memcmp(&back.sin6_addr, a.data(), 16) != 0;
+
+				// Registered again, alone: the same one each time
+				const u32 again = translator->register_ipv6(a);
+				moved += again != translator->register_ipv6(a);
+				const sockaddr_in6 back_again = translator->get_ipv6_sockaddr(again, 0);
+				wrong += std::memcmp(&back_again.sin6_addr, a.data(), 16) != 0;
+			}
+		}
+		std::printf("test_held_queues: IPv6 stand-ins: %u from %u threads, %u map back wrong, %u moved\n", threads * per_thread, threads, wrong, moved);
+		CHECK(wrong == 0 && moved == 0);
+
+		// A thread's own address registered once more gets the one it got
+		CHECK(translator->register_ipv6(address(0x10000 + 1)) == got[0][1]);
 	}
 
 	std::printf("test_held_queues: %s\n", failures ? "FAIL" : "ok");

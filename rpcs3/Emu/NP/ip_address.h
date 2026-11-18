@@ -1,12 +1,16 @@
 #pragma once
 
 #include <array>
+#include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include <retro_atomic.h>
+
 #include "util/types.hpp"
-#include "Utilities/mutex.h"
+#include "util/atomic.hpp"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -61,19 +65,31 @@ namespace np
 		static constexpr u32 translation_range_begin = 0x00'00'00'01;
 		static constexpr u32 translation_range_end = 0x00'00'FF'FF;
 
-		shared_mutex mutex;
-		u32 cur_addr = translation_range_begin;
-		std::unordered_map<std::array<u8, 16>, u32> ipv6_to_ipv4;
-		std::vector<std::array<u8, 16>> ipv4_to_ipv6;
+		// One slot per address handed out, claimed by a fetch-and-add and
+		// published by its flag once written: any thread registers or reads,
+		// no lock. Made once, for every address there can be. An address two
+		// threads register at once for the first time may get two; each maps
+		// back to it, and the first one found is the one handed out after.
+		struct slot
+		{
+			retro_atomic_int_t ready; // 1 once addr is written
+			std::array<u8, 16> addr;
+		};
+
+		static constexpr u32 slot_count = translation_range_end - translation_range_begin;
+
+		retro_atomic_int_t claimed{0};
+		std::unique_ptr<slot[]> slots = std::make_unique<slot[]>(slot_count);
 	};
 
 	u32 register_ip(std::string_view ip_bytes);
 
-	enum class IPV6_SUPPORT : u8
+	enum class IPV6_SUPPORT : u32 // waited on (atomic_t waits on 4 bytes)
 	{
 		IPV6_UNKNOWN,
 		IPV6_UNSUPPORTED,
 		IPV6_SUPPORTED,
+		IPV6_CHECKING, // one thread finding out; the others wait for its answer
 	};
 
 	bool is_ipv6_supported(std::optional<IPV6_SUPPORT> force_state = std::nullopt);

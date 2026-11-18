@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **UPnP and the IPv6 address book take no lock.** Not yet run online.
+  - **UPnP:** the gateway, the config and the port bindings were under a mutex, while each request to the gateway was already handed to the HTTP thread. Each call (enabling, adding or removing a mapping, and the removals as it goes) is now handed whole to the HTTP thread, which alone touches them.
+  - **The IPv6 stand-ins:** the IPv4 addresses that stand in for IPv6 peers were a map and a vector under a mutex, and the reverse lookup read the vector without it. Each address now gets a slot of its own, claimed by a fetch-and-add and published by a flag once written. The table is made once, for all of them, and read in place. An address two threads register at once for the first time can get two stand-ins, and either one maps back to it.
+  - **The IPv6 check** (resolving the RPCN host and trying ipv6.google.com) was a function-local mutex. The first thread to mark the check as running does it, and the others wait untimed for its answer.
+  - `std::lock_guard` count 8. A check fails if a lock comes back in these files. `test_held_queues` registers 12000 addresses from 4 threads, a third of them shared, and checks that each maps back and that registering one again gives the same stand-in. It fails on a mutant that never looks an address up. UPnP and the IPv6 check need a gateway and a network, and have no test.
+
 - **A thread opening a dialog waits for it untimed.** Not yet run on a game.
   - The on-screen keyboard, the message dialog, the home menu, the friends, user and trophy lists and the receive and send message dialogs each woke every millisecond to see whether the dialog had been taken up or closed. They now wait untimed (`libretro_wait_on`) on the dialog's own word, woken by it or by any change of the emulator's state, a stop among them.
   - The receive and send message dialogs also look at `sceNpBasicAbortGui`'s flag, and the send dialog at the press asking for its confirmation. Both now wake the waiter (`libretro_event`) as they are set.

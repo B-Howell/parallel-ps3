@@ -9,33 +9,35 @@ static constexpr int upnp_timeout_ms = 2000;
 
 upnp_handler::~upnp_handler()
 {
-	std::lock_guard lock(m_mutex);
-
-	for (const auto& [protocol, prot_bindings] : m_bindings)
+	// The gateway and the bindings are the HTTP thread's: all of this runs there
+	m_http.run([this]()
 	{
-		for (const auto& [internal_port, external_port] : prot_bindings)
+		for (const auto& [protocol, prot_bindings] : m_bindings)
 		{
-			remove_port_redir_external(external_port, protocol);
+			for (const auto& [internal_port, external_port] : prot_bindings)
+			{
+				remove_port_redir_external(external_port, protocol);
+			}
 		}
-	}
+	});
 
 	m_active = false;
 }
 
 void upnp_handler::upnp_enable()
 {
-	std::lock_guard lock(m_mutex);
+	m_http.run([this]() { upnp_enable_owned(); });
+}
 
+void upnp_handler::upnp_enable_owned()
+{
 	m_cfg.load();
 
 	const std::string dev_url = m_cfg.get_device_url();
 
 	if (!dev_url.empty())
 	{
-		bool found = false;
-		m_http.run([&]() { found = net_upnp_gateway_from_url(&m_gateway, dev_url.c_str(), upnp_timeout_ms); });
-
-		if (found)
+		if (net_upnp_gateway_from_url(&m_gateway, dev_url.c_str(), upnp_timeout_ms))
 		{
 			upnp_log.notice("Saved UPNP(%s) enabled", dev_url);
 			m_active = true;
@@ -47,10 +49,7 @@ void upnp_handler::upnp_enable()
 
 	upnp_log.notice("Starting UPNP search");
 
-	bool found = false;
-	m_http.run([&]() { found = net_upnp_discover(&m_gateway, upnp_timeout_ms); });
-
-	if (!found)
+	if (!net_upnp_discover(&m_gateway, upnp_timeout_ms))
 	{
 		upnp_log.error("No UPNP IGD device was found");
 		return;
@@ -69,10 +68,13 @@ void upnp_handler::add_port_redir(const std::string& addr, u16 internal_port, st
 	if (!m_active)
 		return;
 
+	m_http.run([&]() { add_port_redir_owned(addr, internal_port, protocol); });
+}
+
+void upnp_handler::add_port_redir_owned(const std::string& addr, u16 internal_port, std::string_view protocol)
+{
 	const std::string protocol_str(protocol);
 	const bool udp = protocol_str == "UDP";
-
-	std::lock_guard lock(m_mutex);
 
 	if (m_bindings[protocol_str].contains(internal_port))
 		return;
@@ -83,10 +85,7 @@ void upnp_handler::add_port_redir(const std::string& addr, u16 internal_port, st
 	// which is the address the caller found for it
 	for (u32 external_port = internal_port; external_port <= max_port; external_port++)
 	{
-		bool added = false;
-		m_http.run([&]() { added = net_upnp_add_port_mapping_ext(&m_gateway, external_port, internal_port, udp, "RPCS3", upnp_timeout_ms); });
-
-		if (added)
+		if (net_upnp_add_port_mapping_ext(&m_gateway, external_port, internal_port, udp, "RPCS3", upnp_timeout_ms))
 		{
 			m_bindings[protocol_str][static_cast<u16>(internal_port)] = static_cast<u16>(external_port);
 			upnp_log.notice("Successfully bound %s:%d(%s) to IGD:%d", addr, internal_port, protocol, external_port);
@@ -104,8 +103,11 @@ void upnp_handler::remove_port_redir(u16 internal_port, std::string_view protoco
 	if (!m_active)
 		return;
 
-	std::lock_guard lock(m_mutex);
+	m_http.run([&]() { remove_port_redir_owned(internal_port, protocol); });
+}
 
+void upnp_handler::remove_port_redir_owned(u16 internal_port, std::string_view protocol)
+{
 	const std::string protocol_str(protocol);
 
 	if (!m_bindings.contains(protocol_str) || !::at32(m_bindings, protocol_str).contains(internal_port))
@@ -124,8 +126,8 @@ void upnp_handler::remove_port_redir(u16 internal_port, std::string_view protoco
 
 void upnp_handler::remove_port_redir_external(u16 external_port, std::string_view protocol, bool verbose)
 {
-	bool deleted = false;
-	m_http.run([&]() { deleted = net_upnp_delete_port_mapping(&m_gateway, external_port, protocol == "UDP", upnp_timeout_ms); });
+	// On the HTTP thread already
+	const bool deleted = net_upnp_delete_port_mapping(&m_gateway, external_port, protocol == "UDP", upnp_timeout_ms);
 
 	if (!deleted && verbose)
 		upnp_log.error("Failed to delete port mapping IGD:%d(%s)", external_port, protocol);

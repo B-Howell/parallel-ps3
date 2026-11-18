@@ -44,27 +44,38 @@ namespace np
 			return ip_addr;
 		}
 
-		std::lock_guard lock(mutex);
-
-		const auto it = ipv6_to_ipv4.find(ipv6_addr);
-
-		if (it == ipv6_to_ipv4.end())
+		const auto to_ip_be = [](u32 index)
 		{
-			ensure(cur_addr != translation_range_end);
-			const u32 translation_ip = cur_addr++;
-			const u32 translation_ip_be = std::bit_cast<u32, be_t<u32>>(translation_ip);
-			ipv6_to_ipv4.emplace(ipv6_addr, translation_ip_be);
-			ipv4_to_ipv6.push_back(ipv6_addr);
-			return translation_ip_be;
+			return std::bit_cast<u32, be_t<u32>>(translation_range_begin + index);
+		};
+
+		// Handed out before: found among those published
+		const u32 claimed_now = std::min<u32>(static_cast<u32>(retro_atomic_load_acquire_int(&claimed)), slot_count);
+
+		for (u32 i = 0; i < claimed_now; i++)
+		{
+			if (retro_atomic_load_acquire_int(&slots[i].ready) && slots[i].addr == ipv6_addr)
+			{
+				return to_ip_be(i);
+			}
 		}
 
-		return it->second;
+		// A new one: a slot of its own, written, then published
+		const u32 index = static_cast<u32>(retro_atomic_fetch_add_int(&claimed, 1));
+		ensure(index < slot_count);
+		slots[index].addr = ipv6_addr;
+		retro_atomic_store_release_int(&slots[index].ready, 1);
+		return to_ip_be(index);
 	}
 
 	sockaddr_in6 ip_address_translator::get_ipv6_sockaddr(u32 addr_be, u16 port_be)
 	{
 		const u32 addr_native = std::bit_cast<u32, be_t<u32>>(addr_be);
-		const auto ipv6_addr = ::at32(ipv4_to_ipv6, addr_native - translation_range_begin);
+		const u32 index = addr_native - translation_range_begin;
+
+		// Read in place: a slot handed out is published and never changes
+		ensure(index < slot_count && retro_atomic_load_acquire_int(&slots[index].ready));
+		const std::array<u8, 16>& ipv6_addr = slots[index].addr;
 
 		sockaddr_in6 sockaddr_ipv6{.sin6_family = AF_INET6, .sin6_port = port_be};
 		std::memcpy(&sockaddr_ipv6.sin6_addr, ipv6_addr.data(), ipv6_addr.size());
@@ -108,29 +119,9 @@ namespace np
 		atomic_t<IPV6_SUPPORT> status = IPV6_SUPPORT::IPV6_UNKNOWN;
 	};
 
-	// The conditions for IPv6 to be enabled are, in order:
-	// -IPv6 is not disabled in config
-	// -Internet config is Connected
-	// -PSN config is RPCN
-	// -Bind IP is not set
-	// -RPCN host has an IPv6
-	// -Can connect to ipv6.google.com:413
-	bool is_ipv6_supported(std::optional<IPV6_SUPPORT> force_state)
+	// Finds out, and sets the answer (ipv6_support.status), once
+	static bool find_ipv6_support(ipv6_support_state& ipv6_support)
 	{
-		auto& ipv6_support = g_fxo->get<ipv6_support_state>();
-
-		if (force_state)
-			ipv6_support.status = *force_state;
-
-		if (ipv6_support.status != IPV6_SUPPORT::IPV6_UNKNOWN)
-			return ipv6_support.status == IPV6_SUPPORT::IPV6_SUPPORTED;
-
-		static shared_mutex mtx;
-		std::lock_guard lock(mtx);
-
-		if (ipv6_support.status != IPV6_SUPPORT::IPV6_UNKNOWN)
-			return ipv6_support.status == IPV6_SUPPORT::IPV6_SUPPORTED;
-
 		auto notice_and_disable = [&](std::string_view reason) -> bool
 		{
 			IPv6_log.notice("is_ipv6_supported(): disabled cause: %s", reason);
@@ -231,6 +222,41 @@ namespace np
 		IPv6_log.success("Successfully tested IPv6 support!");
 		ipv6_support.status = IPV6_SUPPORT::IPV6_SUPPORTED;
 		return true;
+	}
+
+	// The conditions for IPv6 to be enabled are, in order:
+	// -IPv6 is not disabled in config
+	// -Internet config is Connected
+	// -PSN config is RPCN
+	// -Bind IP is not set
+	// -RPCN host has an IPv6
+	// -Can connect to ipv6.google.com:413
+	bool is_ipv6_supported(std::optional<IPV6_SUPPORT> force_state)
+	{
+		auto& ipv6_support = g_fxo->get<ipv6_support_state>();
+
+		if (force_state)
+		{
+			ipv6_support.status = *force_state;
+			ipv6_support.status.notify_all();
+		}
+
+		for (IPV6_SUPPORT status = ipv6_support.status; status != IPV6_SUPPORT::IPV6_UNKNOWN; status = ipv6_support.status)
+		{
+			if (status != IPV6_SUPPORT::IPV6_CHECKING)
+				return status == IPV6_SUPPORT::IPV6_SUPPORTED;
+
+			// Another thread is finding out: woken by its answer
+			ipv6_support.status.wait(IPV6_SUPPORT::IPV6_CHECKING);
+		}
+
+		// One thread finds out, the first to mark it; one that loses looks again
+		if (!ipv6_support.status.compare_and_swap_test(IPV6_SUPPORT::IPV6_UNKNOWN, IPV6_SUPPORT::IPV6_CHECKING))
+			return is_ipv6_supported();
+
+		const bool supported = find_ipv6_support(ipv6_support);
+		ipv6_support.status.notify_all();
+		return supported;
 	}
 
 	s32 sendto_possibly_ipv6(socket_type native_socket, const char* data, u32 size, const sockaddr_in* addr, int native_flags)
