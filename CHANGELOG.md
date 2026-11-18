@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The PPU JIT's stubs take no lock.** Not yet run on a game.
+  - **What they are:** as each PPU object is linked, a call to a function by its address (`__0x...`) is given a small stub that jumps into the guest's code there. The stubs were a map under a shared mutex, taken by every compiling thread for every such name, with the shared jump sample under it too.
+  - **Now:** the stubs are an add-only map (`lf_u64_map`) with room for four times the modules' functions. A thread that finds one takes it. A thread that makes one keeps it unless another thread kept one first, in which case it takes that one; its own few bytes are never called. The jump sample is an atomic, read once per stub. A map that is full still hands out the stub it made, just without keeping it.
+  - **Tidy-up:** a savestate helper's `shared_mutex` member, there only to make its object uncopyable, is now deleted copies.
+  - **Tests:** a check fails if a lock comes back in `PPUThread.cpp`. The map itself is tested (`test_lf_u64_map`). This path has no test of its own: it runs only when a game's PPU modules are compiled by LLVM.
+
 - **Five mutexes nothing took are gone.** These were in cellWebBrowser's, cellRudp's, cellRec's and cellFs's AIO state, and the camera handler's base. Not one of them was locked anywhere. The state objects keep their copies deleted, as the object table asks. Nothing behaves differently, so there is no test of its own; a check fails if any of them comes back.
 
 - **The Vulkan driver's pipelines are kept between boots.** Not yet run on a game, and not yet run on a driver that keeps pipelines in its cache: the software driver the tests run on keeps none.

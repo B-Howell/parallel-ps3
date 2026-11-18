@@ -25,6 +25,7 @@
 #include "PPUDisAsm.h"
 #include "SPURecompiler.h"
 #include "timers.hpp"
+#include "Utilities/lf_u64_map.h"
 #include "lv2/sys_sync.h"
 #include "lv2/sys_prx.h"
 #include "lv2/sys_overlay.h"
@@ -3144,8 +3145,11 @@ ppu_thread::ppu_thread(utils::serial& ar)
 			struct awake_pushed
 			{
 				bool pushed = false;
-				shared_mutex dummy;
 				std::map<u32, ppu_thread*> awake_ppus;
+
+				awake_pushed() = default;
+				awake_pushed(const awake_pushed&) = delete;
+				awake_pushed& operator=(const awake_pushed&) = delete;
 			};
 
 			g_fxo->get<awake_pushed>().awake_ppus[order] = this;
@@ -5090,6 +5094,25 @@ extern void ppu_initialize()
 	}
 }
 
+// The JIT stubs by function address (key: the address plus one)
+struct ppu_cement_map
+{
+	lf_u64_map map{};
+
+	explicit ppu_cement_map(usz funcs)
+	{
+		usz slots = 4096;
+		while (slots < funcs * 4)
+			slots *= 2;
+		ensure(lf_u64_map_init(&map, slots));
+	}
+
+	~ppu_cement_map() { lf_u64_map_free(&map); }
+
+	ppu_cement_map(const ppu_cement_map&) = delete;
+	ppu_cement_map& operator=(const ppu_cement_map&) = delete;
+};
+
 bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_size)
 {
 	ppu_log.notice("Entering ppu_initialize(const ppu_module&..)");
@@ -5306,11 +5329,14 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 	std::shared_ptr<std::pair<u32, u32>> local_jit_bounds = std::make_shared<std::pair<u32, u32>>(u32{umax}, 0);
 
 	const auto shared_runtime = make_shared<jit_runtime>();
-	const auto shared_map = make_shared<std::unordered_map<u32, u64>>();
-	const auto full_sample = make_shared<u64>(0);
-	const auto shared_mtx = make_shared<shared_mutex>();
+	// The stubs the JITs link a function's name to, by its address: added
+	// to and read from every compiling thread with no lock, room for every
+	// function the modules have (and more besides)
+	const auto shared_map = make_shared<ppu_cement_map>(info.get_funcs().size());
+	const auto full_sample = make_shared<retro_atomic_64_t>();
+	retro_atomic_store_release_64(full_sample.get(), 0);
 
-	auto symbols_cement = [runtime = shared_runtime, reloc, seg0 = info.segs[0].addr, bound = info.segs[0].addr + info.segs[0].size - reloc, func_map = shared_map, shared_mtx, full_sample](const std::string& name) -> u64
+	auto symbols_cement = [runtime = shared_runtime, reloc, seg0 = info.segs[0].addr, bound = info.segs[0].addr + info.segs[0].size - reloc, func_map = shared_map, full_sample](const std::string& name) -> u64
 	{
 		u32 func_addr = umax;
 
@@ -5330,21 +5356,26 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 			return {};
 		}
 
-		reader_lock rlock(*shared_mtx);
+		// Made already (for the JIT linking this or another module): found
+		// with no lock
+		const u64 key = u64{func_addr} + 1;
 
-		if (auto it = func_map->find(func_addr); it != func_map->end())
+		if (const u64 made = lf_u64_map_get(&func_map->map, key))
 		{
-			return it->second;
+			return made;
 		}
 
-		rlock.upgrade();
-
-		u64& code_ptr = (*func_map)[func_addr];
-
-		if (code_ptr)
+		// Made here: kept unless another thread made one first, whose is
+		// taken (this one's few bytes are never called)
+		const auto publish = [&](u64 made) -> u64
 		{
-			return +code_ptr;
-		}
+			const u64 kept = lf_u64_map_add(&func_map->map, key, made);
+			return kept ? kept : made;
+		};
+
+		// The sample the stubs jump to, read once
+		const u64 sample = static_cast<u64>(retro_atomic_load_acquire_64(full_sample.get()));
+		u64 code_ptr = 0;
 
 		[[maybe_unused]] constexpr auto abs_diff = [](u64 a, u64 b) { return a <= b ? b - a : a - b; };
 
@@ -5356,7 +5387,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 
 #if defined(ARCH_X64)
 		// Try to make the code fit in 16 bytes, may fail and fallback
-		if (*full_sample && (*full_sample <= s32{smax} || abs_diff(*full_sample, reinterpret_cast<u64>(jit_runtime::peek(true))) <= s32{smax}))
+		if (sample && (sample <= s32{smax} || abs_diff(sample, reinterpret_cast<u64>(jit_runtime::peek(true))) <= s32{smax}))
 		{
 			u8* code = jit_runtime::alloc(16, 8, true);
 			code_ptr = reinterpret_cast<u64>(code);
@@ -5365,27 +5396,27 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 			*code++ = 0xba;
 			write_le(code, func_addr - seg0);
 
-			const u64 diff_for_jump = abs_diff(reinterpret_cast<u64>(code + 5), *full_sample);
+			const u64 diff_for_jump = abs_diff(reinterpret_cast<u64>(code + 5), sample);
 
 			if (diff_for_jump <= s32{smax})
 			{
 				// jmp (rel32) full_sample
 				*code++ = 0xe9;
 
-				write_le(code, static_cast<s32>(*full_sample - reinterpret_cast<u64>(code + 4)));
-				return code_ptr;
+				write_le(code, static_cast<s32>(sample - reinterpret_cast<u64>(code + 4)));
+				return publish(code_ptr);
 			}
-			else if (*full_sample <= s32{smax})
+			else if (sample <= s32{smax})
 			{
 				// mov eax, full_sample
 				*code++ = 0xb8;
 
-				write_le(code, static_cast<s32>(*full_sample));
+				write_le(code, static_cast<s32>(sample));
 
 				// jmp rax
 				*code++ = 0xff;
 				*code++ = 0xea;
-				return code_ptr;
+				return publish(code_ptr);
 			}
 			else // fallback (requiring more than 16 bytes)
 			{
@@ -5393,7 +5424,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 				// *code++ = 0x48;
 				// *code++ = 0xb8;
 
-				// write_le(code, *full_sample);
+				// write_le(code, sample);
 
 				// // jmp rax
 				// *code++ = 0xff;
@@ -5404,7 +5435,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 		}
 #elif 0
 		// Try to make the code fit in 16 bytes, may fail and fallback
-		if (*full_sample && abs_diff(*full_sample, reinterpret_cast<u64>(jit_runtime::peek(true) + 3 * 4)) < (128u << 20))
+		if (sample && abs_diff(sample, reinterpret_cast<u64>(jit_runtime::peek(true) + 3 * 4)) < (128u << 20))
 		{
 			u8* code = jit_runtime::alloc(12, 4, true);
 			code_ptr = reinterpret_cast<u64>(code);
@@ -5416,7 +5447,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 				bf_t<u32, 5, 16> mov_imm16;
 			};
 
-			const u64 diff_for_jump = abs_diff(reinterpret_cast<u64>(code + 3 * 4), *full_sample);
+			const u64 diff_for_jump = abs_diff(reinterpret_cast<u64>(code + 3 * 4), sample);
 
 			if (diff_for_jump < (128u << 20))
 			{
@@ -5432,14 +5463,14 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 
 				write_le(code, mov_pch.op);
 
-				const s64 branch_offset = (*full_sample - reinterpret_cast<u64>(code + 4));
+				const s64 branch_offset = (sample - reinterpret_cast<u64>(code + 4));
 
 				// B full_sample
 				arm_op b_sample{0x14000000};
 				b_sample.b_target = static_cast<s32>(branch_offset / 4);
 
 				write_le(code, b_sample.op);
-				return code_ptr;
+				return publish(code_ptr);
 			}
 			else // fallback
 			{
@@ -5528,10 +5559,10 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 		// Full sample may exist already, but is very far away
 		// So in this case, a new sample is written
 		ensure(code_size_until_jump != umax);
-		*full_sample = reinterpret_cast<u64>(func) + code_size_until_jump;
+		retro_atomic_store_release_64(full_sample.get(), static_cast<s64>(reinterpret_cast<u64>(func) + code_size_until_jump));
 
 		code_ptr = reinterpret_cast<u64>(func);
-		return code_ptr;
+		return publish(code_ptr);
 	};
 
 	if (has_mfvscr && g_cfg.core.ppu_set_sat_bit)
@@ -5577,7 +5608,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 
 					if (source == func.addr)
 					{
-						(*shared_map)[func.addr] = reinterpret_cast<u64>(far_jump);
+						lf_u64_map_add(&shared_map->map, u64{func.addr} + 1, reinterpret_cast<u64>(far_jump));
 					}
 
 					ppu_register_function_at(source, 4, far_jump);
@@ -6022,10 +6053,13 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 	{
 		jits.emplace_back(std::make_shared<jit_compiler>(s_link_table, g_cfg.core.llvm_cpu.to_string(), 0, symbols_cement));
 
-		for (const auto& [addr, func] : *shared_map)
+		struct mapping { jit_compiler* jit; u32 reloc; };
+		mapping m{jits.back().get(), reloc};
+		lf_u64_map_each(&shared_map->map, [](void* ud, u64 key, u64 func)
 		{
-			jits.back()->update_global_mapping(fmt::format("__0x%x", addr - reloc), func);
-		}
+			const mapping& m = *static_cast<const mapping*>(ud);
+			m.jit->update_global_mapping(fmt::format("__0x%x", static_cast<u32>(key - 1) - m.reloc), func);
+		}, &m);
 	}
 
 	if (jit_mod.symbol_resolvers.empty() && is_being_used_in_emulation)
