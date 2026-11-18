@@ -316,15 +316,40 @@ public:
 	std::function<void(s32 status)> on_osk_close;
 	std::function<void(CellOskDialogKeyMessage key_message)> on_osk_key_input_entered;
 
-	atomic_t<OskDialogState> state{ OskDialogState::Unloaded };
-	atomic_t<CellOskDialogContinuousMode> continuous_mode{ CELL_OSKDIALOG_CONTINUOUS_MODE_NONE };
-	atomic_t<CellOskDialogInputDevice> input_device{ CELL_OSKDIALOG_INPUT_DEVICE_PAD }; // The current input device.
-	atomic_t<bool> pad_input_enabled{ true };      // Determines if the OSK consumes the device's input.
-	atomic_t<bool> mouse_input_enabled{ true };    // Determines if the OSK consumes the device's input.
-	atomic_t<bool> keyboard_input_enabled{ true }; // Determines if the OSK consumes the device's input.
-	atomic_t<bool> ignore_device_events{ false };  // Determines if the OSK ignores device events.
+	// The dialog's live state, changed by the game's calls and by the
+	// overlay's input: enums as ints, flags 0 or 1
+	retro_atomic_int_t state{static_cast<int>(OskDialogState::Unloaded)};
+	retro_atomic_int_t continuous_mode{CELL_OSKDIALOG_CONTINUOUS_MODE_NONE};
+	retro_atomic_int_t input_device{CELL_OSKDIALOG_INPUT_DEVICE_PAD}; // The current input device.
+	retro_atomic_int_t pad_input_enabled{1};      // Determines if the OSK consumes the device's input.
+	retro_atomic_int_t mouse_input_enabled{1};    // Determines if the OSK consumes the device's input.
+	retro_atomic_int_t keyboard_input_enabled{1}; // Determines if the OSK consumes the device's input.
+	retro_atomic_int_t ignore_device_events{0};  // Determines if the OSK ignores device events.
 
-	atomic_t<CellOskDialogInputFieldResult> osk_input_result{ CellOskDialogInputFieldResult::CELL_OSKDIALOG_INPUT_FIELD_RESULT_OK };
+	retro_atomic_int_t osk_input_result{CELL_OSKDIALOG_INPUT_FIELD_RESULT_OK};
+
+	OskDialogState get_state() const { return static_cast<OskDialogState>(retro_atomic_load_acquire_int(&state)); }
+	void set_state(OskDialogState to) { retro_atomic_store_release_int(&state, static_cast<int>(to)); }
+
+	// A dialog not unloaded becomes Abort, in one swap: false if it was
+	// unloaded (and stays so)
+	bool try_abort()
+	{
+		for (OskDialogState old = get_state();;)
+		{
+			if (old == OskDialogState::Unloaded)
+			{
+				return false;
+			}
+
+			if (retro_atomic_cas_int(&state, static_cast<int>(old), static_cast<int>(OskDialogState::Abort)))
+			{
+				return true;
+			}
+
+			old = get_state();
+		}
+	}
 
 	// The text typed so far: set whole by the dialog (or the game's checks),
 	// read in place by the game's calls, with no lock (osk_text.c)

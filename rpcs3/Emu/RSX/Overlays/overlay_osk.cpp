@@ -40,7 +40,7 @@ namespace rsx
 
 		void osk_dialog::do_close(s32 status)
 		{
-			if (status != FAKE_CELL_OSKDIALOG_CLOSE_ABORT && m_use_separate_windows && continuous_mode == CELL_OSKDIALOG_CONTINUOUS_MODE_REMAIN_OPEN)
+			if (status != FAKE_CELL_OSKDIALOG_CLOSE_ABORT && m_use_separate_windows && static_cast<CellOskDialogContinuousMode>(retro_atomic_load_acquire_int(&continuous_mode)) == CELL_OSKDIALOG_CONTINUOUS_MODE_REMAIN_OPEN)
 			{
 				// Just call the on_osk_close and don't actually close the dialog.
 				if (on_osk_close)
@@ -70,7 +70,7 @@ namespace rsx
 				set_visible(false);
 
 				// Only really close the dialog if we aren't in the continuous separate window mode
-				if (!m_use_separate_windows || continuous_mode == CELL_OSKDIALOG_CONTINUOUS_MODE_NONE)
+				if (!m_use_separate_windows || static_cast<CellOskDialogContinuousMode>(retro_atomic_load_acquire_int(&continuous_mode)) == CELL_OSKDIALOG_CONTINUOUS_MODE_NONE)
 				{
 					close(true, true);
 					return;
@@ -524,7 +524,7 @@ namespace rsx
 			m_btn_cancel.set_image_resource(resource_config::cancel_button_resource());
 
 			m_update = true;
-			set_visible(continuous_mode != CELL_OSKDIALOG_CONTINUOUS_MODE_HIDE);
+			set_visible(static_cast<CellOskDialogContinuousMode>(retro_atomic_load_acquire_int(&continuous_mode)) != CELL_OSKDIALOG_CONTINUOUS_MODE_HIDE);
 
 			retro_atomic_store_release_int(&m_stop_input_loop, 0);
 
@@ -618,13 +618,13 @@ namespace rsx
 		{
 			if (m_use_separate_windows)
 			{
-				if (show && continuous_mode == CELL_OSKDIALOG_CONTINUOUS_MODE_HIDE)
+				if (show && static_cast<CellOskDialogContinuousMode>(retro_atomic_load_acquire_int(&continuous_mode)) == CELL_OSKDIALOG_CONTINUOUS_MODE_HIDE)
 				{
-					continuous_mode = CELL_OSKDIALOG_CONTINUOUS_MODE_SHOW;
+					retro_atomic_store_release_int(&continuous_mode, static_cast<int>(CELL_OSKDIALOG_CONTINUOUS_MODE_SHOW));
 				}
-				else if (!show && continuous_mode == CELL_OSKDIALOG_CONTINUOUS_MODE_SHOW)
+				else if (!show && static_cast<CellOskDialogContinuousMode>(retro_atomic_load_acquire_int(&continuous_mode)) == CELL_OSKDIALOG_CONTINUOUS_MODE_SHOW)
 				{
-					continuous_mode = CELL_OSKDIALOG_CONTINUOUS_MODE_HIDE;
+					retro_atomic_store_release_int(&continuous_mode, static_cast<int>(CELL_OSKDIALOG_CONTINUOUS_MODE_HIDE));
 				}
 			}
 
@@ -640,16 +640,16 @@ namespace rsx
 
 		void osk_dialog::on_button_pressed(pad_button button_press, bool is_auto_repeat)
 		{
-			if (!pad_input_enabled || ignore_device_events)
+			if (!(retro_atomic_load_acquire_int(&pad_input_enabled) != 0) || (retro_atomic_load_acquire_int(&ignore_device_events) != 0))
 				return;
 
-			if (input_device.exchange(CELL_OSKDIALOG_INPUT_DEVICE_PAD) != CELL_OSKDIALOG_INPUT_DEVICE_PAD)
+			if (static_cast<CellOskDialogInputDevice>(retro_atomic_exchange_int(&input_device, static_cast<int>(CELL_OSKDIALOG_INPUT_DEVICE_PAD))) != CELL_OSKDIALOG_INPUT_DEVICE_PAD)
 			{
 				osk.notice("on_button_pressed: sending CELL_SYSUTIL_OSKDIALOG_INPUT_DEVICE_CHANGED with CELL_OSKDIALOG_INPUT_DEVICE_PAD");
 				sysutil_send_system_cmd(CELL_SYSUTIL_OSKDIALOG_INPUT_DEVICE_CHANGED, CELL_OSKDIALOG_INPUT_DEVICE_PAD);
 			}
 
-			if (input_device != CELL_OSKDIALOG_INPUT_DEVICE_PAD)
+			if (static_cast<CellOskDialogInputDevice>(retro_atomic_load_acquire_int(&input_device)) != CELL_OSKDIALOG_INPUT_DEVICE_PAD)
 			{
 				return;
 			}
@@ -894,16 +894,16 @@ namespace rsx
 
 		void osk_dialog::on_key_pressed(u32 led, u32 mkey, u32 key_code, u32 out_key_code, bool pressed, std::u32string key)
 		{
-			if (!pressed || !keyboard_input_enabled || ignore_device_events)
+			if (!pressed || !(retro_atomic_load_acquire_int(&keyboard_input_enabled) != 0) || (retro_atomic_load_acquire_int(&ignore_device_events) != 0))
 				return;
 
-			if (input_device.exchange(CELL_OSKDIALOG_INPUT_DEVICE_KEYBOARD) != CELL_OSKDIALOG_INPUT_DEVICE_KEYBOARD)
+			if (static_cast<CellOskDialogInputDevice>(retro_atomic_exchange_int(&input_device, static_cast<int>(CELL_OSKDIALOG_INPUT_DEVICE_KEYBOARD))) != CELL_OSKDIALOG_INPUT_DEVICE_KEYBOARD)
 			{
 				osk.notice("on_key_pressed: sending CELL_SYSUTIL_OSKDIALOG_INPUT_DEVICE_CHANGED with CELL_OSKDIALOG_INPUT_DEVICE_KEYBOARD");
 				sysutil_send_system_cmd(CELL_SYSUTIL_OSKDIALOG_INPUT_DEVICE_CHANGED, CELL_OSKDIALOG_INPUT_DEVICE_KEYBOARD);
 			}
 
-			if (input_device != CELL_OSKDIALOG_INPUT_DEVICE_KEYBOARD)
+			if (static_cast<CellOskDialogInputDevice>(retro_atomic_load_acquire_int(&input_device)) != CELL_OSKDIALOG_INPUT_DEVICE_KEYBOARD)
 			{
 				return;
 			}
@@ -1331,7 +1331,7 @@ namespace rsx
 
 		void osk_dialog::Create(const osk_params& params)
 		{
-			state = OskDialogState::Open;
+			set_state(OskDialogState::Open);
 			flags = params.prohibit_flags;
 			char_limit = params.charlimit;
 			m_layout = params.layout;
@@ -1351,7 +1351,7 @@ namespace rsx
 			if (m_use_separate_windows)
 			{
 				// When using separate windows, we show the text field, but hide the pad input panel if the input device is a pad.
-				m_show_panel = pad_input_enabled && input_device == CELL_OSKDIALOG_INPUT_DEVICE_PAD;
+				m_show_panel = (retro_atomic_load_acquire_int(&pad_input_enabled) != 0) && static_cast<CellOskDialogInputDevice>(retro_atomic_load_acquire_int(&input_device)) == CELL_OSKDIALOG_INPUT_DEVICE_PAD;
 				m_preview.back_color.a = std::clamp(params.input_field_background_transparency, 0.0f, 1.0f);
 			}
 			else
@@ -1628,15 +1628,15 @@ namespace rsx
 
 			update_panel();
 
-			const auto notify = std::make_shared<atomic_t<u32>>(0);
+			const auto notify = std::make_shared<retro_atomic_int_t>(0);
 			auto& overlayman = g_fxo->get<display_manager>();
 
 			overlayman.attach_thread_input(
 				uid, "OSK",
-				[notify]() { *notify = true; notify->notify_one(); }
+				[notify]() { retro_atomic_store_release_int(notify.get(), 1); retro_waitaddr_notify_one(notify.get()); }
 			);
 
-			while (!Emu.IsStopped() && !*notify)
+			while (!Emu.IsStopped() && !retro_atomic_load_acquire_int(notify.get()))
 			{
 				libretro_wait_on(*notify, u32{0});
 			}

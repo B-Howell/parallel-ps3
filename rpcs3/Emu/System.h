@@ -106,6 +106,19 @@ void libretro_events_wait_named(u32 seen);
 // A host thread's wait for @word to leave @old, or for the emulator's state
 // to change (a stop that skips what was waited for is one): untimed, no
 // poll. The caller looks again at what it waits for, and at the state
+inline void libretro_wait_on(retro_atomic_int_t& word, u32 old)
+{
+	const u32 events = libretro_events_seen();
+
+	if (static_cast<u32>(retro_atomic_load_acquire_int(&word)) != old)
+	{
+		return;
+	}
+
+	const retro_waitaddr_t w[2] = {{&word, old}, {&g_libretro_events, events}};
+	retro_waitaddr_wait(w, 2, -1);
+}
+
 template <typename T>
 inline void libretro_wait_on(atomic_t<T>& word, T old)
 {

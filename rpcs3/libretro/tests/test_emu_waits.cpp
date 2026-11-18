@@ -451,6 +451,68 @@ int main()
 		std::printf("test_emu_waits: OSK settings: colour and pointer back as set, reset gives the defaults\n");
 	}
 
+	// The OSK dialog's abort: an unloaded dialog is left unloaded and says
+	// so; any other becomes Abort, also against another thread's changes
+	{
+		struct stub_osk final : OskDialogBase
+		{
+			void Create(const osk_params&) override {}
+			void Clear(bool) override {}
+			void Insert(const std::u16string&) override {}
+			void SetText(const std::u16string&) override {}
+			void Close(s32) override {}
+		};
+		stub_osk d;
+		CHECK(d.get_state() == OskDialogState::Unloaded);
+		CHECK(!d.try_abort());
+		CHECK(d.get_state() == OskDialogState::Unloaded);
+		d.set_state(OskDialogState::Open);
+		CHECK(d.try_abort());
+		CHECK(d.get_state() == OskDialogState::Abort);
+
+		int aborted = 0, refused = 0;
+		for (int i = 0; i < 2000; i++)
+		{
+			d.set_state(OskDialogState::Open);
+			std::thread closer([&] { d.set_state(OskDialogState::Closed); });
+			if (d.try_abort()) aborted++; else refused++;
+			closer.join();
+			const OskDialogState now = d.get_state();
+			CHECK(now == OskDialogState::Abort || now == OskDialogState::Closed);
+		}
+		CHECK(refused == 0);
+		std::printf("test_emu_waits: OSK abort: unloaded stays unloaded, %d opens aborted against a close\n", aborted);
+	}
+
+	// libretro_wait_on for a retro_atomic word: returns as the word is set
+	// and notified, and on a retro_run - not before either
+	{
+		retro_atomic_int_t word{0};
+		std::atomic<int> returns{0};
+		std::atomic<bool> stop{false};
+		std::thread waiter([&]
+		{
+			while (!stop)
+			{
+				libretro_wait_on(word, static_cast<u32>(retro_atomic_load_acquire_int(&word)));
+				returns++;
+			}
+		});
+		for (int i = 0; i < 200000; i++)
+			std::this_thread::yield();
+		CHECK(returns == 0);
+		retro_atomic_store_release_int(&word, 1);
+		retro_waitaddr_notify_all(&word);
+		CHECK(reaches(returns, 1));
+		const int before = returns;
+		libretro_event();
+		CHECK(reaches(returns, before + 1));
+		stop = true;
+		libretro_event();
+		waiter.join();
+		std::printf("test_emu_waits: a wait on a retro_atomic word returns as it is set and on a retro_run\n");
+	}
+
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");
 	return failures ? 1 : 0;
 }

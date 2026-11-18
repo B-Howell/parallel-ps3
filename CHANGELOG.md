@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The on-screen keyboard dialog's own state is off `atomic_t`, the second half of cellOskDialog.** Not yet run on a game.
+  - **What changed:** the dialog's state (unloaded, open, abort, closed), its continuous mode, current input device, the pad, mouse and keyboard input switches, whether device events are ignored, and the input field's result are `retro_atomic_int_t`. `OskDialogBase` has `get_state()`, `set_state()` and `try_abort()`. The abort, which was an `atomic_op`, is a compare-and-swap loop that moves any state but unloaded to abort. The overlay's switch of input device is an exchange, as before.
+  - **Waits:** the three words the OSK waits on while the main thread runs a call for it (the PS button's check, the confirm callback, and the overlay's input thread being attached) are `retro_atomic_int_t`. For them `System.h` gains a `libretro_wait_on` for a `retro_atomic_int_t` word, woken as the word is set and notified, or on a retro_run.
+  - **Tests:** `test_emu_waits` checks that an abort leaves an unloaded dialog unloaded and turns an open one into abort, 2000 times against another thread closing it. It was shown to fail with an abort that ignores the unloaded state. It also checks that the new `libretro_wait_on` returns as its word is set and on a retro_run, and not before. A check fails if `atomic_t` comes back to the OSK's files.
+
+
 - **The on-screen keyboard's settings (`osk_info`) are off `atomic_t`, the first half of cellOskDialog.** Not yet run on a game.
   - **What changed:** what the game sets with `cellOskDialogSet*` and the dialog reads as it loads is now `retro_atomic_int_t` and `retro_atomic_64_t`. That covers the separate-window and device options, layout, languages, dimmer, scale, transparency, the last dialog state and the three guest callbacks. Flags are 0 or 1, `f32`s are kept as their bits, and callbacks as their guest addresses.
   - **Packed:** the pointer's x and y are one 64-bit word, so the overlay never reads an x from one update with a y from another. The colour is two words (red and green, blue and alpha) where it was one 16-byte `atomic_t`.

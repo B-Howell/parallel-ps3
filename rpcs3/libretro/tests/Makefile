@@ -1169,6 +1169,8 @@ check: all
 	@if grep -nE "atomic_t<data_t>|alignas\(16\) progress_dialog_string_t" ../../Emu/system_progress.hpp; then echo "the progress text slot is a 16-byte atomic_t again"; exit 1; else echo "the progress text slot is one 64-bit word"; fi
 	@# the OSK settings the game sets (osk_info) are retro_atomic: atomic_t must not come back to them
 	@if awk '/^struct osk_info/,/^};/' ../../Emu/Cell/Modules/cellOskDialog.h | grep -n "atomic_t<"; then echo "osk_info has atomic_t fields again"; exit 1; else echo "osk_info is retro_atomic"; fi
+	@# cellOskDialog and the OSK overlay are off atomic_t: it must not come back to them
+	@if grep -nw "atomic_t" ../../Emu/Cell/Modules/cellOskDialog.h ../../Emu/Cell/Modules/cellOskDialog.cpp ../../Emu/RSX/Overlays/overlay_osk.h ../../Emu/RSX/Overlays/overlay_osk.cpp; then echo "the OSK uses atomic_t again"; exit 1; else echo "the OSK is retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
