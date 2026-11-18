@@ -4,6 +4,8 @@
 #include "overlay_manager.h"
 
 #include <queues/retro_deque.h>
+#include <queues/mpsc_stack.h>
+#include <variant>
 #include <retro_atomic.h>
 
 namespace rsx
@@ -58,6 +60,7 @@ namespace rsx
 		class message final : public overlay
 		{
 		public:
+			message();
 			~message();
 
 			void update(u64 timestamp_us) override;
@@ -73,48 +76,51 @@ namespace rsx
 				bool allow_refresh = false,
 				bool compare_id = false)
 			{
-				std::lock_guard lock(m_mutex_queue);
-
-				auto* queue = &m_ready_queue_top_left;
-
-				switch (location)
-				{
-				case message_pin_location::bottom_right:
-					queue = &m_ready_queue_bottom_right;
-					break;
-				case message_pin_location::bottom_left:
-					queue = &m_ready_queue_bottom_left;
-					break;
-				case message_pin_location::top_right:
-					queue = &m_ready_queue_top_right;
-					break;
-				case message_pin_location::top_left:
-					queue = &m_ready_queue_top_left;
-					break;
-				}
-
+				// Handed to the renderer, which keeps the queues: it drops a
+				// message already shown or queued as it takes this up
+				// (update), so nothing here waits on it or takes a lock
 				if constexpr (std::is_same_v<T, std::initializer_list<localized_string_id>>)
 				{
 					for (auto id : msg_id)
 					{
-						if (!message_exists(location, id, allow_refresh, compare_id))
-						{
-							add_item(*queue, new message_item(id, expiration, refs, icon));
-						}
+						hand_over(new pending_t{{}, new message_item(id, expiration, refs, icon), location, id, allow_refresh, compare_id});
 					}
 				}
-				else if (!message_exists(location, msg_id, allow_refresh, compare_id))
+				else
 				{
-					add_item(*queue, new message_item(msg_id, expiration, std::move(refs), icon));
+					hand_over(new pending_t{{}, new message_item(msg_id, expiration, std::move(refs), icon), location, msg_id, allow_refresh, compare_id});
 				}
 
-				visible = true;
-				refresh();
+				request_flip();
 			}
 
 		private:
 			const u32 max_visible_items = 3;
-			shared_mutex m_mutex_queue;
+
+			// A message handed over, with what it is matched against
+			struct pending_t
+			{
+				mpsc_stack_node_t node; // first: the stack's link
+				message_item* item;
+				message_pin_location location;
+				std::variant<localized_string_id, std::string, localized_string> key;
+				bool allow_refresh;
+				bool compare_id;
+			};
+
+			// Pushed by any thread, taken up by the renderer (update)
+			mpsc_stack_t m_pending{};
+
+			void hand_over(pending_t* p)
+			{
+				mpsc_stack_push(&m_pending, &p->node);
+			}
+
+			// The renderer's: the messages handed over, into their queues
+			void take_up_pending();
+
+			// A flip asked for, so that the message shows with no game flip
+			void request_flip() const;
 
 			// Top and bottom enqueued sets
 			message_items_t m_ready_queue_bottom_right{};

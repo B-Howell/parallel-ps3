@@ -800,12 +800,13 @@ int main()
 			for (u32 i = 0; i < 5; i++)
 				CHECK(refs[i].use_count() == 2);
 
-			// The same text again: not queued twice
+			// The same text again: handed over like the rest, and dropped as
+			// the renderer takes it up - not queued twice
 			overlay.queue_message(std::string("message 2"), umax, refs[5]);
-			CHECK(refs[5].use_count() == 1);
 
 			// Three go on screen, in the order queued; the other two wait
 			overlay.update(0);
+			CHECK(refs[5].use_count() == 1);
 			for (u32 i = 0; i < 5; i++)
 				CHECK(refs[i].use_count() == 2);
 

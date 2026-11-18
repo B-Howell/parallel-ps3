@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **On-screen messages, dialog text and the home menu's icons take no lock.**
+  - **Messages:** any thread queuing a message took the message overlay's mutex, and the renderer took it on every frame the messages were drawn. A message is now handed to the renderer on a lock-free stack (`mpsc_stack`). The renderer takes it up as it updates the overlay, dropping it there if the same message is already shown or queued, as before. The caller asks for a flip so it shows even when the game is not flipping.
+  - **Dialog text:** the message dialog's text, its progress bars' text and the debug overlay's text were a string and a dirty flag under a `std::mutex`. They are now published whole and taken by exchange (`atomic_ptr`).
+  - **The home menu's icons:** these were a map under a mutex. They are now one slot per icon, loaded once: the first to publish it by compare-and-swap wins, and a loser frees its own.
+  - `std::lock_guard` count 32. A check fails if a lock comes back in any of these. `test_held_queues` drives the message overlay through its own code: a duplicate is now dropped as the renderer takes it up, and the test fails on a mutant that keeps it. The text and the icons have no test of their own. Not yet run on a game.
 - **The overlays take no lock on the draw path.** The Vulkan and OpenGL presents took the overlay manager's mutex while they drew the overlays and freed the removed ones, so a dialog opened or closed on another thread could hold up a flip.
   - **The lists:** the overlays shown, and those taken off whose resources are yet to be freed, are now published whole. A change (add, remove, dispose) is made to a copy and published by compare-and-swap; it is made again from the newer lists if another change got in first. The lists it replaces go once no reader is in (`retro_retire`).
   - **The renderer** reads the lists as they were when its draw began (`display_manager::reader`) and never waits; a change is drawn from the next flip. The queue of removals deferred while the lock was taken is gone, as removing no longer waits either.

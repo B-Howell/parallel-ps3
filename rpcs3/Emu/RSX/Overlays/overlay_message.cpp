@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "overlay_message.h"
+#include "Emu/RSX/RSXThread.h"
 #include "Emu/Cell/timers.hpp"
 
 namespace rsx
@@ -187,8 +188,68 @@ namespace rsx
 			m_processed = true;
 		}
 
+		message::message()
+		{
+			mpsc_stack_init(&m_pending);
+		}
+
+		void message::request_flip() const
+		{
+			if (auto rsxthr = rsx::get_current_renderer(); rsxthr &&
+				(min_refresh_duration_us + rsxthr->last_host_flip_timestamp) < get_system_time())
+			{
+				rsxthr->async_flip_requested |= rsx::thread::flip_request::native_ui;
+			}
+		}
+
+		void message::take_up_pending()
+		{
+			// Newest first on the stack: taken up in the order handed over
+			for (mpsc_stack_node_t* node = mpsc_stack_reverse(mpsc_stack_drain(&m_pending)); node;)
+			{
+				pending_t* const p = reinterpret_cast<pending_t*>(node);
+				node = node->next;
+
+				const bool exists = std::visit([&](const auto& key)
+				{
+					return message_exists(p->location, key, p->allow_refresh, p->compare_id);
+				}, p->key);
+
+				if (exists)
+				{
+					delete p->item;
+				}
+				else
+				{
+					message_items_t* queue = &m_ready_queue_top_left;
+
+					switch (p->location)
+					{
+					case message_pin_location::bottom_right: queue = &m_ready_queue_bottom_right; break;
+					case message_pin_location::bottom_left: queue = &m_ready_queue_bottom_left; break;
+					case message_pin_location::top_right: queue = &m_ready_queue_top_right; break;
+					case message_pin_location::top_left: queue = &m_ready_queue_top_left; break;
+					}
+
+					add_item(*queue, p->item);
+					visible = true;
+				}
+
+				delete p;
+			}
+		}
+
 		message::~message()
 		{
+			// What was handed over and not taken up
+			for (mpsc_stack_node_t* node = mpsc_stack_drain(&m_pending); node;)
+			{
+				pending_t* const p = reinterpret_cast<pending_t*>(node);
+				node = node->next;
+				delete p->item;
+				delete p;
+			}
+
 			for (message_items_t* list : {&m_ready_queue_bottom_right, &m_ready_queue_bottom_left, &m_ready_queue_top_right, &m_ready_queue_top_left,
 				&m_visible_items_bottom_right, &m_visible_items_bottom_left, &m_visible_items_top_right, &m_visible_items_top_left})
 			{
@@ -269,12 +330,13 @@ namespace rsx
 
 		void message::update(u64 /*timestamp_us*/)
 		{
+			// The renderer's: what was handed over first, with no lock
+			take_up_pending();
+
 			if (!visible)
 			{
 				return;
 			}
-
-			std::lock_guard lock(m_mutex_queue);
 
 			update_queue(m_visible_items_bottom_right, m_ready_queue_bottom_right, message_pin_location::bottom_right);
 			update_queue(m_visible_items_bottom_left, m_ready_queue_bottom_left, message_pin_location::bottom_left);
@@ -292,8 +354,7 @@ namespace rsx
 				return {};
 			}
 
-			std::lock_guard lock(m_mutex_queue);
-
+			// The renderer's, as update is: no lock
 			compiled_resource cr{};
 
 			for (usz i = 0; i < message_items_count(&m_visible_items_bottom_right); i++)

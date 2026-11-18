@@ -157,26 +157,22 @@ namespace rsx
 			s32 run_input_loop(std::function<bool()> check_state = nullptr);
 		};
 
+		// A text set by one thread and taken by the renderer: published
+		// whole, taken by exchange - no lock
 		struct text_guard_t
 		{
-			std::mutex mutex;
-			std::string text;
-			bool dirty{false};
+			atomic_ptr<std::string> text;
 
 			void set_text(std::string t)
 			{
-				std::lock_guard lock(mutex);
 				text = std::move(t);
-				dirty = true;
 			}
 
 			std::pair<bool, std::string> get_text()
 			{
-				if (dirty)
+				if (auto taken = text.exchange(null_ptr))
 				{
-					std::lock_guard lock(mutex);
-					dirty = false;
-					return { true, std::move(text) };
+					return { true, std::move(*taken) };
 				}
 
 				return { false, {} };
