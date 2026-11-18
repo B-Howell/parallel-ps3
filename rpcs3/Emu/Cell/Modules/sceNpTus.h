@@ -156,7 +156,6 @@ private:
 	std::map<s32 /*title_context_id*/, sce_np_tus_title_context> title_contexts;
 
 public:
-	std::mutex mtx;
 	atomic_t<bool> is_initialized = false;
 
 	s32 add_title_context();

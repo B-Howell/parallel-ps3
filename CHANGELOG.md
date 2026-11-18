@@ -4,6 +4,10 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The Windows build is whole again.** Two of the last patches broke it, unseen by the Linux build:
+  - **The network thread:** its `windows_poll` call gave `::size32` a count rather than a container.
+  - **The TUS manager:** its `std::mutex` lost the header that brought in `<mutex>`. The mutex was never taken, so it is gone rather than included for.
+  - Both files are now built with MinGW (`x86_64-w64-mingw32-g++ -fsyntax-only`) before a patch goes out. Not yet built on Windows here.
 - **The signaling handler takes no lock.**
   - **The handler's state:** its one mutex, over the peers, the queued packets and the contexts, was taken by 19 calls and by its thread's whole round. All of it now belongs to its thread, and calls are handed over (`on_thread`, on `owner_calls`, whose waker wakes the thread's timed wait).
   - **Asking RPCN for a peer's details:** `init_sig1` now does this from its caller's thread, not from the signaling thread. The NP thread may itself be waiting on the signaling thread, so the two never wait on each other.

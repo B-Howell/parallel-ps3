@@ -280,7 +280,7 @@ void network_thread::operator()()
 #ifdef _WIN32
 		was_connecting[nwake] = false;
 		connecting[nwake] = false;
-		windows_poll(fds, ::size32(nfds), -1, connecting);
+		windows_poll(fds, static_cast<u32>(nfds), -1, connecting);
 #else
 		::poll(fds.data(), nfds, -1);
 #endif
