@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **libmixer's surround mixer no longer sleeps while it is ahead.** Not yet run on a game.
+  - **Before:** the mixer's PPU thread, once a block ahead of its audio port, slept a millisecond and looked again, for as long as the game played.
+  - **Now:** it waits untimed for retro_run's next frame (the port takes about three blocks a frame) or a change of the emulator's state. It counts as waiting meanwhile, as a PPU waiting does, so a suspend_all does not wait on it, and it ends when the thread is stopped.
+  - **Tests:** none of its own, since it needs a game that uses libmixer; a check fails if the sleep comes back.
+
 - **Writing a savestate no longer sleeps between looks.** Not yet run on a game.
   - **Before:** the zstd writer's threads hand chunks to each other through one-chunk slots. A thread waiting for a slot to empty slept 0.5 to 2 ms a look, because an `atomic_ptr` can be waited on to fill but not to empty. This happened when handing a chunk to a compression thread, when a compression thread handed its output to the writer, and while finishing.
   - **Now:** every take from a slot bumps a counter (`m_taken`) and wakes its waiters, and each of these waits on it untimed.

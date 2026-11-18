@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Emu/System.h"
 #include "Emu/Cell/timers.hpp"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/lv2/sys_sync.h"
@@ -373,7 +374,19 @@ struct surmixer_thread : ppu_thread
 		{
 			if (g_surmx.mixcount > (port.active_counter + 0)) // adding positive value (1-15): preemptive buffer filling (hack)
 			{
-				thread_ctrl::wait_for(1000); // hack
+				// A block ahead of the port: until the next of retro_run's
+				// frames (the port takes about three blocks a frame), or a
+				// change of the emulator's state - no clock. Waiting as a
+				// PPU waits, so a suspend_all meanwhile does not wait on it
+				const bool flagged = !(state & cpu_flag::wait);
+				if (flagged)
+					state += cpu_flag::wait;
+				const u32 events = g_libretro_events.load();
+				g_libretro_events.wait(events);
+				if (flagged)
+					check_state();
+				if (is_stopped())
+					return;
 				continue;
 			}
 

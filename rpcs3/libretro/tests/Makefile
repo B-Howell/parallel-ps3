@@ -1101,6 +1101,8 @@ check: all
 	@if grep -nE "wait_on\(state, old, 16000\)|wait_for\(30.000\)" ../../Emu/RSX/RSXThread.cpp; then echo "RSX: a timed pause wait is back"; exit 1; else echo "RSX: paused by frames"; fi
 	@# The savestate's compression threads wait for a slot to empty on a counter bumped as data is taken, not a sleep
 	@if grep -nE "thread_ctrl::wait_for\(|sleep_for" ../../util/serialization_ext.cpp; then echo "savestate compression: a sleep is back"; exit 1; else echo "savestate compression: no sleep"; fi
+	@# libmixer's surround mixer, a block ahead of its port, waits for a frame, not a millisecond
+	@if grep -nE "thread_ctrl::wait_for\(" ../../Emu/Cell/Modules/libmixer.cpp; then echo "libmixer: a sleep is back"; exit 1; else echo "libmixer: paced by frames"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
