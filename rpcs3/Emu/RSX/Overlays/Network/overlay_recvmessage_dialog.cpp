@@ -108,9 +108,8 @@ namespace rsx
 		{
 			if (fade_animation.active) return;
 
+			// The renderer's, as is the list: input and new messages reach it there
 			bool close_dialog = false;
-
-			std::lock_guard lock(m_mutex);
 
 			switch (button_press)
 			{
@@ -121,6 +120,8 @@ namespace rsx
 
 				if (const usz index = static_cast<usz>(m_list->get_selected_index()); index < m_entry_ids.size())
 				{
+					// Taken as chosen, for the thread waiting on the dialog
+					m_chosen_msg_id = ::at32(m_entry_ids, index);
 					return_code = button_press == pad_button::cross ? selection_code::ok : selection_code::no;
 				}
 				else
@@ -216,10 +217,9 @@ namespace rsx
 			m_rpcn = rpcn::rpcn_client::get_instance(0, true);
 
 			// Get list of messages
-			const auto messages = m_rpcn->get_messages_and_register_cb(type, include_bootable, recvmessage_callback, this);
+			// The list is the renderer's: built there, as are the messages after
+			post_call([this, messages = m_rpcn->get_messages_and_register_cb(type, include_bootable, recvmessage_callback, this)]()
 			{
-				std::lock_guard lock(m_mutex);
-
 				for (const auto& [id, message] : messages)
 				{
 					ensure(message);
@@ -242,7 +242,7 @@ namespace rsx
 					// Only select an entry if there are entries available
 					m_list->select_entry(0);
 				}
-			}
+			});
 
 			fade_animation.current = color4f(0.f);
 			fade_animation.end = color4f(1.f);
@@ -278,18 +278,8 @@ namespace rsx
 
 			auto accept_or_deny = [preserve, this, &result, &recv_result, &chosen_msg_id](SceNpBasicMessageRecvAction result_from_action)
 			{
-				{
-					std::lock_guard lock(m_mutex);
-					const int selected_index = m_list->get_selected_index();
-
-					if (selected_index < 0 || static_cast<usz>(selected_index) >= m_entry_ids.size())
-					{
-						rsx_log.error("recvmessage dialog exited with unexpected selection: index=%d, entries=%d", selected_index, m_entry_ids.size());
-						return;
-					}
-
-					chosen_msg_id = ::at32(m_entry_ids, selected_index);
-				}
+				// As the renderer took it, with the press
+				chosen_msg_id = m_chosen_msg_id;
 				recv_result   = result_from_action;
 				result        = CELL_OK;
 
@@ -322,18 +312,20 @@ namespace rsx
 		{
 			ensure(new_msg);
 
-			std::lock_guard lock(m_mutex);
-
-			std::unique_ptr<overlay_element> entry = std::make_unique<list_entry>(new_msg->first, new_msg->second.subject, new_msg->second.body);
-			m_entries.emplace_back(std::move(entry));
-			m_entry_ids.push_back(msg_id);
-			m_list->add_entry(m_entries.back());
-
-			if (m_list->get_cancel_only())
+			// From the server's thread: the list is the renderer's
+			post_call([this, new_msg = std::move(new_msg), msg_id]()
 			{
-				m_list->set_cancel_only(false);
-				m_list->select_entry(0);
-			}
+				std::unique_ptr<overlay_element> entry = std::make_unique<list_entry>(new_msg->first, new_msg->second.subject, new_msg->second.body);
+				m_entries.emplace_back(std::move(entry));
+				m_entry_ids.push_back(msg_id);
+				m_list->add_entry(m_entries.back());
+
+				if (m_list->get_cancel_only())
+				{
+					m_list->set_cancel_only(false);
+					m_list->select_entry(0);
+				}
+			});
 		}
 	} // namespace overlays
 } // namespace RSX

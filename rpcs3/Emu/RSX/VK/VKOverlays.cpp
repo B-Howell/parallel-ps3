@@ -706,6 +706,7 @@ namespace vk
 			overlay_pass::run(cmd, viewport, target, image_views, render_pass);
 		}
 
+		ui.take_input();
 		ui.update(get_system_time());
 	}
 

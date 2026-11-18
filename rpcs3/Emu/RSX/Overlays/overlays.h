@@ -8,8 +8,9 @@
 
 #include "../Common/bitfield.hpp"
 
-#include <mutex>
 #include <set>
+#include <functional>
+#include <queues/mpsc_stack.h>
 
 
 // Definition of user interface implementations
@@ -63,6 +64,9 @@ namespace rsx
 
 			virtual void update(u64 /*timestamp_us*/) {}
 			virtual compiled_resource get_compiled() = 0;
+
+			// The renderer, before update: what other threads handed over
+			virtual void take_input() {}
 
 			void refresh() const;
 			virtual u16 get_virtual_width() const { return virtual_width; }
@@ -141,8 +145,29 @@ namespace rsx
 				user_interface* m_parent;
 				u32 m_thread_bit;
 			};
+			// What the input thread, and any other thread, hands this dialog:
+			// run by the renderer before it next draws it, so the dialog's
+			// elements are the renderer's alone and take no lock
+			struct ui_event
+			{
+				mpsc_stack_node_t node{}; // first: the stack's link
+				std::function<void()> run;
+			};
+
+			mpsc_stack_t m_ui_events{};
+
 		public:
 			s32 return_code = 0; // CELL_OK
+
+			user_interface() { mpsc_stack_init(&m_ui_events); }
+			~user_interface() override;
+
+			// Any thread: @f run by the renderer before it next draws this
+			// dialog; a flip asked for, so that it is drawn soon
+			void post_call(std::function<void()> f);
+
+			// The renderer's: what was handed over, in the order handed over
+			void take_input() override;
 
 			bool is_detached() const { return m_input_thread_detached; }
 			void detach_input() { m_input_thread_detached.store(true); }

@@ -879,7 +879,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 32
+LOCK_GUARD_MAX := 14
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -1071,6 +1071,8 @@ check: all
 	@if grep -nE "mutex|lock_guard|reader_lock|lock_shared|unlock_shared" ../../Emu/RSX/Overlays/overlay_manager.cpp ../../Emu/RSX/Overlays/overlay_manager.h || grep -nE "lock\(\*m_overlay_manager\)|m_overlay_manager->lock" ../../Emu/RSX/VK/VKPresent.cpp ../../Emu/RSX/GL/GLPresent.cpp; then echo "overlay manager: a lock is back"; exit 1; else echo "overlay manager: no lock"; fi
 	@# On-screen messages are handed to the renderer, a dialog's text published whole, the home menu's icons loaded once by compare-and-swap: no lock
 	@if grep -nE "mutex|lock_guard" ../../Emu/RSX/Overlays/overlay_message.cpp ../../Emu/RSX/Overlays/overlay_message.h ../../Emu/RSX/Overlays/HomeMenu/overlay_home_icons.cpp || awk '/struct text_guard_t/{f=1} f&&/mutex|lock_guard/{bad=1} f&&/^\t\t};/{exit} END{exit !bad}' ../../Emu/RSX/Overlays/overlays.h; then echo "messages / text / icons: a lock is back"; exit 1; else echo "messages / text / icons: no lock"; fi
+	@# A dialog is the renderer's: input and news are handed to it (post_call), no lock
+	@if grep -nE "mutex|lock_guard" ../../Emu/RSX/Overlays/overlay_osk.cpp ../../Emu/RSX/Overlays/overlay_osk.h ../../Emu/RSX/Overlays/overlay_tabs.cpp ../../Emu/RSX/Overlays/overlay_tabs.h ../../Emu/RSX/Overlays/FriendsList/overlay_friends_list_dialog.cpp ../../Emu/RSX/Overlays/FriendsList/overlay_friends_list_dialog.h ../../Emu/RSX/Overlays/Network/overlay_recvmessage_dialog.cpp ../../Emu/RSX/Overlays/Network/overlay_recvmessage_dialog.h ../../Emu/RSX/Overlays/Network/overlay_sendmessage_dialog.cpp ../../Emu/RSX/Overlays/Network/overlay_sendmessage_dialog.h; then echo "dialogs: a lock is back - hand the call to the renderer (post_call)"; exit 1; else echo "dialogs: no lock"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

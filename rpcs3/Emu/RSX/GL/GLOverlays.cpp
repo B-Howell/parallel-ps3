@@ -519,6 +519,7 @@ namespace gl
 			overlay_pass::run(cmd_, viewport, target, gl::image_aspect::color, true);
 		}
 
+		ui.take_input();
 		ui.update(get_system_time());
 	}
 

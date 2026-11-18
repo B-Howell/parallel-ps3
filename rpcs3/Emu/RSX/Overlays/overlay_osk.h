@@ -38,9 +38,6 @@ namespace rsx
 				callback_t callback;
 			};
 
-			// Mutex for interaction between overlay and cellOskDialog
-			shared_mutex m_preview_mutex;
-
 			// Base UI configuration
 			bool m_use_separate_windows = false;
 			bool m_show_panel = true;
@@ -110,6 +107,13 @@ namespace rsx
 			void Clear(bool clear_all_data) override;
 			void SetText(const std::u16string& text) override;
 			void Insert(const std::u16string& text) override;
+
+			// The renderer's, which owns the dialog: the game's calls above
+			// hand these over
+			void do_close(s32 status);
+			void do_clear(bool clear_all_data);
+			void do_set_text(const std::u16string& text);
+			void do_insert(const std::u16string& text);
 
 			void initialize_layout(std::u32string_view title, std::u32string_view initial_text);
 			void add_panel(const osk_panel& panel);

@@ -34,6 +34,12 @@ namespace rsx
 				return;
 			}
 
+			// The fade is the renderer's, which owns the dialog
+			post_call([this, status]() { do_close(status); });
+		}
+
+		void osk_dialog::do_close(s32 status)
+		{
 			if (status != FAKE_CELL_OSKDIALOG_CLOSE_ABORT && m_use_separate_windows && continuous_mode == CELL_OSKDIALOG_CONTINUOUS_MODE_REMAIN_OPEN)
 			{
 				// Just call the on_osk_close and don't actually close the dialog.
@@ -76,9 +82,28 @@ namespace rsx
 
 		void osk_dialog::Clear(bool clear_all_data)
 		{
-			// Try to lock. Clear might be called recursively.
-			const bool locked = m_preview_mutex.try_lock();
+			if (clear_all_data)
+			{
+				// Empty for the game's next read, before the dialog has it
+				osk_text_set(&osk_text, nullptr, 0);
+			}
 
+			// From the game: done by the renderer, which owns the dialog
+			post_call([this, clear_all_data]() { do_clear(clear_all_data); });
+		}
+
+		void osk_dialog::SetText(const std::u16string& text)
+		{
+			post_call([this, text]() { do_set_text(text); });
+		}
+
+		void osk_dialog::Insert(const std::u16string& text)
+		{
+			post_call([this, text]() { do_insert(text); });
+		}
+
+		void osk_dialog::do_clear(bool clear_all_data)
+		{
 			osk.notice("Clearing osk (clear_all_data=%d)", clear_all_data);
 
 			m_preview.caret_position = 0;
@@ -89,19 +114,11 @@ namespace rsx
 				on_text_changed();
 			}
 
-			if (locked)
-			{
-				m_preview_mutex.unlock();
-			}
-
 			m_update = true;
 		}
 
-		void osk_dialog::SetText(const std::u16string& text)
+		void osk_dialog::do_set_text(const std::u16string& text)
 		{
-			// Try to lock. Insert might be called recursively.
-			const bool locked = m_preview_mutex.try_lock();
-
 			const std::u16string new_str = text.length() <= char_limit ? text : text.substr(0, char_limit);
 
 			osk.notice("Setting osk text (text='%s', new_str='%s', char_limit=%d)", utf16_to_ascii8(text), utf16_to_ascii8(new_str), char_limit);
@@ -111,19 +128,11 @@ namespace rsx
 
 			on_text_changed();
 
-			if (locked)
-			{
-				m_preview_mutex.unlock();
-			}
-
 			m_update = true;
 		}
 
-		void osk_dialog::Insert(const std::u16string& text)
+		void osk_dialog::do_insert(const std::u16string& text)
 		{
-			// Try to lock. Insert might be called recursively.
-			const bool locked = m_preview_mutex.try_lock();
-
 			osk.notice("Inserting into osk at position %d (text='%s', char_limit=%d)", m_preview.caret_position, utf16_to_ascii8(text), char_limit);
 
 			// Append to output text
@@ -144,11 +153,6 @@ namespace rsx
 			}
 
 			on_text_changed();
-
-			if (locked)
-			{
-				m_preview_mutex.unlock();
-			}
 
 			m_update = true;
 		}
@@ -662,8 +666,6 @@ namespace rsx
 			// Make sure to show the dialog and send necessary events
 			set_visible(true);
 
-			std::lock_guard lock(m_preview_mutex);
-
 			const u32 grid_size = num_columns * num_rows;
 
 			const auto on_accept = [this]()
@@ -918,8 +920,6 @@ namespace rsx
 			// Make sure to show the dialog and send necessary events
 			set_visible(true);
 
-			std::lock_guard lock(m_preview_mutex);
-
 			// The key should normally be empty unless the backend couldn't find a match.
 			const bool is_key_string_fallback = !key.empty();
 
@@ -1049,8 +1049,7 @@ namespace rsx
 		void osk_dialog::on_text_changed()
 		{
 			const std::u16string ws = u32string_to_utf16(m_preview.value);
-			const usz length = std::min(osk_text.size(), ws.length() + 1) * sizeof(char16_t);
-			memcpy(osk_text.data(), ws.c_str(), length);
+			osk_text_set(&osk_text, reinterpret_cast<const u16*>(ws.c_str()), ::size32(ws));
 
 			osk.notice("on_text_changed: osk_text='%s'", utf16_to_ascii8(ws));
 
@@ -1204,7 +1203,6 @@ namespace rsx
 
 			if (m_use_separate_windows && !m_show_panel)
 			{
-				std::lock_guard lock(m_preview_mutex);
 				m_cached_resource.add(m_preview.get_compiled());
 			}
 			else
@@ -1217,10 +1215,7 @@ namespace rsx
 					m_cached_resource.add(m_input_frame.get_compiled());
 					m_cached_resource.add(m_title.get_compiled());
 				}
-				{
-					std::lock_guard lock(m_preview_mutex);
-					m_cached_resource.add(m_preview.get_compiled());
-				}
+				m_cached_resource.add(m_preview.get_compiled());
 				m_cached_resource.add(m_btn_accept.get_compiled());
 				m_cached_resource.add(m_btn_cancel.get_compiled());
 				m_cached_resource.add(m_btn_shift.get_compiled());

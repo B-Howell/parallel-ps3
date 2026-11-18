@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **A dialog belongs to the renderer: its input and its news are handed over, with no lock.** Not yet run on a game; the friends list and message dialogs not yet run online.
+  - **Input:** the overlay input thread called each dialog's button and key handlers itself, while the renderer drew the same dialog. So the on-screen keyboard, the home menu's tabs, the friends list and the receive and send message dialogs each held a mutex. Each press is now handed to the renderer on a lock-free stack (`user_interface::post_call`, an `mpsc_stack`). The renderer runs them, in order, just before it updates the dialog (`take_input`), so it alone touches the dialog's elements. Calls never taken up are dropped with the dialog.
+  - **The game's calls and the server's news** go the same way: `cellOskDialog`'s clear, set-text, insert and close, the friend and message callbacks from RPCN, and the lists the dialogs open with.
+  - **The on-screen keyboard's text** was a plain array the renderer wrote and the game's calls read. It is now published whole (`osk_text_t`, as the text served to the game already was) and read in place. A clear from the game publishes the empty text at once. The confirm check's result is turned back in the buffer already lent to it, not a second one.
+  - **What a press chose** (the message picked, the friend to send to) is taken with the press, so the thread waiting on the dialog no longer reads the renderer's list.
+  - **No blocking call on the renderer:** adding, removing or rejecting a friend is a round trip to the server, and is now a job on the NP thread. Before, the friends list also waited for the connection on the renderer as it redrew. It now waits once, as the dialog opens, and the renderer only looks at whether it is connected.
+  - `std::lock_guard` count 14. A check fails if a lock comes back in any of these dialogs. `test_held_queues` hands calls over from two threads while a third takes them up: it fails on a mutant that runs them newest first, and on one that runs those left over as the dialog goes.
+
 - **On-screen messages, dialog text and the home menu's icons take no lock.**
   - **Messages:** any thread queuing a message took the message overlay's mutex, and the renderer took it on every frame the messages were drawn. A message is now handed to the renderer on a lock-free stack (`mpsc_stack`). The renderer takes it up as it updates the overlay, dropping it there if the same message is already shown or queued, as before. The caller asks for a flip so it shows even when the game is not flipping.
   - **Dialog text:** the message dialog's text, its progress bars' text and the debug overlay's text were a string and a dirty flag under a `std::mutex`. They are now published whole and taken by exchange (`atomic_ptr`).

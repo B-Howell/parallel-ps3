@@ -248,17 +248,23 @@ error_code cellOskDialogLoadAsync(u32 container, vm::ptr<CellOskDialogParam> dia
 
 	// Get init text and prepare return value
 	osk->osk_input_result = CELL_OSKDIALOG_INPUT_FIELD_RESULT_OK;
-	osk->osk_text = {};
 
 	// Also clear the info text just to be sure (it should be zeroed at this point anyway)
 	osk_text_set(&info.valid_text, nullptr, 0);
 
-	if (inputFieldInfo->init_text)
 	{
-		for (u32 i = 0; (i < maxLength) && (inputFieldInfo->init_text[i] != 0); i++)
+		// The game's big-endian text, turned and published whole
+		u16 init_text[CELL_OSKDIALOG_STRING_SIZE]{};
+
+		if (inputFieldInfo->init_text)
 		{
-			osk->osk_text[i] = inputFieldInfo->init_text[i];
+			for (u32 i = 0; (i < maxLength) && (inputFieldInfo->init_text[i] != 0); i++)
+			{
+				init_text[i] = inputFieldInfo->init_text[i];
+			}
 		}
+
+		osk_text_set(&osk->osk_text, init_text, maxLength);
 	}
 
 	// Get message to display above the input field
@@ -301,11 +307,15 @@ error_code cellOskDialogLoadAsync(u32 container, vm::ptr<CellOskDialogParam> dia
 				atomic_t<u32> done = 0;
 				u32 i;
 
+				const u16* const text = osk_text_enter(&osk->osk_text);
+
 				for (i = 0; i < CELL_OSKDIALOG_STRING_SIZE - 1; i++)
 				{
-					string_to_send[i] = osk->osk_text[i];
-					if (osk->osk_text[i] == 0) break;
+					string_to_send[i] = text[i];
+					if (text[i] == 0) break;
 				}
+
+				osk_text_leave(&osk->osk_text);
 
 				sysutil_register_cb([&, length = i](ppu_thread& cb_ppu) -> s32
 				{
@@ -314,10 +324,14 @@ error_code cellOskDialogLoadAsync(u32 container, vm::ptr<CellOskDialogParam> dia
 					const u32 return_value = ccb(cb_ppu, string_var.begin(), static_cast<s32>(length));
 					cellOskDialog.warning("osk_confirm_callback return_value=%d", return_value);
 
+					// The text as the check left it, turned in the buffer lent
+					// above (its sender waits) and published whole
 					for (u32 i = 0; i < CELL_OSKDIALOG_STRING_SIZE - 1; i++)
 					{
-						osk->osk_text[i] = string_var.begin()[i];
+						string_to_send[i] = string_var.begin()[i];
 					}
+
+					osk_text_set(&osk->osk_text, string_to_send.data(), CELL_OSKDIALOG_STRING_SIZE - 1);
 
 					done.release(1);
 					done.notify_all();
@@ -331,7 +345,10 @@ error_code cellOskDialogLoadAsync(u32 container, vm::ptr<CellOskDialogParam> dia
 				}
 			}
 
-			if (info.use_separate_windows.load() && osk->osk_text[0] == 0)
+			const bool no_text = osk_text_enter(&osk->osk_text)[0] == 0;
+			osk_text_leave(&osk->osk_text);
+
+			if (info.use_separate_windows.load() && no_text)
 			{
 				cellOskDialog.warning("on_osk_close: input result is CELL_OSKDIALOG_INPUT_FIELD_RESULT_NO_INPUT_TEXT");
 				osk->osk_input_result = CELL_OSKDIALOG_INPUT_FIELD_RESULT_NO_INPUT_TEXT;
@@ -599,10 +616,13 @@ error_code cellOskDialogLoadAsync(u32 container, vm::ptr<CellOskDialogParam> dia
 
 	Emu.BlockingCallFromMainThread([=, &info]()
 	{
+		// Read in place for the call
+		const u16* const init_text = osk_text_enter(&osk->osk_text);
+
 		osk->Create({
 			.title = get_localized_string(localized_string_id::CELL_OSK_DIALOG_TITLE),
 			.message = message,
-			.init_text = osk->osk_text.data(),
+			.init_text = reinterpret_cast<const char16_t*>(init_text),
 			.charlimit = maxLength,
 			.prohibit_flags = prohibitFlgs,
 			.panel_flag = allowOskPanelFlg,
@@ -619,6 +639,8 @@ error_code cellOskDialogLoadAsync(u32 container, vm::ptr<CellOskDialogParam> dia
 			.use_separate_windows = info.use_separate_windows,
 			.intercept_input = false // We handle the interception manually based on the device mask
 		});
+
+		osk_text_leave(&osk->osk_text);
 	});
 
 	g_fxo->get<osk_info>().last_dialog_state = CELL_SYSUTIL_OSKDIALOG_LOADED;
@@ -664,7 +686,9 @@ error_code getText(vm::ptr<CellOskDialogCallbackReturnParam> OutputInfo, bool is
 	// Update text buffer if called from cellOskDialogUnloadAsync or if the user accepted the dialog during continuous seperate window mode.
 	if (is_unload || (keep_seperate_window_open && info.last_dialog_state == CELL_SYSUTIL_OSKDIALOG_INPUT_ENTERED))
 	{
-		osk_text_set(&info.valid_text, reinterpret_cast<const u16*>(osk->osk_text.data()), CELL_OSKDIALOG_STRING_SIZE - 1);
+		// From one published text to the other, read in place
+		osk_text_set(&info.valid_text, osk_text_enter(&osk->osk_text), CELL_OSKDIALOG_STRING_SIZE - 1);
+		osk_text_leave(&osk->osk_text);
 	}
 
 	// Read in place, straight into the game's buffer
@@ -1192,7 +1216,9 @@ error_code cellOskDialogExtUpdateInputText()
 
 	if (osk)
 	{
-		osk_text_set(&g_fxo->get<osk_info>().valid_text, reinterpret_cast<const u16*>(osk->osk_text.data()), CELL_OSKDIALOG_STRING_SIZE - 1);
+		// From one published text to the other, read in place
+		osk_text_set(&g_fxo->get<osk_info>().valid_text, osk_text_enter(&osk->osk_text), CELL_OSKDIALOG_STRING_SIZE - 1);
+		osk_text_leave(&osk->osk_text);
 	}
 
 	return CELL_OK;

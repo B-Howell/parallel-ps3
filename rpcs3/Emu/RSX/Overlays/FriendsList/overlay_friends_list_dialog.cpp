@@ -201,7 +201,7 @@ namespace rsx
 				return;
 			}
 
-			std::lock_guard lock(m_list_mutex);
+			// The renderer's, as are the lists: input and the server's news reach it there
 			bool close_dialog = false;
 
 			switch (button_press)
@@ -250,7 +250,8 @@ namespace rsx
 					{
 						m_message_box->show(get_localized_string(localized_string_id::HOME_MENU_FRIENDS_REMOVE_USER_MSG, selected_username.c_str()), [this, selected_username]()
 						{
-							m_rpcn->remove_friend(selected_username);
+							// A round trip to the server: on the NP thread, not this one
+							g_fxo->get<named_thread<np::np_handler>>().run_on_np_thread([rpcn = m_rpcn, selected_username]() { rpcn->remove_friend(selected_username); });
 						});
 						refresh();
 					}
@@ -291,14 +292,14 @@ namespace rsx
 							{
 								m_message_box->show(get_localized_string(localized_string_id::HOME_MENU_FRIENDS_REJECT_REQUEST_MSG, selected_username.c_str()), [this, selected_username]()
 								{
-									m_rpcn->remove_friend(selected_username);
+									g_fxo->get<named_thread<np::np_handler>>().run_on_np_thread([rpcn = m_rpcn, selected_username]() { rpcn->remove_friend(selected_username); });
 								});
 							}
 							else
 							{
 								m_message_box->show(get_localized_string(localized_string_id::HOME_MENU_FRIENDS_ACCEPT_REQUEST_MSG, selected_username.c_str()), [this, selected_username]()
 								{
-									m_rpcn->add_friend(selected_username);
+									g_fxo->get<named_thread<np::np_handler>>().run_on_np_thread([rpcn = m_rpcn, selected_username]() { rpcn->add_friend(selected_username); });
 								});
 							}
 						}
@@ -306,7 +307,7 @@ namespace rsx
 						{
 							m_message_box->show(get_localized_string(localized_string_id::HOME_MENU_FRIENDS_CANCEL_REQUEST_MSG, selected_username.c_str()), [this, selected_username]()
 							{
-								m_rpcn->remove_friend(selected_username);
+								g_fxo->get<named_thread<np::np_handler>>().run_on_np_thread([rpcn = m_rpcn, selected_username]() { rpcn->remove_friend(selected_username); });
 							});
 						}
 						refresh();
@@ -441,8 +442,6 @@ namespace rsx
 			compiled_resource result;
 			result.add(m_dim_background->get_compiled());
 			{
-				std::lock_guard lock(m_list_mutex);
-
 				if (m_list_dirty.exchange(false))
 				{
 					if (m_current_page != m_last_page)
@@ -523,21 +522,22 @@ namespace rsx
 
 		void friends_list_dialog::message_callback_handler(const shared_ptr<std::pair<std::string, message_data>>& message, u64 message_id)
 		{
-			std::lock_guard lock(m_list_mutex);
-
-			if (std::none_of(m_game_invite_messages.cbegin(), m_game_invite_messages.cend(), [message_id](const game_invite& invite)
+			// From the server's thread: the list is the renderer's
+			post_call([this, message, message_id]()
 			{
-				return invite.first == message_id;
-			}))
-			{
-				m_game_invite_messages.emplace_back(message_id, message);
-				m_list_dirty = true;
-			}
+				if (std::none_of(m_game_invite_messages.cbegin(), m_game_invite_messages.cend(), [message_id](const game_invite& invite)
+				{
+					return invite.first == message_id;
+				}))
+				{
+					m_game_invite_messages.emplace_back(message_id, message);
+					m_list_dirty = true;
+				}
+			});
 		}
 
 		void friends_list_dialog::remove_game_invite(u64 message_id)
 		{
-			std::lock_guard lock(m_list_mutex);
 			const auto has_message_id = [message_id](const game_invite& invite)
 			{
 				return invite.first == message_id;
@@ -622,16 +622,10 @@ namespace rsx
 				}
 			}
 
-			if (auto res = m_rpcn->wait_for_connection(); res != rpcn::rpcn_state::failure_no_failure)
+			// Drawn by the renderer, which never waits on the server: the
+			// connection was waited for as the dialog opened (show)
+			if (!m_rpcn->is_connected() || !m_rpcn->is_authentified())
 			{
-				rsx_log.error("Failed to connect to RPCN: %s", rpcn::rpcn_state_to_string(res));
-				status_flags |= status_bits::invalidate_image_cache;
-				rpcn_connected = false;
-			}
-
-			if (auto res = m_rpcn->wait_for_authentified(); res != rpcn::rpcn_state::failure_no_failure)
-			{
-				rsx_log.error("Failed to authentify to RPCN: %s", rpcn::rpcn_state_to_string(res));
 				status_flags |= status_bits::invalidate_image_cache;
 				rpcn_connected = false;
 			}
@@ -798,12 +792,23 @@ namespace rsx
 
 			m_rpcn = rpcn::rpcn_client::get_instance(0);
 
+			// Waited for here, on the thread opening the dialog, not by the renderer
+			if (auto res = m_rpcn->wait_for_connection(); res != rpcn::rpcn_state::failure_no_failure)
 			{
-				std::lock_guard lock(m_list_mutex);
+				rsx_log.error("Failed to connect to RPCN: %s", rpcn::rpcn_state_to_string(res));
+			}
+			else if (auto res = m_rpcn->wait_for_authentified(); res != rpcn::rpcn_state::failure_no_failure)
+			{
+				rsx_log.error("Failed to authentify to RPCN: %s", rpcn::rpcn_state_to_string(res));
+			}
+
+			// The lists are the renderer's
+			post_call([this]()
+			{
 				m_game_invite_messages.clear();
 				m_game_invites.clear();
 				m_list_dirty = true;
-			}
+			});
 
 			m_rpcn->register_friend_cb(friend_callback, this);
 			const auto game_invites = m_rpcn->get_messages_and_register_cb(SCE_NP_BASIC_MESSAGE_MAIN_TYPE_INVITE, true, game_invite_callback, this);

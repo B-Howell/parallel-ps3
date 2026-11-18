@@ -19,6 +19,12 @@
 //   its own code: queued, shown three at a time, let go when done with,
 //   and freed with the overlay - every message accounted for.
 //
+// - a dialog's input and news handed to the renderer
+//   (Emu/RSX/Overlays/overlays.cpp, user_interface::post_call): each
+//   thread's calls run in the order handed over, all of them, only when the
+//   renderer takes them up (take_input), each once; those never taken up
+//   are dropped with the dialog, not run.
+//
 // sys_timer.cpp is compiled into this test (the timer thread is private to
 // it); the rest is the core's own objects and archives, the same link as
 // the core's with this main. Built by `make check`.
@@ -29,6 +35,7 @@
 #include "Emu/Cell/Modules/cellVoice.h"
 #include "Emu/NP/np_dnshook.h"
 #include "Emu/RSX/Overlays/overlay_message.h"
+#include "Emu/RSX/Overlays/overlays.h"
 #include "Emu/RSX/VK/vkutils/memory.h"
 #include "Emu/emu_callbacks.h"
 #include "Emu/system_config.h"
@@ -846,6 +853,64 @@ int main()
 		for (auto& ref : refs)
 			alive += ref.use_count() != 1;
 		CHECK(alive == 0);
+	}
+
+	// A dialog's input and news, handed to the renderer
+	{
+		struct test_ui : rsx::overlays::user_interface
+		{
+			rsx::overlays::compiled_resource get_compiled() override { return {}; }
+		};
+
+		constexpr u32 per_thread = 20000;
+		std::vector<u32> seen[2];
+		u32 runs = 0;
+
+		{
+			test_ui ui;
+			ui.visible = false; // no flip to ask of a renderer that is not here
+
+			// Nothing runs as it is handed over: only as the renderer takes it up
+			ui.post_call([&]() { runs++; });
+			CHECK(runs == 0);
+			ui.take_input();
+			CHECK(runs == 1);
+			ui.take_input();
+			CHECK(runs == 1);
+
+			// Two threads hand calls over while this one, the renderer, takes
+			// them up: each thread's in its own order, every one once
+			retro_atomic_int_t done;
+			retro_atomic_int_init(&done, 0);
+			std::thread posters[2];
+			for (u32 t = 0; t < 2; t++)
+			{
+				posters[t] = std::thread([&, t]()
+				{
+					for (u32 i = 0; i < per_thread; i++)
+						ui.post_call([&, t, i]() { seen[t].push_back(i); });
+					retro_atomic_fetch_add_int(&done, 1);
+				});
+			}
+			while (retro_atomic_load_acquire_int(&done) != 2)
+				ui.take_input();
+			for (auto& poster : posters)
+				poster.join();
+			ui.take_input();
+
+			for (u32 t = 0; t < 2; t++)
+			{
+				bool in_order = seen[t].size() == per_thread;
+				for (u32 i = 0; in_order && i < per_thread; i++)
+					in_order = seen[t][i] == i;
+				CHECK(in_order);
+			}
+
+			// Handed over and never taken up: dropped with the dialog
+			ui.post_call([&]() { runs += 100; });
+		}
+
+		CHECK(runs == 1);
 	}
 
 	std::printf("test_held_queues: %s\n", failures ? "FAIL" : "ok");

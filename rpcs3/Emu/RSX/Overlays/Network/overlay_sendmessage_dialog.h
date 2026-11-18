@@ -18,8 +18,8 @@ namespace rsx
 				list_entry(std::string_view msg);
 			};
 
-			shared_mutex m_mutex;
 			std::vector<std::string> m_entry_names;
+			std::string m_chosen_npid; // set before m_open_confirmation_dialog, as the press is taken
 			std::unique_ptr<overlay_element> m_dim_background;
 			std::unique_ptr<list_view> m_list;
 			std::unique_ptr<label> m_description;
@@ -30,6 +30,7 @@ namespace rsx
 
 			std::string get_current_selection() const;
 			void reload(std::string_view previous_selection);
+			void take_friend_news(rpcn::NotificationType ntype, const std::string& username, bool status);
 
 		public:
 			sendmessage_dialog();

@@ -18,9 +18,9 @@ namespace rsx
 				list_entry(std::string_view name, std::string_view subj, std::string_view body);
 			};
 
-			shared_mutex m_mutex;
 			std::vector<std::unique_ptr<overlay_element>> m_entries;
 			std::vector<u64> m_entry_ids;
+			u64 m_chosen_msg_id = 0; // set with return_code ok or no, as the press is taken
 			std::unique_ptr<overlay_element> m_dim_background;
 			std::unique_ptr<list_view> m_list;
 			std::unique_ptr<label> m_description;

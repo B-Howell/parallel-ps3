@@ -98,6 +98,37 @@ namespace rsx
 			libretro_event();
 		}
 
+		user_interface::~user_interface()
+		{
+			// What was handed over and not run: dropped with the dialog
+			for (mpsc_stack_node_t* node = mpsc_stack_drain(&m_ui_events); node;)
+			{
+				ui_event* const e = reinterpret_cast<ui_event*>(node);
+				node = node->next;
+				delete e;
+			}
+		}
+
+		void user_interface::post_call(std::function<void()> f)
+		{
+			ui_event* const e = new ui_event;
+			e->run = std::move(f);
+			mpsc_stack_push(&m_ui_events, &e->node);
+			refresh();
+		}
+
+		void user_interface::take_input()
+		{
+			// Newest first on the stack: run in the order handed over
+			for (mpsc_stack_node_t* node = mpsc_stack_reverse(mpsc_stack_drain(&m_ui_events)); node;)
+			{
+				ui_event* const e = reinterpret_cast<ui_event*>(node);
+				node = node->next;
+				e->run();
+				delete e;
+			}
+		}
+
 		s32 user_interface::run_input_loop(std::function<bool()> check_state)
 		{
 			user_interface::thread_bits_allocator thread_bits_alloc(this);
@@ -148,7 +179,8 @@ namespace rsx
 						timestamp[pad_index] = steady_clock::now();
 						initial_timestamp[pad_index] = timestamp[pad_index];
 						last_auto_repeat_button[pad_index] = is_auto_repeat_button ? button_id : pad_button::pad_button_max_enum;
-						on_button_pressed(static_cast<pad_button>(button_id), false);
+						// Acted on by the renderer, which owns the dialog
+						post_call([this, button_id]() { on_button_pressed(static_cast<pad_button>(button_id), false); });
 					}
 					else if (is_auto_repeat_button)
 					{
@@ -158,7 +190,7 @@ namespace rsx
 						{
 							// The auto-repeat button was pressed for at least the given threshold in ms and will trigger at an interval.
 							timestamp[pad_index] = steady_clock::now();
-							on_button_pressed(static_cast<pad_button>(button_id), true);
+							post_call([this, button_id]() { on_button_pressed(static_cast<pad_button>(button_id), true); });
 						}
 						else if (last_auto_repeat_button[pad_index] == pad_button::pad_button_max_enum)
 						{
@@ -251,10 +283,14 @@ namespace rsx
 
 					if (!events.empty())
 					{
-						for (const key_event& e : events)
+						// Acted on by the renderer, which owns the dialog
+						post_call([this, events = std::move(events)]()
 						{
-							on_key_pressed(e.led, e.mkey, e.key_code, e.out_key_code, e.pressed, e.text);
-						}
+							for (const key_event& e : events)
+							{
+								on_key_pressed(e.led, e.mkey, e.key_code, e.out_key_code, e.pressed, e.text);
+							}
+						});
 
 						// Ignore gamepad input if a key was recognized
 						refresh();

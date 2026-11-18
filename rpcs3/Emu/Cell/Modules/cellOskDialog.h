@@ -282,7 +282,7 @@ public:
 	{
 		std::string title;
 		std::u16string message;
-		char16_t* init_text = nullptr;
+		const char16_t* init_text = nullptr;
 		u32 charlimit = 0;
 		u32 prohibit_flags = 0;
 		u32 panel_flag = 0;
@@ -310,6 +310,7 @@ public:
 	// Set status to -1 if closed by the game or system.
 	// Set status to -2 if terminated by the system.
 	virtual void Close(s32 status) = 0;
+	OskDialogBase() { osk_text_init(&osk_text); }
 	virtual ~OskDialogBase() {};
 
 	std::function<void(s32 status)> on_osk_close;
@@ -324,7 +325,10 @@ public:
 	atomic_t<bool> ignore_device_events{ false };  // Determines if the OSK ignores device events.
 
 	atomic_t<CellOskDialogInputFieldResult> osk_input_result{ CellOskDialogInputFieldResult::CELL_OSKDIALOG_INPUT_FIELD_RESULT_OK };
-	std::array<char16_t, CELL_OSKDIALOG_STRING_SIZE> osk_text{};
+
+	// The text typed so far: set whole by the dialog (or the game's checks),
+	// read in place by the game's calls, with no lock (osk_text.c)
+	osk_text_t osk_text;
 };
 
 struct osk_info

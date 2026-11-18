@@ -34,7 +34,6 @@ namespace rsx
 
 			using game_invite = std::pair<u64, shared_ptr<std::pair<std::string, message_data>>>;
 
-			std::mutex m_list_mutex;
 			std::vector<u32> m_entry_ids;
 			std::unique_ptr<overlay_element> m_dim_background;
 			std::unique_ptr<list_view> m_list;

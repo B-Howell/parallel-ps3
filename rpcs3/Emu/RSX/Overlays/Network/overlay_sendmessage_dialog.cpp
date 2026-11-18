@@ -72,9 +72,8 @@ namespace rsx
 			if (fade_animation.active) return;
 			if (m_confirmation_dialog_open) return; // Ignore input while the confirmation dialog is open
 
+			// The renderer's, as is the list: input and the friends' news reach it there
 			bool close_dialog = false;
-
-			std::lock_guard lock(m_mutex);
 
 			switch (button_press)
 			{
@@ -84,8 +83,11 @@ namespace rsx
 
 				play_sound(sound_effect::accept);
 
-				if (!get_current_selection().empty())
+				if (std::string selection = get_current_selection(); !selection.empty())
 				{
+					// Taken as chosen, for the thread waiting on the dialog
+					// (seen by it with the flag below)
+					m_chosen_npid = std::move(selection);
 					m_open_confirmation_dialog = true;
 					m_confirmation_dialog_open = true; // Ignore input while the confirmation dialog is open. Set this here due to avoid a race condition.
 					break;
@@ -188,10 +190,11 @@ namespace rsx
 			// Get list of messages
 			rpcn::friend_data data;
 			m_rpcn->get_friends_and_register_cb(data, sendmessage_friend_callback, this);
-			{
-				std::lock_guard lock(m_mutex);
 
-				for (const auto& [name, online_data] : data.friends)
+			// The list is the renderer's: built there, as are the changes after
+			post_call([this, friends = std::move(data.friends)]()
+			{
+				for (const auto& [name, online_data] : friends)
 				{
 					// Only add online friends to the list
 					if (online_data.online)
@@ -204,7 +207,7 @@ namespace rsx
 				}
 
 				reload({});
-			}
+			});
 
 			fade_animation.current = color4f(0.f);
 			fade_animation.end = color4f(1.f);
@@ -229,7 +232,7 @@ namespace rsx
 				if (m_open_confirmation_dialog.exchange(false))
 				{
 					// Get user confirmation by opening a blocking dialog
-					const std::string npid = get_current_selection();
+					const std::string npid = m_chosen_npid;
 					if (npid.empty())
 					{
 						rsx_log.fatal("sendmessage dialog can't open confirmation dialog with empty npid");
@@ -298,7 +301,8 @@ namespace rsx
 			{
 			case selection_code::ok:
 			{
-				const std::string current_selection = get_current_selection();
+				// As the renderer took it, with the press
+				const std::string& current_selection = m_chosen_npid;
 
 				if (current_selection.empty())
 				{
@@ -385,8 +389,12 @@ namespace rsx
 
 		void sendmessage_dialog::callback_handler(rpcn::NotificationType ntype, const std::string& username, bool status)
 		{
-			std::lock_guard lock(m_mutex);
+			// From the server's thread: the list is the renderer's
+			post_call([this, ntype, username, status]() { take_friend_news(ntype, username, status); });
+		}
 
+		void sendmessage_dialog::take_friend_news(rpcn::NotificationType ntype, const std::string& username, bool status)
+		{
 			const auto add_friend = [&]()
 			{
 				if (std::any_of(m_entry_names.cbegin(), m_entry_names.cend(), [&username](const std::string& entry){ return entry == username; }))
