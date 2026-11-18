@@ -587,6 +587,14 @@ $(VK_FIXED_GEN): $(CORE_DIR)/rpcs3/libretro/make/vk_fixed_shaders_gen.c $(CORE_D
 		-I$(CORE_DIR)/rpcs3/libretro/libretro-common/include -I$(CORE_DIR)/rpcs3/libretro/libretro-common/gfx/shaders \
 		-o $@ $(CORE_DIR)/rpcs3/libretro/make/vk_fixed_shaders_gen.c $(VK_FIXED_LRC) -lm
 
+# The modules for the GLSL the compute tasks make (vk_known_spirv_data.c),
+# written again by the shader corpus test through the renderer's own code
+# (it needs a Vulkan driver; a software one will do); its run in `make
+# check` fails while they are not what the tasks make
+.PHONY: vk-known-spirv
+vk-known-spirv: $(SHADER_CORPUS_TEST)
+	SHADER_CORPUS_KNOWN=$(CORE_DIR)/rpcs3/libretro/vk_known_spirv_data.c $(SHADER_CORPUS_TEST)
+
 .PHONY: vk-fixed-shaders vk-fixed-shaders-check
 vk-fixed-shaders: $(VK_FIXED_GEN)
 	$(VK_FIXED_GEN) write $(CORE_DIR)/rpcs3 $(CORE_DIR)/rpcs3/libretro/vk_fixed_spirv.c

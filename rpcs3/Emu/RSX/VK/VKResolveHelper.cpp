@@ -282,8 +282,10 @@ namespace vk
 
 		const std::pair<std::string_view, std::string> syntax_replace[] =
 		{
-			{ "%WORKGROUP_SIZE_X", std::to_string(cs_wave_x) },
-			{ "%WORKGROUP_SIZE_Y", std::to_string(cs_wave_y) },
+			// The size is the specialization constants' (set below), so the
+			// source is the same on every GPU
+			{ "%WORKGROUP_SIZE_X", "1, local_size_x_id = 0" },
+			{ "%WORKGROUP_SIZE_Y", "1, local_size_y_id = 1" },
 			{ "%IMAGE_FORMAT", format_prefix },
 			{ "%BGRA_SWAP", bgra_swap ? "1" : "0" }
 		};
@@ -291,7 +293,9 @@ namespace vk
 		m_src = unresolve ? unresolve_kernel : resolve_kernel;
 		m_src = fmt::replace_all(m_src, syntax_replace);
 
-		rsx_log.notice("Compute shader:\n%s", m_src);
+		spec_values[0] = cs_wave_x;
+		spec_values[1] = cs_wave_y;
+		spec_count = 2;
 	}
 
 	void depth_resolve_base::build(bool resolve_depth, bool resolve_stencil, bool is_unresolve)

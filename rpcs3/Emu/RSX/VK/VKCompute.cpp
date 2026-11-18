@@ -7,6 +7,9 @@
 
 #include <gfx/shaders/rslc_build.h>
 
+#include "libretro/vk_fixed_shaders.h"
+#include "libretro/vk_known_spirv.h"
+
 #define VK_MAX_COMPUTE_TASKS 8192   // Max number of jobs per frame
 
 namespace vk
@@ -96,6 +99,11 @@ namespace vk
 			const auto& gpu = vk::g_render_device->gpu();
 			max_invocations_x = gpu.get_limits().maxComputeWorkGroupCount[0];
 
+			// The work group's width, for a source that leaves it to
+			// local_size_x_id = 0 (one that does not is not changed by it)
+			spec_values[0] = optimal_group_size;
+			spec_count = 1;
+
 			initialized = true;
 		}
 	}
@@ -118,9 +126,21 @@ namespace vk
 		{
 			if (!m_spirv.empty())
 				m_shader.create(::glsl::program_domain::glsl_compute_program, m_spirv);
+			else if (const vk_known_spirv* known = vk_known_spirv_find(m_src.data(), m_src.size(), VK_FIXED_COMPUTE))
+			{
+				// Made when the core was built, from this very text: lent to
+				// the driver from the core's memory, nothing compiled
+				m_shader.create(::glsl::program_domain::glsl_compute_program, known->words, known->count);
+			}
 			else
 				m_shader.create(::glsl::program_domain::glsl_compute_program, m_src);
 			auto handle = m_shader.compile();
+
+			// The specialization constants, kept here for as long as the
+			// pipeline may be made again from its create info
+			for (u32 i = 0; i < spec_count; i++)
+				spec_map[i] = { .constantID = i, .offset = i * u32{sizeof(u32)}, .size = sizeof(u32) };
+			spec_info = { .mapEntryCount = spec_count, .pMapEntries = spec_map, .dataSize = spec_count * sizeof(u32), .pData = spec_values };
 
 			VkComputePipelineCreateInfo create_info
 			{
@@ -129,7 +149,8 @@ namespace vk
 					.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 					.stage = VK_SHADER_STAGE_COMPUTE_BIT,
 					.module = handle,
-					.pName = "main"
+					.pName = "main",
+					.pSpecializationInfo = spec_count ? &spec_info : nullptr
 				},
 			};
 
@@ -203,7 +224,7 @@ namespace vk
 		{
 			{ "%loc", "0" },
 			{ "%set", "set = 0"},
-			{ "%ws", std::to_string(optimal_group_size) },
+			{ "%ws", "1, local_size_x_id = 0" },
 			{ "%ks", std::to_string(kernel_size) },
 			{ "%vars", variables },
 			{ "%f", function_name },

@@ -33,6 +33,15 @@ namespace vk
 		u32 optimal_kernel_size = 1;
 		u32 max_invocations_x = 65535;
 
+		// What the stage's specialization constants are set to as its
+		// pipeline is made: its work group's size, which the source leaves
+		// to them (local_size_x_id = 0, _y_id = 1), so the one source - and
+		// the one module made of it when the core was built - fits every GPU
+		u32 spec_values[2]{};
+		u32 spec_count = 0;
+		VkSpecializationMapEntry spec_map[2]{};
+		VkSpecializationInfo spec_info{};
+
 		compute_task() = default;
 		virtual ~compute_task() { destroy(); }
 
@@ -440,7 +449,7 @@ namespace vk
 				{ "%loc", "0" },
 				{ "%set", "set = 0" },
 				{ "%push_block", "push_constant" },
-				{ "%ws", std::to_string(optimal_group_size) },
+				{ "%ws", "1, local_size_x_id = 0" },
 				{ "%_wordcount", std::to_string(std::max<u32>(sizeof(_BlockType) / 4u, 1u)) },
 				{ "%f", transform },
 				{ "%_8bit", sizeof(_BlockType) == 1 ? "1" : "0" },
@@ -573,7 +582,7 @@ namespace vk
 				{ "%loc", "0" },
 				{ "%set", "set = 0" },
 				{ "%push_block", "push_constant" },
-				{ "%ws", std::to_string(optimal_group_size) },
+				{ "%ws", "1, local_size_x_id = 0" },
 				{ "%op", std::to_string(Op) }
 			};
 

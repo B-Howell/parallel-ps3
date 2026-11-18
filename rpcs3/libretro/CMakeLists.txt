@@ -25,6 +25,8 @@ add_library(rpcs3_libretro SHARED
     config_database.c
     vblank_list.c
     vk_fixed_spirv.c
+    vk_known_spirv.c
+    vk_known_spirv_data.c
     libretro_sw_frames.c
     ${CMAKE_CURRENT_BINARY_DIR}/libretro_ui_icons.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/libretro_config_database.cpp
