@@ -503,8 +503,6 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/rpcs3/Emu/NP/signaling_handler.cpp \
 	$(CORE_DIR)/rpcs3/Emu/NP/upnp_config.cpp \
 	$(CORE_DIR)/rpcs3/Emu/NP/upnp_handler.cpp \
-	$(CORE_DIR)/rpcs3/Emu/RSX/Capture/rsx_capture.cpp \
-	$(CORE_DIR)/rpcs3/Emu/RSX/Capture/rsx_replay.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/Common/BufferUtils.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/Common/TextureUtils.cpp \
 	$(CORE_DIR)/rpcs3/Emu/RSX/Common/surface_store.cpp \

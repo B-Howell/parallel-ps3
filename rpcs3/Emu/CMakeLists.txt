@@ -491,8 +491,6 @@ target_sources(rpcs3_emu PRIVATE
 
 # RSX
 target_sources(rpcs3_emu PRIVATE
-    RSX/Capture/rsx_capture.cpp
-    RSX/Capture/rsx_replay.cpp
     RSX/Common/BufferUtils.cpp
     RSX/Common/surface_store.cpp
     RSX/Common/TextureUtils.cpp

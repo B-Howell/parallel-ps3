@@ -3,7 +3,6 @@
 #include "Emu/System.h"
 #include "RSXFIFO.h"
 #include "RSXThread.h"
-#include "Capture/rsx_capture.h"
 #include "Core/RSXReservationLock.hpp"
 #include "Emu/Memory/vm_reservation.h"
 #include "Emu/Cell/lv2/sys_rsx.h"
@@ -826,67 +825,6 @@ namespace rsx
 
 		do
 		{
-			if (capture_current_frame) [[unlikely]]
-			{
-				const u32 reg = (command.reg & 0xfffc) >> 2;
-				const u32 value = command.value;
-
-				frame_debug.command_queue.emplace_back(reg, value);
-
-				if (!(reg == NV406E_SET_REFERENCE || reg == NV406E_SEMAPHORE_RELEASE || reg == NV406E_SEMAPHORE_ACQUIRE))
-				{
-					// todo: handle nv406e methods better?, do we care about call/jumps?
-					rsx::frame_capture_data::replay_command replay_cmd;
-					replay_cmd.rsx_command = std::make_pair((reg << 2) | (1u << 18), value);
-
-					auto& commands = frame_capture.replay_commands;
-					commands.push_back(replay_cmd);
-
-					switch (reg)
-					{
-					case NV3089_IMAGE_IN:
-						capture::capture_image_in(this, commands.back());
-						break;
-					case NV0039_BUFFER_NOTIFY:
-						capture::capture_buffer_notify(this, commands.back());
-						break;
-					default:
-					{
-						static constexpr std::array<std::pair<u32, u32>, 3> ranges
-						{{
-							{NV308A_COLOR, 0x700},
-							{NV4097_SET_TRANSFORM_PROGRAM, 32},
-							{NV4097_SET_TRANSFORM_CONSTANT, 32}
-						}};
-
-						// Use legacy logic - enqueue leading command with count
-						// Then enqueue each command arg alone with a no-op command
-						for (const auto& range : ranges)
-						{
-							if (reg >= range.first && reg < range.first + range.second)
-							{
-								const u32 remaining = std::min<u32>(fifo_ctrl->get_remaining_args_count() + 1,
-									(fifo_ctrl->last_cmd() & RSX_METHOD_NON_INCREMENT_CMD_MASK) ? -1 : (range.first + range.second) - reg);
-
-								commands.back().rsx_command.first = (fifo_ctrl->last_cmd() & RSX_METHOD_NON_INCREMENT_CMD_MASK) | (reg << 2) | (remaining << 18);
-
-								for (u32 i = 1; i < remaining && fifo_ctrl->get_pos() + i * 4 != (ctrl->put & ~3); i++)
-								{
-									replay_cmd.rsx_command = std::make_pair(0, vm::read32(iomap_table.get_addr(fifo_ctrl->get_pos()) + (i * 4)));
-
-									commands.push_back(replay_cmd);
-								}
-
-								break;
-							}
-						}
-
-						break;
-					}
-					}
-				}
-			}
-
 			if (m_flattener.is_enabled()) [[unlikely]]
 			{
 				switch(m_flattener.test(command))

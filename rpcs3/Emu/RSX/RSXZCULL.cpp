@@ -3,6 +3,7 @@
 #include "Core/RSXReservationLock.hpp"
 #include "Common/guest_page_locks.h"
 #include "RSXThread.h"
+#include <unordered_set>
 
 namespace rsx
 {

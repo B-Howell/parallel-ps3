@@ -8,7 +8,6 @@
 
 #define RSX(ctx) ctx->rsxthr
 #define REGS(ctx) (&rsx::method_registers)
-#define RSX_CAPTURE_EVENT(name) if (RSX(ctx)->capture_current_frame) { RSX(ctx)->capture_frame(name); }
 
 namespace rsx
 {
@@ -513,13 +512,10 @@ namespace rsx
 		void clear(context* ctx, u32 /*reg*/, u32 arg)
 		{
 			RSX(ctx)->clear_surface(arg);
-
-			RSX_CAPTURE_EVENT("clear");
 		}
 
-		void clear_zcull(context* ctx, u32 /*reg*/, u32 /*arg*/)
+		void clear_zcull(context* /*ctx*/, u32 /*reg*/, u32 /*arg*/)
 		{
-			RSX_CAPTURE_EVENT("clear zcull memory");
 		}
 
 		void set_face_property(context* ctx, u32 reg, u32 arg)

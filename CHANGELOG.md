@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The RSX frame capture and its replay are gone from the core.** Not yet run on a game.
+  - **What they were:** the capture wrote a frame's RSX commands and memory to a `.rrc.gz` file when the user asked; the replay booted such a file in place of a game. Its thread waited 10 ms at a time and yielded on the host's clock between frames.
+  - **Why they went:** in the core nothing asked for a capture (standalone RPCS3 has a hotkey for it) and nothing booted one, so both were dead code.
+  - **A branch off the hot path:** the capture's check sat in the FIFO's loop, once for every RSX command the game sends, and in every draw's end. It is gone with it.
+  - **Tests:** a check fails if any of it comes back. Savestates keep their own `rsx_state` serializer, which the capture shared.
+
 - **The GDB server is gone from the core.** It was RPCS3's remote debugger stub, and its setting defaulted to `127.0.0.1:2345`, so every game the core ran opened a listening TCP socket on that port. Its thread then looked for a connection every 5 ms of the host's time for as long as the game ran. A libretro core has no use for a debugger port of its own. A thread the game's code pauses (a breakpoint) still pauses as before; nothing is told of it now. A check fails if the server comes back.
 
 - **`np_handler.h` no longer includes `<condition_variable>`.** Nothing in the core uses one. A check fails if the include comes back.

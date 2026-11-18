@@ -20,10 +20,10 @@
 
 #include "Utilities/Thread.h"
 #include "Utilities/geometry.h"
-#include "Capture/rsx_trace.h"
-#include "Capture/rsx_replay.h"
 
 #include "Emu/Cell/lv2/sys_rsx.h"
+#include "Emu/CPU/CPUThread.h"
+#include "rsx_methods.h"
 #include "Emu/IdManager.h"
 
 #include "Core/RSXDisplay.h"
@@ -35,11 +35,8 @@
 
 #include "NV47/FW/GRAPH_backend.h"
 
-extern atomic_t<bool> g_user_asked_for_frame_capture;
 extern atomic_t<bool> g_disable_frame_limit;
 extern atomic_t<u32> g_libretro_vblank_requests;
-extern rsx::frame_trace_data frame_debug;
-extern rsx::frame_capture_data frame_capture;
 
 namespace rsx
 {
@@ -258,7 +255,6 @@ namespace rsx
 
 		surface_scaling_config_t resolution_scaling_config{};
 
-		void capture_frame(const std::string& name) const;
 		const backend_configuration& get_backend_config() const { return backend_config; }
 
 		const draw_command_processor* draw_processor() const { return &m_draw_processor; }
@@ -348,7 +344,6 @@ namespace rsx
 		vm::ptr<void(u32)> vblank_handler = vm::null;
 		vm::ptr<void(u32)> queue_handler = vm::null;
 		atomic_t<u64> vblank_count{0};
-		bool capture_current_frame = false;
 
 		u64 vblank_at_flip = umax;
 		u64 flip_notification_count = 0;
@@ -523,7 +518,6 @@ namespace rsx
 
 
 		// Program public "get" handlers
-		virtual std::pair<std::string, std::string> get_programs() const { return std::make_pair("", ""); }
 
 		bool is_current_vertex_program_instanced() const { return !!(current_vertex_program.ctrl & RSX_SHADER_CONTROL_INSTANCED_CONSTANTS); }
 

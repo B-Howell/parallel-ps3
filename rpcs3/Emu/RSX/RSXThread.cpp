@@ -4,7 +4,6 @@
 #include "RSXThread.h"
 #include "Common/guest_faults.h"
 
-#include "Capture/rsx_capture.h"
 #include "Common/surface_store.h"
 #include "Core/RSXReservationLock.hpp"
 #include "Core/RSXEngLock.hpp"
@@ -43,11 +42,8 @@ class GSRender;
 
 atomic_t<bool> g_user_asked_for_recording = false;
 atomic_t<bool> g_user_asked_for_screenshot = false;
-atomic_t<bool> g_user_asked_for_frame_capture = false;
 atomic_t<bool> g_disable_frame_limit = false;
 atomic_t<u32> g_libretro_vblank_requests = 0;
-rsx::frame_trace_data frame_debug;
-rsx::frame_capture_data frame_capture;
 
 extern CellGcmOffsetTable offsetTable;
 extern thread_local std::string(*g_tls_log_prefix)();
@@ -70,31 +66,6 @@ bool serialize<rsx::rsx_state>(utils::serial& ar, rsx::rsx_state& o)
 	}
 
 	return ar(o.registers);
-}
-
-template <>
-bool serialize<rsx::frame_capture_data>(utils::serial& ar, rsx::frame_capture_data& o)
-{
-	ar(o.magic, o.version, o.LE_format);
-
-	if (o.magic != rsx::c_fc_magic || o.version != rsx::c_fc_version || o.LE_format != u32{std::endian::little == std::endian::native})
-	{
-		return false;
-	}
-
-	return ar(o.tile_map, o.memory_map, o.memory_data_map, o.display_buffers_map, o.replay_commands, o.reg_state);
-}
-
-template <>
-bool serialize<rsx::frame_capture_data::memory_block_data>(utils::serial& ar, rsx::frame_capture_data::memory_block_data& o)
-{
-	return ar(o.data);
-}
-
-template <>
-bool serialize<rsx::frame_capture_data::replay_command>(utils::serial& ar, rsx::frame_capture_data::replay_command& o)
-{
-	return ar(o.rsx_command, o.memory_state, o.tile_state, o.display_buffer_state);
 }
 
 template <>
@@ -856,8 +827,6 @@ namespace rsx
 
 		m_graphics_state |= pipeline_state::all_dirty;
 
-		g_user_asked_for_frame_capture = false;
-
 		// TODO: Proper context management in the driver
 		s_ctx.rsxthr = this;
 		m_ctx = &s_ctx;
@@ -922,15 +891,6 @@ namespace rsx
 		ar(stereo_enabled, format, aspect, resolution_id, scanline_pitch, gamma, resolution_x, resolution_y, state, scan_mode);
 	}
 
-	void thread::capture_frame(const std::string& name) const
-	{
-		frame_trace_data::draw_state draw_state{};
-
-		draw_state.programs = get_programs();
-		draw_state.name = name;
-		frame_debug.draw_calls.emplace_back(std::move(draw_state));
-	}
-
 	void thread::begin()
 	{
 		if (cond_render_ctrl.hw_cond_active)
@@ -980,11 +940,6 @@ namespace rsx
 
 	void thread::end()
 	{
-		if (capture_current_frame)
-		{
-			capture::capture_draw_memory(this);
-		}
-
 		in_begin_end = false;
 		m_frame_stats.draw_calls++;
 
@@ -997,12 +952,6 @@ namespace rsx
 		m_draw_processor.clear_push_buffers();
 
 		zcull_ctrl->on_draw();
-
-		if (capture_current_frame)
-		{
-			const u32 element_count = rsx::method_registers.current_draw_clause.get_elements_count();
-			capture_frame(fmt::format("Draw %s %d", rsx::method_registers.current_draw_clause.primitive, element_count));
-		}
 	}
 
 	void thread::execute_nop_draw()
@@ -3394,58 +3343,6 @@ namespace rsx
 
 	void thread::on_frame_end(u32 buffer, bool forced)
 	{
-		bool pause_emulator = false;
-
-		// Marks the end of a frame scope GPU-side
-		if (g_user_asked_for_frame_capture.exchange(false) && !capture_current_frame)
-		{
-			capture_current_frame = true;
-			frame_debug.reset();
-			frame_capture.reset();
-
-			// random number just to jumpstart the size
-			frame_capture.replay_commands.reserve(8000);
-
-			// capture first tile state with nop cmd
-			rsx::frame_capture_data::replay_command replay_cmd;
-			replay_cmd.rsx_command = std::make_pair(NV4097_NO_OPERATION, 0);
-			frame_capture.replay_commands.push_back(std::move(replay_cmd));
-			capture::capture_display_tile_state(this, frame_capture.replay_commands.back());
-		}
-		else if (capture_current_frame)
-		{
-			capture_current_frame = false;
-
-			const std::string file_path = fs::get_config_dir() + "captures/" + (Emu.GetTitleID().empty() ? Emu.GetTitle() : Emu.GetTitleID()) + "_" + date_time::current_time_narrow() + "_capture.rrc.gz";
-
-			fs::pending_file temp(file_path);
-
-			utils::serial save_manager;
-
-			if (temp.file)
-			{
-				save_manager.m_file_handler = make_compressed_serialization_file_handler(temp.file);
-				save_manager(frame_capture);
-
-				save_manager.m_file_handler->finalize(save_manager);
-
-				if (temp.commit(false))
-				{
-					rsx_log.success("Capture successful: %s", file_path);
-					frame_capture.reset();
-					pause_emulator = true;
-				}
-				else
-				{
-					rsx_log.error("Capture failed: %s (%s)", file_path, fs::g_tls_error);
-				}
-			}
-			else
-			{
-				rsx_log.fatal("Capture failed: %s (%s)", file_path, fs::g_tls_error);
-			}
-		}
-
 		if (zcull_ctrl->has_pending())
 		{
 			// NOTE: This is a workaround for buggy games.
@@ -3491,15 +3388,6 @@ namespace rsx
 			{
 				rsx_log.error("Frame skip is not compatible with this application");
 			}
-		}
-
-		if (pause_emulator)
-		{
-			Emu.Pause();
-
-			// The pause taken in: a change of state or a frame, no clock
-			const u32 events = g_libretro_events.load();
-			g_libretro_events.wait(events);
 		}
 
 		// Reset current stats

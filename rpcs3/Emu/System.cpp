@@ -29,7 +29,6 @@
 
 #include "Emu/title.h"
 #include "Emu/IdManager.h"
-#include "Emu/RSX/Capture/rsx_replay.h"
 #include "Emu/RSX/Overlays/overlay_message.h"
 
 #include "Loader/PSF.h"
@@ -856,134 +855,6 @@ void Emulator::SetUsr(const std::string& user)
 
 	m_usrid = id;
 	m_usr = user;
-}
-
-bool Emulator::BootRsxCapture(const std::string& path)
-{
-	if (m_state != system_state::stopped || m_restrict_emu_state_change)
-	{
-		return false;
-	}
-
-	m_state = system_state::loading;
-	state_changed();
-
-	fs::file in_file(path);
-
-	if (!in_file)
-	{
-		m_state = system_state::stopped;
-		state_changed();
-		return false;
-	}
-
-	std::unique_ptr<rsx::frame_capture_data> frame = std::make_unique<rsx::frame_capture_data>();
-	utils::serial load;
-	load.set_reading_state();
-
- 	const std::string lower = fmt::to_lower(path);
-
-	if (lower.ends_with(".gz") || lower.ends_with(".zst"))
-	{
-		if (lower.ends_with(".gz"))
-		{
-			load.m_file_handler = make_compressed_serialization_file_handler(std::move(in_file));
-		}
-		else
-		{
-			load.m_file_handler = make_compressed_zstd_serialization_file_handler(std::move(in_file));
-		}
-
-		// Forcefully read some data to check validity
-		load.pop<uchar>();
-		load.pos -= sizeof(uchar);
-
-		if (load.data.empty())
-		{
-			m_state = system_state::stopped;
-			state_changed();
-			sys_log.error("Failed to unzip rsx capture file!");
-			return false;
-		}
-	}
-	else
-	{
-		load.m_file_handler = make_uncompressed_serialization_file_handler(std::move(in_file));
-	}
-
-	load(*frame);
-
-	if (frame->magic != rsx::c_fc_magic)
-	{
-		m_state = system_state::stopped;
-		state_changed();
-		sys_log.error("Invalid rsx capture file!");
-		return false;
-	}
-
-	if (frame->version != rsx::c_fc_version)
-	{
-		m_state = system_state::stopped;
-		state_changed();
-		sys_log.error("Rsx capture file version not supported! Expected %d, found %d", +rsx::c_fc_version, frame->version);
-		return false;
-	}
-
-	if (frame->LE_format != u32{std::endian::little == std::endian::native})
-	{
-		m_state = system_state::stopped;
-		state_changed();
-
-		static constexpr std::string_view machines[2]{"Big-Endian", "Little-Endian"};
-
-		sys_log.error("Rsx capture byte endianness not supported! Expected %s format, found %s format"
-			, machines[frame->LE_format ^ 1], machines[frame->LE_format]);
-
-		return false;
-	}
-
-	m_path.clear();
-	m_path_old.clear();
-	m_path_original.clear();
-	m_path_real.clear();
-	m_title_id.clear();
-	m_title.clear();
-	m_localized_title.clear();
-	m_app_version.clear();
-	m_hash.clear();
-	m_cat.clear();
-	m_dir.clear();
-	m_sfo_dir.clear();
-	m_ar.reset();
-
-	Init();
-	g_cfg.video.disable_on_disk_shader_cache.set(true);
-
-	vm::init();
-	vm::reserve_map(vm::main, 0x10000, 0x1FFF0000, vm::page_64k_size);
-	g_fxo->init(false);
-
-	// Initialize progress dialog
-	g_fxo->init<named_thread<progress_dialog_server>>();
-
-	// PS3 'executable'
-	m_state = system_state::ready;
-	state_changed();
-	g_emu_callbacks.on_ready();
-
-	g_emu_callbacks.init_gs_render(nullptr);
-	g_emu_callbacks.init_kb_handler();
-	g_emu_callbacks.init_mouse_handler();
-	g_emu_callbacks.init_pad_handler("");
-
-	g_emu_callbacks.on_run(false);
-	m_state = system_state::starting;
-	state_changed();
-	m_state.notify_all();
-
-	ensure(g_fxo->init<named_thread<rsx::rsx_replay_thread>>("RSX Replay", std::move(frame)));
-
-	return true;
 }
 
 game_boot_result Emulator::GetElfPathFromDir(std::string& elf_path, const std::string& path)
@@ -2874,11 +2745,6 @@ void Emulator::RunPPU()
 		FinalizeRunRequest();
 	}
 
-	if (auto thr = g_fxo->try_get<named_thread<rsx::rsx_replay_thread>>())
-	{
-		thr->state -= cpu_flag::stop;
-		thr->state.notify_one();
-	}
 }
 
 void Emulator::FixGuestTime()
