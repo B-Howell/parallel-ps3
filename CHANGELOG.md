@@ -4,6 +4,8 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **libretro-common's rslc synced from RetroArch: the lexer tells what a byte is with one table load.** Each test of whether a byte starts or continues an identifier, is whitespace, or can change how a skipped line reads was a chain of compares, run on every byte of a program's source. A 256-entry class table now answers each with one load. On `test_shader_corpus`'s 1774 stages it went from 0.156 to 0.141 ms a stage, with 2.5% fewer instructions; most of the time saved is branches the compare chains mispredicted. The SPIR-V is the same word for word. A decompiled program now compiles about 22% faster than this morning (0.181 ms). The fixed and known-module tables are unchanged.
+
 - **libretro-common's rslc synced from RetroArch: a skipped line runs straight to what can change how it reads.** The skip of an inactive branch (0405) called the lexer's whitespace skipping for every character it passed. Once a line is under way, only a newline, a comment, a splice or a string matters, so it now runs to the next of those. On `test_shader_corpus`'s 1774 stages it went from 0.162 to 0.155 ms a stage, 12% fewer instructions, and the SPIR-V is the same word for word. A decompiled program now compiles about 15% faster than this morning (0.181 ms). The fixed and known-module tables are unchanged.
 
 - **libretro-common's rslc synced from RetroArch: an inactive `#if` branch is skipped to its next directive without being lexed.**
