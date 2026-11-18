@@ -4,6 +4,8 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **`libretro_core.cpp` and `libretro_video.h` no longer include `<mutex>` or `<condition_variable>`.** Nothing in them, or in the files that include `libretro_video.h`, used either. A check fails if they come back.
+
 - **The RSX's "Driver Wake-Up Delay" core option waits in the game's time, without a spin.** Not yet run on a game; it is off by default.
   - **Before:** it slept on the host's clock in the host scheduler's quantum, then yielded, then busy-waited 100 at a time until the host's clock said the delay had passed.
   - **Now:** it waits that many microseconds of the game's time at retro_run's pace (`libretro_guest_wait_as_host`, as the hardware thread switch's cost does), cut short by a change of the RSX thread's state.

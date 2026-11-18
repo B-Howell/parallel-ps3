@@ -5,8 +5,6 @@
 
 #include <functional>
 #include <atomic>
-#include <condition_variable>
-#include <mutex>
 
 // Initialize libretro video subsystem
 bool libretro_video_init(retro_hw_get_current_framebuffer_t get_fb, retro_hw_get_proc_address_t get_proc,
