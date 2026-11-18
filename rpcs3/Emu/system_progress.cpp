@@ -65,6 +65,14 @@ void progress_dialog_server::operator()()
 		return whole_state;
 	};
 
+	// Until the next of retro_run's frames, or a change of the emulator's
+	// state (a stop among them)
+	const auto next_frame = []()
+	{
+		const u32 events = g_libretro_events.load();
+		g_libretro_events.wait(events);
+	};
+
 	const auto create_native_dialog = [&native_dlg](const std::string& text, bool* show_overlay_message)
 	{
 		if (const auto renderer = rsx::get_current_renderer())
@@ -135,7 +143,8 @@ void progress_dialog_server::operator()()
 				}
 			}
 
-			thread_ctrl::wait_for(5000);
+			// A look a frame: retro_run's (g_libretro_events), no clock
+			next_frame();
 			text0 = g_progr_text;
 		}
 
@@ -192,14 +201,15 @@ void progress_dialog_server::operator()()
 		usz time_left_queue_idx = 0;
 
 		// Update progress
-		for (u64 sleep_until = get_system_time(), sleep_for = 500;
+		// An update a frame, as the dialog is drawn: retro_run's, no clock
+		for (;
 			!g_system_progress_stopping && thread_ctrl::state() != thread_state::aborting;
-			thread_ctrl::wait_until(&sleep_until, std::exchange(sleep_for, 500)))
+			next_frame())
 		{
 			const auto [text_new, ftotal_new, fdone_new, ftotal_bits_new, fknown_bits_new, ptotal_new, pdone_new] = get_state();
 
-			// Force-update every 20 seconds to update remaining time
-			if (wait_no_update_count == 100u * 20 || ftotal != ftotal_new || fdone != fdone_new || fknown_bits != fknown_bits_new
+			// Force-update every 20 seconds (at 60 frames) to update remaining time
+			if (wait_no_update_count == 60u * 20 || ftotal != ftotal_new || fdone != fdone_new || fknown_bits != fknown_bits_new
 				|| ftotal_bits != ftotal_bits_new || ptotal != ptotal_new || pdone != pdone_new || text_new != text1)
 			{
 				wait_no_update_count = 0;
@@ -255,7 +265,6 @@ void progress_dialog_server::operator()()
 						}
 					}
 
-					sleep_for = 10000;
 					continue;
 				}
 
@@ -386,7 +395,6 @@ void progress_dialog_server::operator()()
 				break;
 			}
 
-			sleep_for = 10'000;
 			wait_no_update_count++;
 		}
 

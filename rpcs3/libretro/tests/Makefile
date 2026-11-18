@@ -1095,6 +1095,8 @@ check: all
 	@if grep -nE "shared_mutex|reader_lock|lock_guard" ../../Emu/Cell/PPUThread.cpp; then echo "PPU: a lock is back"; exit 1; else echo "PPU: no lock"; fi
 	@# The NetStart dialog's delay is the game's frames (libretro_wait_frames), not the host's clock
 	@if grep -nE "wait_for\(|sleep_for" ../../Emu/Cell/Modules/cellNetCtl.cpp; then echo "cellNetCtl: a sleep on the host's clock is back"; exit 1; else echo "cellNetCtl: paced by frames"; fi
+	@# The progress dialog, the pause message and closing the home menu after a load go by the game's frames, not the host's clock
+	@if grep -nE "thread_ctrl::wait_for\(|thread_ctrl::wait_until\(|sleep_for" ../../Emu/system_progress.cpp || grep -nE "sleep_for\(2s\)|wait_for\(33.000\)" ../../Emu/System.cpp; then echo "progress / pause / home menu: a sleep on the host's clock is back"; exit 1; else echo "progress / pause / home menu: paced by frames"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

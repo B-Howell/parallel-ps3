@@ -2999,7 +2999,9 @@ void Emulator::FinalizeRunRequest()
 		{
 			thread_base::set_name("Close Home Menu");
 
-			std::this_thread::sleep_for(2s);
+			// Two seconds at 60 frames, by the game's frames, not the host's
+			// clock
+			libretro_wait_frames(120);
 
 			CallFromMainThread([this]()
 			{
@@ -3104,9 +3106,14 @@ bool Emulator::Pause(bool freeze_emulation, bool show_resume_message)
 		{
 			while (retro_atomic_load_acquire_int(msg_ref.get()) && GetStatus(false) == status)
 			{
-				// Refresh Native UI
+				// Refresh Native UI: every other frame (retro_run's), no clock
 				rsx::set_native_ui_flip();
-				thread_ctrl::wait_for(33'000);
+				const u32 events = g_libretro_events.load();
+				g_libretro_events.wait(events);
+				if (!retro_atomic_load_acquire_int(msg_ref.get()) || GetStatus(false) != status)
+					break;
+				const u32 events2 = g_libretro_events.load();
+				g_libretro_events.wait(events2);
 			}
 
 			retro_atomic_store_release_int(msg_ref.get(), 0);

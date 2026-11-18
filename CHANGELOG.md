@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The progress dialog, the pause message and the home menu's close after a load go by the game's frames.** Not yet run on a game.
+  - **The progress dialog's thread:** it slept 5 ms between looks while idle and 0.5 to 10 ms while showing progress, for the whole session. It now looks once a frame, waiting untimed on `g_libretro_events` (a retro_run, or a change of the emulator's state). The forced refresh of the time left comes every 1200 frames, 20 seconds at 60. The time-left estimate itself still reads the host's clock, since it is a time shown to the player.
+  - **The pause message:** its native-UI refresh slept 33 ms a turn. It now refreshes every other frame.
+  - **Closing the home menu after a savestate load:** this slept two seconds. It now waits 120 frames (`libretro_wait_frames`).
+  - **Tests:** `libretro_wait_frames` is tested in `test_emu_waits`. These three loops have no test of their own, since they need a booted game; a check fails if any of them sleeps on the host's clock again.
+
 - **The NetStart dialog's delay is counted in the game's frames.** Not yet run on a game.
   - **Before:** `cellNetCtlNetStartDialogLoadAsync` sent its loaded and finished events from a thread that slept half a second on the host's clock first. Diva F 2nd needs that delay, because it registers its sysutil callback only after the call.
   - **Now:** the thread waits 30 of retro_run's frames, half a second at 60, through the new `libretro_wait_frames` (System.h). It is a wait on `g_libretro_events`, untimed, and ends early if the emulator stops. A paused, fast-forwarded or slowed-down game takes the dialog along with it.
