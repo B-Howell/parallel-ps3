@@ -4,6 +4,8 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The GDB server is gone from the core.** It was RPCS3's remote debugger stub, and its setting defaulted to `127.0.0.1:2345`, so every game the core ran opened a listening TCP socket on that port. Its thread then looked for a connection every 5 ms of the host's time for as long as the game ran. A libretro core has no use for a debugger port of its own. A thread the game's code pauses (a breakpoint) still pauses as before; nothing is told of it now. A check fails if the server comes back.
+
 - **`np_handler.h` no longer includes `<condition_variable>`.** Nothing in the core uses one. A check fails if the include comes back.
 
 - **Two waits on the host's clock go by retro_run's frames instead.** Not yet run on a game.

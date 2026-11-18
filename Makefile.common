@@ -442,7 +442,6 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/rpcs3/Emu/Cell/lv2/sys_uart.cpp \
 	$(CORE_DIR)/rpcs3/Emu/Cell/lv2/sys_usbd.cpp \
 	$(CORE_DIR)/rpcs3/Emu/Cell/lv2/sys_vm.cpp \
-	$(CORE_DIR)/rpcs3/Emu/GDB.cpp \
 	$(CORE_DIR)/rpcs3/Emu/IPC_config.cpp \
 	$(CORE_DIR)/rpcs3/Emu/IPC_socket.cpp \
 	$(CORE_DIR)/rpcs3/Emu/IdManager.cpp \

@@ -12,7 +12,6 @@ add_library(rpcs3_emu STATIC
     system_utils.cpp
     vfs_config.cpp
     VFS.cpp
-    GDB.cpp
     title.cpp
     IPC_config.cpp
     IPC_socket.cpp

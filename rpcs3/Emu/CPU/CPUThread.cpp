@@ -7,7 +7,6 @@
 #include "Emu/Memory/vm_locking.h"
 #include "Emu/Memory/vm_reservation.h"
 #include "Emu/IdManager.h"
-#include "Emu/GDB.h"
 #include "Emu/Cell/lv2/sys_spu.h"
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/SPUThread.h"
@@ -1035,11 +1034,6 @@ bool cpu_thread::check_state() noexcept
 
 		if (state0 & ((cpu_can_stop ? cpu_flag::suspend : cpu_flag::dbg_pause) + cpu_flag::dbg_global_pause + cpu_flag::dbg_pause))
 		{
-			if (state0 & cpu_flag::dbg_pause)
-			{
-				g_fxo->get<gdb_server>().pause_from(this);
-			}
-
 			cpu_wait(state1);
 		}
 		else
