@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Closing content hung, from the progress dialog's patch earlier today ("Progress dialog, pause message, home menu close: the game's frames").** Reported on Windows with the hang's backtraces; the fix is not yet run on a game.
+  - **What hung:** at a close, `Emulator::Kill`'s join thread joins every thread the emulator keeps, telling each to end through the thread's own word and waiting for it. The progress dialog's server now waited for retro_run's frames alone. retro_run has stopped by then: the frontend's thread is in `stop_emulation`, waiting for the join. So nothing woke the server and the join waited for it for ever. The backtraces show it so: the frontend's thread in `stop_emulation`, the join thread in `thread_base::join`, the server parked on the frames.
+  - **Now:** a frame wait on one of the core's named threads goes through `libretro_wait_frame` (System.cpp). It wakes for a frame, a change of the emulator's state, or the thread being told to end, as the overlays' waits already did (`overlay_wait`). It returns false for the last two, and `libretro_wait_frames` stops there too.
+  - **What uses it:** the progress dialog's server waits for frames through it, and its wait for the renderer to start also wakes when it is told to end. So does the pause message's thread from the same patch, which the next pause's reset of it, or a close, joins in the same way.
+  - **Tests:** `test_emu_waits` joins a named thread waiting for frames with no retro_run at all, as at a close. With the frame wait alone it never ends, and the test fails within seconds instead of hanging. A check also fails if either thread goes back to waiting on the frames alone.
+
 - **Three things the game sees now go by the game's own clock instead of the host's.** Not yet run on a game.
   - **`cellGcmGetLastFlipTime`:** this hands the game the time of the last flip, and it was the host's microseconds. Games set it against `sys_time_get_system_time`, which in this core is the guest's clock that retro_run drives (the VBLANK's time already is). The two drifted apart with every frontend pause, fast-forward or slow frame. It is now the guest's time, as `sys_time_get_system_time` gives it, a second earlier as before (now floored at zero, since the guest's clock starts near it).
   - **The AV hardware's HDMI events:** `sys_uart` timed these 20 ms apart on the host's clock. They are now 20 ms of the guest's time, and its thread waits for that much of it.

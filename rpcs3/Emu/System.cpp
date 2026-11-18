@@ -2961,14 +2961,16 @@ bool Emulator::Pause(bool freeze_emulation, bool show_resume_message)
 		{
 			while (retro_atomic_load_acquire_int(msg_ref.get()) && GetStatus(false) == status)
 			{
-				// Refresh Native UI: every other frame (retro_run's), no clock
+				// Refresh Native UI: every other frame (retro_run's), no clock;
+				// a join of this thread (the next pause's reset of it, or a
+				// close) wakes it too
 				rsx::set_native_ui_flip();
-				const u32 events = g_libretro_events.load();
-				g_libretro_events.wait(events);
+				if (!libretro_wait_frame())
+					break;
 				if (!retro_atomic_load_acquire_int(msg_ref.get()) || GetStatus(false) != status)
 					break;
-				const u32 events2 = g_libretro_events.load();
-				g_libretro_events.wait(events2);
+				if (!libretro_wait_frame())
+					break;
 			}
 
 			retro_atomic_store_release_int(msg_ref.get(), 0);
@@ -4442,3 +4444,23 @@ void Emulator::SaveSettings(std::string_view settings, const std::string& title_
 }
 
 Emulator Emu;
+
+bool libretro_wait_frame()
+{
+	const u32 events = g_libretro_events.load();
+	const bool named = thread_ctrl::get_current() != nullptr;
+
+	if (Emu.IsStopped() || (named && thread_ctrl::state() == thread_state::aborting))
+	{
+		return false;
+	}
+
+	if (named)
+	{
+		thread_ctrl::wait_on(g_libretro_events, events);
+		return !(thread_ctrl::state() == thread_state::aborting);
+	}
+
+	g_libretro_events.wait(events);
+	return true;
+}

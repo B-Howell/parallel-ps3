@@ -16,9 +16,11 @@
 #include "Emu/System.h"
 #include "Emu/NP/np_contexts.h"
 #include "Emu/Cell/timers.hpp"
+#include "Utilities/Thread.h"
 
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <thread>
 #include <memory>
@@ -151,6 +153,42 @@ int main()
 		waiter.join();
 		std::printf("test_emu_waits: a wait of 30 frames done after %d retro_runs\n", runs);
 		CHECK(runs == 30);
+	}
+
+	// A named thread waiting for frames (libretro_wait_frame, as the progress
+	// dialog's server does) is joined with no retro_run at all, as at a close:
+	// the join tells it to end through its own word, and that wakes it. A wait
+	// on the frames alone never ended there, and the close hung
+	{
+		std::atomic<int> looks{0};
+		auto* waiter = new named_thread("Frame Waiter"sv, [&]
+		{
+			while (libretro_wait_frame())
+				looks++;
+		});
+		for (int i = 0; i < 100000 && looks < 1; i++)
+		{
+			libretro_event();
+			std::this_thread::yield();
+		}
+		CHECK(looks >= 1); // it waits for frames, and a frame moves it
+		std::atomic<bool> joined{false};
+		std::thread joiner([&]
+		{
+			*waiter = thread_state::finished;
+			joined = true;
+		});
+		for (int i = 0; i < 5'000'000 && !joined; i++)
+			std::this_thread::yield();
+		CHECK(joined);
+		if (!joined)
+		{
+			std::fprintf(stderr, "test_emu_waits: the join of a thread waiting for a frame never ended\n");
+			std::_Exit(1);
+		}
+		joiner.join();
+		delete waiter;
+		std::printf("test_emu_waits: a thread waiting for a frame is joined with no retro_run\n");
 	}
 
 	// An NP transaction (np_contexts.cpp): no lock and no thread - finished

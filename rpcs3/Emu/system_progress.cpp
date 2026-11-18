@@ -65,12 +65,12 @@ void progress_dialog_server::operator()()
 		return whole_state;
 	};
 
-	// Until the next of retro_run's frames, or a change of the emulator's
-	// state (a stop among them)
+	// Until the next of retro_run's frames, a change of the emulator's state
+	// (a stop among them), or this thread being told to end: a close joins
+	// it after retro_run has stopped, so a frame alone would never come
 	const auto next_frame = []()
 	{
-		const u32 events = g_libretro_events.load();
-		g_libretro_events.wait(events);
+		static_cast<void>(libretro_wait_frame());
 	};
 
 	const auto create_native_dialog = [&native_dlg](const std::string& text, bool* show_overlay_message)
@@ -81,9 +81,20 @@ void progress_dialog_server::operator()()
 			// Wait for init to complete within 300 of retro_run's frames (5 seconds of the game's
 			// time), as it is set or a frame passes, never the host's clock. Abort just in case
 			// we have hardware/driver issues.
-			for (u32 frames = 0; frames < 300 && !renderer->is_initialized && !Emu.IsStopped(); frames++)
+			for (u32 frames = 0; frames < 300 && !renderer->is_initialized && !Emu.IsStopped() && thread_ctrl::state() != thread_state::aborting; frames++)
 			{
-				libretro_wait_on(renderer->is_initialized, 0u);
+				const u32 events = g_libretro_events.load();
+
+				if (renderer->is_initialized)
+				{
+					break;
+				}
+
+				thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+				{
+					list.template set<0>(renderer->is_initialized, 0u);
+					list.template set<1>(g_libretro_events, events);
+				});
 			}
 
 			auto manager = g_fxo->try_get<rsx::overlays::display_manager>();

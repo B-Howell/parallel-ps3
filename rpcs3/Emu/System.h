@@ -482,22 +482,26 @@ public:
 
 extern Emulator Emu;
 
+// One of retro_run's frames, or a change of the emulator's state - and on
+// one of the core's named threads, its being told to end (a join at close
+// wakes it through the thread's own word: retro_run has stopped by then, so
+// a wait for a frame alone never ends). False when the emulator stopped or
+// this thread is told to end (System.cpp)
+bool libretro_wait_frame();
+
 // A host thread's wait for @frames of the game's time: retro_run's frames
 // (g_libretro_events), never the host's clock. False when the emulator
-// stopped first. Where standalone RPCS3 sleeps some milliseconds to let
-// the game get on, this lets it get on that many frames
+// stopped first, or the thread is told to end. Where standalone RPCS3
+// sleeps some milliseconds to let the game get on, this lets it get on that
+// many frames
 inline bool libretro_wait_frames(u32 frames)
 {
 	for (u32 n = 0; n < frames; n++)
 	{
-		const u32 events = g_libretro_events.load();
-
-		if (Emu.IsStopped())
+		if (!libretro_wait_frame())
 		{
 			return false;
 		}
-
-		g_libretro_events.wait(events);
 	}
 
 	return !Emu.IsStopped();
