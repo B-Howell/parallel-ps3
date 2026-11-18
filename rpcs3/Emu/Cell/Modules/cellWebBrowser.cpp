@@ -13,7 +13,9 @@ struct browser_info
 	vm::ptr<CellWebBrowserSystemCallback> system_cb{};
 	vm::ptr<void> userData{};
 
-	shared_mutex mutex;
+	browser_info() = default;
+	browser_info(const browser_info&) = delete;
+	browser_info& operator=(const browser_info&) = delete;
 };
 
 error_code cellWebBrowserActivate()

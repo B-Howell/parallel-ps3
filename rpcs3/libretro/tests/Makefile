@@ -1089,6 +1089,8 @@ check: all
 	@if grep -nE "std::to_string\((optimal_group_size|cs_wave_x|cs_wave_y)\)" ../../Emu/RSX/VK/VKCompute.h ../../Emu/RSX/VK/VKCompute.cpp ../../Emu/RSX/VK/VKResolveHelper.cpp; then echo "Vulkan compute: a GPU's work group size written into the source again - leave it to local_size_x_id"; exit 1; else echo "Vulkan compute: the work group size is a specialization constant"; fi
 	@# The driver's pipelines are kept between boots: the renderer hands the pipeline cache its file
 	@if ! grep -q "keep_pipeline_cache(" ../../Emu/RSX/VK/VKGSRender.cpp; then echo "Vulkan: the pipeline cache is no longer kept between boots"; exit 1; else echo "Vulkan: the pipeline cache is kept between boots"; fi
+	@# Mutexes nothing took are gone and do not come back
+	@if grep -nE "mutex" ../../Emu/Cell/Modules/cellWebBrowser.cpp ../../Emu/Cell/Modules/cellRudp.cpp ../../Emu/Cell/Modules/cellRec.cpp ../../Emu/Io/camera_handler_base.h || grep -nE "shared_mutex" ../../Emu/Cell/Modules/cellFs.cpp; then echo "unused mutexes: one is back"; exit 1; else echo "unused mutexes: gone"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

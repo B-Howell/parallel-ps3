@@ -266,8 +266,6 @@ struct rec_info
 	atomic_t<u64> pause_time_total = 0;
 	atomic_t<u64> recording_time_total = 0;
 
-	shared_mutex mutex;
-
 	void set_video_params(s32 video_format);
 	void set_audio_params(s32 audio_format);
 

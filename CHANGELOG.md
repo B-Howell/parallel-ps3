@@ -4,6 +4,8 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Five mutexes nothing took are gone.** These were in cellWebBrowser's, cellRudp's, cellRec's and cellFs's AIO state, and the camera handler's base. Not one of them was locked anywhere. The state objects keep their copies deleted, as the object table asks. Nothing behaves differently, so there is no test of its own; a check fails if any of them comes back.
+
 - **The Vulkan driver's pipelines are kept between boots.** Not yet run on a game, and not yet run on a driver that keeps pipelines in its cache: the software driver the tests run on keeps none.
   - **Before:** the pipeline cache was made empty at every boot and never written. Every pipeline a game had used was compiled by the driver again each session, at the first draw that needed it. This is the costly part of a shader hitch: milliseconds to tens of milliseconds, against rslc's 0.24 ms average for a stage.
   - **Now:** the cache is kept beside the game's shader cache (`shaders_cache/pipelines/vulkan/v1.95/vk_pipeline_cache.bin`). It is read once at boot and merged into the cache the compilers use, before the shader cache's pipelines are made. As the compiler is destroyed, it is written whole and swapped in (`fs::pending_file`).

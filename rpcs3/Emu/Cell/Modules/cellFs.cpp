@@ -942,7 +942,9 @@ struct fs_aio_manager
 {
 	std::shared_ptr<fs_aio_thread> thread;
 
-	shared_mutex mutex;
+	fs_aio_manager() = default;
+	fs_aio_manager(const fs_aio_manager&) = delete;
+	fs_aio_manager& operator=(const fs_aio_manager&) = delete;
 };
 
 s32 cellFsAioInit(vm::cptr<char> mount_point)

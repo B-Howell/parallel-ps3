@@ -67,7 +67,9 @@ struct rudp_info
 	vm::ptr<CellRudpEventHandler> handler = vm::null;
 	vm::ptr<void> handler_arg{};
 
-	shared_mutex mutex;
+	rudp_info() = default;
+	rudp_info(const rudp_info&) = delete;
+	rudp_info& operator=(const rudp_info&) = delete;
 };
 
 error_code cellRudpInit(vm::ptr<CellRudpAllocator> allocator)

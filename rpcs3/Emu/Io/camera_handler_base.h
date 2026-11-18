@@ -3,8 +3,6 @@
 #include <retro_atomic.h>
 #include "util/types.hpp"
 
-#include <mutex>
-
 class camera_handler_base
 {
 public:
@@ -48,7 +46,6 @@ public:
 	u32 frame_rate() const { return m_frame_rate; }
 
 protected:
-	std::mutex m_mutex;
 	bool m_mirrored = false;
 	s32 m_format = 2; // CELL_CAMERA_RAW8
 	u32 m_bytesize = 0;
