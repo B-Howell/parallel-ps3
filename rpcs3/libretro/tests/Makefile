@@ -879,7 +879,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 5
+LOCK_GUARD_MAX := 3
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -1081,6 +1081,8 @@ check: all
 	@if awk '/class device_manager final/,/^\tstatic device_manager& get_device_manager/' ../../../Utilities/File.cpp | grep -nE "mutex|lock_guard|reader_lock" || grep -nE "mutex|lock_guard" ../../Emu/RSX/GL/glutils/program.h ../../Emu/RSX/GL/glutils/program.cpp; then echo "virtual devices / GL shaders: a lock is back"; exit 1; else echo "virtual devices / GL shaders: no lock"; fi
 	@# The LLVM JIT's null functions are a table published whole: no lock
 	@if grep -nE "null_mtx|lock_guard" ../../../Utilities/JITLLVM.cpp; then echo "LLVM null functions: a lock is back"; exit 1; else echo "LLVM null functions: no lock"; fi
+	@# The guest's process-shared objects: a table read in place, changed by the HLE thread alone: no lock
+	@if grep -nE "mutex|lock_guard|reader_lock" ../../Emu/IPC.h; then echo "IPC objects: a lock is back"; exit 1; else echo "IPC objects: no lock"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The guest's process-shared objects take no lock.** Not yet run on a game.
+  - These are the lv2 mutexes, condition variables, semaphores, event queues and shared memory a game creates with an IPC key. They were a map under a shared mutex, looked up and added to by the game's PPU threads.
+  - The table is now read in place: a lookup enters, finds and leaves. The HLE thread alone changes it (`hle_call`). It copies the table, changes the copy and publishes it, and the table replaced is retired (`retro_retire`).
+  - An object being made for a key is marked so in the table. It is still made on its caller's thread, as before. Another thread asking for the same key meanwhile waits untimed for it, and counts as waiting, as a PPU waiting on the HLE thread does.
+  - A key already there is found with no call to the HLE thread.
+  - `std::lock_guard` count 3. Those left are `s_cpu_lock` (suspend_all, kept) and the JIT allocator's lock, which is on macOS only. A check fails if a lock comes back in `IPC.h`. `test_held_queues` has four threads ask at once for the same 64 keys, with an object that is slow to make. It checks that each object is made once and is the same to all, and that removing and re-making a key works. It fails on a mutant that ignores an object being made.
+
 - **The LLVM JIT's null functions take no lock.** Not yet run on a game.
   - A name a compiled module calls that nothing placed gets a stand-in function that reports it if called. These were a map under a mutex, taken on every such name as each object was linked, by the PPU and SPU compiler threads at once.
   - The names are now a table published whole and never changed once published. A new name copies the table, adds itself and publishes it by compare-and-swap. The table replaced is retired (`retro_retire`) and freed once no lookup is in it. A thread that loses the race to another giving the same name a function takes that one, and its own few bytes of code are never called.

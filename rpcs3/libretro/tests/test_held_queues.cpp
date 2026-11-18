@@ -36,6 +36,10 @@
 //   or removed when not there fails; and one removed is let go once no
 //   lookup holds the table it was in.
 //
+// - the guest's process-shared objects by key (Emu/IPC.h): four threads
+//   asking at once for the same keys get one object per key, made once,
+//   the same to all; one removed is gone, and the key can be made again.
+//
 // sys_timer.cpp is compiled into this test (the timer thread is private to
 // it); the rest is the core's own objects and archives, the same link as
 // the core's with this main. Built by `make check`.
@@ -46,6 +50,7 @@
 #include "Emu/Cell/Modules/cellVoice.h"
 #include "Emu/NP/np_dnshook.h"
 #include "Emu/NP/ip_address.h"
+#include "Emu/IPC.h"
 #include "Emu/RSX/Overlays/overlay_message.h"
 #include "Emu/RSX/Overlays/overlays.h"
 #include "Emu/RSX/VK/vkutils/memory.h"
@@ -1053,6 +1058,64 @@ int main()
 
 		std::printf("test_held_queues: virtual devices: %llu found while changed, %llu wrong\n", static_cast<unsigned long long>(found.load()), static_cast<unsigned long long>(wrong.load()));
 		CHECK(wrong == 0);
+	}
+
+	// The guest's process-shared objects by key
+	{
+		struct shared_obj { u64 key; };
+		auto ipc = std::make_unique<ipc_manager<shared_obj, u64>>();
+
+		constexpr u32 threads = 4, keys = 64;
+		std::atomic<u32> made[keys]{};
+		shared_ptr<shared_obj> seen[threads][keys];
+		retro_atomic_int_t go;
+		retro_atomic_int_init(&go, 0);
+		std::thread askers[threads];
+		for (u32 t = 0; t < threads; t++)
+		{
+			askers[t] = std::thread([&, t]()
+			{
+				while (!retro_atomic_load_acquire_int(&go))
+					std::this_thread::yield();
+				for (u32 k = 0; k < keys; k++)
+				{
+					seen[t][k] = ipc->add(k + 1, [&]()
+					{
+						made[k]++;
+						// Slow to make, so the others ask while it is made
+						for (u32 i = 0; i < 2000; i++)
+							std::this_thread::yield();
+						return make_shared<shared_obj>(shared_obj{k + 1});
+					}).second;
+				}
+			});
+		}
+		retro_atomic_store_release_int(&go, 1);
+		for (auto& asker : askers)
+			asker.join();
+
+		u32 made_twice = 0, differ = 0;
+		for (u32 k = 0; k < keys; k++)
+		{
+			made_twice += made[k] != 1;
+			for (u32 t = 0; t < threads; t++)
+				differ += !seen[t][k] || seen[t][k] != seen[0][k] || seen[t][k]->key != k + 1;
+			CHECK(ipc->check(k + 1) && ipc->get(k + 1) == seen[0][k]);
+		}
+		std::printf("test_held_queues: shared objects: %u keys from %u threads, %u made more than once, %u differ\n", keys, threads, made_twice, differ);
+		CHECK(made_twice == 0 && differ == 0);
+
+		// Not peeked: there already, so nothing is given back
+		CHECK(!ipc->add(1, [&]() { return make_shared<shared_obj>(); }, false).second);
+
+		// Removed: gone, and made again on the next ask
+		CHECK(ipc->remove(1) && !ipc->remove(1));
+		CHECK(!ipc->check(1) && !ipc->get(1));
+		const auto again = ipc->add(1, [&]() { return make_shared<shared_obj>(shared_obj{1}); });
+		CHECK(again.first && again.second && again.second != seen[0][0]);
+
+		ipc.reset();
+		hle_service_stop();
 	}
 
 	std::printf("test_held_queues: %s\n", failures ? "FAIL" : "ok");
