@@ -1107,6 +1107,8 @@ check: all
 	@if grep -nE "atomic_wait_timeout" ../../Emu/Cell/Modules/cellMsgDialog.cpp; then echo "cellMsgDialog: a timed wait is back"; exit 1; else echo "cellMsgDialog: no timed wait"; fi
 	@# cellGcmCallback waits for the RSX to leave the new command buffer on its get pointer (notified while it waits), not in a spin
 	@if awk '/^s32 cellGcmCallback/,/^}/' ../../Emu/Cell/Modules/cellGcmSys.cpp | grep -nE "busy_wait|yield"; then echo "cellGcmCallback: the spin is back"; exit 1; else echo "cellGcmCallback: waits on get"; fi
+	@# A PPU's yield and hardware thread switch are the guest's time, cut short by its state, not a sleep on the host's clock
+	@if grep -nE "wait_for_accurate\(|s_dummy_atomic" ../../Emu/CPU/CPUThread.cpp; then echo "CPU: a host-clock nap is back"; exit 1; else echo "CPU: yields wait the guest's time"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

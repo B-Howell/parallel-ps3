@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **A PPU's yield and hardware thread switch wait the guest's time.** Not yet run on a game.
+  - **The switch delay:** this is what lv2 adds on `sys_ppu_thread_start`, and on every wake with "All Timers": 100 µs to 30 ms. It was a host-clock `wait_for_accurate`.
+  - **The yield nap:** a PPU or SPU given the yield flag alone took an 80 µs nap, which was a timed wait on a word that never changed.
+  - **Now:** both wait on the thread's own state, so a stop, pause or new flag cuts them short. They are bounded by the guest's time at retro_run's pace (`libretro_guest_wait_as_host`), as the lv2 waits are, so a fast-forward shortens them and the host's clock does not set them.
+  - **Tests:** none of their own, since they need the lv2 scheduler running a game; a check fails if either host-clock wait comes back.
+
 - **cellGcmCallback waits for the RSX instead of spinning.** Not yet run on a game.
   - **Before:** this is the default callback a game gets when its command buffer wraps. The PPU busy-spun on the RSX's get pointer until the RSX had left the buffer it was moving to.
   - **Now:** it counts itself in as a waiter and waits untimed on the get pointer and `g_libretro_events` together, counted as a waiting PPU. While anyone waits, the RSX thread notifies the pointer each time it moves it (`rsx::FIFO::g_get_waiters`). With nobody waiting, that costs the RSX one atomic load.

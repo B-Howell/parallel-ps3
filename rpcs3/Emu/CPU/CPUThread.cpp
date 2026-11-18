@@ -795,9 +795,6 @@ void cpu_thread::cpu_wait(bs_t<cpu_flag> old)
 	state.wait(old);
 }
 
-// Never changes: a short yield waits on it until its bound runs out
-static retro_atomic_int_t s_dummy_atomic{};
-
 static u64 suspend_counter()
 {
 	return static_cast<u32>(retro_atomic_load_acquire_int(&cpu_thread::g_suspend_counter));
@@ -1099,7 +1096,11 @@ bool cpu_thread::check_state() noexcept
 				{
 					if (u32 usec = ppu->hw_sleep_time)
 					{
-						thread_ctrl::wait_for_accurate(usec);
+						// The hardware thread switch's cost, in the guest's time at
+						// retro_run's pace (as the lv2 waits are), and cut short by
+						// a change of this thread's state - not the host's clock
+						const auto old = +state;
+						thread_ctrl::wait_on(state, old, libretro_guest_wait_as_host(usec));
 						ppu->hw_sleep_time = 0;
 						ppu->raddr = 0; // Also lose reservation if there is any (reservation is unsaved on hw thread switch)
 						continue;
@@ -1112,9 +1113,11 @@ bool cpu_thread::check_state() noexcept
 					}
 				}
 
-				// Short sleep when yield flag is present alone (makes no sense when other methods which can stop thread execution have been done)
-				const retro_waitaddr_t w{&s_dummy_atomic, 0};
-				retro_waitaddr_wait(&w, 1, 80);
+				// A short yield when the flag is present alone (makes no sense when other methods which can stop thread execution have been done):
+				// 80us of the guest's time at retro_run's pace, cut short by a
+				// change of this thread's state - not the host's clock
+				const auto old = +state;
+				thread_ctrl::wait_on(state, old, libretro_guest_wait_as_host(80));
 			}
 		}
 	}
