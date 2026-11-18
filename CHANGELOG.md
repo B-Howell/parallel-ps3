@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **libretro-common's rslc synced from RetroArch: an inactive `#if` branch is skipped to its next directive without being lexed.**
+  - **What it was:** the preprocessor lexed every token of a branch it was not taking, interning each identifier, and dropped it. This core's decompiled fragment programs are about 25 KB of GLSL each, of which about 3 KB survive preprocessing; the snippets they pull in are mostly switched off, and the rest is mostly `#define` lines (29%) and comments (10%).
+  - **Now:** read straight from the source, such a branch is skipped to the next line that begins with `#`, through the lexer's own whitespace and comment skipping, so lines and splices count as before.
+  - **Measured:** on the 1774 stages of `test_shader_corpus` (SHADER_CORPUS_DIR) in one process, best of 5, it went from 0.171 to 0.165 ms a stage, and the SPIR-V is the same word for word. With the type hash before it (0404), a decompiled program compiles about 9% faster than this morning.
+  - **Tests:** RetroArch's `rslc_test` gains a case of what an inactive branch can hold; it fails with the skip not taking comments. The fixed and known-module tables are unchanged, which their checks hold.
+
 - **libretro-common's rslc synced from RetroArch: types are found by a hash, and the SPIR-V reader's context is off the stack.**
   - **Types by hash (RetroArch's "rslc: types found by a hash, not a walk of every type"):** rslc found each type it was asked for by walking every type made in the compile so far. On this core's decompiled programs that was several percent of a compile. Measured on the 1774 stages `test_shader_corpus` gathers (SHADER_CORPUS_DIR), compiled in one process best of 5: 0.181 to 0.170 ms a stage, about 6%, and the SPIR-V is the same word for word. The fixed and known-module tables (`vk_fixed_spirv.c`, `vk_known_spirv_data.c`) are unchanged, which their checks hold.
   - **The reader's context (RetroArch's "rslc: the SPIR-V reader's context off the stack"):** this came in with the sync; the core does not read SPIR-V.
