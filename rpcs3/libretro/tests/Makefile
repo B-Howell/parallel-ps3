@@ -1145,6 +1145,8 @@ check: all
 	@if ! grep -q "thread_ctrl::state() == thread_state::aborting || Emu.IsStopped()" ../../Emu/Cell/Modules/sceNpTrophy.cpp; then echo "sceNpTrophy: the status events' wait no longer leaves on a stop"; exit 1; else echo "sceNpTrophy: a stop ends the status events' wait"; fi
 	@# cellGcmCallback's wait for the RSX's get pointer has the PPU's own state in it, so a close's stop wakes it
 	@if ! awk '/^s32 cellGcmCallback/,/^}/' ../../Emu/Cell/Modules/cellGcmSys.cpp | grep -q "list(ctrl.get, ppu.state, g_libretro_events)"; then echo "cellGcmCallback: a stop no longer wakes the wait for the get pointer"; exit 1; else echo "cellGcmCallback: a stop wakes it"; fi
+	@# the PS Move tracker waits for each worker until it is done, and makes no list of devices each frame
+	@if grep -n "std::vector<u32> active_devices" ../../Input/ps_move_tracker.cpp || ! grep -q "if (!retro_waitaddr_wait(&w, 1, 5000000))" ../../Input/ps_move_tracker.cpp; then echo "ps_move_tracker: the one-shot wait for a worker or the per-frame vector is back"; exit 1; else echo "ps_move_tracker: waits until a worker is done, nothing allocated a frame"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

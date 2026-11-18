@@ -201,8 +201,10 @@ void ps_move_tracker<DiagnosticsEnabled>::process_image()
 	// Calculate hues
 	process_hues();
 
-	// Get active devices
-	std::vector<u32> active_devices;
+	// Get active devices: on the stack, at most one each (a vector made
+	// every frame before)
+	u32 active_list[CELL_GEM_MAX_NUM];
+	u32 active_count = 0;
 	for (u32 index = 0; index < CELL_GEM_MAX_NUM; index++)
 	{
 		ps_move_config& config = m_config[index];
@@ -210,7 +212,7 @@ void ps_move_tracker<DiagnosticsEnabled>::process_image()
 		if (config.active)
 		{
 			init_worker(index);
-			active_devices.push_back(index);
+			active_list[active_count++] = index;
 		}
 		else
 		{
@@ -220,6 +222,8 @@ void ps_move_tracker<DiagnosticsEnabled>::process_image()
 			m_fail_count[index] = 0;
 		}
 	}
+
+	const std::span<const u32> active_devices(active_list, active_count);
 
 	// Find contours on worker threads
 	for (u32 index : active_devices)
@@ -235,11 +239,13 @@ void ps_move_tracker<DiagnosticsEnabled>::process_image()
 	// Wait for worker threads (a couple of seconds so we don't deadlock)
 	for (u32 index : active_devices)
 	{
-		// Wait for worker
-		if (!retro_atomic_load_acquire_int(&m_workers_finished[index]))
+		// Wait for worker: until it is done (a wait may return early, with
+		// nothing done, so this looks again), or the guard runs out
+		while (!retro_atomic_load_acquire_int(&m_workers_finished[index]))
 		{
 			const retro_waitaddr_t w{&m_workers_finished[index], 0};
-			retro_waitaddr_wait(&w, 1, 5000000);
+			if (!retro_waitaddr_wait(&w, 1, 5000000))
+				break;
 		}
 
 		retro_atomic_store_release_int(&m_workers_finished[index], 0);

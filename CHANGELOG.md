@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The PS Move camera tracker waits until each worker is done, and allocates nothing a frame.** Not yet run on a game; it runs only for a game that tracks a PS Move through the camera.
+  - **The wait:** each frame it hands each lit controller's contours to a worker thread, then waited for it once, with a 5 s guard. A wait on an address can return early with nothing done (`retro_waitaddr_wait` says so), and it then read the worker's result while the worker was still writing it. It now looks again until the worker is done; the 5 s stays as the guard against a worker that never answers.
+  - **The list:** the controllers it tracks were gathered into a `std::vector` made every frame. They are now an array on the stack, at most one entry each.
+  - **Tests:** this needs a camera image with a lit controller in it, so there is no test of its own; a check fails if the one-look wait or the vector comes back.
+
 - **A close while a game waits in `cellGcmCallback` no longer hangs.** Not yet run on a game; found looking for more of what hung closing content (0393).
   - **Before:** the game's PPU waited for the RSX's get pointer to leave the new command buffer, or for a frame, or a change of the emulator's state, and then looked at whether it had been told to stop. A close changes the emulator's state first and tells the PPUs to stop after. A PPU woken by the first went back to waiting before the second, and the stop only wakes its own state word, which was not in the wait. The RSX had stopped and no frame comes then, so the close could hang there, as libmixer's could (0394).
   - **Now:** the PPU's state is in the wait too.
