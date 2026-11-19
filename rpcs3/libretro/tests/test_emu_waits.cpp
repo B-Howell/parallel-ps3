@@ -1077,6 +1077,95 @@ int main()
 		std::printf("test_emu_waits: a raw SPU's place raised below its limit only, 20000 races with one winner each\n");
 	}
 
+	// An SPU channel, its word a retro_atomic_64_t the recompilers reach at
+	// offset 0: a value pushed and popped, only one of two pushes at once
+	// into an empty channel lands (20000 times), and a waiter on its upper
+	// half woken by a push, 300 times
+	{
+		spu_channel ch;
+		u32 v = 0;
+		CHECK(!ch.try_pop(v) && ch.get_count() == 0);
+		CHECK(ch.try_push(7) && !ch.try_push(8) && ch.get_count() == 1);
+		CHECK(ch.try_read(v) && v == 7);
+		CHECK(ch.try_pop(v) && v == 7 && ch.get_count() == 0);
+		ch.set_value(0x1234);
+		CHECK(ch.get_value() == 0x1234 && ch.get_count() == 1);
+		CHECK(ch.pop() == 0x1234);
+
+		constexpr int rounds = 20000;
+		std::vector<std::atomic<int>> wins(rounds), arrived(rounds), done(rounds);
+		const auto pusher = [&](bool resets)
+		{
+			for (int i = 0; i < rounds; i++)
+			{
+				arrived[i]++;
+				while (arrived[i] < 2) {}
+				wins[i] += ch.try_push(resets ? 1 : 2);
+				done[i]++;
+				if (resets)
+				{
+					while (done[i] < 2) {}
+					u32 out = 0;
+					ch.try_pop(out);
+					done[i] = 3;
+				}
+				else
+				{
+					while (done[i] < 3) {}
+				}
+			}
+		};
+		{
+			std::thread a(pusher, true), b(pusher, false);
+			a.join();
+			b.join();
+		}
+		int not_one = 0;
+		for (auto& w : wins)
+			not_one += w != 1;
+		CHECK(not_one == 0);
+
+		std::atomic<int> woken{0}, marked{0};
+		std::atomic<bool> waiting{false};
+		std::thread waiter([&]
+		{
+			for (int i = 0; i < 300; i++)
+			{
+				while (marked < i + 1) {}
+				const u64 seen = ch.load(); // the waiter's mark
+				waiting = true;
+				while (ch.load() == seen)
+				{
+					const retro_waitaddr_t w{ch.wait_word(), ch.wait_word_of(seen)};
+					retro_waitaddr_wait(&w, 1, -1);
+				}
+				woken++;
+			}
+		});
+		bool all = true;
+		for (int i = 0; i < 300 && all; i++)
+		{
+			// A waiter marked, as pop_wait marks it, then a push wakes it
+			retro_atomic_store_release_64(&ch.data, static_cast<s64>(spu_channel::bit_wait));
+			marked++;
+			while (!waiting) {}
+			waiting = false;
+			for (int j = 0; j < 2000; j++)
+				std::this_thread::yield();
+			ch.push(static_cast<u32>(i));
+			all = reaches(woken, i + 1);
+			u32 out = 0;
+			ch.try_pop(out);
+		}
+		if (!all)
+		{
+			std::fprintf(stderr, "%s:%d: check failed: an SPU channel waiter not woken\n", __FILE__, __LINE__);
+			std::_Exit(1);
+		}
+		waiter.join();
+		std::printf("test_emu_waits: an SPU channel: pushed and popped, 20000 races with one winner each, 300 wakes\n");
+	}
+
 	// A game's callback and its argument in one retro_atomic word: installed
 	// only where none is, taken off whole, and of two threads installing at
 	// once, one wins

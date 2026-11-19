@@ -1345,13 +1345,13 @@ void spu_thread::cpu_init()
 	mfc_fence = 0;
 	ch_tag_upd = 0;
 	ch_tag_mask = 0;
-	ch_tag_stat.data.raw() = {};
+	retro_atomic_store_relaxed_64(&ch_tag_stat.data, 0);
 	ch_stall_mask = 0;
-	ch_stall_stat.data.raw() = {};
-	ch_atomic_stat.data.raw() = {};
+	retro_atomic_store_relaxed_64(&ch_stall_stat.data, 0);
+	retro_atomic_store_relaxed_64(&ch_atomic_stat.data, 0);
 
-	ch_out_mbox.data.raw() = {};
-	ch_out_intr_mbox.data.raw() = {};
+	retro_atomic_store_relaxed_64(&ch_out_mbox.data, 0);
+	retro_atomic_store_relaxed_64(&ch_out_intr_mbox.data, 0);
 
 	ch_events.raw() = {};
 	interrupts_enabled = false;
@@ -1364,8 +1364,8 @@ void spu_thread::cpu_init()
 	if (get_type() >= spu_type::raw)
 	{
 		ch_in_mbox.clear();
-		ch_snr1.data.raw() = {};
-		ch_snr2.data.raw() = {};
+		retro_atomic_store_relaxed_64(&ch_snr1.data, 0);
+		retro_atomic_store_relaxed_64(&ch_snr2.data, 0);
 
 		snr_config = 0;
 
@@ -1881,10 +1881,22 @@ void spu_thread::serialize_common(utils::serial& ar)
 	u32 prxy_mask = static_cast<u32>(retro_atomic_load_acquire_int(&mfc_prxy_mask));
 	u32 run_control = static_cast<u32>(retro_atomic_load_acquire_int(&run_ctrl));
 
+	// The channels' words as the u64s they were
+	spu_channel* const chans[] = {&ch_tag_stat, &ch_stall_stat, &ch_atomic_stat, &ch_out_mbox, &ch_out_intr_mbox, &ch_snr1, &ch_snr2, &exit_status};
+	u64 words[std::size(chans)];
+	for (usz i = 0; i < std::size(chans); i++)
+		words[i] = chans[i]->load();
+
 	ar(gpr, pc, ch_mfc_cmd, mfc_size, mfc_barrier, mfc_fence, prxy_cmd, prxy_mask, prxy_written
-		, srr0, ch_tag_upd, ch_tag_mask, ch_tag_stat.data, ch_stall_mask, ch_stall_stat.data, ch_atomic_stat.data
-		, ch_out_mbox.data, ch_out_intr_mbox.data, snr_config, ch_snr1.data, ch_snr2.data, ch_events.raw().all, interrupts_enabled
-		, run_control, exit_status.data, status_npc.raw().status, ch_dec_start_timestamp, ch_dec_value, is_dec_frozen);
+		, srr0, ch_tag_upd, ch_tag_mask, words[0], ch_stall_mask, words[1], words[2]
+		, words[3], words[4], snr_config, words[5], words[6], ch_events.raw().all, interrupts_enabled
+		, run_control, words[7], status_npc.raw().status, ch_dec_start_timestamp, ch_dec_value, is_dec_frozen);
+
+	if (!ar.is_writing())
+	{
+		for (usz i = 0; i < std::size(chans); i++)
+			retro_atomic_store_release_64(&chans[i]->data, static_cast<s64>(words[i]));
+	}
 
 	if (!ar.is_writing())
 	{
@@ -7281,7 +7293,7 @@ spu_thread::spu_prio_t spu_thread::get_prio() const
 
 s64 spu_channel::pop_wait(cpu_thread& spu, bool pop)
 {
-	u64 old = data.fetch_op([&](u64& data)
+	u64 old = fetch_data([&](u64& data)
 	{
 		if (data & bit_count) [[likely]]
 		{
@@ -7298,7 +7310,7 @@ s64 spu_channel::pop_wait(cpu_thread& spu, bool pop)
 
 		if (pop)
 		{
-			jostling_value.release(bit_occupy);
+			set_jostling(bit_occupy);
 		}
 
 		return true;
@@ -7313,9 +7325,9 @@ s64 spu_channel::pop_wait(cpu_thread& spu, bool pop)
 	{
 		busy_wait();
 
-		if (!(data & bit_wait))
+		if (!(load() & bit_wait))
 		{
-			return static_cast<u32>(pop ? jostling_value.exchange(0) : +data);
+			return static_cast<u32>(pop ? take_jostling() : load());
 		}
 	}
 
@@ -7325,14 +7337,13 @@ s64 spu_channel::pop_wait(cpu_thread& spu, bool pop)
 
 	while (true)
 	{
-		const usz is_le = std::endian::native == std::endian::little ? 1 : 0;
-		thread_ctrl::wait_on(utils::bless<atomic_t<u32>>(&data)[is_le], read_from_ptr_unsafe<u32>(reinterpret_cast<char*>(&old), is_le * 4));
+		thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(wait_word(), wait_word_of(old)); });
 
-		old = data;
+		old = load();
 
 		if (!(old & bit_wait))
 		{
-			return static_cast<u32>(pop ? jostling_value.exchange(0) : +data);
+			return static_cast<u32>(pop ? take_jostling() : load());
 		}
 
 		if (spu.is_stopped())
@@ -7340,9 +7351,9 @@ s64 spu_channel::pop_wait(cpu_thread& spu, bool pop)
 			// Abort waiting and test if a value has been received
 			if (pop)
 			{
-				if (u64 v = jostling_value.exchange(0); !(v & bit_occupy))
+				if (u64 v = take_jostling(); !(v & bit_occupy))
 				{
-					while (data & bit_wait)
+					while (load() & bit_wait)
 					{
 						// Wait until notifying thread finishes operation
 						busy_wait(500);
@@ -7351,11 +7362,11 @@ s64 spu_channel::pop_wait(cpu_thread& spu, bool pop)
 					return static_cast<u32>(v);
 				}
 
-				ensure(data.fetch_and(~(bit_wait | bit_occupy)) & bit_wait);
+				ensure(static_cast<u64>(retro_atomic_fetch_and_64(&data, static_cast<s64>(~(bit_wait | bit_occupy)))) & bit_wait);
 			}
 			else
 			{
-				data.bit_test_reset(off_wait);
+				retro_atomic_fetch_and_64(&data, static_cast<s64>(~bit_wait));
 			}
 
 			return -1;
@@ -7367,11 +7378,11 @@ s64 spu_channel::pop_wait(cpu_thread& spu, bool pop)
 bool spu_channel::push_wait(cpu_thread& spu, u32 value, bool push)
 {
 	u64 state{};
-	data.fetch_op([&](u64& data)
+	fetch_data([&](u64& data)
 	{
 		if (data & bit_count) [[unlikely]]
 		{
-			jostling_value.release(push ? value : static_cast<u32>(data));
+			set_jostling(push ? value : static_cast<u32>(data));
 			data |= (push ? bit_occupy : 0) | bit_wait;
 		}
 		else if (push)
@@ -7396,7 +7407,7 @@ bool spu_channel::push_wait(cpu_thread& spu, u32 value, bool push)
 		}
 
 		busy_wait();
-		state = data;
+		state = load();
 	}
 
 	while (true)
@@ -7408,12 +7419,11 @@ bool spu_channel::push_wait(cpu_thread& spu, u32 value, bool push)
 
 		if (spu.is_stopped())
 		{
-			return !data.bit_test_reset(off_wait);
+			return !(static_cast<u64>(retro_atomic_fetch_and_64(&data, static_cast<s64>(~bit_wait))) & bit_wait);
 		}
 
-		const usz is_le = std::endian::native == std::endian::little ? 1 : 0;
-		thread_ctrl::wait_on(utils::bless<atomic_t<u32>>(&data)[is_le], u32(state >> 32));
-		state = data;
+		thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(wait_word(), wait_word_of(state)); });
+		state = load();
 	}
 }
 

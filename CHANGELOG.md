@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **An SPU channel is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** a channel's word (value, wait, occupy and count bits) and its pending value are `retro_atomic_64_t`s. The word stays at offset 0 and 8 bytes, where the LLVM recompiler's code reads and writes it, held by a static assert. `fetch_data()` changes it with a compare-and-swap loop and gives back what `fetch_op` gave. The bit clears are `retro_atomic_fetch_and_64`. A waiting SPU waits on the word's upper half, through `set_raw` and `thread_ctrl::wait_on_custom` as before. Pushes wake it with `retro_waitaddr`.
+  - **Savestates:** the eight channels saved (tag, stall and atomic status, both outbound mailboxes, both signal notifications, and the exit status) are written and read through the `u64`s they were, so the format is unchanged.
+  - **Tests:** `test_emu_waits` pushes, reads and pops a channel. Two threads push into an empty channel at once, 20000 times, and one of them must land. A waiter on the upper half, marked as `pop_wait` marks it, must be woken by a push, 300 times. It was shown to fail with the push's wake taken out, and with `fetch_data`'s compare-and-swap made a plain store. A check fails if `atomic_t` comes back to `spu_channel`.
+
+
 - **An SPU thread's proxy mask, run control, stop count and exit status are off `atomic_t`.** Not yet run on a game.
   - **What changed:** the MFC proxy query mask, the run control register, the raw SPU stop count and the exit status kept until the group ends are `retro_atomic_int_t`s. A stop request on a raw SPU waits on the stop count with `retro_waitaddr`, as it did on the `atomic_t`. The breakpoint flag is one too. The breakpoint list is plain bytes, since nothing in the core sets a breakpoint, so the list stays empty.
   - **Savestates:** the proxy mask and run control are written and read through the `u32`s they were, so the format is unchanged.

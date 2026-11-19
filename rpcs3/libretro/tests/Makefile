@@ -1267,6 +1267,8 @@ check: all
 	@if grep -n "static atomic_t<u32> g_raw_spu\|static atomic_t<u32> g_spu_work_count" ../../Emu/Cell/SPUThread.h; then echo "atomic_t is back in the raw SPU counters"; exit 1; else echo "the raw SPU counters are retro_atomic"; fi
 	@# an SPU thread's proxy mask, run control, stop count, exit status and breakpoint flag are off atomic_t
 	@if grep -n "atomic_t<u32> mfc_prxy_mask\|atomic_t<u32> run_ctrl\|atomic_t<u32> stop_count\|atomic_t<u32> last_exit_status\|atomic_t<bool> has_active_local_bps" ../../Emu/Cell/SPUThread.h; then echo "atomic_t is back in an SPU thread's registers"; exit 1; else echo "an SPU thread's registers are retro_atomic"; fi
+	@# an SPU channel's word and pending value are retro_atomic_64_t, at the offsets the recompilers use
+	@if grep -n "atomic_t<u64> data{}\|atomic_t<u64> jostling_value{}" ../../Emu/Cell/SPUThread.h; then echo "atomic_t is back in spu_channel"; exit 1; else echo "spu_channel is retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

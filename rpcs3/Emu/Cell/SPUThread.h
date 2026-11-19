@@ -191,11 +191,54 @@ struct spu_channel_op_state
 
 struct alignas(16) spu_channel
 {
-	// Low 32 bits contain value
-	atomic_t<u64> data{};
+	// Low 32 bits contain value. The recompilers read and write it at the
+	// channel's own address (offset 0), 8 bytes
+	retro_atomic_64_t data{0};
 
 	// Pending value to be inserted when it is possible in pop() or pop_wait()
-	atomic_t<u64> jostling_value{};
+	retro_atomic_64_t jostling_value{0};
+
+	u64 load() const { return static_cast<u64>(retro_atomic_load_acquire_64(const_cast<retro_atomic_64_t*>(&data))); }
+	u64 load_jostling() const { return static_cast<u64>(retro_atomic_load_acquire_64(const_cast<retro_atomic_64_t*>(&jostling_value))); }
+	void set_jostling(u64 value) { retro_atomic_store_release_64(&jostling_value, static_cast<s64>(value)); }
+	u64 take_jostling() { return static_cast<u64>(retro_atomic_exchange_64(&jostling_value, 0)); }
+
+	// The word waited on: data's upper half (the wait, occupy and count bits)
+	const void* wait_word() const
+	{
+		return reinterpret_cast<const char*>(&data) + (std::endian::native == std::endian::little ? 4 : 0);
+	}
+
+	u32 wait_word_of(u64 value) const { return static_cast<u32>(value >> 32); }
+
+	// @f changes the value it is given, and may say whether it did (a
+	// bool): the change made with a compare-and-swap, f run again if
+	// another came first. Gives back the value before and f's result, as
+	// atomic_t's fetch_op did
+	template <typename F>
+	auto fetch_data(F&& f)
+	{
+		for (;;)
+		{
+			const u64 old = load();
+			u64 value = old;
+
+			if constexpr (std::is_void_v<std::invoke_result_t<F&, u64&>>)
+			{
+				f(value);
+
+				if (value == old || retro_atomic_cas_64(&data, static_cast<s64>(old), static_cast<s64>(value)))
+					return old;
+			}
+			else
+			{
+				const bool done = f(value);
+
+				if (!done || value == old || retro_atomic_cas_64(&data, static_cast<s64>(old), static_cast<s64>(value)))
+					return std::pair<u64, bool>{old, done};
+			}
+		}
+	}
 
 public:
 	static constexpr u32 off_wait  = 32;
@@ -209,7 +252,7 @@ public:
 	// Returns true on success
 	bool try_push(u32 value)
 	{
-		return data.fetch_op([value](u64& data)
+		return fetch_data([value](u64& data)
 		{
 			if (!(data & bit_count)) [[likely]]
 			{
@@ -228,7 +271,7 @@ public:
 	{
 		while (true)
 		{
-			const auto [old, pushed_to_data] = data.fetch_op([&](u64& data)
+			const auto [old, pushed_to_data] = fetch_data([&](u64& data)
 			{
 				if (data & bit_occupy)
 				{
@@ -250,14 +293,14 @@ public:
 			if (!pushed_to_data)
 			{
 				// Insert the pending value in special storage for waiting SPUs, leave no time in which the channel has data
-				if (!jostling_value.compare_and_swap_test(bit_occupy, value))
+				if (!retro_atomic_cas_64(&jostling_value, static_cast<s64>(bit_occupy), static_cast<s64>(value)))
 				{
 					// Other thread has inserted a value through jostling_value, retry
 					continue;
 				}
 
 				// Turn off waiting bit manually (must succeed because waiting bit can only be resetted by the thread pushed to jostling_value)
-				if (~this->data.fetch_and(~occupy_ored_wait) & bit_wait)
+				if (~static_cast<u64>(retro_atomic_fetch_and_64(&this->data, static_cast<s64>(~occupy_ored_wait))) & bit_wait)
 				{
 					// Could be fatal or at emulation stopping, to be checked by the caller
 					ensure(false);
@@ -271,8 +314,7 @@ public:
 			{
 				if (!postpone_notify)
 				{
-					const usz is_le = std::endian::native == std::endian::little ? 1 : 0;
-					utils::bless<atomic_t<u32>>(&data)[is_le].notify_one();
+					retro_waitaddr_notify_one(wait_word());
 				}
 			}
 
@@ -283,14 +325,13 @@ public:
 
 	void notify()
 	{
-		const usz is_le = std::endian::native == std::endian::little ? 1 : 0;
-		utils::bless<atomic_t<u32>>(&data)[is_le].notify_one();
+		retro_waitaddr_notify_one(wait_word());
 	}
 
 	// Returns true on success
 	bool try_pop(u32& out)
 	{
-		return data.fetch_op([&out](u64& data)
+		return fetch_data([&out](u64& data)
 		{
 			if (data & bit_count) [[likely]]
 			{
@@ -306,7 +347,7 @@ public:
 	// Reading without modification
 	bool try_read(u32& out) const
 	{
-		const u64 old = data.load();
+		const u64 old = load();
 		out = static_cast<u32>(old);
 
 		if (old & bit_count) [[likely]]
@@ -324,12 +365,12 @@ public:
 		// Value is not cleared and may be read again
 		constexpr u64 mask = bit_count | bit_occupy;
 
-		const u64 old = data.fetch_op([&](u64& data)
+		const u64 old = fetch_data([&](u64& data)
 		{
 			if ((data & mask) == mask)
 			{
 				// Insert the pending value, leave no time in which the channel has no data
-				data = bit_count | static_cast<u32>(jostling_value);
+				data = bit_count | static_cast<u32>(load_jostling());
 				return;
 			}
 
@@ -338,8 +379,7 @@ public:
 
 		if (old & bit_wait)
 		{
-			const usz is_le = std::endian::native == std::endian::little ? 1 : 0;
-			utils::bless<atomic_t<u32>>(&data)[is_le].notify_one();
+			retro_waitaddr_notify_one(wait_word());
 		}
 
 		return static_cast<u32>(old);
@@ -353,19 +393,21 @@ public:
 
 	void set_value(u32 value, bool count = true)
 	{
-		data.release(u64{count} << off_count | value);
+		retro_atomic_store_release_64(&data, static_cast<s64>(u64{count} << off_count | value));
 	}
 
 	u32 get_value() const
 	{
-		return static_cast<u32>(data);
+		return static_cast<u32>(load());
 	}
 
 	u32 get_count() const
 	{
-		return (data & bit_count) ? 1 : 0;
+		return (load() & bit_count) ? 1 : 0;
 	}
 };
+
+static_assert(sizeof(spu_channel) == 16 && offsetof(spu_channel, data) == 0 && sizeof(spu_channel::data) == 8);
 
 struct spu_channel_4_t
 {
