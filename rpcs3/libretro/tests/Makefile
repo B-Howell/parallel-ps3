@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_DYLIB -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_vm_range_locks test_vm_range_locks_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_jit_cores test_rpcn_signal test_rsx_wake test_rsx_wake_tsan test_rsx_hold test_rsx_hold_tsan test_rsx_timestamp test_rpcn_reply_slots test_rpcn_reply_slots_tsan test_osk_text test_osk_text_tsan test_game_text_patch test_net_wake test_vk_loader
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_vm_range_locks test_vm_range_locks_tsan test_spu_pc_table test_spu_pc_table_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_jit_cores test_rpcn_signal test_rsx_wake test_rsx_wake_tsan test_rsx_hold test_rsx_hold_tsan test_rsx_timestamp test_rpcn_reply_slots test_rpcn_reply_slots_tsan test_osk_text test_osk_text_tsan test_game_text_patch test_net_wake test_vk_loader
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -512,6 +512,22 @@ test_vm_range_locks_tsan: $(VM_RANGE_LOCKS_DEPS)
 	$(CC) $(CFLAGS) $(TEST_STD) -pedantic -fsanitize=thread -c -o obj/vm_range_locks_tsan.o ../../Emu/Memory/vm_range_locks.c
 	$(CC) $(CFLAGS) -std=gnu99 -fsanitize=thread -o $@ obj/test_vm_range_locks_tsan.o obj/vm_range_locks_tsan.o $(LDFLAGS) $(LDLIBS) -lpthread
 
+# The SPU instruction slot counts: the module and the test as C89
+SPU_PC_TABLE_DEPS := test_spu_pc_table.c test_common.h ../../Emu/Cell/spu_pc_table.c ../../Emu/Cell/spu_pc_table.h
+SPU_PC_TABLE_LRC  := $(LRC)/rthreads/retro_waitaddr.c $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
+
+test_spu_pc_table: $(SPU_PC_TABLE_DEPS)
+	@mkdir -p obj
+	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -c -o obj/test_spu_pc_table.o test_spu_pc_table.c
+	$(CC) $(CFLAGS) $(TEST_STD) -pedantic $(SANITIZE) -c -o obj/spu_pc_table.o ../../Emu/Cell/spu_pc_table.c
+	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS $(SANITIZE) -o $@ obj/test_spu_pc_table.o obj/spu_pc_table.o $(SPU_PC_TABLE_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
+
+test_spu_pc_table_tsan: $(SPU_PC_TABLE_DEPS)
+	@mkdir -p obj
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/test_spu_pc_table_tsan.o test_spu_pc_table.c
+	$(CC) $(CFLAGS) $(TEST_STD) -pedantic -fsanitize=thread -c -o obj/spu_pc_table_tsan.o ../../Emu/Cell/spu_pc_table.c
+	$(CC) $(CFLAGS) -std=gnu99 -DHAVE_THREADS -fsanitize=thread -o $@ obj/test_spu_pc_table_tsan.o obj/spu_pc_table_tsan.o $(SPU_PC_TABLE_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
+
 # Calls run on one owner thread: the module and the test as C89
 OWNER_CALLS_DEPS := test_owner_calls.c test_common.h ../../Emu/CPU/owner_calls.c ../../Emu/CPU/owner_calls.h
 OWNER_CALLS_LRC  := $(LRC)/rthreads/retro_waitaddr.c $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
@@ -962,6 +978,8 @@ check: all
 	./test_cpu_slots_tsan
 	./test_vm_range_locks
 	./test_vm_range_locks_tsan
+	./test_spu_pc_table
+	./test_spu_pc_table_tsan
 	./test_owner_calls
 	./test_owner_calls_tsan
 	./test_hle_service
@@ -1310,6 +1328,8 @@ check: all
 	@if grep -rn "atomic_t<reservation_waiter_t\|raw().wait_flag" ../../Emu --include=*.cpp --include=*.h; then echo "atomic_t is back in the reservation waiter slots"; exit 1; else echo "the reservation waiter slots are retro_atomic"; fi
 	@# the SPU recompiler's blocks, dispatcher and counters are retro_atomic
 	@if grep -n "atomic_t<" ../../Emu/Cell/SPURecompiler.h || grep -n "atomic_t<usz> fnext\|atomic_t<u64> all\|atomic_t<u64>, value_hash" ../../Emu/Cell/SPUCommonRecompiler.cpp; then echo "atomic_t is back in the SPU recompiler"; exit 1; else echo "the SPU recompiler's blocks are retro_atomic"; fi
+	@# the SPU instruction slot counts are C89 (spu_pc_table.c) with a real wait, no sleep loop
+	@if grep -n "atomic_instruction_table" ../../Emu/Cell/SPUThread.cpp || grep -n "sleep_for(1ms);" ../../Emu/Cell/SPUThread.cpp | grep -v hack; then echo "the SPU instruction slot counts are back on atomic_t or a sleep loop"; exit 1; else echo "the SPU instruction slot counts are C89 with a real wait"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

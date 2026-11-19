@@ -5,6 +5,7 @@
 #include "Emu/Memory/vm.h"
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/Memory/vm_reservation.h"
+#include "spu_pc_table.h"
 
 #include "Loader/ELF.h"
 #include "Emu/VFS.h"
@@ -582,55 +583,31 @@ namespace spu
 {
 	namespace scheduler
 	{
-		std::array<atomic_t<u8>, 65536> atomic_instruction_table = {};
+		// The SPUs at each instruction slot (spu_pc_table.c)
+		spu_pc_table_t g_pc_table{};
 		constexpr u32 native_jiffy_duration_us = 1500; //About 1ms resolution with a half offset
 
 		void acquire_pc_address(spu_thread& spu, u32 pc, u32 timeout_ms, u32 max_concurrent_instructions)
 		{
 			const u32 pc_offset = pc >> 2;
 
-			if (atomic_instruction_table[pc_offset].observe() >= max_concurrent_instructions)
+			// With a delay penalty, wait (up to it) for one to leave; with
+			// none, go on at once (a spin of the count * 100 cycles before)
+			if (timeout_ms > 0 && spu_pc_count(&g_pc_table, pc_offset) >= max_concurrent_instructions)
 			{
 				spu.state += cpu_flag::wait + cpu_flag::temp;
 
-				if (timeout_ms > 0)
-				{
-					const u64 timeout = timeout_ms * 1000u; //convert to microseconds
-					const u64 start = get_system_time();
-					auto remaining = timeout;
-
-					while (atomic_instruction_table[pc_offset].observe() >= max_concurrent_instructions)
-					{
-						if (remaining >= native_jiffy_duration_us)
-							std::this_thread::sleep_for(1ms);
-						else
-							std::this_thread::yield();
-
-						const auto now = get_system_time();
-						const auto elapsed = now - start;
-
-						if (elapsed > timeout) break;
-						remaining = timeout - elapsed;
-					}
-				}
-				else
-				{
-					//Slight pause if function is overburdened
-					const auto count = atomic_instruction_table[pc_offset].observe() * 100ull;
-					busy_wait(count);
-				}
+				spu_pc_wait_below(&g_pc_table, pc_offset, max_concurrent_instructions, s64{timeout_ms} * 1000);
 
 				ensure(!spu.check_state());
 			}
 
-			atomic_instruction_table[pc_offset]++;
+			spu_pc_enter(&g_pc_table, pc_offset);
 		}
 
 		void release_pc_address(u32 pc)
 		{
-			const u32 pc_offset = pc >> 2;
-
-			atomic_instruction_table[pc_offset]--;
+			spu_pc_leave(&g_pc_table, pc >> 2);
 		}
 
 		struct concurrent_execution_watchdog
@@ -4564,13 +4541,13 @@ bool spu_thread::process_mfc_cmd()
 							return true;
 						}
 
-						static atomic_t<u32> g_changed, g_unchanged;
+						static retro_atomic_int_t g_changed{0}, g_unchanged{0};
 
 						if (new_time == this_time && vm::reservation_load(res) == this_time)
 						{
 							spu_log.trace("RTIME unchanged on address 0x%x", addr);
 
-							g_unchanged++;
+							retro_atomic_fetch_add_int(&g_unchanged, 1);
 
 							// Notify threads manually, memory data has likely changed and broke the reservation for others
 							if (vm::reservation_notifier_count(addr, new_time) && vm::reservation_load(res) == new_time)
@@ -4580,12 +4557,12 @@ bool spu_thread::process_mfc_cmd()
 						}
 						else
 						{
-							g_changed++;
+							retro_atomic_fetch_add_int(&g_changed, 1);
 						}
 
-						if ((g_changed + g_unchanged) % 200 == 0)
+						if (const int unchanged = retro_atomic_load_relaxed_int(&g_unchanged), changed = retro_atomic_load_relaxed_int(&g_changed); (changed + unchanged) % 200 == 0)
 						{
-							spu_log.trace("SPU GETLLAR wait on RTIME stats: unchanged=%d, changed=%d", +g_unchanged, +g_changed);
+							spu_log.trace("SPU GETLLAR wait on RTIME stats: unchanged=%d, changed=%d", unchanged, changed);
 						}
 					}
 				}

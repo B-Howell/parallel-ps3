@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **"Preferred SPU Threads": the instruction slot counts are C89 (Emu/Cell/spu_pc_table.c), and the SPU waits for a slot instead of sleeping in a loop.** Not yet run on a game.
+  - **What changed:**
+    - **The counts:** with Preferred SPU Threads set, an SPU about to run an MFC command counts itself in at its instruction's slot, and waits while that slot already has as many SPUs as the setting allows. The 65536 counts were an `std::array` of `atomic_t<u8>`. They are now C89, a byte each, four to a `retro_atomic_int_t` word, so the table is the same 64 KiB. Entering is one atomic add, and leaving is one atomic subtract when nobody waits.
+    - **The wait:** it slept 1 ms at a time and read the host's clock until the SPU delay penalty ran out. A waiter now sets the top bit of its slot's byte and sleeps on the word with `retro_waitaddr`, bounded by the delay penalty. The SPU leaving the slot sees the bit, clears it and wakes the waiters, so a waiter goes on as soon as the slot has room instead of on the next 1 ms tick.
+    - **No penalty:** with a delay penalty of 0, the SPU spun for the slot's count times 100 cycles before going on anyway. It now goes on at once.
+    - **The GETLLAR wait statistics** (trace log only) are `retro_atomic_int_t`.
+  - **Tests:** `test_spu_pc_table` (C89, and a ThreadSanitizer build) checks the counts of a word's four slots are kept apart, that a wait below the limit returns at once and one nobody ends runs out its bound, that a waiter on a full slot is woken by the leave long before its 2-second bound, and that four threads entering and leaving one word's slots 200000 times each lose no count and leave a neighbour's alone. It was shown to fail with the leave's wake removed. A check fails if the table goes back to `atomic_t` or the sleep loop comes back.
+
+
 - **The SPU recompiler's compiled blocks, dispatcher and counters are off `atomic_t`.** Not yet run on a game.
   - **What changed:**
     - **A compiled block (spu_item):** the function, the block's ubertrampoline, and the flags for written to the SPU cache and logged are `retro_atomic_ptr_t` and `retro_atomic_int_t`. `install_compiled()` puts a function in only where none is (a compare-and-swap), and `set_compiled()` replaces one from the fast compiler, as before. A thread that finds another compiling the same block waits in `wait_compiled()` on the ready word through the wait engine, and `notify_compiled()` wakes it. `install_trampoline()` gives back the trampoline already there, as `compare_and_swap` did. `take_once()` and `give_back()` handle the two flags.
