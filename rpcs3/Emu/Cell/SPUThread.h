@@ -1,6 +1,7 @@
 #pragma once
 
 #include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 #include "Emu/CPU/CPUThread.h"
 #include "Emu/CPU/Hypervisor.h"
 #include "Emu/Cell/SPUInterpreter.h"
@@ -724,7 +725,7 @@ public:
 	// 16 bytes); the local store address never needs its top 14 bits, so
 	// the five written bits live there
 	retro_atomic_128_t mfc_prxy_word{};
-	atomic_t<u32> mfc_prxy_mask = 0;
+	retro_atomic_int_t mfc_prxy_mask{0}; // u32
 
 	static constexpr u32 mfc_prxy_written_shift = 27;
 	static constexpr u8 mfc_prxy_written_all = 0x1f;
@@ -838,16 +839,16 @@ public:
 	bool is_dec_frozen = false;
 	std::pair<u32, u32> read_dec() const; // Read decrementer
 
-	atomic_t<u32> run_ctrl = 0; // SPU Run Control register (only provided to get latest data written)
+	retro_atomic_int_t run_ctrl{0}; // SPU Run Control register, a u32 (only provided to get latest data written)
 	// Counted up each time a raw SPU stops running, with a wake: what a stop
 	// request waits on, so a run request after the stop cannot keep it
 	// waiting (run requests take no lock)
-	atomic_t<u32> stop_count = 0;
+	retro_atomic_int_t stop_count{0}; // u32
 
 	void count_stop()
 	{
-		stop_count++;
-		stop_count.notify_all();
+		retro_atomic_fetch_add_int(&stop_count, 1);
+		retro_waitaddr_notify_all(&stop_count);
 	}
 
 	struct alignas(8) status_npc_sync_var
@@ -885,7 +886,7 @@ public:
 	// SPU Ports: connected and disconnected with compare-and-swap
 	atomic_ptr<lv2_event_queue> spup[64];
 	spu_channel exit_status{}; // Threaded SPU exit status (not a channel, but the interface fits)
-	atomic_t<u32> last_exit_status; // Value to be written in exit_status after checking group termination
+	retro_atomic_int_t last_exit_status{0}; // u32: value to be written in exit_status after checking group termination
 	lv2_spu_group* const group; // SPU Thread Group (access by the spu threads in the group only! From other threads obtain a shared pointer to group using group ID)
 	const u32 index; // SPU index
 	const spu_type thread_type;
@@ -967,8 +968,10 @@ public:
 	retro_atomic_int_t debugger_mode{0}; // a spu_debugger_mode
 
 	// PC-based breakpoint list
-	std::array<atomic_t<u8>, SPU_LS_SIZE / 4 / 8> local_breakpoints{};
-	atomic_t<bool> has_active_local_bps = false;
+	// Nothing in the core sets a breakpoint (the debugger is not in it):
+	// the list stays empty and the flag 0
+	std::array<u8, SPU_LS_SIZE / 4 / 8> local_breakpoints{};
+	retro_atomic_int_t has_active_local_bps{0}; // 0 or 1
 	u32 current_bp_pc = umax;
 	bool stop_flag_removal_protection = false;
 

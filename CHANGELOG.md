@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **An SPU thread's proxy mask, run control, stop count and exit status are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the MFC proxy query mask, the run control register, the raw SPU stop count and the exit status kept until the group ends are `retro_atomic_int_t`s. A stop request on a raw SPU waits on the stop count with `retro_waitaddr`, as it did on the `atomic_t`. The breakpoint flag is one too. The breakpoint list is plain bytes, since nothing in the core sets a breakpoint, so the list stays empty.
+  - **Savestates:** the proxy mask and run control are written and read through the `u32`s they were, so the format is unchanged.
+  - **Tests:** none at runtime: they are set and read by a game's SPU and raw SPU MMIO. A check fails if `atomic_t` comes back to them.
+
+
 - **The raw SPU counters and the SPU compile work count are off `atomic_t`.** Not yet run on a game.
   - **What changed:** the count of raw SPUs, the five raw SPU id slots and the count of SPU programs being compiled are `retro_atomic_int_t`s. A raw SPU's place and its id slot are taken with `spu_thread::try_inc_below()`, a compare-and-swap loop that raises the word only below a limit, as `try_inc` did. sys_spu, RawSPUThread, the SPU thread and the SPU recompiler use them. Nothing saved in savestates changes.
   - **Tests:** `test_emu_waits` checks that `try_inc_below()` stops at its limit, and that of two threads taking the last place at once one gets it, 20000 times. It was shown to fail with the compare-and-swap made a plain store. A check fails if `atomic_t` comes back to these counters.

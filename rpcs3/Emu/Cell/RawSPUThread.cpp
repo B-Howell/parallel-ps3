@@ -191,7 +191,7 @@ bool spu_thread::read_reg(const u32 addr, u32& value)
 
 	case Prxy_QueryMask_offs:
 	{
-		value = mfc_prxy_mask;
+		value = static_cast<u32>(retro_atomic_load_acquire_int(&mfc_prxy_mask));
 		return true;
 	}
 
@@ -243,7 +243,7 @@ bool spu_thread::read_reg(const u32 addr, u32& value)
 
 	case Prxy_TagStatus_offs:
 	{
-		value = mfc_prxy_mask;
+		value = static_cast<u32>(retro_atomic_load_acquire_int(&mfc_prxy_mask));
 		return true;
 	}
 
@@ -256,7 +256,7 @@ bool spu_thread::read_reg(const u32 addr, u32& value)
 
 	case SPU_RunCntl_offs:
 	{
-		value = run_ctrl;
+		value = static_cast<u32>(retro_atomic_load_acquire_int(&run_ctrl));
 		return true;
 	}
 	}
@@ -372,7 +372,7 @@ bool spu_thread::write_reg(const u32 addr, const u32 value)
 
 	case Prxy_QueryMask_offs:
 	{
-		mfc_prxy_mask = value;
+		retro_atomic_store_release_int(&mfc_prxy_mask, static_cast<int>(value));
 		return true;
 	}
 
@@ -391,7 +391,7 @@ bool spu_thread::write_reg(const u32 addr, const u32 value)
 
 	case SPU_RunCntl_offs:
 	{
-		run_ctrl = value;
+		retro_atomic_store_release_int(&run_ctrl, static_cast<int>(value));
 
 		if (value == SPU_RUNCNTL_RUN_REQUEST)
 		{
@@ -408,15 +408,16 @@ bool spu_thread::write_reg(const u32 addr, const u32 value)
 
 			// Read before the look: a stop after it counts, and the wait ends
 			// with it even if a run request has started the SPU again since
-			const u32 stops = stop_count.load();
+			const u32 stops = static_cast<u32>(retro_atomic_load_acquire_int(&stop_count));
 
 			if (status_npc.load().status & SPU_STATUS_RUNNING)
 			{
 				state += cpu_flag::stop + cpu_flag::ret;
 
-				while (stop_count.load() == stops && (status_npc.load().status & SPU_STATUS_RUNNING))
+				while (static_cast<u32>(retro_atomic_load_acquire_int(&stop_count)) == stops && (status_npc.load().status & SPU_STATUS_RUNNING))
 				{
-					stop_count.wait(stops);
+					const retro_waitaddr_t w{&stop_count, stops};
+					retro_waitaddr_wait(&w, 1, -1);
 				}
 			}
 		}

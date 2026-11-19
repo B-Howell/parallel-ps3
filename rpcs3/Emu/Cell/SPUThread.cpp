@@ -986,7 +986,7 @@ void spu_thread::dump_regs(std::string& ret, std::any& /*custom_data*/) const
 		u8 prxy_written = 0;
 		const spu_mfc_cmd prxy_cmd = mfc_prxy_unpack(retro_atomic_load_acquire_128(const_cast<retro_atomic_128_t*>(&mfc_prxy_word)), &prxy_written);
 		fmt::append(ret, "MFC Prxy Cmd: [%s written: %x]\n", prxy_cmd, prxy_written);
-		fmt::append(ret, "MFC Prxy Mask: 0x%x\n", +mfc_prxy_mask);
+		fmt::append(ret, "MFC Prxy Mask: 0x%x\n", static_cast<u32>(retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&mfc_prxy_mask))));
 	}
 
 	const u32 addr = raddr;
@@ -1369,12 +1369,12 @@ void spu_thread::cpu_init()
 
 		snr_config = 0;
 
-		mfc_prxy_mask.raw() = 0;
+		retro_atomic_store_relaxed_int(&mfc_prxy_mask, 0);
 		retro_atomic_store_release_128(&mfc_prxy_word, retro_u128_t{});
 	}
 
 	status_npc.raw() = {get_type() == spu_type::isolated ? SPU_STATUS_IS_ISOLATED : 0, 0};
-	run_ctrl.raw() = 0;
+	retro_atomic_store_relaxed_int(&run_ctrl, 0);
 
 	spurs_last_task_timestamp = 0;
 	spurs_wait_duration_last = 0;
@@ -1419,7 +1419,7 @@ void spu_thread::cpu_return()
 		// counts itself out, so the last to stop waits for none
 		if (status_npc.load().status >> 16 == SYS_SPU_THREAD_STOP_THREAD_EXIT)
 		{
-			exit_status.set_value(last_exit_status);
+			exit_status.set_value(static_cast<u32>(retro_atomic_load_acquire_int(&last_exit_status)));
 		}
 
 		if (ensure(retro_atomic_fetch_add_int(&group->running, -1)) == 1)
@@ -1630,7 +1630,7 @@ void spu_thread::cpu_work()
 
 	bool work_left = false;
 
-	if (has_active_local_bps)
+	if (retro_atomic_load_relaxed_int(&has_active_local_bps))
 	{
 		const u32 pos_at = pc / 4;
 		const u32 pos_bit = 1u << (pos_at % 8);
@@ -1877,13 +1877,19 @@ void spu_thread::serialize_common(utils::serial& ar)
 	u8 prxy_written = 0;
 	spu_mfc_cmd prxy_cmd = mfc_prxy_unpack(retro_atomic_load_acquire_128(&mfc_prxy_word), &prxy_written);
 
-	ar(gpr, pc, ch_mfc_cmd, mfc_size, mfc_barrier, mfc_fence, prxy_cmd, mfc_prxy_mask, prxy_written
+	// The proxy mask and run control as the u32s they were
+	u32 prxy_mask = static_cast<u32>(retro_atomic_load_acquire_int(&mfc_prxy_mask));
+	u32 run_control = static_cast<u32>(retro_atomic_load_acquire_int(&run_ctrl));
+
+	ar(gpr, pc, ch_mfc_cmd, mfc_size, mfc_barrier, mfc_fence, prxy_cmd, prxy_mask, prxy_written
 		, srr0, ch_tag_upd, ch_tag_mask, ch_tag_stat.data, ch_stall_mask, ch_stall_stat.data, ch_atomic_stat.data
 		, ch_out_mbox.data, ch_out_intr_mbox.data, snr_config, ch_snr1.data, ch_snr2.data, ch_events.raw().all, interrupts_enabled
-		, run_ctrl, exit_status.data, status_npc.raw().status, ch_dec_start_timestamp, ch_dec_value, is_dec_frozen);
+		, run_control, exit_status.data, status_npc.raw().status, ch_dec_start_timestamp, ch_dec_value, is_dec_frozen);
 
 	if (!ar.is_writing())
 	{
+		retro_atomic_store_release_int(&mfc_prxy_mask, static_cast<int>(prxy_mask));
+		retro_atomic_store_release_int(&run_ctrl, static_cast<int>(run_control));
 		retro_atomic_store_release_128(&mfc_prxy_word, mfc_prxy_pack(prxy_cmd, prxy_written));
 	}
 
@@ -6988,7 +6994,7 @@ bool spu_thread::stop_and_signal(u32 code)
 		spu_function_logger logger(*this, "sys_spu_thread_exit");
 
 		spu_log.trace("sys_spu_thread_exit(status=0x%x)", value);
-		last_exit_status.release(value);
+		retro_atomic_store_release_int(&last_exit_status, static_cast<int>(value));
 		set_status_npc();
 		state += cpu_flag::stop + cpu_flag::ret;
 		check_state();
