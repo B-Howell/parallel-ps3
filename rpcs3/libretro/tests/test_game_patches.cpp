@@ -134,7 +134,9 @@ int main()
 			continue;
 		tried++;
 		libretro_patches::collect(serial);
-		if ((!libretro_patches::any() || libretro_patches::definitions().empty()) && without++ < 5)
+		std::size_t count = 0;
+		libretro_patches::definitions(count);
+		if ((!libretro_patches::any() || !count) && without++ < 5)
 			std::fprintf(stderr, "%s has no patch options\n", serial.c_str());
 	}
 	CHECK(without == 0);

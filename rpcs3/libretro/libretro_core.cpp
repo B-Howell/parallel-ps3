@@ -381,6 +381,17 @@ static std::string get_option_value(const char* key, const char* default_val = "
     return default_val;
 }
 
+// An option's value for the Patch Manager (libretro_patch_options.c): the
+// frontend's, used before its next call, or "disabled"
+static const char* patch_option_value(void*, const char* key)
+{
+    retro_variable var{};
+    var.key = key;
+    if (environ_cb && environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+        return var.value;
+    return "disabled";
+}
+
 // What the frontend was last told: the frame size, and the largest frame it
 // made room for. Both start over whenever it asks for the AV info again.
 static unsigned s_reported_width = 0;
@@ -1373,7 +1384,7 @@ static void libretro_big_little_defaults()
 // game is known; RetroArch keeps what the .opt file says for each key.
 static bool RETRO_CALLCONV libretro_update_options_display()
 {
-    libretro_patches::update_display(environ_cb, [](const char* key) { return get_option_value(key, "disabled"); });
+    libretro_patches::update_display(environ_cb, patch_option_value, nullptr);
     return true;
 }
 
@@ -1406,8 +1417,10 @@ static void publish_core_options(retro_environment_t cb)
     categories = fixed_categories;
     if (libretro_patches::any())
     {
-        const auto& patches = libretro_patches::definitions();
-        all.insert(all.end(), patches.begin(), patches.end());
+        std::size_t count = 0;
+        const retro_core_option_v2_definition* const patches = libretro_patches::definitions(count);
+        if (count)
+            all.insert(all.end(), patches, patches + count);
         categories.push_back({"patches", "Patch Manager", "The game's patches from RPCS3's patch files, patch.yml and imported_patch.yml. A change applies at the next start of the game."});
     }
     all.push_back({});
@@ -1432,7 +1445,7 @@ static void publish_core_options(retro_environment_t cb)
     {
         struct retro_core_options_update_display_callback update_display{libretro_update_options_display};
         cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK, &update_display);
-        libretro_patches::update_display(cb, [](const char* key) { return get_option_value(key, "disabled"); });
+        libretro_patches::update_display(cb, patch_option_value, nullptr);
     }
 }
 
@@ -2893,7 +2906,7 @@ bool retro_load_game(const struct retro_game_info* game)
     // The patches turned on in the Patch Manager, for RPCS3 to read as it
     // boots: before any boot (the null and software renderers boot just
     // below, the others as their context comes)
-    libretro_patches::write_config([](const char* key) { return get_option_value(key, "disabled"); });
+    libretro_patches::write_config(patch_option_value, nullptr);
 
     // For null renderer, boot immediately. For OpenGL, defer until
     // context_reset(). The software path has no context coming, so it boots

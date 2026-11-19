@@ -43,6 +43,7 @@ add_library(rpcs3_libretro SHARED
     libretro_frontend.cpp
     libretro_firmware.cpp
     libretro_patch_manager.cpp
+    libretro_patch_options.c
     libretro_vfs.cpp
     ${CMAKE_SOURCE_DIR}/rpcs3/rpcs3_version.cpp
     ${CMAKE_SOURCE_DIR}/rpcs3/Input/product_info.cpp
