@@ -1,5 +1,7 @@
 #pragma once
 
+#include <retro_atomic.h>
+
 #include "video_sink.h"
 
 #include <retro_atomic.h>
@@ -55,8 +57,11 @@ namespace utils
 		retro_atomic_int_t m_audio_users;
 		retro_atomic_size_t m_generation;      // moves on with each new sink
 		retro_atomic_size_t m_pause_time_us;
-		atomic_t<bool> m_active{false};
-		atomic_t<usz> m_start_time_us{umax};
+		retro_atomic_int_t m_active{0}; // 0 or 1
+		retro_atomic_64_t m_start_time_us{-1}; // usz, umax until the first frame or samples
+
+		bool active() const { return retro_atomic_load_acquire_int(&m_active) != 0; }
+		usz start_time_us() const { return static_cast<usz>(retro_atomic_load_acquire_64(&m_start_time_us)); }
 
 		// The renderer's thread's, and cellAudio's: the last time handed
 		// over, reset when the sink is a new one

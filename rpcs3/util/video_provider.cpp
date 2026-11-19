@@ -93,11 +93,11 @@ namespace utils
 		if (sink != old || !sink)
 			retro_atomic_fetch_add_size(&m_generation, 1);
 		retro_atomic_store_release_ptr(&m_sink, sink.get());
-		m_active = (m_type != recording_mode::stopped);
+		retro_atomic_store_release_int(&m_active, m_type != recording_mode::stopped ? 1 : 0);
 
-		if (!m_active)
+		if (!active())
 		{
-			m_start_time_us.store(umax);
+			retro_atomic_store_release_64(&m_start_time_us, -1);
 		}
 
 		if (old && (old_type != type || old != sink))
@@ -146,7 +146,7 @@ namespace utils
 
 		if (static_cast<recording_mode>(retro_atomic_load_acquire_int(&g_recording_mode)) == recording_mode::stopped)
 		{
-			m_active = false;
+			retro_atomic_store_release_int(&m_active, 0);
 		}
 
 		return static_cast<recording_mode>(retro_atomic_load_acquire_int(&g_recording_mode));
@@ -154,7 +154,7 @@ namespace utils
 
 	bool video_provider::can_consume_frame()
 	{
-		if (!m_active)
+		if (!active())
 		{
 			return false;
 		}
@@ -173,7 +173,7 @@ namespace utils
 		}
 
 		const usz pause_time_us = retro_atomic_load_acquire_size(&m_pause_time_us);
-		const usz elapsed_us = get_hw_clock_time() - m_start_time_us;
+		const usz elapsed_us = get_hw_clock_time() - start_time_us();
 		ensure(elapsed_us >= pause_time_us);
 
 		const usz timestamp_ms = (elapsed_us - pause_time_us) / 1000;
@@ -183,7 +183,7 @@ namespace utils
 
 	void video_provider::present_frame(std::vector<u8>&& data, u32 pitch, u32 width, u32 height, bool is_bgra)
 	{
-		if (!m_active)
+		if (!active())
 		{
 			return;
 		}
@@ -203,14 +203,14 @@ namespace utils
 
 		const u64 current_time_us = get_hw_clock_time();
 
-		if (m_start_time_us.compare_and_swap_test(umax, current_time_us))
+		if (retro_atomic_cas_64(&m_start_time_us, -1, static_cast<s64>(current_time_us)))
 		{
 			media_log.notice("video_provider: start time = %d", current_time_us);
 		}
 
 		// Calculate presentation timestamp.
 		const usz pause_time_us = retro_atomic_load_acquire_size(&m_pause_time_us);
-		const usz elapsed_us = current_time_us - m_start_time_us;
+		const usz elapsed_us = current_time_us - start_time_us();
 		ensure(elapsed_us >= pause_time_us);
 
 		const usz timestamp_ms = (elapsed_us - pause_time_us) / 1000;
@@ -230,7 +230,7 @@ namespace utils
 
 	void video_provider::present_samples(const u8* buf, u32 sample_count, u16 channels)
 	{
-		if (!buf || !sample_count || !channels || !m_active)
+		if (!buf || !sample_count || !channels || !active())
 		{
 			return;
 		}
@@ -255,14 +255,14 @@ namespace utils
 
 		const u64 current_time_us = get_hw_clock_time();
 
-		if (m_start_time_us.compare_and_swap_test(umax, current_time_us))
+		if (retro_atomic_cas_64(&m_start_time_us, -1, static_cast<s64>(current_time_us)))
 		{
 			media_log.notice("video_provider: start time = %d", current_time_us);
 		}
 
 		// Calculate presentation timestamp.
 		const usz pause_time_us = retro_atomic_load_acquire_size(&m_pause_time_us);
-		const usz elapsed_us = current_time_us - m_start_time_us;
+		const usz elapsed_us = current_time_us - start_time_us();
 		ensure(elapsed_us >= pause_time_us);
 
 		const usz timestamp_us = elapsed_us - pause_time_us;

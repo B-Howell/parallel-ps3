@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The video provider is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the recording's active flag is a `retro_atomic_int_t`, and its start time a `retro_atomic_64_t`. The start time is still set once, by whichever of the first frame or the first samples comes first, with a compare-and-swap from "unset".
+  - **Tests:** none at runtime: the provider needs a recording's video sink and encoder. A check fails if `atomic_t` comes back to it.
+
+
 - **The compressed savestate writers are off `atomic_t`.** Not yet run on a game.
   - **What changed:** for the deflate writer, the pending byte count is a `retro_atomic_64_t` and the pending wake and signal words are `retro_atomic_int_t`s. The count's "add or mark waiting" update is a compare-and-swap loop, and a writer over the memory bound waits on the wake word with `retro_waitaddr`. For the zstd writer, the error flag, the taken word that the compression and writer threads wait on, and the output and thread buffer indexes are `retro_atomic`. The writer thread keeps its own index and publishes it for `finalize()`. Two zstd fields nothing used are gone. The bytes written are unchanged.
   - **Tests:** `test_savestate_memory` writes and reads back two zstd savestates through the writer's threads. It was shown to hang (timed out) with the taken word's wake taken out. The deflate writer's wait needs 64 MB pending to be reached, and has no runtime test. A check fails if `atomic_t` comes back to serialization_ext.
