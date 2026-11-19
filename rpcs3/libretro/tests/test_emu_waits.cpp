@@ -32,6 +32,7 @@
 #include "Emu/Cell/Modules/cellAudio.h"
 #include "Emu/Cell/Modules/cellDmuxPamf.h"
 #include "Emu/RSX/VK/VKCommandStream.h"
+#include "Emu/RSX/Common/bitfield.hpp"
 #include "Emu/savestate_utils.hpp"
 
 #include <atomic>
@@ -835,6 +836,63 @@ int main()
 		drv = thread_state::aborting;
 		drv();
 		std::printf("test_emu_waits: the Vulkan driver manager wakes each drain, 200 rounds\n");
+	}
+
+	// The RSX's atomic bitmask: set, test, clear and wait on one retro_atomic
+	// word, 32 bits and 64 (the top bit of each too); a waiter woken as its
+	// mask changes, 300 times
+	{
+		enum class m32 : u32 { a = 1, b = 2, top = 0x80000000u };
+		enum class m64 : u64 { a = 1, high = 1ull << 40, top = 1ull << 63 };
+
+		rsx::atomic_bitmask_t<m32> f;
+		CHECK(!f);
+		f |= m32::a;
+		CHECK((f & m32::a) && !(f & m32::b));
+		CHECK(!f.test_and_set(m32::top));
+		CHECK(f.test_and_set(m32::top));
+		CHECK(static_cast<u32>(f.load()) == 0x80000001u);
+		CHECK(f.clear(m32::a) == 0x80000000u); // what is left
+		f &= m32::top;
+		CHECK(static_cast<u32>(f.load()) == 0x80000000u);
+		f.clear();
+		CHECK(!f);
+
+		rsx::atomic_bitmask_t<m64, u64> g;
+		g |= m64::high;
+		g |= m64::top;
+		CHECK((g & m64::high) && (g & m64::top) && !(g & m64::a));
+		CHECK(g.clear(m64::top) == (1ull << 40));
+		CHECK(static_cast<u64>(g.load()) == (1ull << 40));
+
+		std::atomic<int> woken{0};
+		f.store(m32::a);
+		named_thread waiter("bitmask wait test", [&]
+		{
+			for (int i = 0; i < 300; i++)
+			{
+				const m32 want = (i & 1) ? m32::a : m32::b;
+				while (f.load() != want)
+					f.wait(f.load());
+				woken++;
+			}
+		});
+		bool all = true;
+		for (int i = 0; i < 300 && all; i++)
+		{
+			for (int j = 0; j < 2000; j++)
+				std::this_thread::yield();
+			f.store((i & 1) ? m32::a : m32::b);
+			f.notify_all();
+			all = reaches(woken, i + 1);
+		}
+		if (!all)
+		{
+			std::fprintf(stderr, "%s:%d: check failed: a bitmask waiter not woken\n", __FILE__, __LINE__);
+			std::_Exit(1);
+		}
+		waiter();
+		std::printf("test_emu_waits: the RSX bitmask: 32 and 64 bits, its top bits, and 300 wakes\n");
 	}
 
 	// A game's callback and its argument in one retro_atomic word: installed

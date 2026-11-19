@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The RSX's atomic bitmask is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** `rsx::atomic_bitmask_t` (the RSX thread's async flip and interrupt masks, the overlays' status flags, and the Vulkan renderer's flush queue status and runtime state) keeps its bits in a `retro_atomic_int_t`, or a `retro_atomic_64_t` for a 64-bit mask. Set, clear and test are `retro_atomic` fetch-or and fetch-and. A wait on the mask, used by the Vulkan renderer's flush queue, is a `retro_waitaddr` wait, and is offered only for 32-bit masks. bitfield.hpp no longer includes util/atomic.hpp. Nothing is saved in savestates.
+  - **Tests:** `test_emu_waits` checks a 32-bit and a 64-bit mask, each with its top bit set, and that `clear()` gives back the bits left. It also checks that a waiter wakes as the mask changes, 300 times. It was shown to fail with `clear()` giving back the bits before, and with the wake taken out. A check fails if `atomic_t` comes back to bitfield.hpp.
+
+
 - **The program state cache's shader id counter is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the counter that numbers each vertex and fragment program as it is compiled is a `retro_atomic_64_t`, taken with `retro_atomic_fetch_add_64`. Nothing is saved in savestates.
   - **Tests:** none at runtime: the counter is taken only as a renderer compiles a program. A check fails if `atomic_t` comes back to the program state cache.
