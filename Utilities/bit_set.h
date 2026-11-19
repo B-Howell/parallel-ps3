@@ -23,6 +23,9 @@ Intersection (&) and symmetric difference (^) is also available.
 
 #include "util/types.hpp"
 #include "util/atomic.hpp"
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
+#include <utility>
 
 template <typename T>
 concept BitSetEnum = std::is_enum_v<T> && requires(T x)
@@ -255,64 +258,187 @@ constexpr bs_t<T> operator ^(const U& lhs, T rhs)
 	return bs_t<T>(lhs) ^ bs_t<T>(rhs);
 }
 
-// Atomic bitset specialization with optimized operations
+// Atomic bitset: one retro_atomic_int_t word (the flags of a 32-bit
+// enum), every operation on it a retro_atomic call. store() is an
+// exchange, a full barrier as the atomic_t store it replaces was;
+// release() is a release store. Its word is first, so a waiter list
+// waits on the bitset's own address
 template <BitSetEnum T>
-class atomic_bs_t : public atomic_t<::bs_t<T>>
+class atomic_bs_t
 {
 	// Corresponding bitset type
 	using bs_t = ::bs_t<T>;
-
-	// Base class
-	using base = atomic_t<::bs_t<T>>;
-
-	// Use underlying m_data
-	using base::m_data;
 
 public:
 	// Underlying type
 	using under = typename bs_t::under;
 
+private:
+	static_assert(sizeof(under) == 4, "atomic_bs_t: a 32-bit enum");
+
+	mutable retro_atomic_int_t m_word{0};
+
+	static bs_t from(int v)
+	{
+		return bs_t(0, static_cast<under>(static_cast<u32>(v)));
+	}
+
+	static int to(bs_t v)
+	{
+		return static_cast<int>(static_cast<u32>(static_cast<under>(v)));
+	}
+
+	static int to_bit(T rhs)
+	{
+		return static_cast<int>(1u << static_cast<uint>(static_cast<under>(rhs)));
+	}
+
+public:
 	atomic_bs_t() = default;
 
 	atomic_bs_t(const atomic_bs_t&) = delete;
 
 	atomic_bs_t& operator =(const atomic_bs_t&) = delete;
 
-	explicit constexpr atomic_bs_t(bs_t value)
-		: base(value)
+	explicit atomic_bs_t(bs_t value)
+		: m_word(to(value))
 	{
 	}
 
-	explicit constexpr atomic_bs_t(T bit)
-		: base(bit)
+	explicit atomic_bs_t(T bit)
+		: m_word(to(bs_t(bit)))
 	{
 	}
 
-	using base::operator bs_t;
+	bs_t load() const
+	{
+		return from(retro_atomic_load_acquire_int(&m_word));
+	}
+
+	operator bs_t() const
+	{
+		return load();
+	}
 
 	explicit operator bool() const
 	{
-		return static_cast<bool>(base::load());
+		return static_cast<bool>(load());
 	}
 
 	explicit operator under() const
 	{
-		return static_cast<under>(base::load());
+		return static_cast<under>(load());
 	}
 
 	bs_t operator +() const
 	{
-		return base::load();
+		return load();
+	}
+
+	// A full barrier, as the atomic_t store was
+	void store(bs_t value)
+	{
+		retro_atomic_exchange_int(&m_word, to(value));
+	}
+
+	void release(bs_t value)
+	{
+		retro_atomic_store_release_int(&m_word, to(value));
+	}
+
+	bs_t exchange(bs_t value)
+	{
+		return from(retro_atomic_exchange_int(&m_word, to(value)));
+	}
+
+	// The old flags, whether replaced or not
+	bs_t compare_and_swap(bs_t cmp, bs_t exch)
+	{
+		while (true)
+		{
+			const int old = retro_atomic_load_acquire_int(&m_word);
+
+			if (old != to(cmp) || retro_atomic_cas_int(&m_word, old, to(exch)))
+			{
+				return from(old);
+			}
+		}
+	}
+
+	bool compare_and_swap_test(bs_t cmp, bs_t exch)
+	{
+		return retro_atomic_cas_int(&m_word, to(cmp), to(exch)) != 0;
+	}
+
+	// As atomic_t::fetch_op: the old flags, or the old flags and func's
+	// result (nothing stored when it is false)
+	template <typename F, typename RT = std::invoke_result_t<F, bs_t&>>
+	std::conditional_t<std::is_void_v<RT>, bs_t, std::pair<bs_t, RT>> fetch_op(F func)
+	{
+		while (true)
+		{
+			const int old = retro_atomic_load_acquire_int(&m_word);
+			bs_t value = from(old);
+
+			if constexpr (std::is_void_v<RT>)
+			{
+				std::invoke(func, value);
+
+				if (retro_atomic_cas_int(&m_word, old, to(value))) [[likely]]
+				{
+					return from(old);
+				}
+			}
+			else
+			{
+				RT ret = std::invoke(func, value);
+
+				if (!ret || retro_atomic_cas_int(&m_word, old, to(value))) [[likely]]
+				{
+					return {from(old), std::move(ret)};
+				}
+			}
+		}
+	}
+
+	// As atomic_t::atomic_op: func's result, always stored
+	template <typename F, typename RT = std::invoke_result_t<F, bs_t&>>
+	RT atomic_op(F func)
+	{
+		while (true)
+		{
+			const int old = retro_atomic_load_acquire_int(&m_word);
+			bs_t value = from(old);
+
+			if constexpr (std::is_void_v<RT>)
+			{
+				std::invoke(func, value);
+
+				if (retro_atomic_cas_int(&m_word, old, to(value))) [[likely]]
+				{
+					return;
+				}
+			}
+			else
+			{
+				RT result = std::invoke(func, value);
+
+				if (retro_atomic_cas_int(&m_word, old, to(value))) [[likely]]
+				{
+					return result;
+				}
+			}
+		}
 	}
 
 	bs_t fetch_add(const bs_t& rhs)
 	{
-		return bs_t(0, atomic_storage<under>::fetch_or(m_data.m_data, rhs.m_data));
+		return from(retro_atomic_fetch_or_int(&m_word, to(rhs)));
 	}
 
 	bs_t add_fetch(const bs_t& rhs)
 	{
-		return bs_t(0, atomic_storage<under>::or_fetch(m_data.m_data, rhs.m_data));
+		return fetch_add(rhs) + rhs;
 	}
 
 	bs_t operator +=(const bs_t& rhs)
@@ -322,12 +448,12 @@ public:
 
 	bs_t fetch_sub(const bs_t& rhs)
 	{
-		return bs_t(0, atomic_storage<under>::fetch_and(m_data.m_data, ~rhs.m_data));
+		return from(retro_atomic_fetch_and_int(&m_word, ~to(rhs)));
 	}
 
 	bs_t sub_fetch(const bs_t& rhs)
 	{
-		return bs_t(0, atomic_storage<under>::and_fetch(m_data.m_data, ~rhs.m_data));
+		return fetch_sub(rhs) - rhs;
 	}
 
 	bs_t operator -=(const bs_t& rhs)
@@ -337,12 +463,12 @@ public:
 
 	bs_t fetch_and(const bs_t& rhs)
 	{
-		return bs_t(0, atomic_storage<under>::fetch_and(m_data.m_data, rhs.m_data));
+		return from(retro_atomic_fetch_and_int(&m_word, to(rhs)));
 	}
 
 	bs_t and_fetch(const bs_t& rhs)
 	{
-		return bs_t(0, atomic_storage<under>::and_fetch(m_data.m_data, rhs.m_data));
+		return fetch_and(rhs) & rhs;
 	}
 
 	bs_t operator &=(const bs_t& rhs)
@@ -352,12 +478,12 @@ public:
 
 	bs_t fetch_xor(const bs_t& rhs)
 	{
-		return bs_t(0, atomic_storage<under>::fetch_xor(m_data.m_data, rhs.m_data));
+		return fetch_op([&](bs_t& v) { v ^= rhs; });
 	}
 
 	bs_t xor_fetch(const bs_t& rhs)
 	{
-		return bs_t(0, atomic_storage<under>::xor_fetch(m_data.m_data, rhs.m_data));
+		return fetch_xor(rhs) ^ rhs;
 	}
 
 	bs_t operator ^=(const bs_t& rhs)
@@ -365,37 +491,49 @@ public:
 		return xor_fetch(rhs);
 	}
 
-	auto fetch_or(const bs_t&) = delete;
-	auto or_fetch(const bs_t&) = delete;
-	auto operator |=(const bs_t&) = delete;
-
+	// Whether the flag was set before
 	bool test_and_set(T rhs)
 	{
-		return atomic_storage<under>::bts(m_data.m_data, static_cast<uint>(static_cast<under>(rhs)));
+		return (retro_atomic_fetch_or_int(&m_word, to_bit(rhs)) & to_bit(rhs)) != 0;
 	}
 
 	bool test_and_reset(T rhs)
 	{
-		return atomic_storage<under>::btr(m_data.m_data, static_cast<uint>(static_cast<under>(rhs)));
+		return (retro_atomic_fetch_and_int(&m_word, ~to_bit(rhs)) & to_bit(rhs)) != 0;
 	}
 
 	bool test_and_invert(T rhs)
 	{
-		return atomic_storage<under>::btc(m_data.m_data, static_cast<uint>(static_cast<under>(rhs)));
+		return (to(fetch_xor(bs_t(rhs))) & to_bit(rhs)) != 0;
 	}
-
-	bool bit_test_set(uint bit) = delete;
-	bool bit_test_reset(uint bit) = delete;
-	bool bit_test_invert(uint bit) = delete;
 
 	bool all_of(bs_t arg) const
 	{
-		return base::load().all_of(arg);
+		return load().all_of(arg);
 	}
 
 	bool none_of(bs_t arg) const
 	{
-		return base::load().none_of(arg);
+		return load().none_of(arg);
+	}
+
+	// Waits while the flags are @old (the wait engine: thread stop checks
+	// apply); may return early
+	void wait(bs_t old, atomic_wait_timeout timeout = atomic_wait_timeout::inf) const
+	{
+		atomic_wait::list<1> list{};
+		list.template set_raw<0>(&m_word, static_cast<u32>(to(old)));
+		list.wait(timeout);
+	}
+
+	void notify_one()
+	{
+		retro_waitaddr_notify_one(&m_word);
+	}
+
+	void notify_all()
+	{
+		retro_waitaddr_notify_all(&m_word);
 	}
 };
 

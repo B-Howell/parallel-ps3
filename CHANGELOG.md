@@ -4,6 +4,16 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The atomic bitset (atomic_bs_t: every CPU thread's state, a socket's poll events) is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** `atomic_bs_t` no longer derives from `atomic_t`. It holds one `retro_atomic_int_t` (the flags of a 32-bit enum), and every operation on it is a `retro_atomic` call:
+    - setting and clearing flags (`+=`, `-=`, `test_and_set`, `test_and_reset`) is one atomic or/and, as before;
+    - `fetch_op` and `atomic_op` are the same compare-and-swap loops;
+    - `store()` is an exchange, a full barrier as the `atomic_t` store was, so code that sets a flag and then reads something else keeps its ordering, and `release()` is a release store;
+    - `wait()` sleeps on the word through the wait engine (thread stop checks apply) and `notify_one()`/`notify_all()` wake it.
+    The word is the bitset's first member, so the waiter lists that wait on a thread's state wait on the same address as before, and the generated code reading the state at its offset is unchanged.
+  - **Tests:** `test_emu_waits` checks each operation's old and new flags, that a `fetch_op` that declines stores nothing, and that a waiter is woken by a notify. It also runs two threads, each on a CPU of its own, setting and clearing a flag each 200000 times with none lost. It was shown to fail with `test_and_set` made a load and a store. A check fails if the bitset goes back to `atomic_t`.
+
+
 - **shared_mutex's word is C89 (Utilities/rw_word.c) on `retro_atomic`, and its slow paths no longer spin.** Not yet run on a game.
   - **What changed:**
     - **The word and its paths:** the word (the readers' count, a unit for each writer holding or queued, a hand-over bit and a broken-state bit) is a `retro_atomic_int_t`. Its fast paths (one compare-and-swap or one atomic add) are inline C89 in `rw_word.h`. Its slow paths are C89 in `rw_word.c`, and `mutex.cpp` is gone. A broken state (an underflow or overflow) is still fatal, through `ensure`.

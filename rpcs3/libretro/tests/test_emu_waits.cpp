@@ -71,6 +71,17 @@ static bool reaches(const std::atomic<int>& looks, int n)
 	return looks >= n;
 }
 
+// Flags for the atomic bitset below
+enum class test_flag : u32
+{
+	a,
+	b,
+	c,
+	d = 31,
+
+	__bitset_enum_max
+};
+
 // Settings of each kind, for the cfg values below
 struct cfg_values final : cfg::node
 {
@@ -1626,6 +1637,64 @@ int main()
 		writer.join();
 		CHECK(torn == 0);
 		std::printf("test_emu_waits: settings of each kind kept, a 128-bit one never seen torn\n");
+	}
+
+	// An atomic bitset (cpu_thread::state's kind): each operation's old and
+	// new flags, a fetch_op that declines storing nothing, two threads
+	// (each on a CPU of its own) setting and clearing a flag each 200000
+	// times with none lost, and a waiter woken by a notify
+	{
+		atomic_bs_t<test_flag> f{test_flag::a};
+		CHECK(!f.test_and_set(test_flag::b) && f.test_and_set(test_flag::b));
+		CHECK(f.all_of(test_flag::a + test_flag::b) && f.none_of(test_flag::c));
+		CHECK(f.test_and_reset(test_flag::a) && !f.test_and_reset(test_flag::a));
+		CHECK((f += test_flag::d) == test_flag::b + test_flag::d);
+		CHECK(f.fetch_sub(test_flag::b) == test_flag::b + test_flag::d && +f == test_flag::d);
+		CHECK(f.test_and_invert(test_flag::c) == false && f.test_and_invert(test_flag::c) == true);
+		CHECK(f.compare_and_swap(test_flag::a, test_flag::c) == test_flag::d && +f == test_flag::d);
+		CHECK(f.compare_and_swap_test(test_flag::d, test_flag::c) && +f == test_flag::c);
+		CHECK(!f.fetch_op([](bs_t<test_flag>& v) { v += test_flag::a; return false; }).second && +f == test_flag::c);
+		CHECK(f.fetch_op([](bs_t<test_flag>& v) { v += test_flag::a; }) == test_flag::c && +f == test_flag::a + test_flag::c);
+		f.release(bs_t<test_flag>{});
+		CHECK(!f);
+
+		std::atomic<int> lost{0};
+		auto flipper = [&](int cpu, test_flag mine)
+		{
+#ifdef __linux__
+			cpu_set_t set;
+			CPU_ZERO(&set);
+			CPU_SET(cpu % std::max(1u, std::thread::hardware_concurrency()), &set);
+			pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+#endif
+			for (int n = 0; n < 200000; n++)
+			{
+				if (f.test_and_set(mine) || !f.test_and_reset(mine))
+				{
+					lost++;
+				}
+			}
+		};
+		std::thread t1(flipper, 0, test_flag::a), t2(flipper, 1, test_flag::d);
+		t1.join();
+		t2.join();
+		CHECK(lost == 0 && !f);
+
+		std::atomic<int> started{0};
+		std::thread waiter([&]
+		{
+			started = 1;
+			while (!f.all_of(test_flag::b))
+			{
+				f.wait({});
+			}
+		});
+		while (!started) {}
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		f += test_flag::b;
+		f.notify_all();
+		waiter.join();
+		std::printf("test_emu_waits: an atomic bitset: each operation right, 400000 flag flips none lost, a waiter woken\n");
 	}
 
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");
