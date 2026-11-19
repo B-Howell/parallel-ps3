@@ -71,19 +71,28 @@ bool serialize<rsx::rsx_state>(utils::serial& ar, rsx::rsx_state& o)
 template <>
 bool serialize<rsx::rsx_iomap_table>(utils::serial& ar, rsx::rsx_iomap_table& o)
 {
-	// We do not need more than that
-	ar(std::span(o.ea.data(), 512));
+	// We do not need more than that: the first 512 entries, as the u32s
+	// they were
+	std::array<u32, 512> saved;
+
+	if (ar.is_writing())
+	{
+		for (u32 i = 0; i < 512; i++)
+			saved[i] = o.get_ea(i);
+	}
+
+	ar(saved);
 
 	if (!ar.is_writing())
 	{
 		// Populate o.io
-		for (const atomic_t<u32>& ea_addr : o.ea)
+		for (u32 i = 0; i < 512; i++)
 		{
-			const u32& addr = ea_addr.raw();
+			o.set_ea(i, saved[i]);
 
-			if (addr != umax)
+			if (saved[i] != umax)
 			{
-				o.io[addr >> 20].raw() = static_cast<u32>(&ea_addr - o.ea.data()) << 20;
+				o.set_io(saved[i] >> 20, i << 20);
 			}
 		}
 	}
@@ -104,9 +113,12 @@ namespace rsx
 		RSX_SHADER_CONTROL_PROGRAMMABLE_BLENDING;
 
 	rsx_iomap_table::rsx_iomap_table() noexcept
-		: ea(fill_array(-1))
-		, io(fill_array(-1))
 	{
+		for (u32 i = 0; i < 4096; i++)
+		{
+			set_ea(i, umax);
+			set_io(i, umax);
+		}
 	}
 
 	u32 get_address(u32 offset, u32 location, u32 size_to_check, std::source_location src_loc)
@@ -3167,13 +3179,13 @@ namespace rsx
 
 			for (u32 ea = address >> 20, end = ea + (size >> 20); ea < end; ea++)
 			{
-				const u32 io = std::rotl<u32>(iomap_table.io[ea], 32 - 20);
+				const u32 io = std::rotl<u32>(iomap_table.get_io(ea), 32 - 20);
 
 				if (io + 1)
 				{
 					unmap_status[io / 64] |= 1ull << (io & 63);
-					iomap_table.io[ea].release(-1);
-					iomap_table.ea[io].release(-1);
+					iomap_table.set_io(ea, umax);
+					iomap_table.set_ea(io, umax);
 				}
 			}
 

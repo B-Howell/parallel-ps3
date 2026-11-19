@@ -699,10 +699,10 @@ error_code sys_rsx_context_iomap(cpu_thread& cpu, u32 context_id, u64 io, u64 ea
 		auto& table = render->iomap_table;
 
 		// TODO: Investigate relaxed memory ordering
-		const u32 prev_ea = table.ea[io + i];
-		table.ea[io + i].release(static_cast<u32>(ea + i) << 20);
-		if (prev_ea + 1) table.io[prev_ea >> 20].release(-1); // Clear previous mapping if exists
-		table.io[ea + i].release(static_cast<u32>(io + i) << 20);
+		const u32 prev_ea = table.get_ea(io + i);
+		table.set_ea(io + i, static_cast<u32>(ea + i) << 20);
+		if (prev_ea + 1) table.set_io(prev_ea >> 20, umax); // Clear previous mapping if exists
+		table.set_io(ea + i, static_cast<u32>(io + i) << 20);
 	}
 
 	return CELL_OK;
@@ -743,9 +743,9 @@ error_code sys_rsx_context_iounmap(cpu_thread& cpu, u32 context_id, u64 io, u64 
 	{
 		auto& table = render->iomap_table;
 
-		const u32 ea_entry = table.ea[io];
-		table.ea[io++].release(-1);
-		if (ea_entry + 1) table.io[ea_entry >> 20].release(-1);
+		const u32 ea_entry = table.get_ea(io);
+		table.set_ea(io++, umax);
+		if (ea_entry + 1) table.set_io(ea_entry >> 20, umax);
 	}
 
 	return CELL_OK;
@@ -1031,7 +1031,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		{
 			for (u32 io = (offset >> 20), end = (range.end >> 20); io <= end; io++)
 			{
-				if (render->iomap_table.ea[io] == umax)
+				if (render->iomap_table.get_ea(io) == umax)
 				{
 					return { CELL_EINVAL, "iomap_table ea is umax" };
 				}

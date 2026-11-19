@@ -26,6 +26,7 @@
 #include "Emu/Cell/Modules/cellCamera.h"
 #include "Emu/Cell/Modules/cellSysutil.h"
 #include "Emu/RSX/Utils/rsx_utils.h"
+#include "Emu/RSX/Core/RSXIOMap.hpp"
 #include "Emu/RSX/Overlays/Shaders/shader_loading_dialog.h"
 #include "Emu/Cell/Modules/cellMsgDialog.h"
 #include "Emu/NP/net_http_thread.h"
@@ -130,6 +131,36 @@ int main()
 			av_in.set_reading_state(std::move(av.data));
 			auto back_conf = std::make_unique<rsx::avconf>(av_in);
 			CHECK(back_conf->get_gamma() == 1.25f && back_conf->configured());
+		}
+
+		// The RSX IO map: its first 512 entries written as the u32s they
+		// were, and read back with the reverse map filled in
+		{
+			auto table = std::make_unique<rsx::rsx_iomap_table>();
+			CHECK(table->get_ea(0) == umax && table->get_io(4095) == umax);
+			table->set_ea(3, 0x30u << 20);
+			table->set_io(0x30, 3u << 20);
+			table->set_ea(511, 0x40u << 20);
+			table->set_ea(600, 0x50u << 20); // past what is saved
+			CHECK(table->get_addr((3u << 20) | 0x1234) == ((0x30u << 20) | 0x1234));
+			utils::serial io;
+			io(*table);
+			std::array<u32, 512> io_want;
+			for (u32 i = 0; i < 512; i++)
+				io_want[i] = umax;
+			io_want[3] = 0x30u << 20;
+			io_want[511] = 0x40u << 20;
+			utils::serial io_bytes;
+			io_bytes(io_want);
+			CHECK(io.data == io_bytes.data);
+
+			utils::serial io_in;
+			io_in.set_reading_state(std::move(io.data));
+			auto back = std::make_unique<rsx::rsx_iomap_table>();
+			io_in(*back);
+			CHECK(back->get_ea(3) == (0x30u << 20) && back->get_io(0x30) == (3u << 20));
+			CHECK(back->get_ea(511) == (0x40u << 20) && back->get_io(0x40) == (511u << 20));
+			CHECK(back->get_ea(600) == umax && back->get_io(0x50) == umax);
 		}
 
 		// A resource's idle count wraps as the u8 it was

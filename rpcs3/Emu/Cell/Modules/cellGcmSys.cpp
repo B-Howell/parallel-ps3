@@ -105,7 +105,7 @@ u32 gcmIoOffsetToAddress(u32 io_offs)
 
 	if (io_offs < 0x20000000)
 	{
-		upper_12bits = rsx::get_current_renderer()->iomap_table.ea[io_offs >> 20];
+		upper_12bits = rsx::get_current_renderer()->iomap_table.get_ea(io_offs >> 20);
 
 		if (upper_12bits >= rsx::constants::local_mem_base)
 		{
