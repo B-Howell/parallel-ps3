@@ -2999,7 +2999,7 @@ error_code raw_spu_set_int_mask(u32 id, u32 class_id, u64 mask)
 		return CELL_ESRCH;
 	}
 
-	thread->int_ctrl[class_id].mask.exchange(mask);
+	retro_atomic_exchange_64(&thread->int_ctrl[class_id].mask, static_cast<s64>(mask));
 
 	return CELL_OK;
 }
@@ -3062,7 +3062,7 @@ error_code sys_isolated_spu_set_int_stat(ppu_thread& ppu, u32 id, u32 class_id, 
 }
 
 template <bool isolated = false>
-error_code raw_spu_get_int_control(u32 id, u32 class_id, vm::ptr<u64> value, atomic_t<u64> spu_int_ctrl_t::* control)
+error_code raw_spu_get_int_control(u32 id, u32 class_id, vm::ptr<u64> value, retro_atomic_64_t spu_int_ctrl_t::* control)
 {
 	if (class_id != 0 && class_id != 2)
 	{
@@ -3077,7 +3077,7 @@ error_code raw_spu_get_int_control(u32 id, u32 class_id, vm::ptr<u64> value, ato
 	}
 
 	cpu_thread::get_current()->check_state();
-	*value = thread->int_ctrl[class_id].*control;
+	*value = static_cast<u64>(retro_atomic_load_acquire_64(&(thread->int_ctrl[class_id].*control)));
 
 	return CELL_OK;
 }

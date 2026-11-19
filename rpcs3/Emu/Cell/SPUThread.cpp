@@ -724,10 +724,10 @@ std::tuple<u32, std::array<u32, 3>, u32> op_register_targets(u32 /*pc*/, spu_opc
 void spu_int_ctrl_t::set(u64 ints)
 {
 	// leave only enabled interrupts
-	ints &= mask;
+	ints &= get_mask();
 
 	// notify if at least 1 bit was set
-	if (ints && ~stat.fetch_or(ints) & ints)
+	if (ints && ~static_cast<u64>(retro_atomic_fetch_or_64(&stat, static_cast<s64>(ints))) & ints)
 	{
 		// No lock over all IDs: the thread counts itself in on the tag's own
 		// ID, which keeps the tag, and with it the handler it points at and
@@ -980,7 +980,7 @@ void spu_thread::dump_regs(std::string& ret, std::any& /*custom_data*/) const
 	{
 		for (usz i = 0; i < int_ctrl.size(); i++)
 		{
-			fmt::append(ret, "Int Ctrl[%u]: stat=0x%x, mask=0x%x\n", i, +int_ctrl[i].stat, +int_ctrl[i].mask);
+			fmt::append(ret, "Int Ctrl[%u]: stat=0x%x, mask=0x%x\n", i, int_ctrl[i].get_stat(), int_ctrl[i].get_mask());
 		}
 
 		u8 prxy_written = 0;
@@ -1989,7 +1989,11 @@ spu_thread::spu_thread(utils::serial& ar, lv2_spu_group* group)
 	{
 		for (spu_int_ctrl_t& ctrl : int_ctrl)
 		{
-			ar(ctrl.mask, ctrl.stat);
+			// The mask and status as the u64s they were
+			u64 mask_saved = 0, stat_saved = 0;
+			ar(mask_saved, stat_saved);
+			retro_atomic_store_release_64(&ctrl.mask, static_cast<s64>(mask_saved));
+			retro_atomic_store_release_64(&ctrl.stat, static_cast<s64>(stat_saved));
 			ctrl.set_tag(idm::get_unlocked<lv2_obj, lv2_int_tag>(ar.pop<u32>()));
 		}
 
@@ -2044,7 +2048,7 @@ void spu_thread::save(utils::serial& ar)
 	{
 		for (const spu_int_ctrl_t& ctrl : int_ctrl)
 		{
-			ar(ctrl.mask, ctrl.stat, lv2_obj::check(ctrl.tag) ? ctrl.tag->id : 0);
+			ar(ctrl.get_mask(), ctrl.get_stat(), lv2_obj::check(ctrl.tag) ? ctrl.tag->id : 0);
 		}
 	}
 

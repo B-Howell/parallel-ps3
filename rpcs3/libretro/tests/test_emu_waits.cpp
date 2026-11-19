@@ -1263,6 +1263,56 @@ int main()
 		std::printf("test_emu_waits: the SPU inbound mailbox: four values in order, 20000 races counted, 300 wakes\n");
 	}
 
+	// An SPU's interrupt control: only the mask's bits set, cleared, and
+	// two threads setting different bits at once both kept (20000 rounds,
+	// each thread on a CPU of its own)
+	{
+		spu_int_ctrl_t ctrl{};
+		retro_atomic_store_release_64(&ctrl.mask, 0b0110);
+		ctrl.set(0b0011);
+		CHECK(ctrl.get_stat() == 0b0010);
+		ctrl.clear(0b0010);
+		CHECK(ctrl.get_stat() == 0);
+
+		retro_atomic_store_release_64(&ctrl.mask, -1);
+		constexpr int rounds = 20000;
+		std::vector<std::atomic<int>> arrived(rounds), done(rounds);
+		int lost = 0;
+		const auto setter = [&](bool checks)
+		{
+#ifdef __linux__
+			cpu_set_t set;
+			CPU_ZERO(&set);
+			CPU_SET((checks ? 0 : 1) % std::max(1u, std::thread::hardware_concurrency()), &set);
+			pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+#endif
+			for (int i = 0; i < rounds; i++)
+			{
+				arrived[i]++;
+				while (arrived[i] < 2) {}
+				ctrl.set(checks ? 1 : 2);
+				done[i]++;
+				if (checks)
+				{
+					while (done[i] < 2) {}
+					lost += ctrl.get_stat() != 3;
+					ctrl.clear(3);
+					done[i] = 3;
+				}
+				else
+				{
+					while (done[i] < 3) {}
+				}
+			}
+		};
+		std::thread a(setter, true), b(setter, false);
+		a.join();
+		b.join();
+		CHECK(lost == 0);
+		ctrl.clear();
+		std::printf("test_emu_waits: an SPU's interrupt control: masked, cleared, 20000 races with both bits kept\n");
+	}
+
 	// A game's callback and its argument in one retro_atomic word: installed
 	// only where none is, taken off whole, and of two threads installing at
 	// once, one wins

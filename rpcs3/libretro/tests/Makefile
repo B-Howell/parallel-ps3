@@ -1271,6 +1271,8 @@ check: all
 	@if grep -n "atomic_t<u64> data{}\|atomic_t<u64> jostling_value{}" ../../Emu/Cell/SPUThread.h; then echo "atomic_t is back in spu_channel"; exit 1; else echo "spu_channel is retro_atomic"; fi
 	@# the SPU's inbound mailbox (spu_channel_4_t) is one 16-byte retro_atomic word, at the offset the recompilers use
 	@if grep -n "atomic_t<sync_var_t> values" ../../Emu/Cell/SPUThread.h; then echo "atomic_t is back in the SPU inbound mailbox"; exit 1; else echo "the SPU inbound mailbox is retro_atomic"; fi
+	@# an SPU's interrupt control (mask and status) is retro_atomic
+	@if grep -n "atomic_t<u64> mask;\|atomic_t<u64> stat;" ../../Emu/Cell/SPUThread.h; then echo "atomic_t is back in the SPU interrupt control"; exit 1; else echo "the SPU interrupt control is retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

@@ -276,12 +276,12 @@ void ppu_interrupt_thread_entry(ppu_thread& ppu, ppu_opcode_t, be_t<u32>*, struc
 					{
 						if (handler->thread.get() == &ppu)
 						{
-							if (spu.ch_out_intr_mbox.get_count() && ctrl.mask & SPU_INT2_STAT_MAILBOX_INT)
+							if (spu.ch_out_intr_mbox.get_count() && ctrl.get_mask() & SPU_INT2_STAT_MAILBOX_INT)
 							{
-								ctrl.stat |= SPU_INT2_STAT_MAILBOX_INT;
+								retro_atomic_fetch_or_64(&ctrl.stat, static_cast<s64>(SPU_INT2_STAT_MAILBOX_INT));
 							}
 
-							if (ctrl.mask & ctrl.stat)
+							if (ctrl.get_mask() & ctrl.get_stat())
 							{
 								ensure(!serv);
 								serv = handler;

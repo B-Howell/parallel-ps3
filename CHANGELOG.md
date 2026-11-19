@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **An SPU's interrupt control is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** each interrupt class's mask and status are `retro_atomic_64_t`s. Status bits are raised with `retro_atomic_fetch_or_64`, and a new one still tells the handler's thread, as before. They are cleared with `retro_atomic_fetch_and_64`. sys_spu's raw SPU calls and sys_interrupt's handler thread read and set them through `get_mask()`, `get_stat()` and the `retro_atomic` calls.
+  - **Savestates:** the mask and status are written and read as the `u64`s they were, so the format is unchanged.
+  - **Tests:** `test_emu_waits` checks that only the mask's bits are set and that they clear. Two threads, each on a CPU of its own, set different bits at once 20000 times, and both must be kept. It was shown to fail with the fetch-or made a load and a store. A check fails if `atomic_t` comes back to the interrupt control.
+
+
 - **The SPU's inbound mailbox is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the mailbox's state (waiting byte, count, and its first three values) is one `retro_atomic_128_t`. It stays 16 bytes at the mailbox's own address, where the ASMJIT recompiler loads it whole and the LLVM recompiler reads its first word, held by static asserts. `values_op()` and `values_fetch_op()` change it with a 16-byte compare-and-swap, as `atomic_op` and `fetch_op` did. Taking the waiting byte, and setting the first value from a syscall's answer, were one-byte and four-byte stores into the 16-byte word; they are now compare-and-swaps on the whole word. The count is read from the low half alone. The fourth value is a `retro_atomic_int_t` and the pending value a `retro_atomic_64_t`. A waiting SPU waits on the first word, as before.
   - **Savestates:** the mailbox is saved as its count and values, read through `try_read` and set with `set_values`, so the format is unchanged.

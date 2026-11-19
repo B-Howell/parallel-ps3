@@ -592,8 +592,11 @@ static_assert(sizeof(spu_channel_4_t::sync_var_t) == 16 && offsetof(spu_channel_
 
 struct spu_int_ctrl_t
 {
-	atomic_t<u64> mask;
-	atomic_t<u64> stat;
+	mutable retro_atomic_64_t mask{0}; // u64
+	mutable retro_atomic_64_t stat{0}; // u64
+
+	u64 get_mask() const { return static_cast<u64>(retro_atomic_load_acquire_64(&mask)); }
+	u64 get_stat() const { return static_cast<u64>(retro_atomic_load_acquire_64(&stat)); }
 
 	shared_ptr<struct lv2_int_tag> tag;
 
@@ -609,13 +612,13 @@ struct spu_int_ctrl_t
 
 	void clear(u64 ints)
 	{
-		stat &= ~ints;
+		retro_atomic_fetch_and_64(&stat, static_cast<s64>(~ints));
 	}
 
 	void clear()
 	{
-		mask.release(0);
-		stat.release(0);
+		retro_atomic_store_release_64(&mask, 0);
+		retro_atomic_store_release_64(&stat, 0);
 		set_tag({});
 	}
 };
