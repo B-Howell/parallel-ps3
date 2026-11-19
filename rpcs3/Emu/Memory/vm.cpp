@@ -61,7 +61,7 @@ namespace vm
 	alignas(4096) u8 g_reservations[65536 / 128 * 64]{0};
 
 	// Pointers to shared memory mirror or zeros for "normal" memory
-	alignas(4096) atomic_t<u64> g_shmem[65536]{0};
+	alignas(4096) retro_atomic_64_t g_shmem[65536]{};
 
 	// Memory locations
 	alignas(64) std::vector<std::shared_ptr<block_t>> g_locations;
@@ -178,7 +178,7 @@ namespace vm
 
 		for (u64 i = 0;; i++)
 		{
-			const u64 is_share = g_shmem[begin >> 16].load();
+			const u64 is_share = shmem_of(begin >> 16);
 
 			const u64 busy = for_all_range_locks(get_range_lock_bits(true), [&](u64 addr_exec, u32 size_exec)
 			{
@@ -197,7 +197,7 @@ namespace vm
 				size_exec = (size_exec << range_bits) >> range_bits;
 
 				// TODO (currently not possible): handle 2 64K pages (inverse range), or more pages
-				if (u64 is_shared = g_shmem[addr_exec >> 16]) [[unlikely]]
+				if (u64 is_shared = shmem_of(addr_exec >> 16)) [[unlikely]]
 				{
 					addr_exec = static_cast<u16>(addr_exec) | is_shared;
 				}
@@ -511,7 +511,7 @@ namespace vm
 
 			u64 addr1 = addr;
 
-			if (u64 is_shared = g_shmem[addr >> 16]) [[unlikely]]
+			if (u64 is_shared = shmem_of(addr >> 16)) [[unlikely]]
 			{
 				// Reservation address in shareable memory range
 				addr1 = static_cast<u16>(addr) | is_shared;
@@ -542,7 +542,7 @@ namespace vm
 						u64 addr3 = addr2;
 						u64 size3 = std::min<u64>(addr2 + size2, utils::align(addr2, 0x10000)) - addr2;
 
-						if (u64 is_shared = g_shmem[hi]) [[unlikely]]
+						if (u64 is_shared = shmem_of(hi)) [[unlikely]]
 						{
 							addr3 = static_cast<u16>(addr2) | is_shared;
 						}
@@ -761,7 +761,7 @@ namespace vm
 
 							for (u32 i = pp->first / 65536; i < pp->first / 65536 + size2 / 65536; i++)
 							{
-								g_shmem[i].release(shm_self);
+								retro_atomic_store_release_64(&g_shmem[i], static_cast<s64>(shm_self));
 
 								// Advance to the next position
 								shm_self += 0x10000;
@@ -783,7 +783,7 @@ namespace vm
 			// Map range as shareable
 			for (u32 i = addr / 65536; i < addr / 65536 + size / 65536; i++)
 			{
-				g_shmem[i].release(std::exchange(shm_self, shm_self + 0x10000));
+				retro_atomic_store_release_64(&g_shmem[i], static_cast<s64>(std::exchange(shm_self, shm_self + 0x10000)));
 			}
 		}
 
@@ -996,13 +996,13 @@ namespace vm
 		// Protect range locks from actual memory protection changes
 		auto range_lock = _lock_main_range_lock(range_allocation, addr, size);
 
-		if (shm && shm->flags() != 0 && g_shmem[addr >> 16])
+		if (shm && shm->flags() != 0 && shmem_of(addr >> 16))
 		{
 			shm->info--;
 
 			for (u32 i = addr / 65536; i < addr / 65536 + size / 65536; i++)
 			{
-				g_shmem[i].release(0);
+				retro_atomic_store_release_64(&g_shmem[i], 0);
 			}
 		}
 
@@ -2225,7 +2225,7 @@ namespace vm
 			range_lock->store(begin | (u64{size} << 32));
 
 			const u64 lock_val = mem_lock->load();
-			const u64 is_share = g_shmem[begin >> 16].load();
+			const u64 is_share = shmem_of(begin >> 16);
 
 			u64 lock_addr = static_cast<u32>(lock_val); // -> u64
 			u32 lock_size = static_cast<u32>(lock_val << range_bits >> (range_bits + 32));
@@ -2321,7 +2321,8 @@ namespace vm
 			};
 
 			std::memset(g_reservations, 0, sizeof(g_reservations));
-			std::memset(g_shmem, 0, sizeof(g_shmem));
+			for (retro_atomic_64_t& shm : g_shmem)
+				retro_atomic_store_relaxed_64(&shm, 0);
 			std::memset(g_range_lock_set, 0, sizeof(g_range_lock_set));
 			std::memset(g_range_lock_bits, 0, sizeof(g_range_lock_bits));
 

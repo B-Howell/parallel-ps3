@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The shared memory mirror table (vm::g_shmem) is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the 65536 entries, one per 64K page (the shared memory mirror's base, or 0), are `retro_atomic_64_t`s. `vm::shmem_of()` reads one. The memory manager sets them as shared memory is mapped and unmapped, and the range locks and the SPU's reservation code read them. They are zeroed one by one at the start, where a `memset` was.
+  - **Tests:** none at runtime: they are set as a game maps shared memory. A check fails if `atomic_t` comes back to the table.
+
+
 - **The SPU cache line waiters, the raw SPU MMIO log entry and the reservation checker flag are off `atomic_t`.** Not yet run on a game.
   - **What changed:**
     - **Cache line waiters:** the six waiters SPUs register on a reservation's cache line (its hash, address and count of waiters) are `retro_atomic_64_t`s, each on a 128-byte line of its own as before. `waiter_load()` reads one, and `waiter_op()` changes one with a compare-and-swap loop, as `fetch_op` and `atomic_op` did. The SPU thread and lv2's reservation notifier use them.

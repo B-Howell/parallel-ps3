@@ -3621,7 +3621,7 @@ void do_cell_atomic_128_store(u32 addr, const void* to_write)
 	const auto cpu = get_current_cpu_thread();
 	rsx::reservation_lock rsx_lock(addr, 128);
 
-	u64 shared_mem = vm::g_shmem[addr >> 16];
+	u64 shared_mem = vm::shmem_of(addr >> 16);
 
 	if (!shared_mem)
 	{
@@ -5084,7 +5084,7 @@ bool spu_thread::reservation_check(u32 addr, const decltype(rdata)& data, u32 cu
 				}
 
 				// g_shmem values are unchanged too
-				const u64 is_shmem = vm::g_shmem[addr >> 16];
+				const u64 is_shmem = vm::shmem_of(addr >> 16);
 
 				const u64 test_addr = is_shmem ? (is_shmem | static_cast<u16>(addr)) / 128 : u64{addr} / 128;
 				const u64 lock_addr = lock_val / 128;
@@ -5165,7 +5165,7 @@ bool spu_thread::reservation_check(u32 addr, u32 hash, atomic_t<u64, 128>* range
 				}
 
 				// g_shmem values are unchanged too
-				const u64 is_shmem = vm::g_shmem[addr >> 16];
+				const u64 is_shmem = vm::shmem_of(addr >> 16);
 
 				const u64 test_addr = is_shmem ? (is_shmem | static_cast<u16>(addr)) / 128 : u64{addr} / 128;
 				const u64 lock_addr = lock_val / 128;

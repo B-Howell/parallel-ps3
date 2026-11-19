@@ -30,7 +30,10 @@ namespace vm
 
 	extern atomic_t<u64, 128> g_range_lock_bits[2];
 
-	extern atomic_t<u64> g_shmem[];
+	// Per 64K page: the shared memory mirror's base (high bits) or 0
+	extern retro_atomic_64_t g_shmem[];
+
+	inline u64 shmem_of(u32 page64k) { return static_cast<u64>(retro_atomic_load_acquire_64(&g_shmem[page64k])); }
 
 	// Register reader
 	void passive_lock(cpu_thread& cpu);
