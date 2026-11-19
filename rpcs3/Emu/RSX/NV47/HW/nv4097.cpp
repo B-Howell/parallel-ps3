@@ -644,10 +644,15 @@ namespace rsx
 			{
 				struct logged_t
 				{
-					atomic_t<u8> logged_cause[256]{};
+					retro_atomic_int_t logged_cause[256]{};
 				};
 
-				const auto& is_error = ::at32(g_fxo->get<logged_t>().logged_cause, mode).try_inc(10);
+				// An error the first 10 times a mode is seen, a trace after
+				retro_atomic_int_t& count = ::at32(g_fxo->get<logged_t>().logged_cause, mode);
+				int seen = retro_atomic_load_acquire_int(&count);
+				while (seen < 10 && !retro_atomic_cas_int(&count, seen, seen + 1))
+					seen = retro_atomic_load_acquire_int(&count);
+				const bool is_error = seen < 10;
 				(is_error ? rsx_log.error : rsx_log.trace)("Unknown render mode %d", mode);
 				return;
 			}

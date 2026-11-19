@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **NV4097's log counts are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the count of times each unknown render mode has been seen (logged as an error the first 10 times, then as a trace) is a `retro_atomic_int_t`, raised by a compare-and-swap loop that stops at 10, as `try_inc` did. The report and notify writes into the game's memory are left for the guest memory work.
+  - **Tests:** none at runtime: the count only moves as a game sets an unknown render mode, and it only picks a log level. A check fails if `atomic_t` comes back to it.
+
+
 - **The RSX IO map is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the two 4096-entry tables (the effective address each IO megabyte maps to, and the IO address each effective megabyte is mapped at) are `retro_atomic_int_t`s. They are read and set through `get_ea()`, `get_io()`, `set_ea()` and `set_io()`, which sys_rsx, cellGcmSys, the FIFO and the RSX thread use.
   - **Savestates:** the first 512 entries are written and read through a `u32` array, the bytes `atomic_t<u32>` made, so the format is unchanged. On a load, the reverse map is filled in from them as before.
