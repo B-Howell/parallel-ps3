@@ -2,6 +2,8 @@
 
 #include "Emu/savestate_utils.hpp"
 #include "Utilities/Thread.h"
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 #include "cellPamf.h"
 #include "cellDmux.h"
 #include <span>
@@ -12,16 +14,18 @@ class alignas(0x80) dmux_pamf_hle_spurs_queue
 {
 	T* buffer;
 
-	alignas(atomic_t<u32>) std::array<std::byte, sizeof(atomic_t<u32>)> _size; // Stored in a byte array since the PPU context needs to be trivial
+	alignas(retro_atomic_int_t) std::array<std::byte, sizeof(retro_atomic_int_t)> _size; // Stored in a byte array since the PPU context needs to be trivial
+
+	retro_atomic_int_t* size_word() const { return std::launder(reinterpret_cast<retro_atomic_int_t*>(const_cast<std::byte*>(this->_size.data()))); }
 	u32 front;
 	u32 back;
 
 	template <bool is_peek>
 	bool _pop(T* lhs)
 	{
-		atomic_t<u32>& _size = *std::launder(reinterpret_cast<atomic_t<u32>*>(this->_size.data()));
+		retro_atomic_int_t* const _size = size_word();
 
-		if (_size == 0)
+		if (retro_atomic_load_acquire_int(_size) == 0)
 		{
 			return false;
 		}
@@ -34,8 +38,8 @@ class alignas(0x80) dmux_pamf_hle_spurs_queue
 		if constexpr (!is_peek)
 		{
 			front = (front + 1) % max_num_of_entries;
-			_size--;
-			_size.notify_one();
+			retro_atomic_fetch_sub_int(_size, 1);
+			retro_waitaddr_notify_one(_size);
 		}
 
 		return true;
@@ -45,7 +49,7 @@ public:
 	void init(T (&buffer)[max_num_of_entries])
 	{
 		this->buffer = buffer;
-		new (_size.data()) atomic_t<u32>(0);
+		new (_size.data()) retro_atomic_int_t(0);
 		front = 0;
 		back = 0;
 	}
@@ -55,9 +59,9 @@ public:
 	bool peek(T& lhs) const { return const_cast<dmux_pamf_hle_spurs_queue*>(this)->_pop<true>(&lhs); }
 	bool emplace(auto&&... args)
 	{
-		atomic_t<u32>& _size = *std::launder(reinterpret_cast<atomic_t<u32>*>(this->_size.data()));
+		retro_atomic_int_t* const _size = size_word();
 
-		if (_size >= max_num_of_entries)
+		if (static_cast<u32>(retro_atomic_load_acquire_int(_size)) >= max_num_of_entries)
 		{
 			return false;
 		}
@@ -65,21 +69,22 @@ public:
 		new (&buffer[back]) T(std::forward<decltype(args)>(args)...);
 
 		back = (back + 1) % max_num_of_entries;
-		_size++;
-		_size.notify_one();
+		retro_atomic_fetch_add_int(_size, 1);
+		retro_waitaddr_notify_one(_size);
 
 		return true;
 	}
 
-	[[nodiscard]] u32 size() const { return std::launder(reinterpret_cast<const atomic_t<u32>*>(this->_size.data()))->observe(); }
+	[[nodiscard]] u32 size() const { return static_cast<u32>(retro_atomic_load_acquire_int(size_word())); }
 
 	void wait() const
 	{
-		const atomic_t<u32>& _size = *std::launder(reinterpret_cast<const atomic_t<u32>*>(this->_size.data()));
+		retro_atomic_int_t* const _size = size_word();
 
-		while (_size == 0 && thread_ctrl::state() != thread_state::aborting)
+		// Woken by an entry, or this thread told to end
+		while (retro_atomic_load_acquire_int(_size) == 0 && thread_ctrl::state() != thread_state::aborting)
 		{
-			thread_ctrl::wait_on(_size, 0);
+			thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(_size, 0u); });
 		}
 	}
 };

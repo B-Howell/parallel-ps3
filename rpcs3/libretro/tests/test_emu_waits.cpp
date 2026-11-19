@@ -30,6 +30,7 @@
 #include "Emu/Cell/Modules/cellMsgDialog.h"
 #include "Emu/NP/net_http_thread.h"
 #include "Emu/Cell/Modules/cellAudio.h"
+#include "Emu/Cell/Modules/cellDmuxPamf.h"
 #include "Emu/savestate_utils.hpp"
 
 #include <atomic>
@@ -760,6 +761,53 @@ int main()
 		CHECK(p.cas_level_set({0.5f, -0.25f}, {0.5f, 0.0f}));
 		CHECK(p.get_level_set().value == 0.5f && p.get_level_set().inc == 0.0f);
 		std::printf("test_emu_waits: an audio port in the bytes atomic_t made, its state swapped as compare_and_swap did\n");
+	}
+
+	// The demuxer's queue (in the game's memory, its count a word in a byte
+	// array): a thread waiting on an empty queue wakes as an entry goes in,
+	// 500 times; it holds 4 at most and gives them back in order
+	{
+		static u32 entries[4];
+		static dmux_pamf_hle_spurs_queue<u32, 4> q;
+		q.init(entries);
+		CHECK(q.size() == 0);
+		for (u32 i = 0; i < 4; i++)
+			CHECK(q.emplace(i));
+		CHECK(!q.emplace(9u));
+		u32 v = 0;
+		CHECK(q.peek(v) && v == 0 && q.size() == 4);
+		for (u32 i = 0; i < 4; i++)
+			CHECK(q.pop(v) && v == i);
+		CHECK(!q.pop());
+
+		std::atomic<int> taken{0};
+		named_thread consumer("dmux queue test", [&]
+		{
+			for (int i = 0; i < 500; i++)
+			{
+				q.wait();
+				u32 got = 0;
+				if (!q.pop(got) || got != static_cast<u32>(i))
+					return;
+				taken++;
+			}
+		});
+		bool all = true;
+		for (int i = 0; i < 500 && all; i++)
+		{
+			for (int j = 0; j < 2000; j++)
+				std::this_thread::yield();
+			CHECK(q.emplace(static_cast<u32>(i)));
+			all = reaches(taken, i + 1);
+		}
+		CHECK(all);
+		if (!all)
+		{
+			std::fprintf(stderr, "%s:%d: check failed: the demuxer queue's waiter not woken\n", __FILE__, __LINE__);
+			std::_Exit(1);
+		}
+		consumer();
+		std::printf("test_emu_waits: the demuxer queue wakes its waiter, 500 entries, and keeps order\n");
 	}
 
 	// A game's callback and its argument in one retro_atomic word: installed

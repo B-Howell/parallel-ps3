@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellDmuxPamf's queue is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the queue that stands in for the SPURS queue between the demuxer and its SPU side lives in the game's memory, and counts its entries in a word kept in a byte array. That word is now a `retro_atomic_int_t`, the same 4 bytes, so savestates (the game's memory) are unchanged. A waiter on an empty queue waits through `thread_ctrl::wait_on_custom`, so it wakes on an entry or as its thread is told to end.
+  - **Tests:** `test_emu_waits` checks that the queue holds 4 entries at most and gives them back in order, and that a thread waiting on it wakes as each of 500 entries goes in. It was shown to fail with the wake taken out of `emplace`. A check fails if `atomic_t` comes back to cellDmuxPamf.
+
+
 - **sys_uart is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the AV UART's receive and send claim words and its three ring counters (what the AV thread, a blocking send and a blocking receive wait on) are `retro_atomic_int_t`. Their waits keep the same words, now through `set_raw` and `retro_waitaddr`. The AV thread's own wait keeps the game's timeout, a guest-clock wait. sys_uart.h no longer includes util/atomic.hpp. Nothing is saved in savestates.
   - **Tests:** `test_rsxaudio_ring` checks that each of 1000 writes to the AV UART's send ring wakes a thread waiting on its counter. It was shown to fail with the wake taken out of `enque_tx_data`. The receive side and the claim words have no runtime test of their own, because their callers are PPU syscalls. A check fails if `atomic_t` comes back to sys_uart.
