@@ -1068,7 +1068,7 @@ void spu_recompiler::branch_indirect(spu_opcode_t op, bool jt, bool ret)
 		auto _throw = [](spu_thread* _spu)
 		{
 			_spu->state += cpu_flag::dbg_pause;
-			spu_log.fatal("SPU Interrupts not implemented (mask=0x%x)", +_spu->ch_events.load().mask);
+			spu_log.fatal("SPU Interrupts not implemented (mask=0x%x)", +_spu->load_events().mask);
 			spu_runtime::g_escape(_spu);
 		};
 
@@ -2703,7 +2703,7 @@ void spu_recompiler::BISLED(spu_opcode_t op)
 {
 	auto get_events = [](spu_thread* _spu) -> u32
 	{
-		return _spu->get_events(_spu->ch_events.load().mask).count;
+		return _spu->get_events(_spu->load_events().mask).count;
 	};
 
 	c->mov(*addr, SPU_OFF_32(gpr, op.ra, &v128::_u32, 3));

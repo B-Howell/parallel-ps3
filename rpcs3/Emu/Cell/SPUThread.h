@@ -949,7 +949,55 @@ public:
 		bf_t<u64, 32, 32> mask;
 	};
 
-	atomic_t<ch_events_t> ch_events;
+	static_assert(sizeof(ch_events_t) == 8);
+
+	// One word; the recompilers read it at its own offset, 8 bytes
+	mutable retro_atomic_64_t ch_events{0}; // a ch_events_t
+
+	ch_events_t load_events() const { return std::bit_cast<ch_events_t>(static_cast<u64>(retro_atomic_load_acquire_64(&ch_events))); }
+
+	// @f changes the events it is given, and gives back what it likes: the
+	// change made with a compare-and-swap, f run again if another came
+	// first. Gives back f's result, as atomic_op did
+	template <typename F>
+	auto events_op(F&& f)
+	{
+		for (;;)
+		{
+			const s64 old = retro_atomic_load_acquire_64(&ch_events);
+			ch_events_t ev = std::bit_cast<ch_events_t>(static_cast<u64>(old));
+
+			if constexpr (std::is_void_v<std::invoke_result_t<F&, ch_events_t&>>)
+			{
+				f(ev);
+
+				if (static_cast<s64>(ev.all) == old || retro_atomic_cas_64(&ch_events, old, static_cast<s64>(ev.all)))
+					return;
+			}
+			else
+			{
+				auto result = f(ev);
+
+				if (static_cast<s64>(ev.all) == old || retro_atomic_cas_64(&ch_events, old, static_cast<s64>(ev.all)))
+					return result;
+			}
+		}
+	}
+
+	// As fetch_op did: the events before, and f's bool (false: nothing changed)
+	template <typename F>
+	std::pair<ch_events_t, bool> events_fetch_op(F&& f)
+	{
+		for (;;)
+		{
+			const s64 old = retro_atomic_load_acquire_64(&ch_events);
+			ch_events_t ev = std::bit_cast<ch_events_t>(static_cast<u64>(old));
+			const bool done = f(ev);
+
+			if (!done || static_cast<s64>(ev.all) == old || retro_atomic_cas_64(&ch_events, old, static_cast<s64>(ev.all)))
+				return {std::bit_cast<ch_events_t>(static_cast<u64>(old)), done};
+		}
+	}
 	bool interrupts_enabled = false;
 
 	u64 ch_dec_start_timestamp = 0; // timestamp of writing decrementer value

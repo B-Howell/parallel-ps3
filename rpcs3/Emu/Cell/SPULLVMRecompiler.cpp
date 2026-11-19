@@ -1218,7 +1218,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 			if (const u32 raddr = _spu->raddr)
 			{
 				// Last check for event before we clear the reservation
-				if (~_spu->ch_events.load().events & SPU_EVENT_LR)
+				if (~_spu->load_events().events & SPU_EVENT_LR)
 				{
 					if (raddr == addr)
 					{
@@ -1535,7 +1535,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 			if (const u32 raddr = _spu->raddr)
 			{
 				// Last check for event before we clear the reservation
-				if (~_spu->ch_events.load().events & SPU_EVENT_LR)
+				if (~_spu->load_events().events & SPU_EVENT_LR)
 				{
 					if (raddr == addr)
 					{
@@ -10047,7 +10047,7 @@ public:
 	{
 		_spu->set_interrupt_status(true);
 
-		if (_spu->ch_events.load().count)
+		if (_spu->load_events().count)
 		{
 			_spu->interrupts_enabled = false;
 			_spu->srr0 = addr;

@@ -956,7 +956,7 @@ void spu_thread::dump_regs(std::string& ret, std::any& /*custom_data*/) const
 		}
 	}
 
-	const auto events = ch_events.load();
+	const auto events = load_events();
 
 	fmt::append(ret, "\nEvent Stat: 0x%x\n", events.events);
 	fmt::append(ret, "Event Mask: 0x%x\n", events.mask);
@@ -1353,7 +1353,7 @@ void spu_thread::cpu_init()
 	retro_atomic_store_relaxed_64(&ch_out_mbox.data, 0);
 	retro_atomic_store_relaxed_64(&ch_out_intr_mbox.data, 0);
 
-	ch_events.raw() = {};
+	retro_atomic_store_relaxed_64(&ch_events, 0);
 	interrupts_enabled = false;
 	raddr = 0;
 
@@ -1673,7 +1673,7 @@ void spu_thread::cpu_work()
 	// Check interrupts every 16 iterations
 	if (!(old_iter_count % 16) && allow_interrupts_in_cpu_work)
 	{
-		if (u32 mask = ch_events.load().mask & SPU_EVENT_INTR_BUSY_CHECK)
+		if (u32 mask = load_events().mask & SPU_EVENT_INTR_BUSY_CHECK)
 		{
 			// LR check is expensive, do it once in a while
 			if (old_iter_count /*% 256*/)
@@ -1881,6 +1881,9 @@ void spu_thread::serialize_common(utils::serial& ar)
 	u32 prxy_mask = static_cast<u32>(retro_atomic_load_acquire_int(&mfc_prxy_mask));
 	u32 run_control = static_cast<u32>(retro_atomic_load_acquire_int(&run_ctrl));
 
+	// The events word as the u64 it was
+	u64 events_all = load_events().all;
+
 	// The channels' words as the u64s they were
 	spu_channel* const chans[] = {&ch_tag_stat, &ch_stall_stat, &ch_atomic_stat, &ch_out_mbox, &ch_out_intr_mbox, &ch_snr1, &ch_snr2, &exit_status};
 	u64 words[std::size(chans)];
@@ -1889,13 +1892,14 @@ void spu_thread::serialize_common(utils::serial& ar)
 
 	ar(gpr, pc, ch_mfc_cmd, mfc_size, mfc_barrier, mfc_fence, prxy_cmd, prxy_mask, prxy_written
 		, srr0, ch_tag_upd, ch_tag_mask, words[0], ch_stall_mask, words[1], words[2]
-		, words[3], words[4], snr_config, words[5], words[6], ch_events.raw().all, interrupts_enabled
+		, words[3], words[4], snr_config, words[5], words[6], events_all, interrupts_enabled
 		, run_control, words[7], status_npc.raw().status, ch_dec_start_timestamp, ch_dec_value, is_dec_frozen);
 
 	if (!ar.is_writing())
 	{
 		for (usz i = 0; i < std::size(chans); i++)
 			retro_atomic_store_release_64(&chans[i]->data, static_cast<s64>(words[i]));
+		retro_atomic_store_release_64(&ch_events, static_cast<s64>(events_all));
 	}
 
 	if (!ar.is_writing())
@@ -2065,7 +2069,7 @@ void spu_thread::push_snr(u32 number, u32 value)
 	const bool bitor_bit = !!((snr_config >> number) & 1);
 
 	// Lock event channel in case it needs event notification
-	ch_events.atomic_op([](ch_events_t& ev)
+	events_op([](ch_events_t& ev)
 	{
 		ev.locks++;
 	});
@@ -2087,7 +2091,7 @@ void spu_thread::push_snr(u32 number, u32 value)
 		}
 	}
 
-	ch_events.atomic_op([](ch_events_t& ev)
+	events_op([](ch_events_t& ev)
 	{
 		ev.locks--;
 	});
@@ -3586,7 +3590,7 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 		if (raddr)
 		{
 			// Last check for event before we clear the reservation
-			if (~ch_events.load().events & SPU_EVENT_LR)
+			if (~load_events().events & SPU_EVENT_LR)
 			{
 				if (raddr == addr)
 				{
@@ -3757,7 +3761,7 @@ void spu_thread::do_putlluc(const spu_mfc_cmd& args)
 		// Try to process PUTLLUC using PUTLLC when a reservation is active:
 		// If it fails the reservation is cleared, LR event is set and we fallback to the main implementation
 		// All of this is done atomically in PUTLLC
-		if (!(ch_events.load().events & SPU_EVENT_LR) && do_putllc(args))
+		if (!(load_events().events & SPU_EVENT_LR) && do_putllc(args))
 		{
 			// Success, return as our job was done here
 			return;
@@ -3936,7 +3940,7 @@ bool spu_thread::do_mfc(bool can_escape, bool must_finish)
 
 bool spu_thread::check_mfc_interrupts(u32 next_pc)
 {
-	if (ch_events.load().count && std::exchange(interrupts_enabled, false))
+	if (load_events().count && std::exchange(interrupts_enabled, false))
 	{
 		srr0 = next_pc;
 
@@ -4332,7 +4336,7 @@ bool spu_thread::process_mfc_cmd()
 			if (raddr != addr)
 			{
 				// Last check for event before we replace the reservation with a new one
-				if (~ch_events.load().events & SPU_EVENT_LR && reservation_check(raddr, rdata, addr))
+				if (~load_events().events & SPU_EVENT_LR && reservation_check(raddr, rdata, addr))
 				{
 					set_events(SPU_EVENT_LR);
 				}
@@ -4363,7 +4367,7 @@ bool spu_thread::process_mfc_cmd()
 						if ([&]() -> bool
 						{
 							// Validation that it is indeed GETLLAR spinning (large time window is intentional)
-							if (last_getllar_addr != addr || last_getllar_gpr1 != gpr[1]._u32[3] || now - last_gtsc >= 5'000 || (interrupts_enabled && ch_events.load().mask))
+							if (last_getllar_addr != addr || last_getllar_gpr1 != gpr[1]._u32[3] || now - last_gtsc >= 5'000 || (interrupts_enabled && load_events().mask))
 							{
 								// Seemingly not
 								getllar_busy_waiting_switch = umax;
@@ -5287,7 +5291,7 @@ std::pair<u32, u32> spu_thread::read_dec() const
 
 spu_thread::ch_events_t spu_thread::get_events(u64 mask_hint, bool waiting, bool reading)
 {
-	if (auto mask1 = ch_events.load().mask; mask1 & ~SPU_EVENT_IMPLEMENTED)
+	if (auto mask1 = load_events().mask; mask1 & ~SPU_EVENT_IMPLEMENTED)
 	{
 		fmt::throw_exception("SPU Events not implemented (mask=0x%x)", mask1);
 	}
@@ -5321,7 +5325,7 @@ retry:
 		set_events(collect);
 	}
 
-	auto [res, ok] = ch_events.fetch_op([&](ch_events_t& events)
+	auto [res, ok] = events_fetch_op([&](ch_events_t& events)
 	{
 		if (!reading)
 			return false;
@@ -5343,7 +5347,7 @@ retry:
 
 void spu_thread::set_events(u32 bits)
 {
-	if (ch_events.atomic_op([&](ch_events_t& events)
+	if (events_op([&](ch_events_t& events)
 	{
 		events.events |= bits;
 
@@ -5366,7 +5370,7 @@ void spu_thread::set_interrupt_status(bool enable)
 	if (enable)
 	{
 		// Detect enabling interrupts with events masked
-		if (auto mask = ch_events.load().mask; mask & SPU_EVENT_INTR_BUSY_CHECK)
+		if (auto mask = load_events().mask; mask & SPU_EVENT_INTR_BUSY_CHECK)
 		{
 			if (g_cfg.core.spu_decoder != spu_decoder_type::_static && g_cfg.core.spu_decoder != spu_decoder_type::dynamic)
 			{
@@ -5580,12 +5584,12 @@ s64 spu_thread::get_ch_value(u32 ch)
 
 	case SPU_RdEventMask:
 	{
-		return ch_events.load().mask;
+		return load_events().mask;
 	}
 
 	case SPU_RdEventStat:
 	{
-		const u32 mask1 = ch_events.load().mask;
+		const u32 mask1 = load_events().mask;
 
 		auto events = get_events(mask1, false, true);
 
@@ -6402,9 +6406,9 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 
 	case SPU_WrEventMask:
 	{
-		get_events(value | static_cast<u32>(ch_events.load().mask));
+		get_events(value | static_cast<u32>(load_events().mask));
 
-		if (ch_events.atomic_op([&](ch_events_t& events)
+		if (events_op([&](ch_events_t& events)
 		{
 			events.mask = value;
 
@@ -6430,11 +6434,11 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 	case SPU_WrEventAck:
 	{
 		// "Collect" events before final acknowledgment
-		get_events(value | static_cast<u32>(ch_events.load().mask));
+		get_events(value | static_cast<u32>(load_events().mask));
 
 		bool freeze_dec = false;
 
-		const bool check_intr = ch_events.atomic_op([&](ch_events_t& events)
+		const bool check_intr = events_op([&](ch_events_t& events)
 		{
 			events.events &= ~value;
 

@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **An SPU's event word is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the events, their mask, the lock count and the waiting and count bits are one `retro_atomic_64_t`. It stays 8 bytes at its own offset, where both recompilers load it, held by a static assert on the union's size. `load_events()` reads it whole. `events_op()` and `events_fetch_op()` change it with a compare-and-swap loop, giving back what `atomic_op` and `fetch_op` gave. The SPU thread and both recompilers' helpers use them.
+  - **Savestates:** the word is written and read as the `u64` it was, so the format is unchanged.
+  - **Tests:** none at runtime: the word belongs to an SPU thread, which needs a game's SPU and its local store mapped. A check fails if `atomic_t` comes back to it.
+
+
 - **An SPU's interrupt control is off `atomic_t`.** Not yet run on a game.
   - **What changed:** each interrupt class's mask and status are `retro_atomic_64_t`s. Status bits are raised with `retro_atomic_fetch_or_64`, and a new one still tells the handler's thread, as before. They are cleared with `retro_atomic_fetch_and_64`. sys_spu's raw SPU calls and sys_interrupt's handler thread read and set them through `get_mask()`, `get_stat()` and the `retro_atomic` calls.
   - **Savestates:** the mask and status are written and read as the `u64`s they were, so the format is unchanged.
