@@ -17,8 +17,8 @@ LOG_CHANNEL(cellUserInfo);
 
 struct user_info_manager
 {
-	atomic_t<bool> enable_overlay{false};
-	atomic_t<bool> dialog_opened{false};
+	retro_atomic_int_t enable_overlay{0}; // 0 or 1
+	retro_atomic_int_t dialog_opened{0}; // 0 or 1
 };
 
 std::string get_username(const u32 user_id)
@@ -116,7 +116,7 @@ error_code cellUserInfoSelectUser_ListType(vm::ptr<CellUserInfoTypeSet> listType
 		return CELL_USERINFO_ERROR_PARAM;
 	}
 
-	if (g_fxo->get<user_info_manager>().dialog_opened)
+	if (retro_atomic_load_acquire_int(&g_fxo->get<user_info_manager>().dialog_opened))
 	{
 		return CELL_USERINFO_ERROR_BUSY;
 	}
@@ -154,14 +154,14 @@ error_code cellUserInfoSelectUser_ListType(vm::ptr<CellUserInfoTypeSet> listType
 
 	if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
 	{
-		if (g_fxo->get<user_info_manager>().dialog_opened.exchange(true))
+		if (retro_atomic_exchange_int(&g_fxo->get<user_info_manager>().dialog_opened, 1))
 		{
 			return CELL_USERINFO_ERROR_BUSY;
 		}
 
 		if (s32 ret = sysutil_send_system_cmd(CELL_SYSUTIL_DRAWING_BEGIN, 0); ret < 0)
 		{
-			g_fxo->get<user_info_manager>().dialog_opened = false;
+			retro_atomic_store_release_int(&g_fxo->get<user_info_manager>().dialog_opened, 0);
 			return CELL_USERINFO_ERROR_BUSY;
 		}
 
@@ -170,7 +170,7 @@ error_code cellUserInfoSelectUser_ListType(vm::ptr<CellUserInfoTypeSet> listType
 
 		cellUserInfo.warning("cellUserInfoSelectUser_ListType: opening user_list_dialog with: title='%s', focused=%d", title, focused);
 
-		const bool enable_overlay = g_fxo->get<user_info_manager>().enable_overlay;
+		const bool enable_overlay = retro_atomic_load_acquire_int(&g_fxo->get<user_info_manager>().enable_overlay) != 0;
 		const error_code result = manager->create<rsx::overlays::user_list_dialog>()->show(title, focused, user_ids, enable_overlay, [funcSelect, userdata](s32 status)
 		{
 			s32 callback_result = CELL_USERINFO_RET_CANCEL;
@@ -186,7 +186,7 @@ error_code cellUserInfoSelectUser_ListType(vm::ptr<CellUserInfoTypeSet> listType
 
 			cellUserInfo.warning("cellUserInfoSelectUser_ListType: callback_result=%s, selected_user_id=%d, selected_username='%s'", callback_result, selected_user_id, selected_username);
 
-			g_fxo->get<user_info_manager>().dialog_opened = false;
+			retro_atomic_store_release_int(&g_fxo->get<user_info_manager>().dialog_opened, 0);
 
 			sysutil_send_system_cmd(CELL_SYSUTIL_DRAWING_END, 0);
 
@@ -229,7 +229,7 @@ error_code cellUserInfoSelectUser_SetList(vm::ptr<CellUserInfoListSet> setList, 
 		return CELL_USERINFO_ERROR_PARAM;
 	}
 
-	if (g_fxo->get<user_info_manager>().dialog_opened)
+	if (retro_atomic_load_acquire_int(&g_fxo->get<user_info_manager>().dialog_opened))
 	{
 		return CELL_USERINFO_ERROR_BUSY;
 	}
@@ -263,14 +263,14 @@ error_code cellUserInfoSelectUser_SetList(vm::ptr<CellUserInfoListSet> setList, 
 
 	if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
 	{
-		if (g_fxo->get<user_info_manager>().dialog_opened.exchange(true))
+		if (retro_atomic_exchange_int(&g_fxo->get<user_info_manager>().dialog_opened, 1))
 		{
 			return CELL_USERINFO_ERROR_BUSY;
 		}
 
 		if (s32 ret = sysutil_send_system_cmd(CELL_SYSUTIL_DRAWING_BEGIN, 0); ret < 0)
 		{
-			g_fxo->get<user_info_manager>().dialog_opened = false;
+			retro_atomic_store_release_int(&g_fxo->get<user_info_manager>().dialog_opened, 0);
 			return CELL_USERINFO_ERROR_BUSY;
 		}
 
@@ -279,7 +279,7 @@ error_code cellUserInfoSelectUser_SetList(vm::ptr<CellUserInfoListSet> setList, 
 
 		cellUserInfo.warning("cellUserInfoSelectUser_SetList: opening user_list_dialog with: title='%s', focused=%d", title, focused);
 
-		const bool enable_overlay = g_fxo->get<user_info_manager>().enable_overlay;
+		const bool enable_overlay = retro_atomic_load_acquire_int(&g_fxo->get<user_info_manager>().enable_overlay) != 0;
 		const error_code result = manager->create<rsx::overlays::user_list_dialog>()->show(title, focused, user_ids, enable_overlay, [funcSelect, userdata](s32 status)
 		{
 			s32 callback_result = CELL_USERINFO_RET_CANCEL;
@@ -295,7 +295,7 @@ error_code cellUserInfoSelectUser_SetList(vm::ptr<CellUserInfoListSet> setList, 
 
 			cellUserInfo.warning("cellUserInfoSelectUser_SetList: callback_result=%s, selected_user_id=%d, selected_username='%s'", callback_result, selected_user_id, selected_username);
 
-			g_fxo->get<user_info_manager>().dialog_opened = false;
+			retro_atomic_store_release_int(&g_fxo->get<user_info_manager>().dialog_opened, 0);
 
 			sysutil_send_system_cmd(CELL_SYSUTIL_DRAWING_END, 0);
 
@@ -333,7 +333,7 @@ void cellUserInfoEnableOverlay(s32 enable)
 {
 	cellUserInfo.notice("cellUserInfoEnableOverlay(enable=%d)", enable);
 	auto& manager = g_fxo->get<user_info_manager>();
-	manager.enable_overlay = enable != 0;
+	retro_atomic_store_release_int(&manager.enable_overlay, enable != 0 ? 1 : 0);
 }
 
 error_code cellUserInfoGetList(vm::ptr<u32> listNum, vm::ptr<CellUserInfoUserList> listBuf, vm::ptr<u32> currentUserId)
