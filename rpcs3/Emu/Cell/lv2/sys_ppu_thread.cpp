@@ -103,7 +103,7 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 		const auto closed = idm::close<named_thread<ppu_thread>>(ppu.id);
 
 		// Get joiner ID
-		old_status = ppu.joiner.fetch_op([](ppu_join_status& status)
+		old_status = ppu.joiner_op([](ppu_join_status& status)
 		{
 			if (status == ppu_join_status::joinable)
 			{
@@ -140,9 +140,9 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 		ppu.state -= cpu_flag::suspend;
 	}
 
-	while (ppu.joiner == ppu_join_status::zombie)
+	while (ppu.get_joiner() == ppu_join_status::zombie)
 	{
-		if (ppu.is_stopped() && ppu.joiner.compare_and_swap_test(ppu_join_status::zombie, ppu_join_status::joinable))
+		if (ppu.is_stopped() && retro_atomic_cas_int(&ppu.joiner, static_cast<int>(ppu_join_status::zombie), static_cast<int>(ppu_join_status::joinable)))
 		{
 			// Abort
 			ppu.state += cpu_flag::again;
@@ -150,7 +150,7 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 		}
 
 		// Wait for termination
-		thread_ctrl::wait_on(ppu.joiner, ppu_join_status::zombie);
+		thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&ppu.joiner, static_cast<u32>(ppu_join_status::zombie)); });
 	}
 
 	ppu_thread_exit(ppu, {}, nullptr, nullptr);
@@ -202,7 +202,7 @@ error_code sys_ppu_thread_join(ppu_thread& ppu, u32 thread_id, vm::ptr<u64> vptr
 
 	auto thread = idm::get_entered<named_thread<ppu_thread>>(thread_id, [&, notify = lv2_obj::notify_all_t()](ppu_thread& thread) -> CellError
 	{
-		CellError result = thread.joiner.atomic_op([&](ppu_join_status& value) -> CellError
+		CellError result = thread.joiner_op([&](ppu_join_status& value) -> CellError
 		{
 			switch (value)
 			{
@@ -243,13 +243,13 @@ error_code sys_ppu_thread_join(ppu_thread& ppu, u32 thread_id, vm::ptr<u64> vptr
 	if (thread.ret == CELL_EAGAIN)
 	{
 		// Notify thread if waiting for a joiner
-		thread->joiner.notify_one();
+		retro_waitaddr_notify_one(&thread->joiner);
 	}
 
 	// Wait for cleanup
 	(*thread.ptr)();
 
-	if (thread->joiner != ppu_join_status::exited)
+	if (thread->get_joiner() != ppu_join_status::exited)
 	{
 		// Thread aborted, log it later
 		ppu.state += cpu_flag::again;
@@ -286,7 +286,7 @@ error_code sys_ppu_thread_detach(ppu_thread& ppu, u32 thread_id)
 
 	auto [ptr, _] = idm::withdraw<named_thread<ppu_thread>>(thread_id, [&](ppu_thread& thread)
 	{
-		result = thread.joiner.atomic_op([](ppu_join_status& value) -> CellError
+		result = thread.joiner_op([](ppu_join_status& value) -> CellError
 		{
 			switch (value)
 			{
@@ -333,7 +333,7 @@ error_code sys_ppu_thread_get_join_state(ppu_thread& ppu, vm::ptr<s32> isjoinabl
 		return CELL_EFAULT;
 	}
 
-	*isjoinable = ppu.joiner != ppu_join_status::detached;
+	*isjoinable = ppu.get_joiner() != ppu_join_status::detached;
 	return CELL_OK;
 }
 

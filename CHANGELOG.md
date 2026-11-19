@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **A PPU thread's joiner status is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the status is a `retro_atomic_int_t`. It holds joinable, detached, zombie or exited, or the id of the thread joining it. `get_joiner()` reads it. `joiner_op()` changes it with a compare-and-swap loop and gives back what `atomic_op` or `fetch_op` gave. sys_ppu_thread's exit, join and detach use them. An exiting thread that waits as a zombie for its joiner waits through `thread_ctrl::wait_on_custom`.
+  - **Savestates:** the status is read through `ar.pop<ppu_join_status>()` and written as the `ppu_join_status` it was, so the format is unchanged.
+  - **Tests:** none at runtime: a PPU thread cannot be made without a game. A check fails if `atomic_t` comes back to the joiner.
+
+
 - **A PPU thread's command and start gate words are off `atomic_t`.** Not yet run on a game.
   - **What changed:** five words are now `retro_atomic_int_t`:
     - the command notify word, which interrupt threads wait on and which sys_interrupt, sys_ppu_thread and the RSX set;

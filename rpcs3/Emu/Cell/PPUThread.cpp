@@ -2592,7 +2592,7 @@ void ppu_thread::dump_misc(std::string& ret, std::any& custom_data) const
 
 	fmt::append(ret, "Priority: %d\n", prio.load().prio);
 	fmt::append(ret, "Stack: 0x%x..0x%x\n", stack_addr, stack_addr + stack_size - 1);
-	fmt::append(ret, "Joiner: %s\n", joiner.load());
+	fmt::append(ret, "Joiner: %s\n", get_joiner());
 
 	if (const auto size = cmd_queue.size())
 		fmt::append(ret, "Commands: %u\n", size);
@@ -2977,7 +2977,7 @@ ppu_thread::ppu_thread(const ppu_thread_params& param, std::string_view name, u3
 	: cpu_thread(idm::last_id<ppu_thread>())
 	, stack_size(param.stack_size)
 	, stack_addr(param.stack_addr)
-	, joiner(detached != 0 ? ppu_join_status::detached : ppu_join_status::joinable)
+	, joiner(static_cast<int>(detached != 0 ? ppu_join_status::detached : ppu_join_status::joinable))
 	, entry_func(param.entry)
 	, start_time(get_guest_system_time())
 	, is_interrupt_thread(detached < 0)
@@ -3029,7 +3029,7 @@ void vdecEntry(ppu_thread& ppu, u32 vid);
 
 bool ppu_thread::savable() const
 {
-	if (joiner == ppu_join_status::exited)
+	if (get_joiner() == ppu_join_status::exited)
 	{
 		return false;
 	}
@@ -3077,7 +3077,7 @@ ppu_thread::ppu_thread(utils::serial& ar)
 	: cpu_thread(idm::last_id<ppu_thread>()) // last_id<>() is shown to constructor on serialization
 	, stack_size(ar)
 	, stack_addr(ar)
-	, joiner(ar.pop<ppu_join_status>())
+	, joiner(static_cast<int>(ar.pop<ppu_join_status>()))
 	, entry_func(std::bit_cast<ppu_func_opd_t>(ar.pop<u64>()))
 	, is_interrupt_thread(ar)
 {
@@ -3271,7 +3271,7 @@ void ppu_thread::save(utils::serial& ar)
 
 	const u64 entry = std::bit_cast<u64>(entry_func);
 
-	ppu_join_status _joiner = joiner;
+	ppu_join_status _joiner = get_joiner();
 	if (_joiner >= ppu_join_status::max)
 	{
 		// Joining thread should recover this member properly

@@ -3234,7 +3234,7 @@ void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savesta
 
 				for (auto& ppu : ppu_thread_list)
 				{
-					if (ppu && (ppu->state & cpu_flag::exit || ppu->joiner == ppu_join_status::zombie))
+					if (ppu && (ppu->state & cpu_flag::exit || ppu->get_joiner() == ppu_join_status::zombie))
 					{
 						ppu.reset();
 						thread_exited_count++;

@@ -292,7 +292,37 @@ public:
 	const u32 stack_size; // Stack size
 	const u32 stack_addr; // Stack address
 
-	atomic_t<ppu_join_status> joiner; // Joining thread or status
+	retro_atomic_int_t joiner; // Joining thread or status (a ppu_join_status)
+
+	ppu_join_status get_joiner() const { return static_cast<ppu_join_status>(retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&joiner))); }
+
+	// @f changes the status it is given, and may give a result back: the
+	// change made with a compare-and-swap, f run again if another came first.
+	// Gives back f's result, or the status as it was when f gives none
+	template <typename F>
+	auto joiner_op(F&& f)
+	{
+		for (;;)
+		{
+			const int old = retro_atomic_load_acquire_int(&joiner);
+			ppu_join_status value = static_cast<ppu_join_status>(old);
+
+			if constexpr (std::is_void_v<std::invoke_result_t<F&, ppu_join_status&>>)
+			{
+				f(value);
+
+				if (static_cast<int>(value) == old || retro_atomic_cas_int(&joiner, old, static_cast<int>(value)))
+					return static_cast<ppu_join_status>(old);
+			}
+			else
+			{
+				auto result = f(value);
+
+				if (static_cast<int>(value) == old || retro_atomic_cas_int(&joiner, old, static_cast<int>(value)))
+					return result;
+			}
+		}
+	}
 	u32 hw_sleep_time = 0; // Very specific delay for hardware threads switching, see lv2_obj::awake_unlocked for more details
 
 	lf_fifo<atomic_t<cmd64>, 127> cmd_queue; // Command queue for asynchronous operations.

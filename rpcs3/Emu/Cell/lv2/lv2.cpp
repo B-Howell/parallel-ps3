@@ -2118,7 +2118,7 @@ std::pair<ppu_thread_status, u32> lv2_obj::ppu_state(ppu_thread* ppu, bool lock_
 		return { PPU_THREAD_STATUS_IDLE, 0};
 	}
 
-	switch (ppu->joiner)
+	switch (ppu->get_joiner())
 	{
 	case ppu_join_status::zombie: return { PPU_THREAD_STATUS_ZOMBIE, 0};
 	case ppu_join_status::exited: return { PPU_THREAD_STATUS_DELETED, 0};
