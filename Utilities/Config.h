@@ -4,6 +4,8 @@
 #include "Utilities/StrUtil.h"
 #include "util/logs.hpp"
 #include "util/atomic.hpp"
+#include <retro_atomic.h>
+#include <bit>
 #include "util/shared_ptr.hpp"
 
 #include <algorithm>
@@ -168,7 +170,10 @@ namespace cfg
 
 	class _bool final : public _base
 	{
-		atomic_t<bool> m_value;
+		mutable retro_atomic_int_t m_value;
+
+		bool load() const { return retro_atomic_load_acquire_int(&m_value) != 0; }
+		void store(bool value) { retro_atomic_store_release_int(&m_value, value ? 1 : 0); }
 		bool original_def;
 
 	public:
@@ -176,7 +181,7 @@ namespace cfg
 
 		_bool(node* owner, std::string name, bool def = false, bool dynamic = false)
 			: _base(type::_bool, owner, std::move(name), dynamic)
-			, m_value(def)
+			, m_value(def ? 1 : 0)
 			, original_def(def)
 			, def(def)
 		{
@@ -184,17 +189,17 @@ namespace cfg
 
 		explicit operator bool() const
 		{
-			return m_value;
+			return load();
 		}
 
 		bool get() const
 		{
-			return m_value;
+			return load();
 		}
 
 		void from_default() override
 		{
-			m_value = def;
+			store(def);
 		}
 
 		void restore_defaults() override
@@ -204,7 +209,7 @@ namespace cfg
 
 		std::string to_string() const override
 		{
-			return m_value ? "true" : "false";
+			return load() ? "true" : "false";
 		}
 
 		std::string def_to_string() const override
@@ -216,7 +221,7 @@ namespace cfg
 
 		void set(const bool& value)
 		{
-			m_value = value;
+			store(value);
 		}
 	};
 
@@ -224,7 +229,12 @@ namespace cfg
 	template <typename T>
 	class _enum : public _base
 	{
-		atomic_t<T> m_value;
+		// The value's underlying integer
+		mutable retro_atomic_64_t m_value;
+
+		static_assert(sizeof(T) <= 8);
+		T load() const { return static_cast<T>(static_cast<std::underlying_type_t<T>>(retro_atomic_load_acquire_64(&m_value))); }
+		void store(T value) { retro_atomic_store_release_64(&m_value, static_cast<s64>(static_cast<std::underlying_type_t<T>>(value))); }
 		T original_def;
 
 	public:
@@ -232,7 +242,7 @@ namespace cfg
 
 		_enum(node* owner, const std::string& name, T def = {}, bool dynamic = false)
 			: _base(type::_enum, owner, name, dynamic)
-			, m_value(def)
+			, m_value(static_cast<s64>(static_cast<std::underlying_type_t<T>>(def)))
 			, original_def(def)
 			, def(def)
 		{
@@ -240,12 +250,12 @@ namespace cfg
 
 		operator T() const
 		{
-			return m_value;
+			return load();
 		}
 
 		T get() const
 		{
-			return m_value;
+			return load();
 		}
 
 		T get_default() const
@@ -255,12 +265,12 @@ namespace cfg
 
 		void set(T value)
 		{
-			m_value = value;
+			store(value);
 		}
 
 		void from_default() override
 		{
-			m_value = def;
+			store(def);
 		}
 
 		void restore_defaults() override
@@ -271,7 +281,7 @@ namespace cfg
 		std::string to_string() const override
 		{
 			std::string result;
-			fmt_class_string<T>::format(result, fmt_unveil<T>::get(m_value.load()));
+			fmt_class_string<T>::format(result, fmt_unveil<T>::get(load()));
 			return result; // TODO: ???
 		}
 
@@ -289,7 +299,7 @@ namespace cfg
 			if (try_to_enum_value(&result, &fmt_class_string<T>::format, value, m_name))
 			{
 				// No narrowing check, it's hard to do right there
-				m_value = static_cast<T>(static_cast<std::underlying_type_t<T>>(result));
+				store(static_cast<T>(static_cast<std::underlying_type_t<T>>(result)));
 				return true;
 			}
 
@@ -316,7 +326,10 @@ namespace cfg
 		// Prefer 32 bit type if possible
 		using int_type = std::conditional_t<Min >= s32{smin} && Max <= s32{smax}, s32, s64>;
 
-		atomic_t<int_type> m_value;
+		mutable retro_atomic_64_t m_value;
+
+		int_type load() const { return static_cast<int_type>(retro_atomic_load_acquire_64(&m_value)); }
+		void store(int_type value) { retro_atomic_store_release_64(&m_value, s64{value}); }
 		int_type original_def;
 
 	public:
@@ -328,7 +341,7 @@ namespace cfg
 
 		_int(node* owner, const std::string& name, int_type def = std::min<int_type>(Max, std::max<int_type>(Min, 0)), bool dynamic = false)
 			: _base(type::_int, owner, name, dynamic)
-			, m_value(def)
+			, m_value(s64{def})
 			, original_def(def)
 			, def(def)
 		{
@@ -336,17 +349,17 @@ namespace cfg
 
 		operator int_type() const
 		{
-			return m_value;
+			return load();
 		}
 
 		int_type get() const
 		{
-			return m_value;
+			return load();
 		}
 
 		void from_default() override
 		{
-			m_value = def;
+			store(def);
 		}
 
 		void restore_defaults() override
@@ -356,7 +369,7 @@ namespace cfg
 
 		std::string to_string() const override
 		{
-			return std::to_string(m_value);
+			return std::to_string(load());
 		}
 
 		std::string def_to_string() const override
@@ -369,7 +382,7 @@ namespace cfg
 			s64 result;
 			if (try_to_int64(&result, value, Min, Max, m_name))
 			{
-				m_value = static_cast<int_type>(result);
+				store(static_cast<int_type>(result));
 				return true;
 			}
 
@@ -379,7 +392,7 @@ namespace cfg
 		void set(const s64& value)
 		{
 			if (value < Min || value > Max) fmt::throw_exception("'%s': value %d out of bounds (min=%d, max=%d)", m_name, value, Min, Max);
-			m_value = static_cast<int_type>(value);
+			store(static_cast<int_type>(value));
 		}
 
 		std::vector<std::string> to_list() const override
@@ -395,7 +408,11 @@ namespace cfg
 		static_assert(Min < Max, "Invalid cfg::_float range");
 
 		using float_type = f64;
-		atomic_t<float_type> m_value;
+		// The value's bits
+		mutable retro_atomic_64_t m_value;
+
+		float_type load() const { return std::bit_cast<float_type>(retro_atomic_load_acquire_64(&m_value)); }
+		void store(float_type value) { retro_atomic_store_release_64(&m_value, std::bit_cast<s64>(value)); }
 		float_type original_def;
 
 	public:
@@ -407,7 +424,7 @@ namespace cfg
 
 		_float(node* owner, const std::string& name, float_type def = std::min<float_type>(Max, std::max<float_type>(Min, 0)), bool dynamic = false)
 			: _base(type::_int, owner, name, dynamic)
-			, m_value(def)
+			, m_value(std::bit_cast<s64>(def))
 			, original_def(def)
 			, def(def)
 		{
@@ -415,17 +432,17 @@ namespace cfg
 
 		operator float_type() const
 		{
-			return m_value;
+			return load();
 		}
 
 		float_type get() const
 		{
-			return m_value;
+			return load();
 		}
 
 		void from_default() override
 		{
-			m_value = def;
+			store(def);
 		}
 
 		void restore_defaults() override
@@ -436,7 +453,7 @@ namespace cfg
 		std::string to_string() const override
 		{
 			std::string result;
-			if (try_to_string(&result, m_value, m_name))
+			if (try_to_string(&result, load(), m_name))
 			{
 				return result;
 			}
@@ -460,7 +477,7 @@ namespace cfg
 			f64 result;
 			if (try_to_float(&result, value, Min, Max, m_name))
 			{
-				m_value = static_cast<float_type>(result);
+				store(static_cast<float_type>(result));
 				return true;
 			}
 
@@ -470,7 +487,7 @@ namespace cfg
 		void set(const f64& value)
 		{
 			if (value < Min || value > Max) fmt::throw_exception("'%s': value %d out of bounds (min=%d, max=%d)", m_name, value, Min, Max);
-			m_value = static_cast<float_type>(value);
+			store(static_cast<float_type>(value));
 		}
 
 		std::vector<std::string> to_list() const override
@@ -494,7 +511,10 @@ namespace cfg
 		// Prefer 32 bit type if possible
 		using int_type = std::conditional_t<Max <= u32{umax}, u32, u64>;
 
-		atomic_t<int_type> m_value;
+		mutable retro_atomic_64_t m_value;
+
+		int_type load() const { return static_cast<int_type>(retro_atomic_load_acquire_64(&m_value)); }
+		void store(int_type value) { retro_atomic_store_release_64(&m_value, static_cast<s64>(value)); }
 		int_type original_def;
 
 	public:
@@ -506,7 +526,7 @@ namespace cfg
 
 		uint(node* owner, const std::string& name, int_type def = std::max<int_type>(Min, 0), bool dynamic = false)
 			: _base(type::uint, owner, name, dynamic)
-			, m_value(def)
+			, m_value(static_cast<s64>(def))
 			, original_def(def)
 			, def(def)
 		{
@@ -514,17 +534,17 @@ namespace cfg
 
 		operator int_type() const
 		{
-			return m_value;
+			return load();
 		}
 
 		int_type get() const
 		{
-			return m_value;
+			return load();
 		}
 
 		void from_default() override
 		{
-			m_value = def;
+			store(def);
 		}
 
 		void restore_defaults() override
@@ -534,7 +554,7 @@ namespace cfg
 
 		std::string to_string() const override
 		{
-			return std::to_string(m_value);
+			return std::to_string(load());
 		}
 
 		std::string def_to_string() const override
@@ -547,7 +567,7 @@ namespace cfg
 			u64 result;
 			if (try_to_uint64(&result, value, Min, Max, m_name))
 			{
-				m_value = static_cast<int_type>(result);
+				store(static_cast<int_type>(result));
 				return true;
 			}
 
@@ -557,7 +577,7 @@ namespace cfg
 		void set(const u64& value)
 		{
 			if (value < Min || value > Max) fmt::throw_exception("'%s': value %d out of bounds (min=%d, max=%d)", m_name, value, Min, Max);
-			m_value = static_cast<int_type>(value);
+			store(static_cast<int_type>(value));
 		}
 
 		std::vector<std::string> to_list() const override
@@ -577,7 +597,10 @@ namespace cfg
 	{
 		using int_type = u128;
 
-		atomic_t<int_type> m_value{};
+		mutable retro_atomic_128_t m_value{};
+
+		int_type load() const { return std::bit_cast<int_type>(retro_atomic_load_acquire_128(&m_value)); }
+		void store(int_type value) { retro_atomic_store_release_128(&m_value, std::bit_cast<retro_u128_t>(value)); }
 		int_type original_def = 0;
 
 	public:
@@ -585,30 +608,30 @@ namespace cfg
 
 		uint128(node* owner, const std::string& name, int_type def = 0, bool dynamic = false)
 			: _base(type::uint128, owner, name, dynamic)
-			, m_value(def)
 			, original_def(def)
 			, def(def)
 		{
+			store(def);
 		}
 
 		operator int_type() const
 		{
-			return m_value;
+			return load();
 		}
 
 		operator ullong() const
 		{
-			return static_cast<ullong>(m_value.load());
+			return static_cast<ullong>(load());
 		}
 
 		int_type get() const
 		{
-			return m_value;
+			return load();
 		}
 
 		void from_default() override
 		{
-			m_value = def;
+			store(def);
 		}
 
 		void restore_defaults() override
@@ -620,7 +643,7 @@ namespace cfg
 
 		std::string to_string() const override
 		{
-			return to_string(m_value.load());
+			return to_string(load());
 		}
 
 		std::string def_to_string() const override
@@ -633,7 +656,7 @@ namespace cfg
 			u128 result;
 			if (try_to_uint128(&result, value, m_name))
 			{
-				m_value = result;
+				store(result);
 				return true;
 			}
 
@@ -642,7 +665,7 @@ namespace cfg
 
 		void set(u128 value)
 		{
-			m_value = value;
+			store(value);
 		}
 
 		std::vector<std::string> to_list() const override

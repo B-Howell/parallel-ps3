@@ -1351,6 +1351,8 @@ check: all
 	@if grep -n "atomic_t<" ../../../Utilities/File.cpp ../../../Utilities/File.h; then echo "atomic_t is back in the file layer"; exit 1; else echo "the file layer is retro_atomic"; fi
 	@# the JIT's bump allocators are C89 (jit_bump.c) on retro_atomic
 	@if grep -n "atomic_t<" ../../../Utilities/JITASM.cpp; then echo "atomic_t is back in the JIT allocators"; exit 1; else echo "the JIT allocators are C89 on retro_atomic"; fi
+	@# the settings' values (Config.h) are retro_atomic
+	@if grep -n "atomic_t<" ../../../Utilities/Config.h; then echo "atomic_t is back in the settings' values"; exit 1; else echo "the settings' values are retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

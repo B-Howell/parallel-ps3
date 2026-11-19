@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The settings' values (Utilities/Config.h) are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** each setting's value can be changed by the frontend while the emulator threads read it, so it is atomic. A setting holds its value in a `retro_atomic_int_t` (on/off), a `retro_atomic_64_t` (a choice, a whole number of either sign, a decimal as its bits) or a `retro_atomic_128_t` (128-bit). Every read and write goes through the setting's own `get()` and `set()` as before, now a plain acquire load and a release store, so the code reading settings is unchanged and compiles to the same loads.
+  - **Tests:** `test_emu_waits` checks that a setting of each kind keeps its default, takes a new value (the ends of its range among them), reads and writes its text, refuses text out of range and goes back to its default. It also checks that a 128-bit setting switched between two values by one thread is never seen half of each by another (200000 reads, each thread on a CPU of its own). It was shown to fail with the 128-bit value stored and read in two halves. A check fails if `atomic_t` comes back to the settings' values.
+
+
 - **The JIT's memory allocators are C89 (Utilities/jit_bump.c) on `retro_atomic`.** Not yet run on a game.
   - **What changed:**
     - **Code and data ranges:** the JIT's code and data each come from 1 GiB of reserved memory, handed out by moving a counter on. The counter's low half is the next free byte and its high half is how far the range is committed. It is a `retro_atomic_64_t`, taken with the compare-and-swap loop `atomic_op` ran, now in C89: `jit_bump_alloc()`. An allocation past the end fails, and every one after it too, as before. `jit_bump_commit()` raises the committed top once more memory is committed.

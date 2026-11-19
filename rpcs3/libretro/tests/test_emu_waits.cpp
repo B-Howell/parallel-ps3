@@ -39,6 +39,8 @@
 #include "Emu/Memory/vm_locking.h"
 #include "Emu/Memory/vm_reservation.h"
 #include "Emu/Cell/SPURecompiler.h"
+#include "Utilities/Config.h"
+#include "Emu/system_config_types.h"
 
 #include <atomic>
 #include <chrono>
@@ -68,6 +70,18 @@ static bool reaches(const std::atomic<int>& looks, int n)
 		std::this_thread::yield();
 	return looks >= n;
 }
+
+// Settings of each kind, for the cfg values below
+struct cfg_values final : cfg::node
+{
+	cfg::_bool b{this, "Bool", true};
+	cfg::_enum<video_renderer> e{this, "Enum", video_renderer::vulkan};
+	cfg::_int<-5, 100000> i{this, "Int", -3};
+	cfg::int64 big{this, "Int64", -1};
+	cfg::_float<-10, 10> f{this, "Float", 2.5};
+	cfg::uint64 u{this, "Uint64", 7};
+	cfg::uint128 w{this, "Uint128", 9};
+};
 
 int main()
 {
@@ -1552,6 +1566,66 @@ int main()
 		t.join();
 		CHECK(got == f1);
 		std::printf("test_emu_waits: a compiled SPU block: installed once, its waiter woken\n");
+	}
+
+	// Settings: each kind keeps its default, its value and its text, and a
+	// 128-bit one switched between two values by one thread is never seen
+	// half of each by another (200000 reads, each thread on a CPU of its
+	// own)
+	{
+		static cfg_values v;
+		CHECK(v.b.get() && v.e.get() == video_renderer::vulkan && v.i.get() == -3 && v.big.get() == -1 && v.f.get() == 2.5 && v.u.get() == 7 && v.w.get() == 9);
+		v.b.set(false);
+		v.e.set(video_renderer::opengl);
+		v.i.set(99999);
+		v.big.set(s64{smin});
+		v.f.set(-9.75);
+		v.u.set(u64{umax});
+		v.w.set(u128{0x1234} << 70 | 5);
+		CHECK(!v.b.get() && v.e.get() == video_renderer::opengl && v.i.get() == 99999 && v.big.get() == s64{smin} && v.f.get() == -9.75 && v.u.get() == u64{umax} && v.w.get() == (u128{0x1234} << 70 | 5));
+		CHECK(v.b.to_string() == "false" && v.i.to_string() == "99999" && v.u.to_string() == "18446744073709551615");
+		CHECK(v.i.from_string("-5") && v.i.get() == -5 && !v.i.from_string("-6") && v.i.get() == -5);
+		CHECK(v.f.from_string("1.5") && v.f.get() == 1.5);
+		v.from_default();
+		CHECK(v.b.get() && v.e.get() == video_renderer::vulkan && v.i.get() == -3 && v.big.get() == -1 && v.f.get() == 2.5 && v.u.get() == 7 && v.w.get() == 9);
+
+		const u128 x = ~u128{0}, y = 0;
+		std::atomic<bool> stop{false};
+		std::atomic<int> torn{0};
+		auto pin = [](int cpu)
+		{
+#ifdef __linux__
+			cpu_set_t set;
+			CPU_ZERO(&set);
+			CPU_SET(cpu % std::max(1u, std::thread::hardware_concurrency()), &set);
+			pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+#endif
+		};
+		std::thread writer([&]
+		{
+			pin(0);
+			for (bool flip = false; !stop; flip = !flip)
+			{
+				v.w.set(flip ? x : y);
+			}
+		});
+		std::thread reader([&]
+		{
+			pin(1);
+			for (int n = 0; n < 200000; n++)
+			{
+				const u128 seen = v.w.get();
+				if (seen != x && seen != y && seen != 9)
+				{
+					torn++;
+				}
+			}
+			stop = true;
+		});
+		reader.join();
+		writer.join();
+		CHECK(torn == 0);
+		std::printf("test_emu_waits: settings of each kind kept, a 128-bit one never seen torn\n");
 	}
 
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");
