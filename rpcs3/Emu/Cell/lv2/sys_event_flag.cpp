@@ -32,7 +32,7 @@ static int event_flag_rank(void* ctx, unsigned slot)
 {
 	auto& flag = *static_cast<lv2_event_flag*>(ctx);
 	const auto* ppu = static_cast<ppu_thread*>(retro_atomic_load_acquire_ptr(&flag.thread[slot]));
-	return ppu ? ppu->prio.load().prio : 0;
+	return ppu ? ppu->get_prio().prio : 0;
 }
 
 // A waiter that is to be saved again (a save state being made) is not

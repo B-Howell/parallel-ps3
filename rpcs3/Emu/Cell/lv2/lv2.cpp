@@ -2002,7 +2002,7 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 				tag = retro_atomic_fetch_add_64(&g_priority_order_tag, 1) + 1;
 			}
 
-			target->prio.atomic_op([&](ppu_thread::ppu_prio_t& p)
+			target->prio_op([&](ppu_thread::ppu_prio_t& p)
 			{
 				p.prio = value;
 
@@ -2031,7 +2031,7 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 
 	if (current_ppu && cpu != current_ppu && op.changed && op.had_free_slot)
 	{
-		if (current_ppu->prio.load().prio > op.lowest_new_prio - g_prio_bias)
+		if (current_ppu->get_prio().prio > op.lowest_new_prio - g_prio_bias)
 		{
 			const bool is_create_thread = current_ppu->current_function && current_ppu->gpr[11] == 0x35;
 
@@ -2088,7 +2088,7 @@ void lv2_obj::sched_register(ppu_thread& ppu)
 	// The slot's last thread left for good (settled): this one starts afresh
 	retro_atomic_store_release_ptr(&g_slot_ppu[slot], &ppu);
 	drop_deadline(slot, retro_atomic_load_acquire_128(&g_deadline[slot]));
-	lv2_sched_register(&g_sched, slot, static_cast<int>(ppu.prio.load().prio) + g_prio_bias);
+	lv2_sched_register(&g_sched, slot, static_cast<int>(ppu.get_prio().prio) + g_prio_bias);
 }
 
 void lv2_obj::sched_settle(ppu_thread& ppu)

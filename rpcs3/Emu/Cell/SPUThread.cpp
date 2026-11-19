@@ -7259,16 +7259,16 @@ spu_thread::thread_name_t::operator std::string() const
 	return full_name;
 }
 
-spu_thread::spu_prio_t spu_thread::priority_t::load() const
+spu_thread::spu_prio_t spu_thread::get_prio() const
 {
-	if (_this->get_type() != spu_type::threaded || !_this->group->has_scheduler_context)
+	if (get_type() != spu_type::threaded || !group->has_scheduler_context)
 	{
 		spu_thread::spu_prio_t prio{};
 		prio.prio = s32{smax};
 		return prio;
 	}
 
-	return _this->group->prio;
+	return group->get_prio();
 }
 
 s64 spu_channel::pop_wait(cpu_thread& spu, bool pop)

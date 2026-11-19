@@ -351,7 +351,7 @@ error_code sys_ppu_thread_set_priority(ppu_thread& ppu, u32 thread_id, s32 prio)
 	if (thread_id == ppu.id)
 	{
 		// Fast path for self
-		if (ppu.prio.load().prio != prio)
+		if (ppu.get_prio().prio != prio)
 		{
 			lv2_obj::set_priority(ppu, prio);
 		}
@@ -390,7 +390,7 @@ error_code sys_ppu_thread_get_priority(ppu_thread& ppu, u32 thread_id, vm::ptr<s
 			// after is what the lock held still.
 			if (cpu_flag::suspend - ppu.state)
 			{
-				const u32 seen = ppu.prio.load().prio;
+				const u32 seen = ppu.get_prio().prio;
 
 				if (cpu_flag::suspend - ppu.state)
 				{
@@ -418,7 +418,7 @@ error_code sys_ppu_thread_get_priority(ppu_thread& ppu, u32 thread_id, vm::ptr<s
 
 			if (cpu_flag::suspend - ppu.state)
 			{
-				const u32 seen = thread.prio.load().prio;
+				const u32 seen = thread.get_prio().prio;
 
 				if (cpu_flag::suspend - ppu.state)
 				{

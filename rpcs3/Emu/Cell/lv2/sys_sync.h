@@ -189,7 +189,7 @@ public:
 			}
 		}
 
-		auto prio = it->prio.load();
+		auto prio = it->get_prio();
 		auto found = it;
 
 		while (true)
@@ -202,7 +202,7 @@ public:
 				break;
 			}
 
-			const auto _prio = static_cast<E*>(next)->prio.load();
+			const auto _prio = static_cast<E*>(next)->get_prio();
 
 			// This condition tests for equality as well so the earliest element to be pushed is popped
 			if (_prio.prio < prio.prio || (_prio.prio == prio.prio && _prio.order < prio.order))
@@ -234,7 +234,7 @@ public:
 		atomic_storage<T>::release(object->next_cpu, first);
 		atomic_storage<T>::release(first, object);
 
-		object->prio.atomic_op([order = retro_atomic_fetch_add_64(&g_priority_order_tag, 1) + 1](std::common_type_t<decltype(std::declval<T>()->prio.load())>& prio)
+		object->prio_op([order = retro_atomic_fetch_add_64(&g_priority_order_tag, 1) + 1](decltype(std::declval<T>()->get_prio())& prio)
 		{
 			if constexpr (requires { +std::declval<decltype(prio)>().preserve_bit; } )
 			{

@@ -100,7 +100,7 @@ static int event_queue_rank(void* ctx, unsigned slot)
 		return 0;
 	}
 
-	return queue.type == SYS_PPU_QUEUE ? static_cast<ppu_thread*>(cpu)->prio.load().prio : static_cast<spu_thread*>(cpu)->prio.load().prio;
+	return queue.type == SYS_PPU_QUEUE ? static_cast<ppu_thread*>(cpu)->get_prio().prio : static_cast<spu_thread*>(cpu)->get_prio().prio;
 }
 
 bool lv2_event_queue::resaving()
@@ -293,7 +293,7 @@ CellError lv2_event_queue::send(lv2_event event, bool* notified_thread, lv2_even
 
 		awake(&ppu);
 
-		if (port && ppu.prio.load().prio < ensure(current_ppu)->prio.load().prio)
+		if (port && ppu.get_prio().prio < ensure(current_ppu)->get_prio().prio)
 		{
 			// Block event port disconnection for the time being of sending events
 			// PPU -> lower prio PPU is the only case that can cause thread blocking

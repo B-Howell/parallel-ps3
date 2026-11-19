@@ -34,6 +34,7 @@
 #include "Emu/Cell/Modules/cellDmuxPamf.h"
 #include "Emu/RSX/VK/VKCommandStream.h"
 #include "Emu/RSX/Common/bitfield.hpp"
+#include "Emu/Cell/lv2/sys_spu.h"
 #include "Emu/savestate_utils.hpp"
 
 #include <atomic>
@@ -41,6 +42,10 @@
 #include <cstdlib>
 #include <functional>
 #include <thread>
+#ifdef __linux__
+#include <pthread.h>
+#include <sched.h>
+#endif
 #include <memory>
 #include <vector>
 
@@ -947,6 +952,40 @@ int main()
 		CHECK(static_cast<bool>(ch.trace));
 		ch.set_enabled(saved_level);
 		std::printf("test_emu_waits: a log channel's messages find it and their level, and its level filters them\n");
+	}
+
+	// An SPU thread group's priority, one retro_atomic word: made with its
+	// priority, read whole, and changed by two threads at once with none of
+	// their changes lost (400000 in all), the priority kept by each
+	{
+		auto group = std::make_unique<lv2_spu_group>("prio test", 1, 100, 0, nullptr, true, 0);
+		CHECK(group->get_prio().prio == 100 && group->get_prio().order == 0);
+		std::atomic<int> arrived{0};
+		const auto bump = [&](int cpu)
+		{
+#ifdef __linux__
+			// Each on a CPU of its own, whatever the thread making them was
+			// held to, so that the two do race
+			cpu_set_t set;
+			CPU_ZERO(&set);
+			CPU_SET(cpu % std::max(1u, std::thread::hardware_concurrency()), &set);
+			pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+#else
+			(void)cpu;
+#endif
+			arrived++;
+			while (arrived < 2)
+				std::this_thread::yield();
+			for (int i = 0; i < 200000; i++)
+				group->prio_op([](spu_thread::spu_prio_t& p) { p.order = p.order + 1; });
+		};
+		std::thread a(bump, 0), b(bump, 1);
+		a.join();
+		b.join();
+		CHECK(group->get_prio().order == 400000 && group->get_prio().prio == 100);
+		group->prio_op([](spu_thread::spu_prio_t& p) { p.prio = 3; });
+		CHECK(group->get_prio().prio == 3 && group->get_prio().order == 400000);
+		std::printf("test_emu_waits: an SPU group's priority, changed by two threads at once, 400000 changes kept\n");
 	}
 
 	// A game's callback and its argument in one retro_atomic word: installed

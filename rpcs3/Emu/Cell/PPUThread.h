@@ -277,16 +277,34 @@ public:
 		bf_t<u64, 63, 1> preserve_bit; // Preserve value for savestates
 	};
 
-	atomic_t<ppu_prio_t> prio{};
+	retro_atomic_64_t prio{0}; // a ppu_prio_t
+	// The priority word, read whole; changed whole with a compare-and-swap
+	// loop running @f on a copy (as atomic_op did)
+	ppu_prio_t get_prio() const { return std::bit_cast<ppu_prio_t>(static_cast<u64>(retro_atomic_load_acquire_64(const_cast<retro_atomic_64_t*>(&prio)))); }
+	void set_prio(ppu_prio_t value) { retro_atomic_store_release_64(&prio, static_cast<s64>(value.all)); }
+
+	template <typename F>
+	void prio_op(F&& f)
+	{
+		for (;;)
+		{
+			const s64 old = retro_atomic_load_acquire_64(&prio);
+			ppu_prio_t value = std::bit_cast<ppu_prio_t>(static_cast<u64>(old));
+			f(value);
+
+			if (static_cast<s64>(value.all) == old || retro_atomic_cas_64(&prio, old, static_cast<s64>(value.all)))
+				return;
+		}
+	}
 
 	bool is_lower_priority_than(ppu_thread& other) const
 	{
-		return prio.load().prio < other.prio.load().prio;
+		return get_prio().prio < other.get_prio().prio;
 	}
 
 	bool is_lower_priority_than(s32 _prio) const
 	{
-		return prio.load().prio < _prio;
+		return get_prio().prio < _prio;
 	}
 
 	const u32 stack_size; // Stack size

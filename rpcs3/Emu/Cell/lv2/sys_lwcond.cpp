@@ -37,7 +37,7 @@ static int lwcond_rank(void* ctx, unsigned slot)
 {
 	auto& cond = *static_cast<lv2_lwcond*>(ctx);
 	const auto* ppu = static_cast<ppu_thread*>(retro_atomic_load_acquire_ptr(&cond.thread[slot]));
-	return ppu ? ppu->prio.load().prio : 0;
+	return ppu ? ppu->get_prio().prio : 0;
 }
 
 static lv2_waitset_rank_t lwcond_ranking(const lv2_lwcond& cond)

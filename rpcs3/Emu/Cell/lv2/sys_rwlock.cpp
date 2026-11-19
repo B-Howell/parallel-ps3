@@ -67,7 +67,7 @@ static int rwlock_rank(void* ctx, unsigned slot)
 {
 	auto& rw = *static_cast<lv2_rwlock*>(ctx);
 	const auto* ppu = static_cast<ppu_thread*>(retro_atomic_load_acquire_ptr(&rw.thread[slot]));
-	return ppu ? ppu->prio.load().prio : 0;
+	return ppu ? ppu->get_prio().prio : 0;
 }
 
 static lv2_rwq_rank_t rwlock_ranking(const lv2_rwlock& rw)

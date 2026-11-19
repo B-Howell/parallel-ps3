@@ -32,7 +32,7 @@ static int sema_rank(void* ctx, unsigned slot)
 {
 	const auto& sema = *static_cast<lv2_sema*>(ctx);
 	const auto* ppu = static_cast<ppu_thread*>(retro_atomic_load_acquire_ptr(const_cast<retro_atomic_ptr_t*>(&sema.waiter[slot])));
-	return ppu ? ppu->prio.load().prio : 0;
+	return ppu ? ppu->get_prio().prio : 0;
 }
 
 std::function<void(void*)> lv2_sema::load(utils::serial& ar)

@@ -240,14 +240,7 @@ lv2_spu_group::lv2_spu_group(utils::serial& ar) noexcept
 	, has_scheduler_context(ar.pop<u8>())
 	, max_run(ar)
 	, init(static_cast<int>(ar.pop<u32>()))
-	, prio([&ar]()
-	{
-		std::common_type_t<decltype(lv2_spu_group::prio)> prio{};
-
-		ar(prio.all);
-
-		return prio;
-	}())
+	, prio(static_cast<s64>(ar.pop<u64>())) // the spu_prio_t's u64
 	, run_state(static_cast<int>(ar.pop<spu_group_status>()))
 	, exit_status(ar.pop<s32>())
 {
@@ -343,7 +336,7 @@ void lv2_spu_group::save(utils::serial& ar)
 {
 	USING_SERIALIZATION_VERSION(spu);
 
-	ar(name, max_num, mem_size, type, ct->id, has_scheduler_context, max_run, static_cast<u32>(retro_atomic_load_acquire_int(&init)), prio.load().all, status(), static_cast<s32>(retro_atomic_load_acquire_int(&exit_status)));
+	ar(name, max_num, mem_size, type, ct->id, has_scheduler_context, max_run, static_cast<u32>(retro_atomic_load_acquire_int(&init)), get_prio().all, status(), static_cast<s32>(retro_atomic_load_acquire_int(&exit_status)));
 
 	for (const auto& thread : threads)
 	{
@@ -1991,7 +1984,7 @@ error_code sys_spu_thread_group_set_priority(ppu_thread& ppu, u32 id, s32 priori
 		return CELL_EINVAL;
 	}
 
-	group->prio.atomic_op([&](std::common_type_t<decltype(lv2_spu_group::prio)>& prio)
+	group->prio_op([&](spu_thread::spu_prio_t& prio)
 	{
 		prio.prio = priority;
 	});
@@ -2025,7 +2018,7 @@ error_code sys_spu_thread_group_get_priority(ppu_thread& ppu, u32 id, vm::ptr<s3
 	}
 	else
 	{
-		*priority = group->prio.load().prio;
+		*priority = group->get_prio().prio;
 	}
 
 	return CELL_OK;

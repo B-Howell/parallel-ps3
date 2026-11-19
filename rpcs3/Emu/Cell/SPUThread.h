@@ -1076,19 +1076,14 @@ public:
 		bf_t<s64, 9, 55> order; // Thread enqueue order (TODO, last 52-bits)
 	};
 
-	// For lv2_obj::schedule<spu_thread>
-	struct priority_t
+	// For lv2_obj::schedule<spu_thread>: the group's priority
+	spu_prio_t get_prio() const;
+
+	template <typename Func>
+	void prio_op(Func&& func)
 	{
-		const spu_thread* _this;
-
-		spu_prio_t load() const;
-
-		template <typename Func>
-		auto atomic_op(Func&& func)
-		{
-			return static_cast<std::conditional_t<std::is_void_v<Func>, Func, decltype(_this->group)>>(_this->group)->prio.atomic_op(std::move(func));
-		}
-	} prio{ this };
+		static_cast<std::conditional_t<std::is_void_v<Func>, Func, decltype(group)>>(group)->prio_op(std::forward<Func>(func));
+	}
 };
 
 class spu_function_logger

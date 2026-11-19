@@ -2590,7 +2590,7 @@ void ppu_thread::dump_misc(std::string& ret, std::any& custom_data) const
 		fmt::append(ret, " (LV2 suspended)\n");
 	}
 
-	fmt::append(ret, "Priority: %d\n", prio.load().prio);
+	fmt::append(ret, "Priority: %d\n", get_prio().prio);
 	fmt::append(ret, "Stack: 0x%x..0x%x\n", stack_addr, stack_addr + stack_size - 1);
 	fmt::append(ret, "Joiner: %s\n", get_joiner());
 
@@ -2983,7 +2983,11 @@ ppu_thread::ppu_thread(const ppu_thread_params& param, std::string_view name, u3
 	, is_interrupt_thread(detached < 0)
 	, ppu_tname(make_single<std::string>(name))
 {
-	prio.raw().prio = _prio;
+	{
+		ppu_prio_t p{};
+		p.prio = _prio;
+		set_prio(p);
+	}
 
 	memset(&hv_ctx, 0, sizeof(hv_ctx));
 
@@ -3047,7 +3051,10 @@ void ppu_thread::serialize_common(utils::serial& ar)
 {
 	[[maybe_unused]] const s32 version = GET_OR_USE_SERIALIZATION_VERSION(ar.is_writing(), ppu);
 
-	ar(gpr, fpr, cr, fpscr.bits, lr, ctr, vrsave, cia, xer, sat, nj, prio.raw().all);
+	// The priority as the u64 it was
+	u64 prio_all = get_prio().all;
+	ar(gpr, fpr, cr, fpscr.bits, lr, ctr, vrsave, cia, xer, sat, nj, prio_all);
+	set_prio(std::bit_cast<ppu_prio_t>(prio_all));
 
 	if (cia % 4 || (cia >> 28) >= 0xCu)
 	{
@@ -3224,9 +3231,9 @@ ppu_thread::ppu_thread(utils::serial& ar)
 					const u32 op = vm::read32(ppu.cia);
 					const auto& table = g_fxo->get<ppu_interpreter_rt>();
 					ppu.loaded_from_savestate = true;
-					ppu.prio.raw().preserve_bit = 1;
+					ppu.prio_op([](ppu_thread::ppu_prio_t& p) { p.preserve_bit = 1; });
 					table.decode(op)(ppu, {op}, vm::_ptr<u32>(ppu.cia), &ppu_ret);
-					ppu.prio.raw().preserve_bit = 0;
+					ppu.prio_op([](ppu_thread::ppu_prio_t& p) { p.preserve_bit = 0; });
 
 					ppu.optional_savestate_state->clear(); // Reset to writing state
 					ppu.loaded_from_savestate = false;

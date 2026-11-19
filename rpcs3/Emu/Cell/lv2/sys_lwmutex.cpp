@@ -36,7 +36,7 @@ u32 lv2_lwmutex::slot_of(const ppu_thread& ppu)
 int lv2_lwmutex::rank(void* ctx, unsigned slot)
 {
 	const auto ppu = static_cast<lv2_lwmutex*>(ctx)->thread_in(slot);
-	return ppu ? ppu->prio.load().prio : 0;
+	return ppu ? ppu->get_prio().prio : 0;
 }
 
 s32 lv2_lwmutex::try_own(ppu_thread* cpu)

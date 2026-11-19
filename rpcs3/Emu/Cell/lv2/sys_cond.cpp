@@ -55,7 +55,7 @@ bool lv2_cond::any_waiter_again()
 static int cond_rank(void* ctx, unsigned slot)
 {
 	const auto cpu = static_cast<lv2_cond*>(ctx)->thread_in(slot);
-	return cpu ? cpu->prio.load().prio : 0;
+	return cpu ? cpu->get_prio().prio : 0;
 }
 
 static lv2_waitset_rank_t cond_ranking(lv2_cond& cond)
@@ -307,7 +307,7 @@ error_code sys_cond_signal_all(ppu_thread& ppu, u32 cond_id)
 						continue;
 					}
 
-					const s32 prio = ensure(cond.thread_in(slot))->prio.load().prio;
+					const s32 prio = ensure(cond.thread_in(slot))->get_prio().prio;
 					const int tick = retro_atomic_load_acquire_int(&cond.waiters.ticket[slot]);
 
 					if (best < 0 || prio < best_prio || (prio == best_prio && static_cast<int>(static_cast<u32>(tick) - static_cast<u32>(best_tick)) < 0))

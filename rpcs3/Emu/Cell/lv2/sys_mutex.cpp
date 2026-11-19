@@ -39,7 +39,7 @@ u32 lv2_mutex::slot_of_id(u32 id)
 int lv2_mutex::rank(void* ctx, unsigned slot)
 {
 	const auto ppu = static_cast<lv2_mutex*>(ctx)->thread_in(slot);
-	return ppu ? ppu->prio.load().prio : 0;
+	return ppu ? ppu->get_prio().prio : 0;
 }
 
 std::function<void(void*)> lv2_mutex::load(utils::serial& ar)

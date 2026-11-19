@@ -289,7 +289,25 @@ struct lv2_spu_group
 	u32 max_run;
 
 	retro_atomic_int_t init; // Initialization Counter (a u32)
-	atomic_t<typename spu_thread::spu_prio_t> prio{}; // SPU Thread Group Priority
+	retro_atomic_64_t prio{0}; // SPU Thread Group Priority (a spu_thread::spu_prio_t)
+	// The priority word, read whole; changed whole with a compare-and-swap
+	// loop running @f on a copy (as atomic_op did)
+	spu_thread::spu_prio_t get_prio() const { return std::bit_cast<spu_thread::spu_prio_t>(static_cast<u64>(retro_atomic_load_acquire_64(const_cast<retro_atomic_64_t*>(&prio)))); }
+	void set_prio(spu_thread::spu_prio_t value) { retro_atomic_store_release_64(&prio, static_cast<s64>(value.all)); }
+
+	template <typename F>
+	void prio_op(F&& f)
+	{
+		for (;;)
+		{
+			const s64 old = retro_atomic_load_acquire_64(&prio);
+			spu_thread::spu_prio_t value = std::bit_cast<spu_thread::spu_prio_t>(static_cast<u64>(old));
+			f(value);
+
+			if (static_cast<s64>(value.all) == old || retro_atomic_cas_64(&prio, old, static_cast<s64>(value.all)))
+				return;
+		}
+	}
 	// SPU Thread Group State: a spu_group_status, and `terminating` while a
 	// termination (sys_spu_thread_group_terminate, or a thread's
 	// sys_spu_thread_group_exit) is under way - each change one
@@ -344,7 +362,9 @@ struct lv2_spu_group
 		, args({})
 	{
 		threads_map.fill(-1);
-		prio.raw().prio = _prio;
+		spu_thread::spu_prio_t p{};
+		p.prio = _prio;
+		set_prio(p);
 	}
 
 	SAVESTATE_INIT_POS(8); // Dependency on SPUs

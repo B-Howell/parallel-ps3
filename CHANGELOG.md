@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **PPU thread and SPU thread group priorities are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** each priority (its level, its enqueue order and, for a PPU thread, the bit kept for a savestate's load) is one `retro_atomic_64_t`. `get_prio()` reads it whole, `set_prio()` writes it, and `prio_op()` changes it with a compare-and-swap loop, as `atomic_op` did. The scheduler's queue code (sys_sync.h), lv2's priority changes, the sync primitives' priority look-ups, sys_ppu_thread and sys_spu use them.
+  - **SPU threads:** an SPU thread's priority is its group's. The little `priority_t` proxy that stood in for it is replaced by `get_prio()` and `prio_op()` on the SPU thread itself.
+  - **Savestates:** a PPU thread's priority is written and read through the `u64` it was, and an SPU group's as the `u64` it was, so the format is unchanged.
+  - **Tests:** `test_emu_waits` makes an SPU thread group and checks that its priority is the one it was made with. Two threads, each held to a CPU of its own, then change the order 200000 times each with none lost, and the level stays as it was. It was shown to fail with the compare-and-swap made a plain store. The test found that the test process's threads were all held to one CPU, so the race only showed once each thread was given its own; earlier race tests may need the same. A check fails if `atomic_t` comes back to the priorities.
+
+
 - **The PPU and SPU threads' debugger mode is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the mode that picks how a thread's registers are dumped is a `retro_atomic_int_t` on both threads. Nothing in the core sets it any more (the debugger is not in the core), so it stays at its default, as before.
   - **Tests:** none: nothing changes at runtime. A check fails if `atomic_t` comes back to it.
