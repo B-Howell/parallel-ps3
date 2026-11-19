@@ -945,8 +945,8 @@ namespace np
 		if (incoming_ticket.get_service_id() == CLANS_SERVICE_ID)
 		{
 			clan_ticket = std::move(incoming_ticket);
-			clan_ticket_ready.store(1);
-			clan_ticket_ready.notify_all();
+			retro_atomic_store_release_int(&clan_ticket_ready, 1);
+			retro_waitaddr_notify_all(&clan_ticket_ready);
 
 			return;
 		}

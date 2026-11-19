@@ -499,14 +499,25 @@ namespace np
 	np_handler::np_handler(utils::serial& ar)
 		: np_handler()
 	{
-		ar(is_netctl_init, is_NP_init);
+		// Through bools, as they were in the savestate
+		bool flags[7]{};
+		retro_atomic_int_t* const words[7] = {&is_netctl_init, &is_NP_init, &is_NP_Lookup_init, &is_NP_Score_init, &is_NP2_init, &is_NP2_Match2_init, &is_NP_Auth_init};
+		for (usz i = 0; i < 7; i++)
+			flags[i] = retro_atomic_load_acquire_int(words[i]) != 0;
 
-		if (!is_NP_init)
+		ar(flags[0], flags[1]);
+		retro_atomic_store_release_int(&is_netctl_init, flags[0] ? 1 : 0);
+		retro_atomic_store_release_int(&is_NP_init, flags[1] ? 1 : 0);
+
+		if (!flags[1])
 		{
 			return;
 		}
 
-		ar(is_NP_Lookup_init, is_NP_Score_init, is_NP2_init, is_NP2_Match2_init, is_NP_Auth_init, manager_cb, manager_cb_arg, std::as_bytes(std::span(&basic_handler, 1)), is_connected, is_psn_active, hostname, ether_address, local_ip_addr, public_ip_addr, dns_ip);
+		ar(flags[2], flags[3], flags[4], flags[5], flags[6], manager_cb, manager_cb_arg, std::as_bytes(std::span(&basic_handler, 1)), is_connected, is_psn_active, hostname, ether_address, local_ip_addr, public_ip_addr, dns_ip);
+
+		for (usz i = 2; i < 7; i++)
+			retro_atomic_store_release_int(words[i], flags[i] ? 1 : 0);
 
 		// Call init func if needed (np_memory is unaffected when an empty pool is provided)
 		init_NP(0, vm::null);
@@ -588,16 +599,27 @@ namespace np
 	void np_handler::save(utils::serial& ar)
 	{
 		// TODO: See ctor
-		ar(is_netctl_init, is_NP_init);
+		// Through bools, as they were in the savestate
+		bool flags[7]{};
+		retro_atomic_int_t* const words[7] = {&is_netctl_init, &is_NP_init, &is_NP_Lookup_init, &is_NP_Score_init, &is_NP2_init, &is_NP2_Match2_init, &is_NP_Auth_init};
+		for (usz i = 0; i < 7; i++)
+			flags[i] = retro_atomic_load_acquire_int(words[i]) != 0;
 
-		if (!is_NP_init)
+		ar(flags[0], flags[1]);
+		retro_atomic_store_release_int(&is_netctl_init, flags[0] ? 1 : 0);
+		retro_atomic_store_release_int(&is_NP_init, flags[1] ? 1 : 0);
+
+		if (!flags[1])
 		{
 			return;
 		}
 
 		USING_SERIALIZATION_VERSION(sceNp);
 
-		ar(is_NP_Lookup_init, is_NP_Score_init, is_NP2_init, is_NP2_Match2_init, is_NP_Auth_init, manager_cb, manager_cb_arg, std::as_bytes(std::span(&basic_handler, 1)), is_connected, is_psn_active, hostname, ether_address, local_ip_addr, public_ip_addr, dns_ip);
+		ar(flags[2], flags[3], flags[4], flags[5], flags[6], manager_cb, manager_cb_arg, std::as_bytes(std::span(&basic_handler, 1)), is_connected, is_psn_active, hostname, ether_address, local_ip_addr, public_ip_addr, dns_ip);
+
+		for (usz i = 2; i < 7; i++)
+			retro_atomic_store_release_int(words[i], flags[i] ? 1 : 0);
 
 		np_memory.save(ar);
 	}
@@ -941,7 +963,7 @@ namespace np
 
 		manager_cb = {};
 		manager_cb_arg = {};
-		basic_handler_registered = false;
+		retro_atomic_store_release_int(&basic_handler_registered, 0);
 		room_event_cb = {};
 		room_event_cb_ctx = 0;
 		room_event_cb_arg = {};
@@ -951,7 +973,7 @@ namespace np
 
 		presence_self.pr_status = {};
 		presence_self.pr_data = {};
-		presence_self.advertised = false;
+		retro_atomic_store_release_int(&presence_self.advertised, 0);
 
 		if (const auto rpcn = load_rpcn(); is_connected && is_psn_active && rpcn)
 		{
@@ -994,7 +1016,7 @@ namespace np
 				basic_handler.handler_func = handler;
 				basic_handler.handler_arg = arg;
 				basic_handler.context_sensitive = context_sensitive;
-				basic_handler_registered = true;
+				retro_atomic_store_release_int(&basic_handler_registered, 1);
 
 				presence_self.pr_com_id = *context;
 				presence_self.pr_title = fmt::truncate(Emu.GetTitle(), SCE_NP_BASIC_PRESENCE_TITLE_SIZE_MAX - 1);
@@ -1062,7 +1084,7 @@ namespace np
 
 	bool np_handler::send_basic_event(s32 event, s32 retCode, u32 reqId)
 	{
-		if (basic_handler_registered)
+		if ((retro_atomic_load_acquire_int(&basic_handler_registered) != 0))
 		{
 			// The handler, the NP thread's: read there
 			const auto [handler_func, handler_arg] = on_np_thread([&]()
@@ -1355,7 +1377,7 @@ namespace np
 				}
 
 				auto presence_updates = rpcn->get_presence_updates();
-				if (basic_handler_registered)
+				if ((retro_atomic_load_acquire_int(&basic_handler_registered) != 0))
 				{
 					for (auto& [npid, pr_info] : presence_updates)
 					{
@@ -1400,7 +1422,7 @@ namespace np
 					const localized_string_id loc_id = (msg->second.mainType == SCE_NP_BASIC_MESSAGE_MAIN_TYPE_INVITE) ? localized_string_id::CELL_NP_MESSAGE_INVITE_RECEIVED : localized_string_id::CELL_NP_MESSAGE_OTHER_RECEIVED;
 					rsx::overlays::queue_message(get_localized_string(loc_id, msg->first.c_str()), 6'000'000);
 
-					if (basic_handler_registered)
+					if ((retro_atomic_load_acquire_int(&basic_handler_registered) != 0))
 					{
 						if (strncmp(msg->second.commId.data, basic_handler.context.data, sizeof(basic_handler.context.data) - 1) == 0)
 						{
@@ -1564,14 +1586,17 @@ namespace np
 
 	u32 np_handler::get_clan_ticket_ready() const
 	{
-		return clan_ticket_ready.load();
+		return static_cast<u32>(retro_atomic_load_acquire_int(&clan_ticket_ready));
 	}
 
 	ticket np_handler::get_clan_ticket() const
 	{
-		clan_ticket_ready.wait(0, atomic_wait_timeout{60'000'000'000}); // 60 seconds
+		// The server's answer, or 60 seconds (a network timeout, not pacing):
+		// once, as before; a wake may be spurious
+		const retro_waitaddr_t w{&clan_ticket_ready, 0};
+		retro_waitaddr_wait(&w, 1, 60'000'000);
 
-		if (!clan_ticket_ready.load())
+		if (!retro_atomic_load_acquire_int(&clan_ticket_ready))
 		{
 			rpcn_log.error("Failed to get clan ticket within timeout.");
 			return ticket{};
@@ -1773,7 +1798,7 @@ namespace np
 			}
 		}
 
-		if (is_psn_active && (!presence_self.advertised || send_update))
+		if (is_psn_active && (!(retro_atomic_load_acquire_int(&presence_self.advertised) != 0) || send_update))
 		{
 			const auto rpcn = load_rpcn();
 
@@ -1782,7 +1807,7 @@ namespace np
 				return;
 			}
 
-			presence_self.advertised = true;
+			retro_atomic_store_release_int(&presence_self.advertised, 1);
 			rpcn->send_presence(presence_self.pr_com_id, presence_self.pr_title, presence_self.pr_status, presence_self.pr_comment, presence_self.pr_data);
 		}
 	}

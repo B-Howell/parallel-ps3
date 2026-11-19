@@ -183,7 +183,7 @@ error_code sceNpMatching2Term2();
 
 error_code generic_match2_error_check(const named_thread<np::np_handler>& nph, SceNpMatching2ContextId ctxId, vm::cptr<void> reqParam)
 {
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -212,7 +212,7 @@ error_code sceNp2Init(u32 poolsize, vm::ptr<void> poolptr)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (nph.is_NP2_init)
+	if ((retro_atomic_load_acquire_int(&nph.is_NP2_init) != 0))
 	{
 		return SCE_NP_ERROR_ALREADY_INITIALIZED;
 	}
@@ -224,7 +224,7 @@ error_code sceNp2Init(u32 poolsize, vm::ptr<void> poolptr)
 		return result;
 	}
 
-	nph.is_NP2_init = true;
+	retro_atomic_store_release_int(&nph.is_NP2_init, 1);
 
 	return CELL_OK;
 }
@@ -241,7 +241,7 @@ error_code sceNpMatching2Init2(u32 stackSize, s32 priority, vm::ptr<SceNpMatchin
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_init) != 0))
 	{
 		return SCE_NP_ERROR_NOT_INITIALIZED;
 	}
@@ -252,7 +252,7 @@ error_code sceNpMatching2Init2(u32 stackSize, s32 priority, vm::ptr<SceNpMatchin
 	// 3. Set maximum lengths for the event data queues in the system
 
 	// Set up by one caller only
-	if (nph.is_NP2_Match2_init.test_and_set())
+	if ((retro_atomic_exchange_int(&nph.is_NP2_Match2_init, 1) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_ALREADY_INITIALIZED;
 	}
@@ -266,7 +266,7 @@ error_code sceNp2Term(ppu_thread& ppu)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_init) != 0))
 	{
 		return SCE_NP_ERROR_NOT_INITIALIZED;
 	}
@@ -276,7 +276,7 @@ error_code sceNp2Term(ppu_thread& ppu)
 	//	cellSysutilUnregisterCallbackDispatcher();
 	sceNpTerm();
 
-	nph.is_NP2_init = false;
+	retro_atomic_store_release_int(&nph.is_NP2_init, 0);
 
 	return CELL_OK;
 }
@@ -293,13 +293,13 @@ error_code sceNpMatching2Term2()
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_init) != 0))
 	{
 		return SCE_NP_ERROR_NOT_INITIALIZED;
 	}
 
 	// Taken down by one caller only
-	if (!nph.is_NP2_Match2_init.test_and_reset())
+	if (!(retro_atomic_exchange_int(&nph.is_NP2_Match2_init, 0) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -318,7 +318,7 @@ error_code sceNpMatching2DestroyContext(SceNpMatching2ContextId ctxId)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -352,7 +352,7 @@ error_code sceNpMatching2RegisterLobbyMessageCallback(SceNpMatching2ContextId ct
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -392,7 +392,7 @@ error_code sceNpMatching2RegisterLobbyEventCallback(SceNpMatching2ContextId ctxI
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -442,7 +442,7 @@ error_code sceNpMatching2SignalingGetConnectionStatus(
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -525,7 +525,7 @@ error_code sceNpMatching2GetClanLobbyId(SceNpMatching2ContextId ctxId, SceNpClan
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -555,7 +555,7 @@ error_code sceNpMatching2ContextStart(SceNpMatching2ContextId ctxId)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -611,7 +611,7 @@ error_code sceNpMatching2GetMemoryInfo(vm::ptr<SceNpMatching2MemoryInfo> memInfo
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -676,7 +676,7 @@ error_code sceNpMatching2SignalingGetConnectionInfo(
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -811,7 +811,7 @@ error_code sceNpMatching2AbortRequest(SceNpMatching2ContextId ctxId, SceNpMatchi
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -856,7 +856,7 @@ error_code sceNpMatching2GetEventData(SceNpMatching2ContextId ctxId, SceNpMatchi
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -875,7 +875,7 @@ error_code sceNpMatching2GetRoomSlotInfoLocal(SceNpMatching2ContextId ctxId, con
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -932,7 +932,7 @@ error_code sceNpMatching2AbortContextStart(SceNpMatching2ContextId ctxId)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -946,7 +946,7 @@ error_code sceNpMatching2GetRoomMemberIdListLocal(SceNpMatching2ContextId ctxId,
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1020,7 +1020,7 @@ error_code sceNpMatching2GetRoomMemberDataInternalLocal(SceNpMatching2ContextId 
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1064,7 +1064,7 @@ error_code sceNpMatching2GetCbQueueInfo(SceNpMatching2ContextId ctxId, vm::ptr<S
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1103,7 +1103,7 @@ error_code sceNpMatching2ContextStartAsync(SceNpMatching2ContextId ctxId, u32 ti
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1152,7 +1152,7 @@ error_code sceNpMatching2RegisterContextCallback(SceNpMatching2ContextId ctxId, 
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1255,7 +1255,7 @@ error_code sceNpMatching2GetServerIdListLocal(SceNpMatching2ContextId ctxId, vm:
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1319,7 +1319,7 @@ error_code sceNpMatching2CreateContext(
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1345,7 +1345,7 @@ error_code sceNpMatching2GetSignalingOptParamLocal(SceNpMatching2ContextId ctxId
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1383,7 +1383,7 @@ error_code sceNpMatching2RegisterSignalingCallback(SceNpMatching2ContextId ctxId
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1409,7 +1409,7 @@ error_code sceNpMatching2ClearEventData(SceNpMatching2ContextId ctxId, SceNpMatc
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1501,7 +1501,7 @@ error_code sceNpMatching2SignalingSetCtxOpt(SceNpMatching2ContextId ctxId, s32 o
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1541,7 +1541,7 @@ error_code sceNpMatching2SetDefaultRequestOptParam(SceNpMatching2ContextId ctxId
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1566,7 +1566,7 @@ error_code sceNpMatching2RegisterRoomEventCallback(SceNpMatching2ContextId ctxId
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1584,7 +1584,7 @@ error_code sceNpMatching2GetRoomPasswordLocal(SceNpMatching2ContextId ctxId, Sce
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1675,7 +1675,7 @@ error_code sceNpMatching2SignalingGetCtxOpt(SceNpMatching2ContextId ctxId, s32 o
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1711,7 +1711,7 @@ error_code sceNpMatching2GetLobbyMemberIdListLocal(
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1739,7 +1739,7 @@ error_code sceNpMatching2ContextStop(SceNpMatching2ContextId ctxId)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1784,7 +1784,7 @@ error_code sceNpMatching2RegisterRoomMessageCallback(SceNpMatching2ContextId ctx
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1802,7 +1802,7 @@ error_code sceNpMatching2SignalingCancelPeerNetInfo(SceNpMatching2ContextId ctxI
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1816,7 +1816,7 @@ error_code sceNpMatching2SignalingGetLocalNetInfo(vm::ptr<SceNpMatching2Signalin
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1841,7 +1841,7 @@ error_code sceNpMatching2SignalingGetPeerNetInfo(SceNpMatching2ContextId ctxId, 
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1860,7 +1860,7 @@ error_code sceNpMatching2SignalingGetPeerNetInfoResult(SceNpMatching2ContextId c
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP2_Match2_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP2_Match2_init) != 0))
 	{
 		return SCE_NP_MATCHING2_ERROR_NOT_INITIALIZED;
 	}
@@ -1879,12 +1879,12 @@ error_code sceNpAuthOAuthInit()
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (nph.is_NP_Auth_init)
+	if ((retro_atomic_load_acquire_int(&nph.is_NP_Auth_init) != 0))
 	{
 		return SCE_NP_OAUTH_ERROR_ALREADY_INITIALIZED;
 	}
 
-	nph.is_NP_Auth_init = true;
+	retro_atomic_store_release_int(&nph.is_NP_Auth_init, 1);
 
 	return CELL_OK;
 }
@@ -1896,7 +1896,7 @@ error_code sceNpAuthOAuthTerm()
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
 	// TODO: check if this might throw SCE_NP_OAUTH_ERROR_NOT_INITIALIZED
-	nph.is_NP_Auth_init = false;
+	retro_atomic_store_release_int(&nph.is_NP_Auth_init, 0);
 
 	return CELL_OK;
 }
@@ -1907,7 +1907,7 @@ error_code sceNpAuthCreateOAuthRequest()
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_Auth_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_Auth_init) != 0))
 	{
 		return SCE_NP_OAUTH_ERROR_NOT_INITIALIZED;
 	}
@@ -1921,7 +1921,7 @@ error_code sceNpAuthDeleteOAuthRequest(SceNpAuthOAuthRequestId reqId)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_Auth_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_Auth_init) != 0))
 	{
 		return SCE_NP_OAUTH_ERROR_NOT_INITIALIZED;
 	}
@@ -1935,7 +1935,7 @@ error_code sceNpAuthAbortOAuthRequest(SceNpAuthOAuthRequestId reqId)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_Auth_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_Auth_init) != 0))
 	{
 		return SCE_NP_OAUTH_ERROR_NOT_INITIALIZED;
 	}
@@ -1949,7 +1949,7 @@ error_code sceNpAuthGetAuthorizationCode(SceNpAuthOAuthRequestId reqId, vm::cptr
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_Auth_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_Auth_init) != 0))
 	{
 		return SCE_NP_OAUTH_ERROR_NOT_INITIALIZED;
 	}

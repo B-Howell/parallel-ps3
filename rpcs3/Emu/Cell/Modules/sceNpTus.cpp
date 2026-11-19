@@ -38,17 +38,17 @@ error_code sceNpTusInit(s32 prio)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (nph.is_NP_TUS_init)
+	if ((retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_ALREADY_INITIALIZED;
 	}
 
-	if (!nph.is_NP_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_init) != 0))
 	{
 		return SCE_NP_ERROR_NOT_INITIALIZED;
 	}
 
-	nph.is_NP_TUS_init = true;
+	retro_atomic_store_release_int(&nph.is_NP_TUS_init, 1);
 
 	return CELL_OK;
 }
@@ -59,17 +59,17 @@ error_code sceNpTusTerm()
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
 
-	if (!nph.is_NP_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_init) != 0))
 	{
 		return SCE_NP_ERROR_NOT_INITIALIZED;
 	}
 
-	nph.is_NP_TUS_init = false;
+	retro_atomic_store_release_int(&nph.is_NP_TUS_init, 0);
 
 	return CELL_OK;
 }
@@ -80,7 +80,7 @@ error_code sceNpTusCreateTitleCtx(vm::cptr<SceNpCommunicationId> communicationId
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -106,7 +106,7 @@ error_code sceNpTusDestroyTitleCtx(s32 titleCtxId)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -123,7 +123,7 @@ error_code sceNpTusCreateTransactionCtx(s32 titleCtxId)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -156,7 +156,7 @@ error_code sceNpTusDestroyTransactionCtx(s32 transId)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -175,7 +175,7 @@ error_code sceNpTusSetTimeout(s32 ctxId, u32 timeout)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -207,7 +207,7 @@ error_code sceNpTusAbortTransaction(s32 transId)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -229,7 +229,7 @@ error_code sceNpTusWaitAsync(s32 transId, vm::ptr<s32> result)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -251,7 +251,7 @@ error_code sceNpTusPollAsync(s32 transId, vm::ptr<s32> result)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -298,7 +298,7 @@ error_code scenp_tus_set_multislot_variable(s32 transId, T targetNpId, vm::cptr<
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -385,7 +385,7 @@ error_code scenp_tus_get_multislot_variable(s32 transId, T targetNpId, vm::cptr<
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -472,7 +472,7 @@ error_code scenp_tus_get_multiuser_variable(s32 transId, T targetNpIdArray, SceN
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -576,7 +576,7 @@ error_code scenp_tus_get_friends_variable(s32 transId, SceNpTusSlotId slotId, s3
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -621,7 +621,7 @@ error_code scenp_tus_add_and_get_variable(s32 transId, T targetNpId, SceNpTusSlo
 {
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -693,7 +693,7 @@ error_code scenp_tus_try_and_set_variable(s32 transId, T targetNpId, SceNpTusSlo
 {
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -790,7 +790,7 @@ error_code scenp_tus_delete_multislot_variable(s32 transId, T targetNpId, vm::cp
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -857,7 +857,7 @@ error_code scenp_tus_set_data(s32 transId, T targetNpId, SceNpTusSlotId slotId, 
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -934,7 +934,7 @@ error_code scenp_tus_get_data(s32 transId, T targetNpId, SceNpTusSlotId slotId, 
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -1016,7 +1016,7 @@ error_code scenp_tus_get_multislot_data_status(s32 transId, T targetNpId, vm::cp
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -1103,7 +1103,7 @@ error_code scenp_tus_get_multiuser_data_status(s32 transId, T targetNpIdArray, S
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -1207,7 +1207,7 @@ error_code scenp_tus_get_friends_data_status(s32 transId, SceNpTusSlotId slotId,
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -1272,7 +1272,7 @@ error_code scenp_tus_delete_multislot_data(s32 transId, T targetNpId, vm::cptr<S
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -1338,7 +1338,7 @@ error_code sceNpTssGetData(s32 transId, SceNpTssSlotId slotId, vm::ptr<SceNpTssD
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}
@@ -1371,7 +1371,7 @@ error_code sceNpTssGetDataAsync(s32 transId, SceNpTssSlotId slotId, vm::ptr<SceN
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_NP_TUS_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_NP_TUS_init) != 0))
 	{
 		return SCE_NP_COMMUNITY_ERROR_NOT_INITIALIZED;
 	}

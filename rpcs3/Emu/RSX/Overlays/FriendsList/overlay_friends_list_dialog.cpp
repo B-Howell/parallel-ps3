@@ -715,7 +715,7 @@ namespace rsx
 
 				auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-				if (!nph.basic_handler_registered)
+				if (!(retro_atomic_load_acquire_int(&nph.basic_handler_registered) != 0))
 					break;
 
 				const SceNpCommunicationId context = nph.get_basic_handler_context();

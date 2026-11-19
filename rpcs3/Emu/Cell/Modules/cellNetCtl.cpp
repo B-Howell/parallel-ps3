@@ -112,12 +112,12 @@ error_code cellNetCtlInit()
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (nph.is_netctl_init)
+	if ((retro_atomic_load_acquire_int(&nph.is_netctl_init) != 0))
 	{
 		return CELL_NET_CTL_ERROR_NOT_TERMINATED;
 	}
 
-	nph.is_netctl_init = true;
+	retro_atomic_store_release_int(&nph.is_netctl_init, 1);
 
 	return CELL_OK;
 }
@@ -128,7 +128,7 @@ void cellNetCtlTerm()
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	nph.is_netctl_init = false;
+	retro_atomic_store_release_int(&nph.is_netctl_init, 0);
 }
 
 error_code cellNetCtlGetState(vm::ptr<s32> state)
@@ -137,7 +137,7 @@ error_code cellNetCtlGetState(vm::ptr<s32> state)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_netctl_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_netctl_init) != 0))
 	{
 		return CELL_NET_CTL_ERROR_NOT_INITIALIZED;
 	}
@@ -158,7 +158,7 @@ error_code cellNetCtlAddHandler(vm::ptr<cellNetCtlHandler> handler, vm::ptr<void
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_netctl_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_netctl_init) != 0))
 	{
 		return CELL_NET_CTL_ERROR_NOT_INITIALIZED;
 	}
@@ -177,7 +177,7 @@ error_code cellNetCtlDelHandler(s32 hid)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_netctl_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_netctl_init) != 0))
 	{
 		return CELL_NET_CTL_ERROR_NOT_INITIALIZED;
 	}
@@ -235,7 +235,7 @@ error_code cellNetCtlGetInfo(s32 code, vm::ptr<CellNetCtlInfo> info)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_netctl_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_netctl_init) != 0))
 	{
 		return CELL_NET_CTL_ERROR_NOT_INITIALIZED;
 	}
@@ -313,7 +313,7 @@ error_code cellNetCtlNetStartDialogLoadAsync(vm::cptr<CellNetCtlNetStartDialogPa
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_netctl_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_netctl_init) != 0))
 	{
 		return CELL_NET_CTL_ERROR_NOT_INITIALIZED;
 	}
@@ -345,7 +345,7 @@ error_code cellNetCtlNetStartDialogAbortAsync()
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_netctl_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_netctl_init) != 0))
 	{
 		return CELL_NET_CTL_ERROR_NOT_INITIALIZED;
 	}
@@ -359,7 +359,7 @@ error_code cellNetCtlNetStartDialogUnloadAsync(vm::ptr<CellNetCtlNetStartDialogR
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_netctl_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_netctl_init) != 0))
 	{
 		return CELL_NET_CTL_ERROR_NOT_INITIALIZED;
 	}
@@ -386,7 +386,7 @@ error_code cellNetCtlGetNatInfo(vm::ptr<CellNetCtlNatInfo> natInfo)
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
-	if (!nph.is_netctl_init)
+	if (!(retro_atomic_load_acquire_int(&nph.is_netctl_init) != 0))
 	{
 		return CELL_NET_CTL_ERROR_NOT_INITIALIZED;
 	}

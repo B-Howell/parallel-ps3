@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The NP handler is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** which NP libraries the game has initialised (netctl, NP, lookup, score, NP2, matching 2, auth, TUS, commerce 2), whether the basic handler is registered, the presence's advertised flag, the busy flag that lets one `sceNpInit` or `sceNpTerm` run at a time, the two matching 2 counters and the clan ticket's ready flag are `retro_atomic_int_t`. That is about 420 uses across sceNp, sceNp2, sceNpCommerce2, sceNpTus, cellNetCtl and the friends list. The matching 2 request ids keep their 16-bit wrap.
+  - **The clan ticket:** the wait for the server's answer is on `retro_waitaddr`, with the same 60 seconds. It is a network timeout, one of the kept exceptions, not pacing.
+  - **Savestates:** the flags are written and read through a `bool` array, so the format is unchanged.
+  - **Tests:** none of its own. The NP handler needs its network threads to be made, and these flags have no logic of their own to test. A check fails if `atomic_t` comes back, or if the savestate stops writing the flags as bools.
+
+
 - **cellCamera is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the camera thread's state that the game's threads read before their calls reach it (initialised, open, attached, streaming, the read mode, the frame count and the bytes read, the frame time, the buffer being written and the two buffers' locked flags) is `retro_atomic_int_t` and `retro_atomic_64_t`. So is what it shares with cellGem (the frame's time, width, height, size and format). The rest stays the camera thread's alone, as before.
   - **Savestates:** written and read through the types the fields were (`u8`, `bool`, `u32`, `u64`, `s32` and the format), so the format is unchanged.

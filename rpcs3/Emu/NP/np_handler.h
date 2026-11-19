@@ -157,22 +157,23 @@ namespace np
 		void init_NP(u32 poolsize, vm::ptr<void> poolptr);
 		void terminate_NP();
 
-		atomic_t<bool> is_netctl_init     = false;
-		atomic_t<bool> is_NP_init         = false;
-		atomic_t<bool> is_NP_Lookup_init  = false;
-		atomic_t<bool> is_NP_Score_init   = false;
-		atomic_t<bool> is_NP2_init        = false;
-		atomic_t<bool> is_NP2_Match2_init = false;
-		atomic_t<bool> is_NP_Auth_init    = false;
-		atomic_t<bool> is_NP_TUS_init     = false; // TODO: savestate
-		atomic_t<bool> is_NP_Com2_init    = false; // TODO: savestate
+		// Which NP libraries the game has initialised: 0 or 1
+		retro_atomic_int_t is_netctl_init{0};
+		retro_atomic_int_t is_NP_init{0};
+		retro_atomic_int_t is_NP_Lookup_init{0};
+		retro_atomic_int_t is_NP_Score_init{0};
+		retro_atomic_int_t is_NP2_init{0};
+		retro_atomic_int_t is_NP2_Match2_init{0};
+		retro_atomic_int_t is_NP_Auth_init{0};
+		retro_atomic_int_t is_NP_TUS_init{0}; // TODO: savestate
+		retro_atomic_int_t is_NP_Com2_init{0}; // TODO: savestate
 
 		// NP Handlers/Callbacks
 		// Seems to be global
 		vm::ptr<SceNpManagerCallback> manager_cb{}; // Connection status and tickets
 		vm::ptr<void> manager_cb_arg{};
 
-		atomic_t<bool> basic_handler_registered = false;
+		retro_atomic_int_t basic_handler_registered{0};
 
 		void register_basic_handler(vm::cptr<SceNpCommunicationId> context, vm::ptr<SceNpBasicEventHandler> handler, vm::ptr<void> arg, bool context_sensitive);
 		SceNpCommunicationId get_basic_handler_context();
@@ -340,7 +341,7 @@ namespace np
 		std::vector<SceNpCustomMenuActionExceptions> custom_menu_exception_list{};
 
 		// sceNpInit/sceNpTerm under way: one at a time, by compare-and-swap
-		atomic_t<u32> np_status_busy = 0;
+		retro_atomic_int_t np_status_busy{0}; // sceNpInit or sceNpTerm under way
 
 		static constexpr std::string_view thread_name = "NP Handler Thread";
 
@@ -469,7 +470,7 @@ namespace np
 		ticket current_ticket;
 
 		// Clan ticket
-		atomic_t<u32> clan_ticket_ready = 0;
+		mutable retro_atomic_int_t clan_ticket_ready{0};
 		ticket clan_ticket;
 
 		// IP & DNS info
@@ -502,21 +503,21 @@ namespace np
 
 		// Requests(reqEventKey : data)
 		std::unordered_map<u32, event_data> match2_req_results;
-		atomic_t<u16> match2_low_reqid_cnt = 1;
-		atomic_t<u32> match2_event_cnt     = 1;
+		retro_atomic_int_t match2_low_reqid_cnt{1}; // its low 16 bits are the id
+		retro_atomic_int_t match2_event_cnt{1};
 		u32 get_req_id(u16 app_req)
 		{
-			return ((app_req << 16) | match2_low_reqid_cnt.fetch_add(1));
+			return ((app_req << 16) | static_cast<u16>(retro_atomic_fetch_add_int(&match2_low_reqid_cnt, 1)));
 		}
 
 		u32 get_req_id(REQUEST_ID_HIGH int_req)
 		{
-			return ((static_cast<u16>(int_req) << 16) | match2_low_reqid_cnt.fetch_add(1));
+			return ((static_cast<u16>(int_req) << 16) | static_cast<u16>(retro_atomic_fetch_add_int(&match2_low_reqid_cnt, 1)));
 		}
 
 		u32 get_event_key()
 		{
-			return match2_event_cnt.fetch_add(1);
+			return static_cast<u32>(retro_atomic_fetch_add_int(&match2_event_cnt, 1));
 		}
 		event_data& allocate_req_result(u32 event_key, u32 max_size, u32 initial_size);
 
@@ -589,7 +590,7 @@ namespace np
 			std::string pr_status;
 			std::string pr_comment;
 			std::vector<u8> pr_data;
-			atomic_t<bool> advertised = false;
+			retro_atomic_int_t advertised{0};
 		} presence_self;
 
 		player_history& get_player_and_set_timestamp(const SceNpId& npid, u64 timestamp);
