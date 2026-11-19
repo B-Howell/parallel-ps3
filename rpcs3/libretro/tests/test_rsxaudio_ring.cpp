@@ -37,6 +37,8 @@
 #include "Emu/Audio/AudioBackend.h"
 #include "Emu/Cell/lv2/sys_uart.h"
 #include "Emu/IdManager.h"
+#include "Emu/Cell/timers.hpp"
+#include <rthreads/retro_waitaddr.h>
 #include "reference_ringbuf.h"
 
 #include <chrono>
@@ -492,6 +494,53 @@ int main()
 		CHECK(quick == 20);
 		CHECK(on_data == 20);
 		std::printf("test_rsxaudio_ring: calls on the data thread: %u of 20 taken up at once (worst %.2f ms), %u run there\n", quick, worst_ms, on_data);
+	}
+
+	// The AV UART's send ring: each write wakes the thread waiting on
+	// tx_put_seq, 1000 times
+	{
+		auto av = std::make_unique<vuart_av_thread>();
+		std::atomic<int> woken_put{0};
+		std::atomic<bool> stop{false};
+		const auto waiter = [&](retro_atomic_int_t* word, std::atomic<int>& woken)
+		{
+			for (int i = 0; i < 1000; i++)
+			{
+				const int seen = retro_atomic_load_acquire_int(word);
+				while (retro_atomic_load_acquire_int(word) == seen && !stop)
+				{
+					const retro_waitaddr_t w{word, static_cast<uint32_t>(seen)};
+					retro_waitaddr_wait(&w, 1, -1);
+				}
+				woken++;
+			}
+		};
+		std::thread put_waiter(waiter, &av->tx_put_seq, std::ref(woken_put));
+		u8 byte = 0x5a;
+		u32 drained = 0;
+		bool all_woken = true;
+		for (int i = 0; i < 1000 && all_woken; i++)
+		{
+			// One move at a time: the waiter is back at its wait before the next
+			for (int j = 0; j < 2000; j++)
+				std::this_thread::yield();
+			CHECK(av->enque_tx_data(&byte, 1) == 1);
+			drained = av->get_tx_bytes();
+			const u64 until = get_system_time() + 2'000'000;
+			while (woken_put < i + 1 && get_system_time() < until)
+				std::this_thread::yield();
+			all_woken = woken_put >= i + 1;
+		}
+		CHECK(all_woken);
+		CHECK(drained == 1000); // 1000 bytes in a 2048-byte ring
+		stop = true;
+		for (int i = 0; i < 2000; i++)
+		{
+			retro_atomic_fetch_add_int(&av->tx_put_seq, 1);
+			retro_waitaddr_notify_all(&av->tx_put_seq);
+		}
+		put_waiter.join();
+		std::printf("test_rsxaudio_ring: each write to the AV UART's send ring wakes its reader, 1000 writes\n");
 	}
 
 	std::printf("test_rsxaudio_ring: %s\n", failures ? "FAIL" : "ok");

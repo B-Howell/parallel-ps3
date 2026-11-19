@@ -3,7 +3,6 @@
 #include <retro_atomic.h>
 
 #include "Emu/Memory/vm_ptr.h"
-#include "util/atomic.hpp"
 #include <retro_spsc.h>
 
 // The UART's two byte rings (libretro-common's retro_spsc: one thread writes
@@ -311,11 +310,11 @@ public:
 	// compare-and-swap (a second is told it is busy, or a blocking send
 	// waits for it); each ring's side moves a word as it reads or writes,
 	// which the other side waits on
-	atomic_t<u32> rx_claim{}; // a sys_uart_receive reading
-	atomic_t<u32> tx_claim{}; // a sys_uart_send writing
-	atomic_t<u32> tx_put_seq{}; // moved by every write to tx_buf: this thread waits on it
-	atomic_t<u32> tx_take_seq{}; // moved by every read of tx_buf: a blocking send waits on it for room
-	atomic_t<u32> rx_put_seq{}; // moved by every write to rx_buf: a blocking receive waits on it
+	retro_atomic_int_t rx_claim{0}; // a sys_uart_receive reading
+	retro_atomic_int_t tx_claim{0}; // a sys_uart_send writing
+	retro_atomic_int_t tx_put_seq{0}; // moved by every write to tx_buf: this thread waits on it
+	retro_atomic_int_t tx_take_seq{0}; // moved by every read of tx_buf: a blocking send waits on it for room
+	retro_atomic_int_t rx_put_seq{0}; // moved by every write to rx_buf: a blocking receive waits on it
 
 	bool head_b_initialized = false;
 	u8 hdmi_behavior_mode = PS3AV_HDMI_BEHAVIOR_NORMAL;

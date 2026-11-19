@@ -1734,7 +1734,7 @@ error_code sys_uart_receive(ppu_thread &ppu, vm::ptr<void> buffer, u64 size, u32
 		constexpr u32 ITER_SIZE = 4096;
 
 		// One receive at a time: a second is told busy, as by the lock's try
-		if (!vuart_thread.rx_claim.compare_and_swap_test(0, 1))
+		if (!retro_atomic_cas_int(&vuart_thread.rx_claim, 0, 1))
 		{
 			return CELL_EBUSY;
 		}
@@ -1753,8 +1753,8 @@ error_code sys_uart_receive(ppu_thread &ppu, vm::ptr<void> buffer, u64 size, u32
 				break;
 		}
 
-		vuart_thread.rx_claim.release(0);
-		vuart_thread.rx_claim.notify_all();
+		retro_atomic_store_release_int(&vuart_thread.rx_claim, 0);
+		retro_waitaddr_notify_all(&vuart_thread.rx_claim);
 		return read_size;
 	};
 
@@ -1770,7 +1770,7 @@ error_code sys_uart_receive(ppu_thread &ppu, vm::ptr<void> buffer, u64 size, u32
 				return {};
 			}
 
-			const u32 seen = vuart_thread.rx_put_seq.load();
+			const u32 seen = static_cast<u32>(retro_atomic_load_acquire_int(&vuart_thread.rx_put_seq));
 			const auto old_state = +ppu.state;
 			const s32 read_result = vuart_read(data, static_cast<u32>(size));
 
@@ -1790,8 +1790,8 @@ error_code sys_uart_receive(ppu_thread &ppu, vm::ptr<void> buffer, u64 size, u32
 			thread_ctrl::wait_on_custom<3>([&](atomic_wait::list<5>& list)
 			{
 				list.template set<0>(ppu.state, old_state);
-				list.template set<1>(vuart_thread.rx_put_seq, seen);
-				list.template set<2>(vuart_thread.rx_claim, static_cast<u32>(read_result) == static_cast<u32>(CELL_EBUSY) ? 1u : 0u);
+				list.template set_raw<1>(&vuart_thread.rx_put_seq, seen);
+				list.template set_raw<2>(&vuart_thread.rx_claim, static_cast<u32>(read_result) == static_cast<u32>(CELL_EBUSY) ? 1u : 0u);
 			});
 		}
 
@@ -1856,12 +1856,12 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 	// One send at a time (tx_claim): let go as this returns
 	struct tx_claimed
 	{
-		atomic_t<u32>& claim;
+		retro_atomic_int_t& claim;
 		bool held = false;
 
 		bool try_take()
 		{
-			held = claim.compare_and_swap_test(0, 1);
+			held = retro_atomic_cas_int(&claim, 0, 1) != 0;
 			return held;
 		}
 
@@ -1869,8 +1869,8 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 		{
 			if (held)
 			{
-				claim.release(0);
-				claim.notify_all();
+				retro_atomic_store_release_int(&claim, 0);
+				retro_waitaddr_notify_all(&claim);
 			}
 		}
 	} lock{vuart_thread.tx_claim};
@@ -1895,7 +1895,7 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 			thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
 			{
 				list.template set<0>(ppu.state, old_state);
-				list.template set<1>(vuart_thread.tx_claim, 1u);
+				list.template set_raw<1>(&vuart_thread.tx_claim, 1u);
 			});
 		}
 
@@ -1912,7 +1912,7 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 
 				// No room: woken as the AV thread takes some, or this thread
 				// stopped (a 5 ms timed wait before)
-				const u32 seen = vuart_thread.tx_take_seq.load();
+				const u32 seen = static_cast<u32>(retro_atomic_load_acquire_int(&vuart_thread.tx_take_seq));
 				const auto old_state = +ppu.state;
 
 				if (vuart_thread.get_tx_bytes() >= PS3AV_TX_BUF_SIZE)
@@ -1920,7 +1920,7 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 					thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
 					{
 						list.template set<0>(ppu.state, old_state);
-						list.template set<1>(vuart_thread.tx_take_seq, seen);
+						list.template set_raw<1>(&vuart_thread.tx_take_seq, seen);
 					});
 					continue;
 				}
@@ -2068,11 +2068,11 @@ void vuart_av_thread::operator()()
 
 		// Woken by a packet sent, or by the next HDMI event's time - the AV
 		// hardware's own timer
-		const u32 seen = tx_put_seq.load();
+		const u32 seen = static_cast<u32>(retro_atomic_load_acquire_int(&tx_put_seq));
 
 		if (!uart_ring_used(tx_buf))
 		{
-			thread_ctrl::wait_on(tx_put_seq, seen, wait_time ? libretro_guest_wait_as_host(wait_time) : -1);
+			thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&tx_put_seq, seen); }, wait_time ? libretro_guest_wait_as_host(wait_time) : -1);
 		}
 
 		if (u32 read_size = read_tx_data(temp_tx_buf, PS3AV_TX_BUF_SIZE))
@@ -2147,8 +2147,8 @@ void vuart_av_thread::parse_tx_buffer(u32 buf_size)
 
 vuart_av_thread &vuart_av_thread::operator=(thread_state)
 {
-	tx_put_seq++;
-	tx_put_seq.notify_all();
+	retro_atomic_fetch_add_int(&tx_put_seq, 1);
+	retro_waitaddr_notify_all(&tx_put_seq);
 	return *this;
 }
 
@@ -2156,8 +2156,8 @@ u32 vuart_av_thread::enque_tx_data(const void *data, u32 data_sz)
 {
 	if (u32 size = uart_ring_push(tx_buf, PS3AV_TX_BUF_SIZE, data, data_sz))
 	{
-		tx_put_seq++;
-		tx_put_seq.notify_all();
+		retro_atomic_fetch_add_int(&tx_put_seq, 1);
+		retro_waitaddr_notify_all(&tx_put_seq);
 		return size;
 	}
 
@@ -2178,8 +2178,8 @@ u32 vuart_av_thread::read_tx_data(void *data, u32 data_sz)
 {
 	if (u32 size = uart_ring_pop(tx_buf, data, data_sz))
 	{
-		tx_take_seq++;
-		tx_take_seq.notify_all();
+		retro_atomic_fetch_add_int(&tx_take_seq, 1);
+		retro_waitaddr_notify_all(&tx_take_seq);
 		return size;
 	}
 	return 0;
@@ -2284,8 +2284,8 @@ void vuart_av_thread::commit_rx_buf(bool syscon_buf)
 
 	if (uart_ring_used(rx_buf))
 	{
-		rx_put_seq++;
-		rx_put_seq.notify_all();
+		retro_atomic_fetch_add_int(&rx_put_seq, 1);
+		retro_waitaddr_notify_all(&rx_put_seq);
 	}
 }
 
@@ -2466,8 +2466,8 @@ void vuart_av_thread::commit_event_data(const void *data, u16 data_size)
 
 	if (uart_ring_used(rx_buf))
 	{
-		rx_put_seq++;
-		rx_put_seq.notify_all();
+		retro_atomic_fetch_add_int(&rx_put_seq, 1);
+		retro_waitaddr_notify_all(&rx_put_seq);
 	}
 }
 
