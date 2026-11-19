@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../VulkanAPI.h"
-#include "util/atomic.hpp"
+#include <retro_atomic.h>
 
 #include "commands.h"
 #include "device.h"
@@ -218,7 +218,7 @@ namespace vk
 
 		// Temporary storage accessors
 		const rsx::simple_array<WriteDescriptorSetT> peek() const { return m_pending_writes; }
-		u64 cache_id() const { return m_storage_cache_id; }
+		u64 cache_id() const { return static_cast<u64>(retro_atomic_load_acquire_64(&m_storage_cache_id)); }
 
 	private:
 		VkDescriptorSet m_handle = VK_NULL_HANDLE;
@@ -229,7 +229,7 @@ namespace vk
 		bool m_registered = false;
 
 		friend class descriptors::dispatch_manager;
-		atomic_t<u64> m_storage_cache_id = 0;
+		mutable retro_atomic_64_t m_storage_cache_id{0};
 
 		rsx::simple_array<VkBufferView> m_buffer_view_pool;
 		rsx::simple_array<VkDescriptorBufferInfo> m_buffer_info_pool;

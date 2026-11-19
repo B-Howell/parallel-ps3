@@ -4,7 +4,8 @@
 #include "buffer_object.h"
 #include "device.h"
 
-#include "util/atomic.hpp"
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 
 namespace vk
 {
@@ -20,7 +21,7 @@ namespace vk
 
 	struct fence
 	{
-		atomic_t<u32> flushed = 0; // the submit made (waited on: wait_flush)
+		retro_atomic_int_t flushed{0}; // 1 once the submit is made (waited on: wait_flush)
 		VkFence handle         = VK_NULL_HANDLE;
 		VkDevice owner         = VK_NULL_HANDLE;
 

@@ -112,7 +112,7 @@ namespace vk
 				return true;
 			}
 
-			if (!m_submit_fence->flushed)
+			if (!retro_atomic_load_acquire_int(&m_submit_fence->flushed))
 			{
 				return false;
 			}

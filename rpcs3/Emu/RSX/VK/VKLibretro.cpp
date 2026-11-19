@@ -49,7 +49,7 @@ namespace vk::libretro
 		{
 			return count | static_cast<int>(first << 2) | static_cast<int>(second << 10);
 		}
-		atomic_t<u32> s_generation{0};
+		retro_atomic_int_t s_generation{0}; // u32
 	}
 
 	bool hw_present() { return s_hw_present; }
@@ -205,11 +205,11 @@ namespace vk::libretro
 		retro_atomic_store_release_int(&s_ready, 0);
 	}
 
-	u32 image_generation() { return s_generation; }
+	u32 image_generation() { return static_cast<u32>(retro_atomic_load_acquire_int(&s_generation)); }
 
 	void new_image_generation()
 	{
 		drop_pending_frames();
-		s_generation++;
+		retro_atomic_fetch_add_int(&s_generation, 1);
 	}
 }

@@ -545,7 +545,7 @@ namespace vk
 		const auto num_copies = ::size32(m_pending_copies);
 		vkUpdateDescriptorSets(*g_render_device, num_writes, m_pending_writes.data(), num_copies, m_pending_copies.data());
 
-		m_storage_cache_id++;
+		retro_atomic_fetch_add_64(&m_storage_cache_id, 1);
 
 		m_push_type_mask = 0;
 		m_pending_writes.clear();

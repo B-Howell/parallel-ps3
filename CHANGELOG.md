@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The rest of the Vulkan renderer is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** a fence's flushed flag (which `wait_flush` waits on, now with `retro_waitaddr`), the descriptor set's storage cache id, the unique resource id counter, the DMA pool's allocated size and the libretro image generation are `retro_atomic_int_t` and `retro_atomic_64_t`. No Vulkan file includes util/atomic.hpp any more. The texture cache's own flag is left for the texture cache work. Nothing is saved in savestates.
+  - **Tests:** none at runtime: a fence and everything else here needs a Vulkan device. A check fails if `atomic_t` or util/atomic.hpp comes back to the Vulkan renderer outside the texture cache.
+
+
 - **The Vulkan renderer's flags and counters are off `atomic_t`.** Not yet run on a game.
   - **What changed:** the samplers-dirty flag, a flush request's pending flag, the command buffer ring's index, the cached render pass key and the pipeline compiler's thread index are `retro_atomic_int_t` and `retro_atomic_64_t`. Nothing is saved in savestates.
   - **Tests:** none at runtime: they need a Vulkan device. A check fails if `atomic_t` comes back to these files.

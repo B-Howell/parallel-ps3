@@ -168,21 +168,22 @@ namespace vk
 	void fence::reset()
 	{
 		vkResetFences(owner, 1, &handle);
-		flushed.release(0);
+		retro_atomic_store_release_int(&flushed, 0);
 	}
 
 	void fence::signal_flushed()
 	{
-		flushed.release(1);
-		flushed.notify_all();
+		retro_atomic_store_release_int(&flushed, 1);
+		retro_waitaddr_notify_all(&flushed);
 	}
 
 	void fence::wait_flush()
 	{
 		// Woken as the submit is made (signal_flushed), no spin
-		while (!flushed)
+		const retro_waitaddr_t w{&flushed, 0};
+		while (!retro_atomic_load_acquire_int(&flushed))
 		{
-			flushed.wait(0);
+			retro_waitaddr_wait(&w, 1, -1);
 		}
 	}
 

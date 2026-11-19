@@ -38,7 +38,7 @@ namespace vk
 	}
 
 	// Validation
-	atomic_t<u64> s_allocated_dma_pool_size{ 0 };
+	retro_atomic_64_t s_allocated_dma_pool_size{0};
 
 	dma_block::~dma_block()
 	{
@@ -120,7 +120,7 @@ namespace vk
 		memory_mapping = dst;
 		make_view();
 
-		s_allocated_dma_pool_size += allocated_memory->size();
+		retro_atomic_fetch_add_64(&s_allocated_dma_pool_size, static_cast<s64>(allocated_memory->size()));
 	}
 
 	void dma_block::make_view()
@@ -137,7 +137,7 @@ namespace vk
 		if (allocated_memory)
 		{
 			// Do some accounting before the allocation info is no more
-			s_allocated_dma_pool_size -= allocated_memory->size();
+			retro_atomic_fetch_sub_64(&s_allocated_dma_pool_size, static_cast<s64>(allocated_memory->size()));
 
 			// If you have both a memory allocation AND a parent block at the same time, you're in trouble
 			ensure(head() == this);
@@ -309,7 +309,7 @@ namespace vk
 			size);
 
 		make_view();
-		s_allocated_dma_pool_size += allocated_memory->size();
+		retro_atomic_fetch_add_64(&s_allocated_dma_pool_size, static_cast<s64>(allocated_memory->size()));
 	}
 
 	void* dma_block_EXT::map_range(const utils::address_range32& range)
@@ -455,7 +455,7 @@ namespace vk
 
 		// Check that all the math adds up...
 		stale_references.clear();
-		ensure(s_allocated_dma_pool_size == g_dma_pool.size() * s_dma_block_length);
+		ensure(static_cast<u64>(retro_atomic_load_acquire_64(&s_allocated_dma_pool_size)) == g_dma_pool.size() * s_dma_block_length);
 
 		ensure(block_head);
 		publish_views(first_block, last_block);
@@ -495,7 +495,7 @@ namespace vk
 			block += s_dma_block_length;
 		}
 
-		ensure(s_allocated_dma_pool_size == g_dma_pool.size() * s_dma_block_length);
+		ensure(static_cast<u64>(retro_atomic_load_acquire_64(&s_allocated_dma_pool_size)) == g_dma_pool.size() * s_dma_block_length);
 	}
 
 	// Copying through a mapping only reads the table of views: no lock
