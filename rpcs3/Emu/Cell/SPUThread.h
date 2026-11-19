@@ -1151,7 +1151,9 @@ public:
 		u64 mmio_time = umax;
 	};
 
-	atomic_t<raw_spu_log_stats_t> mmio_stats{};
+	retro_atomic_128_t mmio_stats{{~0ull, ~0ull}}; // a raw_spu_log_stats_t, all umax as its defaults
+
+	static_assert(sizeof(raw_spu_log_stats_t) == 16);
 
 	bool in_cpu_work = false;
 	bool allow_interrupts_in_cpu_work = false;
@@ -1264,7 +1266,45 @@ public:
 		return false;
 	}
 
-	static atomic_t<u64, 128> g_spu_waiters_by_value[6];
+	// Each on a cache line of its own: the reservation's hash (high half)
+	// and address (bits 7 up), and the count of SPUs waiting on it (low 7)
+	struct alignas(128) spu_waiter_t
+	{
+		retro_atomic_64_t word{0};
+	};
+
+	static spu_waiter_t g_spu_waiters_by_value[6];
+
+	static u64 waiter_load(usz i) { return static_cast<u64>(retro_atomic_load_acquire_64(&g_spu_waiters_by_value[i].word)); }
+
+	// @f changes the waiter's word: with a bool f, the word before and
+	// whether f changed it (fetch_op); with a void f, the word before
+	template <typename F>
+	static auto waiter_op(usz i, F&& f)
+	{
+		retro_atomic_64_t* const word = &g_spu_waiters_by_value[i].word;
+
+		for (;;)
+		{
+			const s64 old = retro_atomic_load_acquire_64(word);
+			u64 value = static_cast<u64>(old);
+
+			if constexpr (std::is_void_v<std::invoke_result_t<F&, u64&>>)
+			{
+				f(value);
+
+				if (static_cast<s64>(value) == old || retro_atomic_cas_64(word, old, static_cast<s64>(value)))
+					return static_cast<u64>(old);
+			}
+			else
+			{
+				const bool done = f(value);
+
+				if (!done || static_cast<s64>(value) == old || retro_atomic_cas_64(word, old, static_cast<s64>(value)))
+					return std::pair<u64, bool>{static_cast<u64>(old), done};
+			}
+		}
+	}
 
 	static u32 find_raw_spu(u32 id)
 	{

@@ -2418,8 +2418,8 @@ void lv2_obj::notify_all() noexcept
 
 	for (usz i = 0, checked = 0; checked < 4 && i < total_waiters; i++)
 	{
-		auto& waiter = spu_thread::g_spu_waiters_by_value[(i + cpu->id) % total_waiters];
-		const u64 value = waiter.load();
+		const usz waiter = (i + cpu->id) % total_waiters;
+		const u64 value = spu_thread::waiter_load(waiter);
 		u32 raddr = static_cast<u32>(value) & -128;
 
 		if (vm::check_addr(raddr))
@@ -2431,7 +2431,7 @@ void lv2_obj::notify_all() noexcept
 				if (compute_rdata_hash32(*vm::get_super_ptr<spu_rdata_t>(raddr)) != static_cast<u32>(value >> 32))
 				{
 					// Clear address to avoid a race, keep waiter counter
-					if (waiter.fetch_op([&](u64& x)
+					if (spu_thread::waiter_op(waiter, [&](u64& x)
 					{
 						if ((x & -128) == (value & -128))
 						{
@@ -2460,7 +2460,7 @@ void lv2_obj::notify_all() noexcept
 			if (spu_thread::reservation_check(raddr, static_cast<u32>(value >> 32), range_lock))
 			{
 				// Clear address to avoid a race, keep waiter counter
-				if (waiter.fetch_op([&](u64& x)
+				if (spu_thread::waiter_op(waiter, [&](u64& x)
 				{
 					if ((x & -128) == (value & -128))
 					{

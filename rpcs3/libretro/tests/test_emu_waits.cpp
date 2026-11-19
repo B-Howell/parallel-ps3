@@ -1313,6 +1313,38 @@ int main()
 		std::printf("test_emu_waits: an SPU's interrupt control: masked, cleared, 20000 races with both bits kept\n");
 	}
 
+	// The SPU cache line waiters: each word on a line of its own, and two
+	// threads counting themselves in on one at once, 200000 times each
+	// (each on a CPU of its own), none of the counts lost
+	{
+		static_assert(alignof(spu_thread::spu_waiter_t) == 128 && sizeof(spu_thread::spu_waiter_t) == 128);
+		retro_atomic_store_release_64(&spu_thread::g_spu_waiters_by_value[5].word, 0);
+		const auto [old0, took] = spu_thread::waiter_op(5, [](u64& x) { if (x) return false; x = 0x1000; return true; });
+		CHECK(old0 == 0 && took && spu_thread::waiter_load(5) == 0x1000);
+		std::atomic<int> arrived{0};
+		const auto counter = [&](int cpu)
+		{
+#ifdef __linux__
+			cpu_set_t set;
+			CPU_ZERO(&set);
+			CPU_SET(cpu % std::max(1u, std::thread::hardware_concurrency()), &set);
+			pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+#else
+			(void)cpu;
+#endif
+			arrived++;
+			while (arrived < 2) {}
+			for (int i = 0; i < 200000; i++)
+				spu_thread::waiter_op(5, [](u64& x) { x += 0x1'0000'0000ull; });
+		};
+		std::thread a(counter, 0), b(counter, 1);
+		a.join();
+		b.join();
+		CHECK(spu_thread::waiter_load(5) == 0x1000 + 400000 * 0x1'0000'0000ull);
+		retro_atomic_store_release_64(&spu_thread::g_spu_waiters_by_value[5].word, 0);
+		std::printf("test_emu_waits: the SPU cache line waiters, 400000 changes from two threads kept\n");
+	}
+
 	// A game's callback and its argument in one retro_atomic word: installed
 	// only where none is, taken off whole, and of two threads installing at
 	// once, one wins

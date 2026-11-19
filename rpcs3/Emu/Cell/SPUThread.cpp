@@ -5226,7 +5226,7 @@ usz spu_thread::register_cache_line_waiter(u32 addr)
 
 		for (usz i = 0; i < std::size(g_spu_waiters_by_value); i++)
 		{
-			auto [old, ok] = g_spu_waiters_by_value[i].fetch_op([&](u64& x)
+			auto [old, ok] = waiter_op(i, [&](u64& x)
 			{
 				if (x == 0)
 				{
@@ -5255,7 +5255,7 @@ usz spu_thread::register_cache_line_waiter(u32 addr)
 		}
 
 		// If we did not find existing an waiter, try to occupy an empty spot
-		if (g_spu_waiters_by_value[empty_it].compare_and_swap_test(0, value + 1))
+		if (retro_atomic_cas_64(&g_spu_waiters_by_value[empty_it].word, 0, static_cast<s64>(value + 1)))
 		{
 			return empty_it;
 		}
@@ -5274,7 +5274,7 @@ void spu_thread::deregister_cache_line_waiter(usz index)
 
 	ensure(index < std::size(g_spu_waiters_by_value));
 
-	g_spu_waiters_by_value[index].atomic_op([](u64& x)
+	waiter_op(index, [](u64& x)
 	{
 		x--;
 
@@ -5656,7 +5656,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 				return true;
 			}
 
-			if ((g_spu_waiters_by_value[cache_line_waiter_index] & -128) == 0)
+			if ((waiter_load(cache_line_waiter_index) & -128) == 0)
 			{
 				deregister_cache_line_waiter(cache_line_waiter_index);
 				cache_line_waiter_index = umax;
@@ -5666,7 +5666,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 			return true;
 		};
 
-		static atomic_t<u8> s_is_reservation_data_checking_thread = false;
+		static retro_atomic_int_t s_is_reservation_data_checking_thread{0}; // 0 or 1
 		bool is_reservation_data_checking_thread = false;
 
 		const bool is_LR_wait = raddr && mask1 & SPU_EVENT_LR;
@@ -5694,9 +5694,9 @@ s64 spu_thread::get_ch_value(u32 ch)
 				val = static_cast<u8>(std::min<u32>(val + 1, u8{umax}));
 			}
 
-			if (!s_is_reservation_data_checking_thread && utils::get_thread_count() >= 12)// && std::find(raddr_busy_wait_addr.begin(), raddr_busy_wait_addr.end(), raddr) != raddr_busy_wait_addr.end())
+			if (!retro_atomic_load_acquire_int(&s_is_reservation_data_checking_thread) && utils::get_thread_count() >= 12)// && std::find(raddr_busy_wait_addr.begin(), raddr_busy_wait_addr.end(), raddr) != raddr_busy_wait_addr.end())
 			{
-				if (s_is_reservation_data_checking_thread.compare_and_swap_test(0, 1))
+				if (retro_atomic_cas_int(&s_is_reservation_data_checking_thread, 0, 1))
 				{
 					eventstat_busy_waiting_switch = 1;
 					is_reservation_data_checking_thread = true;
@@ -5735,7 +5735,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 			{
 				if (is_reservation_data_checking_thread)
 				{
-					s_is_reservation_data_checking_thread = 0;
+					retro_atomic_store_release_int(&s_is_reservation_data_checking_thread, 0);
 
 					// Check again other reservations in other threads
 					lv2_obj::notify_all();
@@ -6023,7 +6023,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 
 		if (is_reservation_data_checking_thread)
 		{
-			s_is_reservation_data_checking_thread = 0;
+			retro_atomic_store_release_int(&s_is_reservation_data_checking_thread, 0);
 
 			// Check again other reservations in other threads
 			lv2_obj::notify_all();

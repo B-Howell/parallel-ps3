@@ -36,6 +36,22 @@ inline void try_start(spu_thread& spu)
 	}
 };
 
+// The MMIO log's last entry, changed with a 16-byte compare-and-swap: the
+// entry before and whether @f changed it, as fetch_op did
+template <typename F>
+static std::pair<spu_thread::raw_spu_log_stats_t, bool> stats_fetch_op(retro_atomic_128_t* stats, F&& f)
+{
+	for (;;)
+	{
+		const retro_u128_t old = retro_atomic_load_acquire_128(stats);
+		auto entry = std::bit_cast<spu_thread::raw_spu_log_stats_t>(old);
+		const bool done = f(entry);
+
+		if (!done || retro_atomic_cas_128(stats, old, std::bit_cast<retro_u128_t>(entry)))
+			return {std::bit_cast<spu_thread::raw_spu_log_stats_t>(old), done};
+	}
+}
+
 bool spu_thread::read_reg(const u32 addr, u32& value)
 {
 	const u32 offset = addr - (RAW_SPU_BASE_ADDR + RAW_SPU_OFFSET * index) - RAW_SPU_PROB_OFFSET;
@@ -44,14 +60,14 @@ bool spu_thread::read_reg(const u32 addr, u32& value)
 	{
 		u32 offset;
 		const u32* value;
-		atomic_t<raw_spu_log_stats_t>* stats;
+		retro_atomic_128_t* stats;
 		std::string log_message;
 
 		~logger_end_t() noexcept
 		{
 			if (log_message.empty()) return;
 
-			const auto [old, value_changed] = stats->fetch_op([&](raw_spu_log_stats_t& old)
+			const auto [old, value_changed] = stats_fetch_op(stats, [&](raw_spu_log_stats_t& old)
 			{
 				if (old.mmio_offset == offset)
 				{
@@ -76,7 +92,7 @@ bool spu_thread::read_reg(const u32 addr, u32& value)
 
 	if (spu_log.trace)
 	{
-		const auto [old_stats, is_changed] = mmio_stats.fetch_op([&](raw_spu_log_stats_t& old)
+		const auto [old_stats, is_changed] = stats_fetch_op(&mmio_stats, [&](raw_spu_log_stats_t& old)
 		{
 			if (old.mmio_offset == offset)
 			{
@@ -271,7 +287,7 @@ bool spu_thread::write_reg(const u32 addr, const u32 value)
 
 	if (spu_log.trace)
 	{
-		const auto [old_stats, is_changed] = mmio_stats.fetch_op([&](raw_spu_log_stats_t& old)
+		const auto [old_stats, is_changed] = stats_fetch_op(&mmio_stats, [&](raw_spu_log_stats_t& old)
 		{
 			if (old.mmio_offset == offset && old.mmio_value == value)
 			{

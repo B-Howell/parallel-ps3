@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The SPU cache line waiters, the raw SPU MMIO log entry and the reservation checker flag are off `atomic_t`.** Not yet run on a game.
+  - **What changed:**
+    - **Cache line waiters:** the six waiters SPUs register on a reservation's cache line (its hash, address and count of waiters) are `retro_atomic_64_t`s, each on a 128-byte line of its own as before. `waiter_load()` reads one, and `waiter_op()` changes one with a compare-and-swap loop, as `fetch_op` and `atomic_op` did. The SPU thread and lv2's reservation notifier use them.
+    - **MMIO log entry:** the last raw SPU MMIO log entry (offset, value, time, used only with trace logging) is a `retro_atomic_128_t`. It is changed with a 16-byte compare-and-swap and starts at all ones, as its defaults did.
+    - **Reservation checker flag:** the flag that picks the one SPU that checks reservation data is a `retro_atomic_int_t`.
+  - **Tests:** `test_emu_waits` checks a waiter's word is a cache line of its own, and that two threads, each on a CPU of its own, change one waiter at once 200000 times each with none lost. It was shown to fail with `waiter_op`'s compare-and-swap made a plain store. The MMIO log entry and the flag have no runtime test, because they need a game's SPUs. A check fails if `atomic_t` comes back to any of them.
+
+
 - **An SPU's status and NPC word is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the status register and the next program counter are one `retro_atomic_64_t`, held to 8 bytes by a static assert. `load_status_npc()` reads them whole and `store_status_npc()` sets them. `status_npc_op()` changes them with a compare-and-swap loop, as `atomic_op` and `fetch_op` did. Setting the NPC alone, and the status alone on a savestate's load, were stores into half the word; they are now compare-and-swaps on the whole word. The SPU thread, the raw SPU MMIO and sys_spu use them.
   - **Savestates:** the status is written and read as the `u32` it was, and the NPC is set from the program counter on load as before, so the format is unchanged.
