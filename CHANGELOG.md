@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Logging is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the log file writer's buffer and written-byte counters are `retro_atomic_64_t`s, each on its own 128-byte line as before. A line takes its room with a compare-and-swap loop, where `fetch_op` was. The listener list's links are `retro_atomic_ptr_t`, and a new listener is added at the end with a compare-and-swap. The started flag is a `retro_atomic_int_t`. A channel's enabled level is a `retro_atomic_int_t`, read with a relaxed load as `observe()` did, so the check on every log line costs the same.
+  - **Channels are 32 bytes:** a message finds its channel and its level from its own address (the address rounded down, and its low 3 bits). The level used to be one byte that filled a 16-byte channel exactly. The 4-byte word does not fit, so a channel is now 32 bytes, 32-aligned, with the seven messages at offsets 25 to 31. The lookup rounds to 32, and static asserts hold the layout.
+  - **Tests:** `test_emu_waits` checks that each of a channel's seven messages finds the channel and its own level, and that the enabled level lets through what it should and nothing else. It was shown to fail with the lookup still rounding to 16. A check fails if `atomic_t` comes back to logging.
+
+
 - **The video provider is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the recording's active flag is a `retro_atomic_int_t`, and its start time a `retro_atomic_64_t`. The start time is still set once, by whichever of the first frame or the first samples comes first, with a compare-and-swap from "unset".
   - **Tests:** none at runtime: the provider needs a recording's video sink and encoder. A check fails if `atomic_t` comes back to it.

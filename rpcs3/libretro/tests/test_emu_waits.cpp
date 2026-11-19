@@ -51,6 +51,8 @@ static int failures = 0;
 #define CHECK(cond) do { if (!(cond)) { std::fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #cond); failures++; } } while (0)
 
 // Until @looks has reached @n, or a few million yields have gone by
+LOG_CHANNEL(waits_test_log, "WaitsTest");
+
 static bool reaches(const std::atomic<int>& looks, int n)
 {
 	for (int i = 0; i < 5'000'000 && looks < n; i++)
@@ -924,6 +926,27 @@ int main()
 		}
 		waiter();
 		std::printf("test_emu_waits: the RSX bitmask: 32 and 64 bits, its top bits, and 300 wakes\n");
+	}
+
+	// A log channel: 32 bytes, its enabled level a retro_atomic word; each
+	// message finds its channel and its level from its own address
+	{
+		const logs::channel& ch = waits_test_log;
+		CHECK(reinterpret_cast<uptr>(&ch) % 32 == 0);
+		const logs::message* msgs[] = {&ch.fatal, &ch.error, &ch.todo, &ch.success, &ch.warning, &ch.notice, &ch.trace};
+		for (int i = 0; i < 7; i++)
+		{
+			CHECK((*msgs[i]).operator->() == &ch);
+			CHECK(static_cast<logs::level>(*msgs[i]) == static_cast<logs::level>(i + 1));
+		}
+		const logs::level saved_level = ch.get_enabled();
+		ch.set_enabled(logs::level::error);
+		CHECK(static_cast<bool>(ch.fatal) && static_cast<bool>(ch.error));
+		CHECK(!static_cast<bool>(ch.warning) && !static_cast<bool>(ch.trace));
+		ch.set_enabled(logs::level::trace);
+		CHECK(static_cast<bool>(ch.trace));
+		ch.set_enabled(saved_level);
+		std::printf("test_emu_waits: a log channel's messages find it and their level, and its level filters them\n");
 	}
 
 	// A game's callback and its argument in one retro_atomic word: installed

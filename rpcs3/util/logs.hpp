@@ -1,6 +1,7 @@
 #pragma once // No BOM and only basic ASCII in this header, or a neko will die
 
 #include <map>
+#include <retro_atomic.h>
 #include <memory>
 #include <string>
 #include <set>
@@ -48,7 +49,7 @@ namespace logs
 
 		const channel* operator->() const
 		{
-			return reinterpret_cast<const channel*>(reinterpret_cast<uptr>(this) & -16);
+			return reinterpret_cast<const channel*>(reinterpret_cast<uptr>(this) & -32);
 		}
 
 		inline explicit operator bool() const;
@@ -71,7 +72,9 @@ namespace logs
 	class listener
 	{
 		// Next listener (linked list)
-		atomic_t<listener*> m_next{};
+		mutable retro_atomic_ptr_t m_next{};
+
+		listener* next() const { return static_cast<listener*>(retro_atomic_load_acquire_ptr(&m_next)); }
 
 		friend struct message;
 
@@ -109,19 +112,29 @@ namespace logs
 		static void close_all_prematurely();
 	};
 
-	struct alignas(16) channel : private message
+	// 32 bytes, 32-aligned: a message's address gives its channel (rounded
+	// down) and its level (its offset's low 3 bits), so the seven messages
+	// sit at offsets 25 to 31, after the name, the enabled level and padding
+	struct alignas(32) channel : private message
 	{
 		// Channel prefix (added to every log message)
 		const char* const name;
 
 		// The lowest logging level enabled for this channel (used for early filtering)
-		atomic_t<level> enabled;
+		mutable retro_atomic_int_t enabled; // a level
+
+		// Padding up to the messages (public, as every data member, so that
+		// the layout stays standard and offsetof holds)
+		const char reserved_[13]{};
+
+		level get_enabled() const { return static_cast<level>(retro_atomic_load_relaxed_int(&enabled)); }
+		void set_enabled(level value) const { retro_atomic_store_release_int(&enabled, static_cast<int>(value)); }
 
 		// Initialize channel
 		consteval channel(const char* name) noexcept
 			: message{}
 			, name(name)
-			, enabled(level::notice)
+			, enabled(static_cast<int>(level::notice))
 		{
 		}
 
@@ -148,7 +161,7 @@ namespace logs
 	inline logs::message::operator bool() const
 	{
 		// Test if enabled
-		return *this <= (*this)->enabled.observe();
+		return *this <= (*this)->get_enabled();
 	}
 
 	template <typename... Args>

@@ -68,6 +68,7 @@ namespace logs
 {
 	static_assert(std::is_empty_v<message> && sizeof(message) == 1);
 	static_assert(sizeof(channel) == alignof(channel));
+	static_assert(alignof(channel) == 32);
 	static_assert(uchar(level::always) == 0);
 	static_assert(uchar(level::fatal) == 1);
 	static_assert(uchar(level::trace) == 7);
@@ -86,8 +87,11 @@ namespace logs
 
 		std::unique_ptr<uchar[]> m_fptr{};
 
-		atomic_t<u64, 128> m_buf{0}; // MSB (39 bits): push begin, LSB (25 bis): push size
-		atomic_t<u64, 128> m_out{0}; // Amount of bytes written to file
+		alignas(128) retro_atomic_64_t m_buf{0}; // MSB (39 bits): push begin, LSB (25 bis): push size
+		alignas(128) retro_atomic_64_t m_out{0}; // Amount of bytes written to file; umax as the writer is told to end
+
+		u64 buf() const { return static_cast<u64>(retro_atomic_load_acquire_64(&m_buf)); }
+		u64 out() const { return static_cast<u64>(retro_atomic_load_acquire_64(&m_out)); }
 
 		// No lock: only the writer thread writes to the file. A log line
 		// bumps m_commits once its bytes are in (the writer waits on it);
@@ -211,7 +215,7 @@ namespace logs
 	};
 
 	// Must be set to true in main()
-	static atomic_t<bool> g_init{false};
+	static retro_atomic_int_t g_init{0}; // 0 or 1
 
 	// Nothing above this level is let through, whatever a channel is set to
 	// (set_ceiling)
@@ -228,7 +232,7 @@ namespace logs
 
 		for (auto&& pair : get_logger()->channels)
 		{
-			pair.second->enabled.release(std::min(level::_default, top));
+			pair.second->set_enabled(std::min(level::_default, top));
 		}
 	}
 
@@ -238,7 +242,7 @@ namespace logs
 
 		for (auto&& pair : get_logger()->channels)
 		{
-			pair.second->enabled.release(std::min(level::_default, value));
+			pair.second->set_enabled(std::min(level::_default, value));
 		}
 	}
 
@@ -246,7 +250,7 @@ namespace logs
 	{
 		for (auto&& pair : get_logger()->channels)
 		{
-			pair.second->enabled.release(level::always);
+			pair.second->set_enabled(level::always);
 		}
 	}
 
@@ -265,7 +269,7 @@ namespace logs
 
 				if (std::regex_match(channel_pair.first, sm, ex))
 				{
-					channel_pair.second->enabled.release(std::min(value, top));
+					channel_pair.second->set_enabled(std::min(value, top));
 				}
 			}
 
@@ -276,7 +280,7 @@ namespace logs
 
 		while (found.first != found.second)
 		{
-			found.first->second->enabled.release(std::min(value, top));
+			found.first->second->set_enabled(std::min(value, top));
 			found.first++;
 		}
 	}
@@ -287,7 +291,7 @@ namespace logs
 
 		if (found.first != found.second)
 		{
-			return found.first->second->enabled.observe();
+			return found.first->second->get_enabled();
 		}
 
 		return level::always;
@@ -333,7 +337,7 @@ namespace logs
 
 	void set_init(std::initializer_list<stored_message> init_msg)
 	{
-		if (!g_init)
+		if (!retro_atomic_load_acquire_int(&g_init))
 		{
 			// Prepend main messages
 			for (const auto& msg : init_msg)
@@ -345,7 +349,7 @@ namespace logs
 			// ran. (One stored after that was sent to the listeners there
 			// were as it was logged; it is not sent again.)
 			replay_stored();
-			g_init = true;
+			retro_atomic_store_release_int(&g_init, 1);
 			replay_stored();
 		}
 	}
@@ -363,7 +367,7 @@ logs::listener::~listener()
 
 		for (auto&& pair : logger->channels)
 		{
-			pair.second->enabled.release(level::always);
+			pair.second->set_enabled(level::always);
 		}
 	}
 }
@@ -374,12 +378,9 @@ void logs::listener::add(logs::listener* _new)
 	listener* lis = get_logger();
 
 	// Install new listener at the end of linked list
-	listener* null = nullptr;
-
-	while (lis->m_next || !lis->m_next.compare_exchange(null, _new))
+	while (lis->next() || !retro_atomic_cas_ptr(&lis->m_next, nullptr, _new))
 	{
-		lis = lis->m_next;
-		null = nullptr;
+		lis = lis->next();
 	}
 }
 
@@ -388,12 +389,12 @@ void logs::listener::remove(logs::listener* old)
 	listener* lis = get_logger();
 
 	// Unlink it from the list add() built
-	while (listener* next = lis->m_next)
+	while (listener* next = lis->next())
 	{
 		if (next == old)
 		{
-			lis->m_next.release(next->m_next.load());
-			next->m_next.release(nullptr);
+			retro_atomic_store_release_ptr(&lis->m_next, next->next());
+			retro_atomic_store_release_ptr(&next->m_next, nullptr);
 			return;
 		}
 
@@ -403,7 +404,7 @@ void logs::listener::remove(logs::listener* old)
 
 void logs::listener::broadcast(const logs::stored_message& msg) const
 {
-	for (auto lis = m_next.load(); lis; lis = lis->m_next)
+	for (listener* lis = next(); lis; lis = lis->next())
 	{
 		lis->log(msg.stamp, msg.m, msg.prefix, msg.text);
 	}
@@ -419,7 +420,7 @@ void logs::listener::close_prematurely()
 
 void logs::listener::sync_all()
 {
-	for (listener* lis = get_logger(); lis; lis = lis->m_next)
+	for (listener* lis = get_logger(); lis; lis = lis->next())
 	{
 		lis->sync();
 	}
@@ -427,15 +428,15 @@ void logs::listener::sync_all()
 
 void logs::listener::shutdown_all()
 {
-	for (listener* lis = get_logger()->m_next.exchange(nullptr); lis;)
+	for (listener* lis = static_cast<listener*>(retro_atomic_exchange_ptr(&get_logger()->m_next, nullptr)); lis;)
 	{
-		lis = lis->m_next.exchange(nullptr);
+		lis = static_cast<listener*>(retro_atomic_exchange_ptr(&lis->m_next, nullptr));
 	}
 }
 
 void logs::listener::close_all_prematurely()
 {
-	for (listener* lis = get_logger(); lis; lis = lis->m_next)
+	for (listener* lis = get_logger(); lis; lis = lis->next())
 	{
 		lis->close_prematurely();
 	}
@@ -483,12 +484,12 @@ void logs::message::broadcast(const char* fmt, const fmt_type_info* sup, ...) co
 	// Get first (main) listener
 	listener* lis = get_logger();
 
-	if (!g_init)
+	if (!retro_atomic_load_acquire_int(&g_init))
 	{
 		while (lis)
 		{
 			lis->log(stamp, *this, prefix, text);
-			lis = lis->m_next;
+			lis = lis->next();
 		}
 
 		// Store message additionally, for set_init
@@ -500,7 +501,7 @@ void logs::message::broadcast(const char* fmt, const fmt_type_info* sup, ...) co
 	while (lis)
 	{
 		lis->log(stamp, *this, prefix, text);
-		lis = lis->m_next;
+		lis = lis->next();
 	}
 
 	// Notify end operation
@@ -534,7 +535,7 @@ logs::file_writer::file_writer(const std::string& name, u64 max_size)
 		{
 			// Read before looking: a line committed after wakes the wait
 			const int commits = retro_atomic_load_acquire_int(&m_commits);
-			const u64 bufv = m_buf;
+			const u64 bufv = buf();
 
 			if (retro_atomic_load_acquire_int(&m_close) == 1)
 			{
@@ -559,7 +560,7 @@ logs::file_writer::file_writer(const std::string& name, u64 max_size)
 				continue;
 			}
 
-			if (m_out == umax)
+			if (out() == umax)
 			{
 				break;
 			}
@@ -581,7 +582,7 @@ logs::file_writer::~file_writer()
 	// Stop writer thread
 	file_writer::sync();
 
-	m_out = -1;
+	retro_atomic_store_release_64(&m_out, -1);
 	wake_writer();
 	m_writer.join();
 }
@@ -594,7 +595,7 @@ void logs::file_writer::wake_writer()
 
 bool logs::file_writer::flush(u64 bufv)
 {
-	const u64 read_pos = m_out;
+	const u64 read_pos = out();
 	const u64 out_index = read_pos % s_log_size;
 	const u64 pushed = (bufv / s_log_size) % s_log_size;
 	const u64 end = std::min<u64>(out_index <= pushed ? read_pos - out_index + pushed : ((read_pos + s_log_size) & ~(s_log_size - 1)), m_max_size);
@@ -609,7 +610,7 @@ bool logs::file_writer::flush(u64 bufv)
 			m_fout.close();
 		}
 
-		m_out += size;
+		retro_atomic_fetch_add_64(&m_out, static_cast<s64>(size));
 		return true;
 	}
 
@@ -626,24 +627,33 @@ void logs::file_writer::log(const char* text, usz size)
 	// TODO: write bigger fragment directly in blocking manner
 	while (size && size < s_log_size)
 	{
-		const auto [bufv, pos] = m_buf.fetch_op([&](u64& v) -> uchar*
-		{
-			const u64 out = m_out % s_log_size;
-			const u64 v1 = (v / s_log_size) % s_log_size;
-			const u64 v2 = v % s_log_size;
+		// Room taken by a compare-and-swap on m_buf, or none if it is full
+		u64 bufv = buf();
+		uchar* pos = nullptr;
 
-			if (v1 + v2 + size >= (out <= v1 ? out + s_log_size : out)) [[unlikely]]
+		for (;;)
+		{
+			const u64 out_index = out() % s_log_size;
+			const u64 v1 = (bufv / s_log_size) % s_log_size;
+			const u64 v2 = bufv % s_log_size;
+
+			if (v1 + v2 + size >= (out_index <= v1 ? out_index + s_log_size : out_index)) [[unlikely]]
 			{
-				return nullptr;
+				break;
 			}
 
-			v += size;
-			return m_fptr.get() + (v1 + v2) % s_log_size;
-		});
+			if (retro_atomic_cas_64(&m_buf, static_cast<s64>(bufv), static_cast<s64>(bufv + size)))
+			{
+				pos = m_fptr.get() + (v1 + v2) % s_log_size;
+				break;
+			}
+
+			bufv = buf();
+		}
 
 		if (!pos) [[unlikely]]
 		{
-			if (m_out >= m_max_size || !m_fout)
+			if (out() >= m_max_size || !m_fout)
 			{
 				// Logging is inactive
 				return;
@@ -668,7 +678,7 @@ void logs::file_writer::log(const char* text, usz size)
 			std::memcpy(pos, text, size);
 		}
 
-		m_buf += (size * s_log_size) - size;
+		retro_atomic_fetch_add_64(&m_buf, static_cast<s64>((size * s_log_size) - size));
 
 		// The writer, if it waits for this line
 		retro_atomic_inc_int(&m_commits);
@@ -689,7 +699,7 @@ void logs::file_writer::sync()
 	{
 		const int flushes = retro_atomic_load_acquire_int(&m_flushes);
 
-		if ((m_out % s_log_size) * s_log_size == m_buf % (s_log_size * s_log_size) || m_out >= m_max_size)
+		if ((out() % s_log_size) * s_log_size == buf() % (s_log_size * s_log_size) || out() >= m_max_size)
 		{
 			break;
 		}
