@@ -145,10 +145,10 @@ error_code cellVideoOutGetState(u32 videoOut, u32 deviceIndex, vm::ptr<CellVideo
 		const auto& conf = g_fxo->get<rsx::avconf>();
 		state->state = CELL_VIDEO_OUT_OUTPUT_STATE_ENABLED;
 		state->colorSpace = CELL_VIDEO_OUT_COLOR_SPACE_RGB;
-		state->displayMode.resolutionId = conf.state ? conf.resolution_id : ::at32(g_video_out_resolution_id, g_cfg.video.resolution);
-		state->displayMode.scanMode = conf.state ? conf.scan_mode : ::at32(g_video_out_scan_mode, g_cfg.video.resolution);
+		state->displayMode.resolutionId = conf.configured() ? conf.resolution_id : ::at32(g_video_out_resolution_id, g_cfg.video.resolution);
+		state->displayMode.scanMode = conf.configured() ? conf.scan_mode : ::at32(g_video_out_scan_mode, g_cfg.video.resolution);
 		state->displayMode.conversion = CELL_VIDEO_OUT_DISPLAY_CONVERSION_NONE;
-		state->displayMode.aspect = conf.state ? conf.aspect : ::at32(g_video_out_aspect_id, g_cfg.video.aspect_ratio);
+		state->displayMode.aspect = conf.configured() ? conf.aspect : ::at32(g_video_out_aspect_id, g_cfg.video.aspect_ratio);
 		state->displayMode.refreshRates = CELL_VIDEO_OUT_REFRESH_RATE_59_94HZ;
 
 		return CELL_OK;
@@ -218,7 +218,7 @@ error_code cellVideoOutConfigure(u32 videoOut, vm::ptr<CellVideoOutConfiguration
 	conf.scanline_pitch = config->pitch;
 	conf.resolution_x = res.width;
 	conf.resolution_y = res.height;
-	conf.state = 1;
+	retro_atomic_store_release_int(&conf.state, 1);
 
 	// TODO: What happens if the aspect is unknown? Let's treat it as auto for now.
 	if (conf.aspect != CELL_VIDEO_OUT_ASPECT_4_3 && conf.aspect != CELL_VIDEO_OUT_ASPECT_16_9)
@@ -255,7 +255,7 @@ error_code cellVideoOutGetConfiguration(u32 videoOut, vm::ptr<CellVideoOutConfig
 	{
 	case CELL_VIDEO_OUT_PRIMARY:
 	{
-		if (const auto& conf = g_fxo->get<rsx::avconf>(); conf.state)
+		if (const auto& conf = g_fxo->get<rsx::avconf>(); conf.configured())
 		{
 			config->resolutionId = conf.resolution_id;
 			config->format = conf.format;

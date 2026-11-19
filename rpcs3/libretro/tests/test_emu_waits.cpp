@@ -25,6 +25,7 @@
 #include "Emu/Cell/Modules/cellOskDialog.h"
 #include "Emu/Cell/Modules/cellCamera.h"
 #include "Emu/Cell/Modules/cellSysutil.h"
+#include "Emu/RSX/Utils/rsx_utils.h"
 #include "Emu/savestate_utils.hpp"
 
 #include <atomic>
@@ -104,6 +105,39 @@ int main()
 		CHECK(retro_atomic_load_acquire_int(&cam_back->is_streaming) == 1 && retro_atomic_load_acquire_int(&cam_back->is_attached) == 1);
 		CHECK(retro_atomic_load_acquire_int(&cam_back->is_open) == 0 && retro_atomic_load_acquire_int(&cam_back->frame_num) == 77);
 		CHECK(retro_atomic_load_acquire_int(&cam_back->is_attached_dirty) == 1);
+
+		// The video out setup (rsx::avconf): gamma and state written as the
+		// f32 and u32 they were, and read back
+		{
+			auto conf = std::make_unique<rsx::avconf>();
+			conf->set_gamma(1.25f);
+			retro_atomic_store_release_int(&conf->state, 1);
+			utils::serial av;
+			conf->save(av);
+			utils::serial av_want;
+			av_want(conf->stereo_enabled, conf->format, conf->aspect, conf->resolution_id, conf->scanline_pitch, 1.25f, conf->resolution_x, conf->resolution_y, u32{1}, conf->scan_mode);
+			CHECK(av.data == av_want.data);
+
+			CHECK(is_savestate_version_compatible({{10, 4}}, true));
+			utils::serial av_in;
+			av_in.set_reading_state(std::move(av.data));
+			auto back_conf = std::make_unique<rsx::avconf>(av_in);
+			CHECK(back_conf->get_gamma() == 1.25f && back_conf->configured());
+		}
+
+		// A resource's idle count wraps as the u8 it was
+		{
+			struct counted : rsx::ref_counted {};
+			counted c;
+			u32 wraps = 0;
+			for (u32 i = 0; i < 300; i++)
+				wraps += c.unused_check_count() != static_cast<u8>(i);
+			CHECK(wraps == 0);
+			c.add_ref();
+			CHECK(c.has_refs() && c.unused_check_count() == 0);
+			c.release();
+			CHECK(!c.has_refs() && c.unused_check_count() == 0); // add_ref started it again
+		}
 
 		is_savestate_version_compatible({{0, 25}}, true); // no savestate's versions left behind
 		std::printf("test_emu_waits: camera savestates: the bytes atomic_t made, read back\n");

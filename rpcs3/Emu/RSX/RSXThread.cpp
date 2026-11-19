@@ -897,7 +897,12 @@ namespace rsx
 			return;
 		}
 
-		ar(stereo_enabled, format, aspect, resolution_id, scanline_pitch, gamma, resolution_x, resolution_y, state, scan_mode);
+		// gamma and state through the f32 and u32 they were
+		f32 gamma_v = get_gamma();
+		u32 state_v = static_cast<u32>(retro_atomic_load_acquire_int(&state));
+		ar(stereo_enabled, format, aspect, resolution_id, scanline_pitch, gamma_v, resolution_x, resolution_y, state_v, scan_mode);
+		set_gamma(gamma_v);
+		retro_atomic_store_release_int(&state, static_cast<int>(state_v));
 	}
 
 	void thread::begin()

@@ -109,7 +109,7 @@ gl::texture* GLGSRender::get_present_source(gl::present_surface_info* info, cons
 		static_cast<u32>(info ? info->height : 0),
 		static_cast<u32>(info ? info->pitch : 0),
 		static_cast<u32>(info ? info->eye : 0),
-		avconfig.state ? 1 : 0,
+		avconfig.configured() ? 1 : 0,
 		static_cast<u32>(avconfig.resolution_x),
 		static_cast<u32>(avconfig.resolution_y),
 		static_cast<u32>(avconfig.format),
@@ -276,7 +276,7 @@ void GLGSRender::flip(const rsx::display_flip_info_t& info)
 	const auto& avconfig = g_fxo->get<rsx::avconf>();
 	if (log_this)
 	{
-		LRRSX_PRESENT_NOTICE("flip avconf state=%d res=%ux%u fmt=%u stereo=%d", avconfig.state ? 1 : 0, static_cast<u32>(avconfig.resolution_x), static_cast<u32>(avconfig.resolution_y), static_cast<u32>(avconfig.format), avconfig.stereo_enabled ? 1 : 0);
+		LRRSX_PRESENT_NOTICE("flip avconf state=%d res=%ux%u fmt=%u stereo=%d", avconfig.configured() ? 1 : 0, static_cast<u32>(avconfig.resolution_x), static_cast<u32>(avconfig.resolution_y), static_cast<u32>(avconfig.format), avconfig.stereo_enabled ? 1 : 0);
 	}
 
 	if (!buffer_width)
@@ -289,7 +289,7 @@ void GLGSRender::flip(const rsx::display_flip_info_t& info)
 		}
 	}
 
-	if (avconfig.state)
+	if (avconfig.configured())
 	{
 		av_format = avconfig.get_compatible_gcm_format();
 		if (!buffer_pitch)
@@ -588,7 +588,7 @@ void GLGSRender::flip(const rsx::display_flip_info_t& info)
 		// LIBRETRO_CORE: Never use UPSCALE_AND_COMMIT path - it blits to gl::screen instead of our FBO
 		// We must always go through the else branch which calls libretro_bind_hw_fbo()
 		{
-			const f32 gamma = avconfig.gamma;
+			const f32 gamma = avconfig.get_gamma();
 			const bool limited_range = !use_full_rgb_range_output;
 			const auto filter = m_output_scaling == output_scaling_mode::nearest ? gl::filter::nearest : gl::filter::linear;
 			rsx::simple_array<gl::texture*> images{ image_to_flip, image_to_flip2 };

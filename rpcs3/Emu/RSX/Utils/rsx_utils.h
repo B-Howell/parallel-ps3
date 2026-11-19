@@ -3,6 +3,7 @@
 #include "Utilities/address_range.h"
 #include "Utilities/geometry.h"
 #include "../gcm_enums.h"
+#include <retro_atomic.h>
 
 #define RSX_SURFACE_DIMENSION_IGNORED 1
 
@@ -21,7 +22,7 @@ namespace rsx
 	using flags16_t = u16;
 	using flags8_t = u8;
 
-	extern atomic_t<u64> g_rsx_shared_tag;
+	extern retro_atomic_64_t g_rsx_shared_tag;
 
 	enum class problem_severity : u8
 	{
@@ -66,35 +67,35 @@ namespace rsx
 	class ref_counted
 	{
 	protected:
-		atomic_t<s32> ref_count{ 0 }; // References held
-		atomic_t<u8> idle_time{ 0 };  // Number of times the resource has been tagged idle
+		mutable retro_atomic_int_t ref_count{0}; // References held
+		retro_atomic_int_t idle_time{0};  // Number of times the resource has been tagged idle (as a u8: it wraps)
 
 	public:
 		void add_ref()
 		{
-			++ref_count;
-			idle_time = 0;
+			retro_atomic_fetch_add_int(&ref_count, 1);
+			retro_atomic_store_release_int(&idle_time, 0);
 		}
 
 		void release()
 		{
-			--ref_count;
+			retro_atomic_fetch_sub_int(&ref_count, 1);
 		}
 
 		bool has_refs() const
 		{
-			return (ref_count > 0);
+			return retro_atomic_load_acquire_int(&ref_count) > 0;
 		}
 
 		// Returns number of times the resource has been checked without being used in-between checks
 		u8 unused_check_count()
 		{
-			if (ref_count)
+			if (retro_atomic_load_acquire_int(&ref_count))
 			{
 				return 0;
 			}
 
-			return idle_time++;
+			return static_cast<u8>(retro_atomic_fetch_add_int(&idle_time, 1));
 		}
 	};
 
@@ -148,16 +149,20 @@ namespace rsx
 		u8 aspect = 0;               // AUTO
 		u8 resolution_id = 2;        // 720p
 		u32 scanline_pitch = 0;      // PACKED
-		atomic_t<f32> gamma = 1.f;   // NO GAMMA CORRECTION
+		mutable retro_atomic_int_t gamma{0x3f800000}; // 1.0f: NO GAMMA CORRECTION (the f32's bits; get_gamma(), set_gamma())
 		u32 resolution_x = 1280;     // X RES
 		u32 resolution_y = 720;      // Y RES
-		atomic_t<u32> state = 0;     // 1 after cellVideoOutConfigure was called
+		mutable retro_atomic_int_t state{0}; // 1 after cellVideoOutConfigure was called
 		u8 scan_mode = 1;            // CELL_VIDEO_OUT_SCAN_MODE_PROGRESSIVE
 
 		ENABLE_BITWISE_SERIALIZATION;
 		SAVESTATE_INIT_POS(12);
 
 		avconf() noexcept;
+
+		f32 get_gamma() const { return std::bit_cast<f32>(static_cast<u32>(retro_atomic_load_acquire_int(&gamma))); }
+		void set_gamma(f32 g) { retro_atomic_store_release_int(&gamma, static_cast<int>(std::bit_cast<u32>(g))); }
+		bool configured() const { return retro_atomic_load_acquire_int(&state) != 0; }
 		~avconf() = default;
 		avconf(utils::serial& ar);
 		void save(utils::serial& ar);
@@ -225,7 +230,7 @@ namespace rsx
 	// Returns an ever-increasing tag value
 	static inline u64 get_shared_tag()
 	{
-		return g_rsx_shared_tag++;
+		return static_cast<u64>(retro_atomic_fetch_add_64(&g_rsx_shared_tag, 1));
 	}
 
 	static inline u32 get_location(u32 addr)

@@ -10,7 +10,7 @@
 
 namespace rsx
 {
-	atomic_t<u64> g_rsx_shared_tag{ 0 };
+	retro_atomic_64_t g_rsx_shared_tag{0};
 
 	// One scaler a thread, kept from copy to copy: a copy of the size and
 	// formats of the last takes no memory. Freed with the thread.

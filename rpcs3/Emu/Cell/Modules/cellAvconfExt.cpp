@@ -399,7 +399,7 @@ error_code cellVideoOutGetGamma(u32 videoOut, vm::ptr<f32> gamma)
 
 	const auto& conf = g_fxo->get<rsx::avconf>();
 
-	*gamma = conf.gamma;
+	*gamma = conf.get_gamma();
 
 	return CELL_OK;
 }
@@ -463,7 +463,7 @@ error_code cellVideoOutSetGamma(u32 videoOut, f32 gamma)
 	}
 
 	auto& conf = g_fxo->get<rsx::avconf>();
-	conf.gamma = gamma;
+	conf.set_gamma(gamma);
 
 	return CELL_OK;
 }

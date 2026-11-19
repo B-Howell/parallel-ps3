@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The RSX's reference counts, its shared tag and the video out setup are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** `rsx::ref_counted`'s count and idle count (which still wraps as the `u8` it was), the ever-increasing shared tag, and `avconf`'s gamma (kept as its `f32`'s bits) and configured state are `retro_atomic_int_t` and `retro_atomic_64_t`. `avconf` has `get_gamma()`, `set_gamma()` and `configured()`, used by cellVideoOut, cellAvconfExt and the GL and Vulkan presenters. The Vulkan query pool, which set its count directly, goes through `retro_atomic` too.
+  - **Savestates:** gamma and state are written and read through the `f32` and `u32` they were, so the format is unchanged. Older savestates, read as raw bytes, still land in the same 4-byte layout.
+  - **Tests:** `test_emu_waits` checks that `avconf`'s savestate is byte for byte what the old types made, and reads it back, and that the idle count wraps at 256. It was shown to fail with the state saved as a `u8`. A check fails if `atomic_t` comes back to rsx_utils.
+
+
 - **cellSysutil is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the four system callbacks and the 32 callback dispatchers are each one `retro_atomic_64_t` holding both halves of their pair (address and argument, or event code and function), set and read whole. A dispatcher is taken or freed with a compare-and-swap loop where it was an `atomic_op`. The drawing flag, the read counter, the callback id counter, the abort handles, the home menu's open flag and `sysutil_cb_word` (a callback and its argument in one word) are `retro_atomic` too.
   - **Savestates:** the four callbacks are written and read through the structs they were, so the format is unchanged.

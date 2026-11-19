@@ -604,7 +604,7 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 		buffer_height = avconfig.resolution_y;
 	}
 
-	if (avconfig.state)
+	if (avconfig.configured())
 	{
 		av_format = avconfig.get_compatible_gcm_format();
 		if (!buffer_pitch)
@@ -1002,7 +1002,7 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 	{
 		const bool use_full_rgb_range_output = g_cfg.video.full_rgb_range_output.get();
 
-		if (!use_full_rgb_range_output || !rsx::fcmp(avconfig.gamma, 1.f) || avconfig.stereo_enabled) [[unlikely]]
+		if (!use_full_rgb_range_output || !rsx::fcmp(avconfig.get_gamma(), 1.f) || avconfig.stereo_enabled) [[unlikely]]
 		{
 			if (image_to_flip) calibration_src.push_back(image_to_flip);
 			if (image_to_flip2) calibration_src.push_back(image_to_flip2);
@@ -1038,7 +1038,7 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 
 			vk::get_overlay_pass<vk::video_out_calibration_pass>()->run(
 				*m_current_command_buffer, areau(aspect_ratio), direct_fbo, calibration_src,
-				avconfig.gamma, !use_full_rgb_range_output, avconfig.stereo_enabled, single_target_pass);
+				avconfig.get_gamma(), !use_full_rgb_range_output, avconfig.stereo_enabled, single_target_pass);
 
 			direct_fbo->release();
 		}

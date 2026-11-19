@@ -44,7 +44,7 @@ namespace vk
 		void reset_refs()
 		{
 			// Take 'size' references on this object
-			ref_count.release(static_cast<s32>(m_size));
+			retro_atomic_store_release_int(&ref_count, static_cast<s32>(m_size));
 		}
 
 		operator VkQueryPool()
