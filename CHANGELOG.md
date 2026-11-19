@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The unused fifo_mutex lock and spin_wait spin loop are gone, and asm.hpp's fallback is on `retro_atomic`.** Not yet run on a game.
+  - **What changed:** `util/fifo_mutex.hpp` (a lock, which nothing took) and `utils::spin_wait` in `util/asm.hpp` (a loop spinning on a monitor until a condition held, which nothing called) are removed. On a CPU other than x86-64 or ARM64, the store fence on another thread's memory (`utils::memory_barrier`'s portable form) is a `retro_atomic` fetch-and-add of 0 instead of an `atomic_t` one.
+  - **Tests:** none: what is removed had no callers, and the fallback is not built on the machines the core targets. A check fails if the lock, the spin loop or that `atomic_t` comes back.
+
+
 - **YAML values are read in C89 (rpcs3/util/yaml_value.c), in place.** Not yet run on a game.
   - **What changed:** a YAML scalar read as a boolean, an integer or a double (the settings, the patches, the music and player lists, the PRX validation files) is now read by C89 functions straight from the document's bytes:
     - **Booleans:** they were copied into a lowercased `std::string` first;
