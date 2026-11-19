@@ -607,7 +607,7 @@ void rec_info::start_video_provider()
 			// Read before looking: anything handed over after it moves it
 			const u32 sink_seen = sink ? sink->seen() : 0;
 			const u32 frames_seen = libretro_events_seen();
-			const u32 periods_seen = g_audio_periods.load();
+			const u32 periods_seen = static_cast<u32>(retro_atomic_load_acquire_int(&g_audio_periods));
 			bool progressed = false;
 
 			if (retro_atomic_load_acquire_int(&encoder->has_error))
@@ -826,7 +826,7 @@ void rec_info::start_video_provider()
 				if (sink)
 					sink->wait_new(sink_seen);
 				else
-					g_audio_periods.wait(periods_seen);
+					thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&g_audio_periods, periods_seen); });
 			}
 		}
 	});
@@ -855,8 +855,8 @@ void rec_info::stop_video_provider(bool flush)
 		if (sink)
 			sink->wake();
 
-		g_audio_periods++;
-		g_audio_periods.notify_all();
+		retro_atomic_fetch_add_seq_cst_int(&g_audio_periods, 1);
+		retro_waitaddr_notify_all(&g_audio_periods);
 		libretro_event();
 	}
 

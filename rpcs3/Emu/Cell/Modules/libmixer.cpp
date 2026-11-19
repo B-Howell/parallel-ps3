@@ -370,7 +370,7 @@ struct surmixer_thread : ppu_thread
 
 		audio_port& port = g_audio.ports[g_surmx.audio_port];
 
-		while (port.state != audio_port_state::closed)
+		while (port.get_state() != audio_port_state::closed)
 		{
 			if (g_surmx.mixcount > (port.active_counter + 0)) // adding positive value (1-15): preemptive buffer filling (hack)
 			{
@@ -399,7 +399,7 @@ struct surmixer_thread : ppu_thread
 				continue;
 			}
 
-			if (port.state == audio_port_state::started)
+			if (port.get_state() == audio_port_state::started)
 			{
 				//u64 stamp0 = get_guest_system_time();
 
@@ -537,7 +537,7 @@ s32 cellSurMixerCreate(vm::cptr<CellSurMixerConfig> config)
 	port->attr = 0;
 	port->size = port->num_channels * port->num_blocks * AUDIO_BUFFER_SAMPLES * sizeof(f32);
 	port->level = 1.0f;
-	port->level_set.store({ 1.0f, 0.0f });
+	port->set_level_set({ 1.0f, 0.0f });
 
 	libmixer.warning("*** audio port opened (port=%d)", g_surmx.audio_port);
 
@@ -607,7 +607,7 @@ s32 cellSurMixerStart()
 		return CELL_LIBMIXER_ERROR_NOT_INITIALIZED;
 	}
 
-	g_audio.ports[g_surmx.audio_port].state.compare_and_swap(audio_port_state::opened, audio_port_state::started);
+	g_audio.ports[g_surmx.audio_port].cas_state(audio_port_state::opened, audio_port_state::started);
 
 	return CELL_OK;
 }
@@ -629,7 +629,7 @@ s32 cellSurMixerFinalize()
 		return CELL_LIBMIXER_ERROR_NOT_INITIALIZED;
 	}
 
-	g_audio.ports[g_surmx.audio_port].state.compare_and_swap(audio_port_state::opened, audio_port_state::closed);
+	g_audio.ports[g_surmx.audio_port].cas_state(audio_port_state::opened, audio_port_state::closed);
 
 	return CELL_OK;
 }
@@ -675,7 +675,7 @@ s32 cellSurMixerPause(u32 type)
 		return CELL_LIBMIXER_ERROR_NOT_INITIALIZED;
 	}
 
-	g_audio.ports[g_surmx.audio_port].state.compare_and_swap(audio_port_state::started, audio_port_state::opened);
+	g_audio.ports[g_surmx.audio_port].cas_state(audio_port_state::started, audio_port_state::opened);
 
 	return CELL_OK;
 }

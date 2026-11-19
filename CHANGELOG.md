@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellAudio is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** an audio port's state is a `retro_atomic_int_t`, with `get_state()`, `set_state()` and `cas_state()`, which gives back the state it was as `compare_and_swap` did; libmixer uses them too. A port's volume step (its two floats) is one `retro_atomic_64_t`, set and read whole. The period counter that cellRec waits on, the initialized flag and the device-changed flag are `retro_atomic` too. cellRec's video thread waits on the period counter through `thread_ctrl::wait_on_custom`, so it also wakes as it is told to end.
+  - **Savestates:** ports are still saved bitwise, and `static_assert`s hold their size and the offsets of the state and the volume step to what `atomic_t` made. The initialized flag is written and read as the `u8` it was. The format is unchanged.
+  - **Tests:** `test_emu_waits` checks a port's bytes: its state as a `u32` and its volume step as two floats in order. It also checks that its copy keeps both, and that the state's compare-and-swap gives back the state it was. It was shown to fail with the two floats packed the other way round. A check fails if `atomic_t` comes back to cellAudio.
+
+
 - **The rest of the networking code (Emu/NP) is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the signaling thread's wake flag, UPnP's active flag, the net_http thread's completion words and stopping flag, the clans manager's initialized flag and the IPv6 support state are `retro_atomic_int_t`. A net_http caller and a thread waiting for another's IPv6 check wait on their word with `retro_waitaddr`. The signaling thread waits through `thread_ctrl::wait_on_custom`, so it wakes on a packet or call, at the next packet resend (a network timeout), or as it is told to end. Nothing is saved in savestates.
   - **Tests:** `test_emu_waits` checks that the net_http thread runs work from two callers at once, 200 calls in all, on its own thread, and wakes each caller. It was shown to fail with the wake taken out. The signaling thread, UPnP and the IPv6 check have no runtime test, because they need the network. A check fails if `atomic_t` comes back to Emu/NP.

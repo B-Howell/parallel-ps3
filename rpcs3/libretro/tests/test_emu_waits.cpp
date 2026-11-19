@@ -29,6 +29,7 @@
 #include "Emu/RSX/Overlays/Shaders/shader_loading_dialog.h"
 #include "Emu/Cell/Modules/cellMsgDialog.h"
 #include "Emu/NP/net_http_thread.h"
+#include "Emu/Cell/Modules/cellAudio.h"
 #include "Emu/savestate_utils.hpp"
 
 #include <atomic>
@@ -729,6 +730,36 @@ int main()
 			CHECK(worker != std::thread::id{} && worker != std::this_thread::get_id());
 		}
 		std::printf("test_emu_waits: the net_http thread runs its callers' work and wakes each, 200 calls\n");
+	}
+
+	// An audio port, saved bitwise: its state and its volume step in the
+	// bytes atomic_t made (a u32, then two floats in order), and the state's
+	// compare-and-swap giving the state it was, as compare_and_swap did
+	{
+		audio_port p;
+		CHECK(p.get_state() == audio_port_state::closed);
+		p.set_state(audio_port_state::started);
+		p.set_level_set({0.5f, -0.25f});
+
+		u8 bytes[sizeof(audio_port)];
+		std::memcpy(bytes, &p, sizeof(p));
+		const u32 state_bytes = static_cast<u32>(audio_port_state::started);
+		const f32 level_bytes[2] = {0.5f, -0.25f};
+		CHECK(std::memcmp(bytes + offsetof(audio_port, state), &state_bytes, 4) == 0);
+		CHECK(std::memcmp(bytes + offsetof(audio_port, level_set), level_bytes, 8) == 0);
+
+		audio_port q(p); // the copy a savestate load makes
+		CHECK(q.get_state() == audio_port_state::started);
+		CHECK(q.get_level_set().value == 0.5f && q.get_level_set().inc == -0.25f);
+
+		CHECK(p.cas_state(audio_port_state::started, audio_port_state::opened) == audio_port_state::started);
+		CHECK(p.cas_state(audio_port_state::started, audio_port_state::closed) == audio_port_state::opened);
+		CHECK(p.get_state() == audio_port_state::opened);
+
+		CHECK(!p.cas_level_set({0.5f, 0.0f}, {1.0f, 0.0f}));
+		CHECK(p.cas_level_set({0.5f, -0.25f}, {0.5f, 0.0f}));
+		CHECK(p.get_level_set().value == 0.5f && p.get_level_set().inc == 0.0f);
+		std::printf("test_emu_waits: an audio port in the bytes atomic_t made, its state swapped as compare_and_swap did\n");
 	}
 
 	// A game's callback and its argument in one retro_atomic word: installed

@@ -1197,6 +1197,8 @@ check: all
 	@if grep -nw "atomic_t" ../../Emu/NP/np_contexts.h ../../Emu/NP/np_contexts.cpp || grep -n "wakey.wait\|started.compare_and_swap\|busy.compare_and_swap" ../../Emu/NP/np_requests_gui.cpp ../../Emu/Cell/Modules/sceNp2.cpp; then echo "atomic_t is back in the NP contexts"; exit 1; else echo "the NP contexts are retro_atomic"; fi
 	@# Emu/NP (signaling, UPnP, the net_http thread, the clans manager, the IPv6 check) is off atomic_t
 	@if grep -rnw "atomic_t" ../../Emu/NP --include=*.cpp --include=*.h || grep -n "util/atomic.hpp" ../../Emu/NP/net_http_thread.h; then echo "atomic_t is back in Emu/NP"; exit 1; else echo "Emu/NP is retro_atomic"; fi
+	@# cellAudio (ports, period counter, init, device change) is off atomic_t
+	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/cellAudio.h ../../Emu/Cell/Modules/cellAudio.cpp || grep -n "g_audio_periods\.\|state\.compare_and_swap\|level_set\." ../../Emu/Cell/Modules/cellAudio.cpp ../../Emu/Cell/Modules/libmixer.cpp ../../Emu/Cell/Modules/cellRec.cpp; then echo "atomic_t is back in cellAudio"; exit 1; else echo "cellAudio is retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

@@ -14,7 +14,7 @@
 // The audio thread's periods (a block of 256 samples each), counted for a
 // host thread that paces itself by them (cellRec, sampling the game's own
 // audio): moved every period, and notified while there are waiters
-extern atomic_t<u32> g_audio_periods;
+extern retro_atomic_int_t g_audio_periods; // moved by every period of the cellAudio thread
 extern retro_atomic_int_t g_audio_period_waiters;
 
 struct lv2_event_queue;
@@ -161,7 +161,24 @@ enum class audio_port_state : u32
 
 struct audio_port
 {
-	atomic_t<audio_port_state> state = audio_port_state::closed;
+	retro_atomic_int_t state{static_cast<int>(audio_port_state::closed)};
+
+	audio_port_state get_state() const { return static_cast<audio_port_state>(retro_atomic_load_acquire_int(&state)); }
+	void set_state(audio_port_state s) { retro_atomic_store_release_int(&state, static_cast<int>(s)); }
+
+	// Set to @desired if it is @expected; the state it was, as atomic_t's
+	// compare_and_swap gave it
+	audio_port_state cas_state(audio_port_state expected, audio_port_state desired)
+	{
+		for (;;)
+		{
+			const int cur = retro_atomic_load_acquire_int(&state);
+			if (cur != static_cast<int>(expected))
+				return static_cast<audio_port_state>(cur);
+			if (retro_atomic_cas_int(&state, cur, static_cast<int>(desired)))
+				return expected;
+		}
+	}
 
 	u32 number = 0;
 	u32 server_index = 0;
@@ -185,7 +202,27 @@ struct audio_port
 	};
 
 	float level = 0.0f;
-	atomic_t<level_set_t> level_set{};
+
+	// level_set_t's two floats in one word, value in the low half and inc
+	// in the high, the bytes the struct had in memory (and in savestates)
+	retro_atomic_64_t level_set{0};
+
+	static s64 pack_level_set(level_set_t l)
+	{
+		return static_cast<s64>(u64{std::bit_cast<u32>(l.value)} | (u64{std::bit_cast<u32>(l.inc)} << 32));
+	}
+
+	static level_set_t unpack_level_set(s64 w)
+	{
+		const u64 u = static_cast<u64>(w);
+		return { std::bit_cast<f32>(static_cast<u32>(u)), std::bit_cast<f32>(static_cast<u32>(u >> 32)) };
+	}
+
+	level_set_t get_level_set() const { return unpack_level_set(retro_atomic_load_acquire_64(&level_set)); }
+	void set_level_set(level_set_t l) { retro_atomic_store_release_64(&level_set, pack_level_set(l)); }
+
+	// Replaced only if it is still @expected, bit for bit
+	bool cas_level_set(level_set_t expected, level_set_t desired) { return retro_atomic_cas_64(&level_set, pack_level_set(expected), pack_level_set(desired)) != 0; }
 
 	u32 block_size() const
 	{
@@ -231,6 +268,12 @@ struct audio_port
 
 	ENABLE_BITWISE_SERIALIZATION;
 };
+
+// Saved bitwise: the layout atomic_t's fields had
+static_assert(sizeof(audio_port) == 128 && alignof(audio_port) == 8);
+static_assert(offsetof(audio_port, state) == 0 && sizeof(audio_port::state) == 4);
+static_assert(offsetof(audio_port, level) == 80 && offsetof(audio_port, level_set) == 88 && sizeof(audio_port::level_set) == 8);
+static_assert(offsetof(audio_port, prev_touched_tag_nr) == 96);
 
 struct cell_audio_config
 {
@@ -321,7 +364,7 @@ private:
 	lr_audio_ring cb_ringbuf{};
 	lr_audio_ring* ring = &cb_ringbuf;
 
-	atomic_t<bool> backend_device_changed = false;
+	retro_atomic_int_t backend_device_changed{0}; // 0 or 1
 	bool playing = false;
 
 	u64 update_timestamp = 0;
@@ -368,7 +411,7 @@ public:
 
 	bool device_changed()
 	{
-		return backend_device_changed.test_and_reset() && backend->DefaultDeviceChanged();
+		return retro_atomic_exchange_int(&backend_device_changed, 0) != 0 && backend->DefaultDeviceChanged();
 	}
 
 	std::string_view get_backend_name() const
@@ -406,7 +449,7 @@ public:
 	// between its parts on the cellAudio thread
 	owner_calls_t calls{};
 	bool initialising = false; // cellAudioInit between its parts
-	atomic_t<u8> init = 0;
+	retro_atomic_int_t init{0}; // 0 or 1; saved as the u8 it was
 	u32 shared_area = 0;
 	u32 shared_address = 0;
 	u32 shared_refs = 0;

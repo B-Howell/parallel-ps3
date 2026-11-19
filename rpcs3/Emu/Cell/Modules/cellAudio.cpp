@@ -187,7 +187,7 @@ void audio_ringbuffer::backend_state_callback(AudioStateEvent event)
 {
 	if (event == AudioStateEvent::DEFAULT_DEVICE_MAYBE_CHANGED)
 	{
-		backend_device_changed = true;
+		retro_atomic_store_release_int(&backend_device_changed, 1);
 	}
 }
 
@@ -444,9 +444,11 @@ namespace
 cell_audio_thread::cell_audio_thread(utils::serial& ar)
 	: cell_audio_thread()
 {
-	ar(init, shared_area, shared_address, shared_refs, ports);
+	u8 init_saved = 0;
+	ar(init_saved, shared_area, shared_address, shared_refs, ports);
+	retro_atomic_store_release_int(&init, init_saved);
 
-	if (!init)
+	if (!init_saved)
 	{
 		return;
 	}
@@ -474,9 +476,10 @@ void cell_audio_thread::save(utils::serial& ar)
 	USING_SERIALIZATION_VERSION(cellAudio);
 
 	// closed ports keep their descriptor after audio quits
-	ar(init, shared_area, shared_address, shared_refs, ports);
+	const u8 init_saved = static_cast<u8>(retro_atomic_load_acquire_int(&init));
+	ar(init_saved, shared_area, shared_address, shared_refs, ports);
 
-	if (!init)
+	if (!init_saved)
 	{
 		return;
 	}
@@ -517,7 +520,7 @@ std::tuple<u32, u32, u32, u32> cell_audio_thread::count_port_buffer_tags()
 	{
 		audio_port& port = ports[port_index];
 
-		if (port.state != audio_port_state::started) continue;
+		if (port.get_state() != audio_port_state::started) continue;
 		active++;
 
 		if (!port.num_channels) continue;
@@ -638,7 +641,7 @@ void cell_audio_thread::reset_ports(s32 offset)
 	{
 		audio_port& port = ports[port_index];
 
-		if (port.state != audio_port_state::started) continue;
+		if (port.get_state() != audio_port_state::started) continue;
 
 		auto* buffer = get_buffer(port, offset);
 		memset(buffer, 0, port.block_size() * sizeof(float));
@@ -657,7 +660,7 @@ void cell_audio_thread::reset_ports(s32 offset)
 	}
 }
 
-atomic_t<u32> g_audio_periods{0};
+retro_atomic_int_t g_audio_periods{0};
 retro_atomic_int_t g_audio_period_waiters{0};
 
 void cell_audio_thread::advance(u64 timestamp)
@@ -669,7 +672,7 @@ void cell_audio_thread::advance(u64 timestamp)
 
 	for (audio_port& port : ports)
 	{
-		if (port.state != audio_port_state::started) continue;
+		if (port.get_state() != audio_port_state::started) continue;
 
 		port.global_counter = m_counter;
 		port.active_counter++;
@@ -694,10 +697,10 @@ void cell_audio_thread::advance(u64 timestamp)
 	m_counter++;
 	m_last_period_end = timestamp;
 
-	g_audio_periods++;
+	retro_atomic_fetch_add_seq_cst_int(&g_audio_periods, 1);
 	if (retro_atomic_load_seq_cst_int(&g_audio_period_waiters))
 	{
-		g_audio_periods.notify_all();
+		retro_waitaddr_notify_all(&g_audio_periods);
 	}
 	m_dynamic_period = 0;
 
@@ -1219,7 +1222,7 @@ audio_port* cell_audio_thread::open_port()
 	const u32 index = --free_port_count;
 	auto& port = ports[free_ports[index]];
 	port.server_index = free_indices[index];
-	port.state = audio_port_state::opened;
+	port.set_state(audio_port_state::opened);
 	m_front_only_reported[port.number] = false;
 	m_periods_without_tag[port.number] = 0;
 	m_front_only_port[port.number] = false;
@@ -1272,7 +1275,7 @@ static u32 map_port_memory(ppu_thread& ppu, u32 size, u32 area, u32& address, sh
 
 cell_audio_thread::port_unmap cell_audio_thread::take_port(audio_port& port)
 {
-	port.state = audio_port_state::closed;
+	port.set_state(audio_port_state::closed);
 
 	port_unmap gone;
 	gone.mapped = port.mapped;
@@ -1340,7 +1343,7 @@ void cell_audio_thread::mix(float* out_buffer, s32 offset)
 	// mixing
 	for (audio_port& port : ports)
 	{
-		if (port.state != audio_port_state::started) continue;
+		if (port.get_state() != audio_port_state::started) continue;
 
 		if (port.num_channels != 2 && port.num_channels != 8 && port.num_channels != 0)
 		{
@@ -1352,7 +1355,7 @@ void cell_audio_thread::mix(float* out_buffer, s32 offset)
 		// volume is spread over 13 ms, a step a frame. The level it is going
 		// to cannot change meanwhile - cellAudioSetPortLevel takes the mutex
 		// held here - so it is read once for the block, not once a frame.
-		const audio_port::level_set_t param = port.level_set.load();
+		const audio_port::level_set_t param = port.get_level_set();
 		cell_audio_mix_level level{port.level, param.value, param.inc};
 
 		constexpr cell_audio_mix_down down = downmix == AudioChannelCnt::STEREO ? CELL_AUDIO_MIX_STEREO
@@ -1365,7 +1368,7 @@ void cell_audio_thread::mix(float* out_buffer, s32 offset)
 
 		if (arrived)
 		{
-			port.level_set.compare_and_swap(param, { param.value, 0.0f });
+			port.cas_level_set(param, { param.value, 0.0f });
 		}
 	}
 }
@@ -1375,11 +1378,11 @@ void cell_audio_thread::finish_port_volume_stepping()
 	// part of cellAudioSetPortLevel functionality
 	for (audio_port& port : ports)
 	{
-		if (port.state != audio_port_state::started) continue;
+		if (port.get_state() != audio_port_state::started) continue;
 
-		const audio_port::level_set_t param = port.level_set.load();
+		const audio_port::level_set_t param = port.get_level_set();
 		port.level = param.value;
-		port.level_set.compare_and_swap(param, { param.value, 0.0f });
+		port.cas_level_set(param, { param.value, 0.0f });
 	}
 }
 
@@ -1401,7 +1404,7 @@ error_code cellAudioInit(ppu_thread& ppu)
 	// cellAudio thread. Its memory is mapped here, then taken there
 	const error_code claim = audio_call([&]() -> error_code
 	{
-		if (g_audio.init || g_audio.initialising)
+		if (retro_atomic_load_acquire_int(&g_audio.init) || g_audio.initialising)
 		{
 			return CELL_AUDIO_ERROR_ALREADY_INIT;
 		}
@@ -1491,7 +1494,7 @@ error_code cellAudioInit(ppu_thread& ppu)
 
 		for (u32 i = 0; i < AUDIO_PORT_COUNT; i++)
 		{
-			g_audio.ports[i].state = audio_port_state::closed;
+			g_audio.ports[i].set_state(audio_port_state::closed);
 			g_audio.ports[i].mapped = false;
 			g_audio.ports[i].number = i;
 			// closed ports keep their buffer fields and their slot in the new index mapping
@@ -1505,7 +1508,7 @@ error_code cellAudioInit(ppu_thread& ppu)
 		}
 
 		g_audio.initialising = false;
-		g_audio.init = 1;
+		retro_atomic_store_release_int(&g_audio.init, 1);
 		return CELL_OK;
 	});
 }
@@ -1532,14 +1535,14 @@ error_code cellAudioQuit(ppu_thread& ppu)
 
 	const error_code result = audio_call([&]() -> error_code
 	{
-		if (!g_audio.init)
+		if (!retro_atomic_load_acquire_int(&g_audio.init))
 		{
 			return CELL_AUDIO_ERROR_NOT_INIT;
 		}
 
 		for (auto& port : g_audio.ports)
 		{
-			if (port.state != audio_port_state::closed)
+			if (port.get_state() != audio_port_state::closed)
 			{
 				ports_gone[port.number] = g_audio.take_port(port);
 			}
@@ -1548,7 +1551,7 @@ error_code cellAudioQuit(ppu_thread& ppu)
 		shared_gone = g_audio.take_shared_ref();
 		shared_memory = std::move(g_audio.shared_memory);
 		// NOTE: Do not clear event queues here. They are handled independently.
-		g_audio.init = 0;
+		retro_atomic_store_release_int(&g_audio.init, 0);
 		return CELL_OK;
 	});
 
@@ -1581,7 +1584,7 @@ error_code cellAudioPortOpen(ppu_thread& ppu, vm::ptr<CellAudioPortParam> audioP
 
 	auto& g_audio = g_fxo->get<cell_audio>();
 
-	if (!g_audio.init)
+	if (!retro_atomic_load_acquire_int(&g_audio.init))
 	{
 		return CELL_AUDIO_ERROR_NOT_INIT;
 	}
@@ -1657,7 +1660,7 @@ error_code cellAudioPortOpen(ppu_thread& ppu, vm::ptr<CellAudioPortParam> audioP
 
 	const error_code taken = audio_call([&]() -> error_code
 	{
-		if (!g_audio.init)
+		if (!retro_atomic_load_acquire_int(&g_audio.init))
 		{
 			return CELL_AUDIO_ERROR_NOT_INIT;
 		}
@@ -1688,7 +1691,7 @@ error_code cellAudioPortOpen(ppu_thread& ppu, vm::ptr<CellAudioPortParam> audioP
 			port->level = 1.0f;
 		}
 
-		port->level_set.store({ port->level, 0.0f });
+		port->set_level_set({ port->level, 0.0f });
 
 		shared_area = g_audio.shared_area;
 		size = std::max<u32>(0x10000, utils::align(port->size, 0x10000));
@@ -1715,7 +1718,7 @@ error_code cellAudioPortOpen(ppu_thread& ppu, vm::ptr<CellAudioPortParam> audioP
 	// Given to the port, unless a cellAudioQuit came between and closed it
 	const bool given = audio_call([&]()
 	{
-		if (port->state != audio_port_state::opened || port->mapped)
+		if (port->get_state() != audio_port_state::opened || port->mapped)
 		{
 			return false;
 		}
@@ -1746,7 +1749,7 @@ error_code cellAudioGetPortConfig(u32 portNum, vm::ptr<CellAudioPortConfig> port
 
 	return audio_call([&]() -> error_code
 	{
-		if (!g_audio.init)
+		if (!retro_atomic_load_acquire_int(&g_audio.init))
 		{
 			return CELL_AUDIO_ERROR_NOT_INIT;
 		}
@@ -1760,7 +1763,7 @@ error_code cellAudioGetPortConfig(u32 portNum, vm::ptr<CellAudioPortConfig> port
 
 		portConfig->readIndexAddr = port.index;
 
-		switch (audio_port_state state = port.state.load())
+		switch (audio_port_state state = port.get_state())
 		{
 		case audio_port_state::closed:
 			portConfig->status = CELL_AUDIO_STATUS_CLOSE;
@@ -1790,7 +1793,7 @@ error_code cellAudioPortStart(u32 portNum)
 
 	auto& g_audio = g_fxo->get<cell_audio>();
 
-	if (!g_audio.init)
+	if (!retro_atomic_load_acquire_int(&g_audio.init))
 	{
 		return CELL_AUDIO_ERROR_NOT_INIT;
 	}
@@ -1805,20 +1808,20 @@ error_code cellAudioPortStart(u32 portNum)
 
 	return audio_call([&]() -> error_code
 	{
-		if (!g_audio.init)
+		if (!retro_atomic_load_acquire_int(&g_audio.init))
 		{
 			return CELL_AUDIO_ERROR_NOT_INIT;
 		}
 
 		auto& port = g_audio.ports[portNum];
 
-		switch (audio_port_state state = port.state)
+		switch (audio_port_state state = port.get_state())
 		{
 		case audio_port_state::closed: return CELL_AUDIO_ERROR_PORT_NOT_OPEN;
 		case audio_port_state::started: return CELL_AUDIO_ERROR_PORT_ALREADY_RUN;
 		case audio_port_state::opened:
 			std::memset(port.addr.get_ptr(), 0, port.size);
-			port.state = audio_port_state::started;
+			port.set_state(audio_port_state::started);
 			return CELL_OK;
 		default: fmt::throw_exception("Invalid port state (%d: %d)", portNum, static_cast<u32>(state));
 		}
@@ -1843,7 +1846,7 @@ error_code cellAudioPortClose(ppu_thread& ppu, u32 portNum)
 
 	const error_code result = audio_call([&]() -> error_code
 	{
-		if (!g_audio.init)
+		if (!retro_atomic_load_acquire_int(&g_audio.init))
 		{
 			return CELL_AUDIO_ERROR_NOT_INIT;
 		}
@@ -1855,7 +1858,7 @@ error_code cellAudioPortClose(ppu_thread& ppu, u32 portNum)
 
 		auto& port = g_audio.ports[portNum];
 
-		if (port.state == audio_port_state::closed)
+		if (port.get_state() == audio_port_state::closed)
 		{
 			return CELL_AUDIO_ERROR_PORT_NOT_OPEN;
 		}
@@ -1884,7 +1887,7 @@ error_code cellAudioPortStop(ppu_thread& ppu, u32 portNum)
 
 	return audio_call([&]() -> error_code
 	{
-		if (!g_audio.init)
+		if (!retro_atomic_load_acquire_int(&g_audio.init))
 		{
 			return CELL_AUDIO_ERROR_NOT_INIT;
 		}
@@ -1894,7 +1897,7 @@ error_code cellAudioPortStop(ppu_thread& ppu, u32 portNum)
 			return CELL_AUDIO_ERROR_PARAM;
 		}
 
-		switch (audio_port_state state = g_audio.ports[portNum].state.compare_and_swap(audio_port_state::started, audio_port_state::opened))
+		switch (audio_port_state state = g_audio.ports[portNum].cas_state(audio_port_state::started, audio_port_state::opened))
 		{
 		case audio_port_state::closed: return CELL_AUDIO_ERROR_PORT_NOT_RUN;
 		case audio_port_state::started: return CELL_OK;
@@ -1912,7 +1915,7 @@ error_code cellAudioGetPortTimestamp(u32 portNum, u64 tag, vm::ptr<u64> stamp)
 
 	return audio_call([&]() -> error_code
 	{
-		if (!g_audio.init)
+		if (!retro_atomic_load_acquire_int(&g_audio.init))
 		{
 			return CELL_AUDIO_ERROR_NOT_INIT;
 		}
@@ -1924,7 +1927,7 @@ error_code cellAudioGetPortTimestamp(u32 portNum, u64 tag, vm::ptr<u64> stamp)
 
 		audio_port& port = g_audio.ports[portNum];
 
-		if (port.state == audio_port_state::closed)
+		if (port.get_state() == audio_port_state::closed)
 		{
 			return CELL_AUDIO_ERROR_PORT_NOT_OPEN;
 		}
@@ -1952,7 +1955,7 @@ error_code cellAudioGetPortBlockTag(u32 portNum, u64 blockNo, vm::ptr<u64> tag)
 
 	return audio_call([&]() -> error_code
 	{
-		if (!g_audio.init)
+		if (!retro_atomic_load_acquire_int(&g_audio.init))
 		{
 			return CELL_AUDIO_ERROR_NOT_INIT;
 		}
@@ -1964,7 +1967,7 @@ error_code cellAudioGetPortBlockTag(u32 portNum, u64 blockNo, vm::ptr<u64> tag)
 
 		audio_port& port = g_audio.ports[portNum];
 
-		if (port.state == audio_port_state::closed)
+		if (port.get_state() == audio_port_state::closed)
 		{
 			return CELL_AUDIO_ERROR_PORT_NOT_OPEN;
 		}
@@ -1991,7 +1994,7 @@ error_code cellAudioSetPortLevel(ppu_thread& ppu, u32 portNum, float level)
 
 	return audio_call([&]() -> error_code
 	{
-		if (!g_audio.init)
+		if (!retro_atomic_load_acquire_int(&g_audio.init))
 		{
 			return CELL_AUDIO_ERROR_NOT_INIT;
 		}
@@ -2003,14 +2006,14 @@ error_code cellAudioSetPortLevel(ppu_thread& ppu, u32 portNum, float level)
 
 		audio_port& port = g_audio.ports[portNum];
 
-		if (port.state == audio_port_state::closed)
+		if (port.get_state() == audio_port_state::closed)
 		{
 			return CELL_AUDIO_ERROR_PORT_NOT_OPEN;
 		}
 
 		if (level >= 0.0f)
 		{
-			port.level_set.exchange({ level, (port.level - level) / 624.0f });
+			port.set_level_set({ level, (port.level - level) / 624.0f });
 		}
 		else
 		{
@@ -2035,7 +2038,7 @@ static error_code AudioCreateNotifyEventQueue(ppu_thread& ppu, vm::ptr<u32> id, 
 
 		// This originally reads from a global sdk value set by cellAudioInit
 		// So check initialization as well
-		const u32 queue_depth = g_fxo->get<cell_audio>().init && g_ps3_process_info.sdk_ver <= 0x35FFFF ? 2 : 8;
+		const u32 queue_depth = retro_atomic_load_acquire_int(&g_fxo->get<cell_audio>().init) && g_ps3_process_info.sdk_ver <= 0x35FFFF ? 2 : 8;
 
 		if (CellError res{sys_event_queue_create(ppu, id, attr, key_value, queue_depth) + 0u})
 		{
@@ -2078,7 +2081,7 @@ error_code AudioSetNotifyEventQueue(ppu_thread& ppu, u64 key, u32 iFlags)
 {
 	auto& g_audio = g_fxo->get<cell_audio>();
 
-	if (!g_audio.init)
+	if (!retro_atomic_load_acquire_int(&g_audio.init))
 	{
 		return CELL_AUDIO_ERROR_NOT_INIT;
 	}
@@ -2139,7 +2142,7 @@ error_code AudioSetNotifyEventQueue(ppu_thread& ppu, u64 key, u32 iFlags)
 
 	return audio_call([&]() -> error_code
 	{
-		if (!g_audio.init)
+		if (!retro_atomic_load_acquire_int(&g_audio.init))
 		{
 			return CELL_AUDIO_ERROR_NOT_INIT;
 		}
@@ -2214,7 +2217,7 @@ error_code AudioRemoveNotifyEventQueue(u64 key, u32 iFlags)
 
 	return audio_call([&]() -> error_code
 	{
-		if (!g_audio.init)
+		if (!retro_atomic_load_acquire_int(&g_audio.init))
 		{
 			return CELL_AUDIO_ERROR_NOT_INIT;
 		}
@@ -2269,7 +2272,7 @@ error_code cellAudioAddData(u32 portNum, vm::ptr<float> src, u32 samples, float 
 
 	return audio_call([&]() -> error_code
 	{
-		if (!g_audio.init)
+		if (!retro_atomic_load_acquire_int(&g_audio.init))
 		{
 			return CELL_AUDIO_ERROR_NOT_INIT;
 		}
@@ -2307,7 +2310,7 @@ error_code cellAudioAdd2chData(u32 portNum, vm::ptr<float> src, u32 samples, flo
 
 	return audio_call([&]() -> error_code
 	{
-		if (!g_audio.init)
+		if (!retro_atomic_load_acquire_int(&g_audio.init))
 		{
 			return CELL_AUDIO_ERROR_NOT_INIT;
 		}
@@ -2362,7 +2365,7 @@ error_code cellAudioAdd6chData(u32 portNum, vm::ptr<float> src, float volume)
 
 	return audio_call([&]() -> error_code
 	{
-		if (!g_audio.init)
+		if (!retro_atomic_load_acquire_int(&g_audio.init))
 		{
 			return CELL_AUDIO_ERROR_NOT_INIT;
 		}
@@ -2412,7 +2415,7 @@ error_code cellAudioMiscSetAccessoryVolume(ppu_thread& ppu, u32 devNum, float vo
 
 	return audio_call([&]() -> error_code
 	{
-		if (!g_audio.init)
+		if (!retro_atomic_load_acquire_int(&g_audio.init))
 		{
 			return CELL_AUDIO_ERROR_NOT_INIT;
 		}
@@ -2433,7 +2436,7 @@ error_code cellAudioSendAck(ppu_thread& ppu, u64 data3)
 
 	return audio_call([&]() -> error_code
 	{
-		if (!g_audio.init)
+		if (!retro_atomic_load_acquire_int(&g_audio.init))
 		{
 			return CELL_AUDIO_ERROR_NOT_INIT;
 		}
@@ -2463,7 +2466,7 @@ error_code cellAudioSetPersonalDevice(ppu_thread& ppu, s32 iPersonalStream, s32 
 
 	return audio_call([&]() -> error_code
 	{
-		if (!g_audio.init)
+		if (!retro_atomic_load_acquire_int(&g_audio.init))
 		{
 			return CELL_AUDIO_ERROR_NOT_INIT;
 		}
@@ -2490,7 +2493,7 @@ error_code cellAudioUnsetPersonalDevice(ppu_thread& ppu, s32 iPersonalStream)
 
 	return audio_call([&]() -> error_code
 	{
-		if (!g_audio.init)
+		if (!retro_atomic_load_acquire_int(&g_audio.init))
 		{
 			return CELL_AUDIO_ERROR_NOT_INIT;
 		}
