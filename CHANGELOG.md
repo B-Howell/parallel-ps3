@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The overlays are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the done flag that the user list, message, send and receive message, friends list, home menu and trophy list dialogs wait on is a `retro_atomic_int_t`, set and woken through `retro_waitaddr`. The send message dialog's confirmation flags, the friends list's dirty flag and its current and last page, the trophy list's dirty flag and sync status, the trophy notification queue's two counters, the overlay manager's id counter and its input thread's abort and interrupt flags, the home menu's screenshot and recording requests, and the shader loading dialog's count of queued main thread calls are `retro_atomic` too. Nothing is saved in savestates.
+  - **Tests:** `test_emu_waits` checks that the shader loading dialog's `close()` returns only after the main thread has run every call it queued. It was shown to fail with a wait that returned while one call was left. The dialogs' done flags and the other fields have no runtime test, because they need a running overlay and its input. A check fails if `atomic_t` comes back to the overlays.
+
+
 - **The RSX's reference counts, its shared tag and the video out setup are off `atomic_t`.** Not yet run on a game.
   - **What changed:** `rsx::ref_counted`'s count and idle count (which still wraps as the `u8` it was), the ever-increasing shared tag, and `avconf`'s gamma (kept as its `f32`'s bits) and configured state are `retro_atomic_int_t` and `retro_atomic_64_t`. `avconf` has `get_gamma()`, `set_gamma()` and `configured()`, used by cellVideoOut, cellAvconfExt and the GL and Vulkan presenters. The Vulkan query pool, which set its count directly, goes through `retro_atomic` too.
   - **Savestates:** gamma and state are written and read through the `f32` and `u32` they were, so the format is unchanged. Older savestates, read as raw bytes, still land in the same 4-byte layout.

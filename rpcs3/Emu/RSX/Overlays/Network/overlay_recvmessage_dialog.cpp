@@ -250,17 +250,17 @@ namespace rsx
 
 			retro_atomic_store_release_int(&visible, 1);
 
-			const auto notify = std::make_shared<atomic_t<u32>>(0);
+			const auto notify = std::make_shared<retro_atomic_int_t>(0);
 			auto& overlayman = g_fxo->get<display_manager>();
 			auto& nps = g_fxo->get<np_state>();
 
 			// Block until the user exits the dialog
 			overlayman.attach_thread_input(
 				uid, "Recvmessage dialog", nullptr,
-				[notify](s32) { *notify = true; notify->notify_one(); }
+				[notify](s32) { retro_atomic_store_release_int(notify.get(), 1); retro_waitaddr_notify_one(notify.get()); }
 			);
 
-			while (!Emu.IsStopped() && !*notify && !nps.abort_gui_flag)
+			while (!Emu.IsStopped() && !retro_atomic_load_acquire_int(notify.get()) && !nps.abort_gui_flag)
 			{
 				libretro_wait_on(*notify, u32{0});
 			}

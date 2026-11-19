@@ -152,7 +152,7 @@ namespace rsx
 				break;
 			case pad_button::square:
 				m_show_hidden_trophies = !m_show_hidden_trophies;
-				m_list_dirty = true;
+				retro_atomic_store_release_int(&m_list_dirty, 1);
 				break;
 			case pad_button::triangle:
 			{
@@ -164,12 +164,12 @@ namespace rsx
 				case trophy_sort_mode::earned_date:  m_sort_mode = trophy_sort_mode::grade; break;
 				case trophy_sort_mode::grade:        m_sort_mode = trophy_sort_mode::game_default; break;
 				}
-				m_list_dirty = true;
+				retro_atomic_store_release_int(&m_list_dirty, 1);
 				break;
 			}
 			case pad_button::select:
 				// Only start a new sync if not already in progress
-				if (m_sync_status.load() != 1)
+				if (static_cast<u8>(retro_atomic_load_acquire_int(&m_sync_status)) != 1)
 				{
 					sync_trophies_async();
 				}
@@ -225,7 +225,7 @@ namespace rsx
 			}
 
 			// Update sync button label based on current sync state
-			switch (m_sync_status.load())
+			switch (static_cast<u8>(retro_atomic_load_acquire_int(&m_sync_status)))
 			{
 			case 1: m_sync_trophies_button->set_text(localized_string_id::HOME_MENU_TROPHY_SYNCING_TROPHIES); break;
 			case 2: m_sync_trophies_button->set_text(localized_string_id::HOME_MENU_TROPHY_SYNC_SUCCESS); break;
@@ -249,7 +249,7 @@ namespace rsx
 
 			compiled_resource result;
 			result.add(m_dim_background->get_compiled());
-			if (m_list_dirty.exchange(false))
+			if (retro_atomic_exchange_int(&m_list_dirty, 0) != 0)
 			{
 				reload();
 			}
@@ -281,15 +281,15 @@ namespace rsx
 
 			retro_atomic_store_release_int(&visible, 1);
 
-			const auto notify = std::make_shared<atomic_t<u32>>(0);
+			const auto notify = std::make_shared<retro_atomic_int_t>(0);
 			auto& overlayman = g_fxo->get<display_manager>();
 
 			overlayman.attach_thread_input(
 				uid, "Trophy list dialog",
-				[notify]() { *notify = true; notify->notify_one(); }
+				[notify]() { retro_atomic_store_release_int(notify.get(), 1); retro_waitaddr_notify_one(notify.get()); }
 			);
 
-			while (!Emu.IsStopped() && !*notify)
+			while (!Emu.IsStopped() && !retro_atomic_load_acquire_int(notify.get()))
 			{
 				libretro_wait_on(*notify, u32{0});
 			}
@@ -307,22 +307,22 @@ namespace rsx
 			if (!rpcn_configured())
 			{
 				rsx_log.warning("Trophy sync requested but RPCN is not configured.");
-				m_sync_status = 3; // error
+				retro_atomic_store_release_int(&m_sync_status, 3); // error
 				return;
 			}
 
 			if (!m_trophy_data || !m_trophy_data->trop_usr)
 			{
 				rsx_log.error("Trophy sync requested but trophy data is not loaded.");
-				m_sync_status = 3;
+				retro_atomic_store_release_int(&m_sync_status, 3);
 				return;
 			}
 
-			m_sync_status = 1; // syncing
+			retro_atomic_store_release_int(&m_sync_status, 1); // syncing
 
 			const std::string trop_name = m_trop_name;
-			atomic_t<u8>* sync_status = &m_sync_status;
-			atomic_t<bool>* list_dirty = &m_list_dirty;
+			retro_atomic_int_t* sync_status = &m_sync_status;
+			retro_atomic_int_t* list_dirty = &m_list_dirty;
 
 			SceNpCommunicationId comm_id{};
 			{
@@ -336,7 +336,7 @@ namespace rsx
 				else
 				{
 					rsx_log.error("Trophy sync: unexpected trop_name format: %s", trop_name);
-					m_sync_status = 3;
+					retro_atomic_store_release_int(&m_sync_status, 3);
 					return;
 				}
 			}
@@ -366,14 +366,14 @@ namespace rsx
 				if (auto res = rpcn->wait_for_connection(); res != rpcn::rpcn_state::failure_no_failure)
 				{
 					rsx_log.error("Trophy sync: failed to connect to RPCN: %s", rpcn::rpcn_state_to_string(res));
-					*sync_status = 3;
+					retro_atomic_store_release_int(sync_status, 3);
 					return;
 				}
 
 				if (auto res = rpcn->wait_for_authentified(); res != rpcn::rpcn_state::failure_no_failure)
 				{
 					rsx_log.error("Trophy sync: failed to authenticate with RPCN: %s", rpcn::rpcn_state_to_string(res));
-					*sync_status = 3;
+					retro_atomic_store_release_int(sync_status, 3);
 					return;
 				}
 
@@ -400,18 +400,18 @@ namespace rsx
 							if (!tropusr->Save(tropusr_vfs_path))
 								rsx_log.error("Trophy sync: failed to save TROPUSR after sync for %s", trop_name);
 
-							*list_dirty = true;
+							retro_atomic_store_release_int(list_dirty, 1);
 						}
 					}
 					else
 					{
 						rsx_log.error("Trophy sync: failed to reload TROPUSR for %s", trop_name);
-						*sync_status = 3;
+						retro_atomic_store_release_int(sync_status, 3);
 						return;
 					}
 				}
 
-				*sync_status = 2; // success
+				retro_atomic_store_release_int(sync_status, 2); // success
 			}).detach();
 		}
 

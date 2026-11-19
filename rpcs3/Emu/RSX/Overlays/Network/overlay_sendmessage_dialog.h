@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../overlays.h"
+#include <retro_atomic.h>
 #include "../overlay_list_view.hpp"
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Cell/Modules/sceNp.h"
@@ -23,8 +24,8 @@ namespace rsx
 			std::unique_ptr<overlay_element> m_dim_background;
 			std::unique_ptr<list_view> m_list;
 			std::unique_ptr<label> m_description;
-			atomic_t<bool> m_open_confirmation_dialog = false;
-			atomic_t<bool> m_confirmation_dialog_open = false;
+			retro_atomic_int_t m_open_confirmation_dialog{0}; // 0 or 1
+			retro_atomic_int_t m_confirmation_dialog_open{0}; // 0 or 1
 
 			animation_color_interpolate fade_animation;
 

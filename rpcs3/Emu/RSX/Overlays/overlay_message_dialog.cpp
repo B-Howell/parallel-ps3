@@ -296,21 +296,21 @@ namespace rsx
 			{
 				if (!retro_atomic_load_acquire_int(&m_stop_input_loop))
 				{
-					const auto notify = std::make_shared<atomic_t<u32>>(0);
+					const auto notify = std::make_shared<retro_atomic_int_t>(0);
 					auto& overlayman = g_fxo->get<display_manager>();
 
 					if (interactive)
 					{
 						overlayman.attach_thread_input(
 							uid, "Message dialog",
-							[notify]() { *notify = true; notify->notify_one(); }
+							[notify]() { retro_atomic_store_release_int(notify.get(), 1); retro_waitaddr_notify_one(notify.get()); }
 						);
 					}
 					else
 					{
 						overlayman.attach_thread_input(
 							uid, "Message dialog",
-							[notify]() { *notify = true; notify->notify_one(); },
+							[notify]() { retro_atomic_store_release_int(notify.get(), 1); retro_waitaddr_notify_one(notify.get()); },
 							nullptr,
 							[&]()
 							{
@@ -339,7 +339,7 @@ namespace rsx
 						);
 					}
 
-					while (!Emu.IsStopped() && !*notify)
+					while (!Emu.IsStopped() && !retro_atomic_load_acquire_int(notify.get()))
 					{
 						libretro_wait_on(*notify, u32{0});
 					}

@@ -9,23 +9,23 @@ namespace rsx
 		// TODO: Move somewhere in rsx_utils or general utils if needed anywhere else
 		class ticket_semaphore_t
 		{
-			atomic_t<u64> acquired{0};
-			atomic_t<u64> released{0};
+			retro_atomic_64_t acquired{0};
+			retro_atomic_64_t released{0};
 
 		public:
 			u64 enqueue()
 			{
-				return acquired.fetch_add(1);
+				return static_cast<u64>(retro_atomic_fetch_add_64(&acquired, 1));
 			}
 
 			bool try_acquire(u64 queue_id) const
 			{
-				return (queue_id == released.load());
+				return (queue_id == static_cast<u64>(retro_atomic_load_acquire_64(&released)));
 			}
 
 			void release()
 			{
-				released++;
+				retro_atomic_fetch_add_64(&released, 1);
 			}
 		};
 

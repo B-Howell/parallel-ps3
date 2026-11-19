@@ -26,6 +26,8 @@
 #include "Emu/Cell/Modules/cellCamera.h"
 #include "Emu/Cell/Modules/cellSysutil.h"
 #include "Emu/RSX/Utils/rsx_utils.h"
+#include "Emu/RSX/Overlays/Shaders/shader_loading_dialog.h"
+#include "Emu/Cell/Modules/cellMsgDialog.h"
 #include "Emu/savestate_utils.hpp"
 
 #include <atomic>
@@ -642,6 +644,57 @@ int main()
 		CHECK(ran == 1);
 		g_emu_callbacks.call_from_main_thread = saved;
 		std::printf("test_emu_waits: a blocking call from the main thread returns after it ran\n");
+	}
+
+	// The shader loading dialog closes once the main thread has run every
+	// call it queued: its count is a retro_atomic word, and close() wakes on
+	// the last call, not before
+	{
+		struct stub_dialog final : MsgDialogBase
+		{
+			std::atomic<int> calls{0};
+			void Create(const std::string&, const std::string&) override { calls++; }
+			void Close(bool) override {}
+			void SetMsg(const std::string&) override {}
+			void ProgressBarSetMsg(u32, const std::string&) override { calls++; }
+			void ProgressBarReset(u32) override {}
+			void ProgressBarInc(u32, u32) override { calls++; }
+			void ProgressBarSetValue(u32, u32) override { calls++; }
+			void ProgressBarSetLimit(u32, u32) override { calls++; }
+		};
+		extern emu_callbacks g_emu_callbacks;
+		const auto saved = g_emu_callbacks.call_from_main_thread;
+		std::vector<std::function<void()>> queued;
+		g_emu_callbacks.call_from_main_thread = [&](std::function<void()> func, retro_atomic_int_t*)
+		{
+			queued.push_back(std::move(func));
+		};
+
+		auto stub = std::make_shared<stub_dialog>();
+		rsx::shader_loading_dialog d;
+		d.dlg = stub;
+		d.update_msg(0, "a");
+		d.inc_value(0, 1);
+		d.set_value(1, 2);
+		d.set_limit(1, 3);
+		CHECK(retro_atomic_load_acquire_int(&d.ref_cnt) == 4);
+		CHECK(queued.size() == 4);
+
+		std::atomic<int> closed{0};
+		std::thread closer([&] { d.close(); closed = 1; });
+		for (std::size_t i = 0; i < queued.size(); i++)
+		{
+			for (int j = 0; j < 200000; j++)
+				std::this_thread::yield();
+			CHECK(closed == 0); // a call still queued
+			queued[i]();
+		}
+		CHECK(reaches(closed, 1));
+		closer.join();
+		CHECK(stub->calls == 4);
+		CHECK(retro_atomic_load_acquire_int(&d.ref_cnt) == 0);
+		g_emu_callbacks.call_from_main_thread = saved;
+		std::printf("test_emu_waits: the shader loading dialog closes after its last queued call\n");
 	}
 
 	// A game's callback and its argument in one retro_atomic word: installed

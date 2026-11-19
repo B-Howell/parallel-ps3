@@ -40,8 +40,8 @@ class GSRender;
 
 #define CMD_DEBUG 0
 
-atomic_t<bool> g_user_asked_for_recording = false;
-atomic_t<bool> g_user_asked_for_screenshot = false;
+retro_atomic_int_t g_user_asked_for_recording{0}; // written, never read
+retro_atomic_int_t g_user_asked_for_screenshot{0};
 retro_atomic_int_t g_disable_frame_limit{0};
 retro_atomic_int_t g_libretro_vblank_requests{0};
 

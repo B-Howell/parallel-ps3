@@ -23,7 +23,7 @@ namespace rsx
 			if (m_input_thread)
 			{
 				// This keeps the input thread from looping again
-				m_input_thread_abort.store(true);
+				retro_atomic_store_release_int(&m_input_thread_abort, 1);
 				overlay_changed();
 
 				// Wake it if it is asleep
@@ -176,7 +176,7 @@ namespace rsx
 					input_loop_override);
 
 				// Signal input thread loop after pushing to avoid a race.
-				m_input_thread_interrupted = true;
+				retro_atomic_store_release_int(&m_input_thread_interrupted, 1);
 				overlay_changed();
 			}
 		}
@@ -204,10 +204,10 @@ namespace rsx
 			std::vector<input_thread_context_t> own_stack;
 			std::vector<input_thread_context_t> to_run;
 
-			while (!m_input_thread_abort)
+			while (retro_atomic_load_acquire_int(&m_input_thread_abort) == 0)
 			{
 				// We're about to load the whole list, interruption makes no sense before this point
-				m_input_thread_interrupted = false;
+				retro_atomic_store_release_int(&m_input_thread_interrupted, 0);
 
 				// Those pushed since, after those kept; then run newest first
 				for (auto&& input_context : m_input_token_stack.pop_all())
@@ -225,7 +225,7 @@ namespace rsx
 						continue;
 					}
 
-					if (m_input_thread_interrupted)
+					if (retro_atomic_load_acquire_int(&m_input_thread_interrupted) != 0)
 					{
 						// Someone just pushed something onto the stack. Check if we already saw it.
 						if (m_input_token_stack)
@@ -236,7 +236,7 @@ namespace rsx
 						}
 
 						// False alarm, we already saw it.
-						m_input_thread_interrupted = false;
+						retro_atomic_store_release_int(&m_input_thread_interrupted, 0);
 					}
 
 					if (input_context.input_loop_prologue &&
@@ -253,7 +253,7 @@ namespace rsx
 						result = input_context.target->run_input_loop([this]()
 						{
 							// Stop if interrupt status is set or input stack is empty
-							return !m_input_thread_interrupted || !m_input_token_stack;
+							return retro_atomic_load_acquire_int(&m_input_thread_interrupted) == 0 || !m_input_token_stack;
 						});
 					}
 					else
@@ -264,7 +264,7 @@ namespace rsx
 					if (result == user_interface::selection_code::interrupted)
 					{
 						// This dialog was exited prematurely, so we must re-run it's input routine later.
-						ensure(m_input_thread_interrupted);
+						ensure(retro_atomic_load_acquire_int(&m_input_thread_interrupted) != 0);
 						ensure(m_input_token_stack);
 						interrupted_items.push_back(input_context);
 						continue;
@@ -292,7 +292,7 @@ namespace rsx
 					// Clear
 					interrupted_items.clear();
 				}
-				else if (!m_input_thread_abort)
+				else if (retro_atomic_load_acquire_int(&m_input_thread_abort) == 0)
 				{
 					thread_ctrl::wait_on(m_input_token_stack);
 				}

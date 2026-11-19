@@ -26,13 +26,13 @@ namespace rsx
 				});
 			};
 
-			ref_cnt++;
+			retro_atomic_fetch_add_int(&ref_cnt, 1);
 
 			Emu.CallFromMainThread([&]()
 			{
 				dlg->Create(msg, title);
-				ref_cnt--;
-				ref_cnt.notify_all();
+				retro_atomic_fetch_sub_int(&ref_cnt, 1);
+				retro_waitaddr_notify_all(&ref_cnt);
 			});
 		}
 
@@ -46,13 +46,13 @@ namespace rsx
 			return;
 		}
 
-		ref_cnt++;
+		retro_atomic_fetch_add_int(&ref_cnt, 1);
 
 		Emu.CallFromMainThread([&, index, message = std::move(msg)]()
 		{
 			dlg->ProgressBarSetMsg(index, message);
-			ref_cnt--;
-			ref_cnt.notify_all();
+			retro_atomic_fetch_sub_int(&ref_cnt, 1);
+			retro_waitaddr_notify_all(&ref_cnt);
 		});
 	}
 
@@ -63,13 +63,13 @@ namespace rsx
 			return;
 		}
 
-		ref_cnt++;
+		retro_atomic_fetch_add_int(&ref_cnt, 1);
 
 		Emu.CallFromMainThread([&, index, value]()
 		{
 			dlg->ProgressBarInc(index, value);
-			ref_cnt--;
-			ref_cnt.notify_all();
+			retro_atomic_fetch_sub_int(&ref_cnt, 1);
+			retro_waitaddr_notify_all(&ref_cnt);
 		});
 	}
 
@@ -80,13 +80,13 @@ namespace rsx
 			return;
 		}
 
-		ref_cnt++;
+		retro_atomic_fetch_add_int(&ref_cnt, 1);
 
 		Emu.CallFromMainThread([&, index, value]()
 		{
 			dlg->ProgressBarSetValue(index, value);
-			ref_cnt--;
-			ref_cnt.notify_all();
+			retro_atomic_fetch_sub_int(&ref_cnt, 1);
+			retro_waitaddr_notify_all(&ref_cnt);
 		});
 	}
 
@@ -97,13 +97,13 @@ namespace rsx
 			return;
 		}
 
-		ref_cnt++;
+		retro_atomic_fetch_add_int(&ref_cnt, 1);
 
 		Emu.CallFromMainThread([&, index, limit]()
 		{
 			dlg->ProgressBarSetLimit(index, limit);
-			ref_cnt--;
-			ref_cnt.notify_all();
+			retro_atomic_fetch_sub_int(&ref_cnt, 1);
+			retro_waitaddr_notify_all(&ref_cnt);
 		});
 	}
 
@@ -113,7 +113,7 @@ namespace rsx
 	{
 		for (;;)
 		{
-			const int refs = ref_cnt.load();
+			const int refs = retro_atomic_load_acquire_int(&ref_cnt);
 			const u32 events = libretro_events_seen();
 
 			if (!refs || Emu.IsStopped())
@@ -122,7 +122,7 @@ namespace rsx
 			}
 
 			atomic_wait::list<2> list;
-			list.template set<0>(ref_cnt, refs);
+			list.template set_raw<0>(&ref_cnt, static_cast<u32>(refs));
 			list.template set_raw<1>(&g_libretro_events, events);
 			list.wait();
 		}

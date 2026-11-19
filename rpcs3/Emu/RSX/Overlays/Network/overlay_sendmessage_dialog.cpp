@@ -70,7 +70,7 @@ namespace rsx
 		void sendmessage_dialog::on_button_pressed(pad_button button_press, bool is_auto_repeat)
 		{
 			if (fade_animation.active) return;
-			if (m_confirmation_dialog_open) return; // Ignore input while the confirmation dialog is open
+			if (retro_atomic_load_acquire_int(&m_confirmation_dialog_open) != 0) return; // Ignore input while the confirmation dialog is open
 
 			// The renderer's, as is the list: input and the friends' news reach it there
 			bool close_dialog = false;
@@ -88,9 +88,9 @@ namespace rsx
 					// Taken as chosen, for the thread waiting on the dialog
 					// (seen by it with the flag below)
 					m_chosen_npid = std::move(selection);
-					m_open_confirmation_dialog = true;
+					retro_atomic_store_release_int(&m_open_confirmation_dialog, 1);
 					libretro_event(); // the dialog's thread waits untimed: woken to open it
-					m_confirmation_dialog_open = true; // Ignore input while the confirmation dialog is open. Set this here due to avoid a race condition.
+					retro_atomic_store_release_int(&m_confirmation_dialog_open, 1); // Ignore input while the confirmation dialog is open. Set this here due to avoid a race condition.
 					break;
 				}
 
@@ -216,21 +216,21 @@ namespace rsx
 
 			retro_atomic_store_release_int(&visible, 1);
 
-			const auto notify = std::make_shared<atomic_t<u32>>(0);
+			const auto notify = std::make_shared<retro_atomic_int_t>(0);
 			auto& overlayman = g_fxo->get<display_manager>();
 			auto& nps = g_fxo->get<np_state>();
 
 			// Block until the user exits the dialog
 			overlayman.attach_thread_input(
 				uid, "Sendmessage dialog", nullptr,
-				[notify](s32) { *notify = true; notify->notify_one(); }
+				[notify](s32) { retro_atomic_store_release_int(notify.get(), 1); retro_waitaddr_notify_one(notify.get()); }
 			);
 
 			bool confirmation_error = false;
 
-			while (!Emu.IsStopped() && !*notify && !nps.abort_gui_flag)
+			while (!Emu.IsStopped() && !retro_atomic_load_acquire_int(notify.get()) && !nps.abort_gui_flag)
 			{
-				if (m_open_confirmation_dialog.exchange(false))
+				if (retro_atomic_exchange_int(&m_open_confirmation_dialog, 0) != 0)
 				{
 					// Get user confirmation by opening a blocking dialog
 					const std::string npid = m_chosen_npid;
@@ -271,7 +271,7 @@ namespace rsx
 					retro_atomic_store_release_int(&visible, 1);
 
 					// Allow input again
-					m_confirmation_dialog_open = false;
+					retro_atomic_store_release_int(&m_confirmation_dialog_open, 0);
 
 					// Intercept pads again (Only needed because we currently don't have an interception stack and the confirmation dialog disables it on close)
 					input::SetIntercepted(true);

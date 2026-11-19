@@ -5,7 +5,7 @@
 #include "Emu/system_config.h"
 #include "Utilities/date_time.h"
 
-extern atomic_t<bool> g_user_asked_for_screenshot;
+extern retro_atomic_int_t g_user_asked_for_screenshot;
 
 namespace rsx
 {
@@ -125,7 +125,7 @@ namespace rsx
 					if (navigation == page_navigation::exit_for_screenshot)
 					{
 						rsx_log.notice("Taking screenshot after exiting home menu");
-						g_user_asked_for_screenshot = true;
+						retro_atomic_store_release_int(&g_user_asked_for_screenshot, 1);
 					}
 				};
 				break;
@@ -166,12 +166,12 @@ namespace rsx
 			this->on_close = std::move(on_close);
 			retro_atomic_store_release_int(&visible, 1);
 
-			const auto notify = std::make_shared<atomic_t<u32>>(0);
+			const auto notify = std::make_shared<retro_atomic_int_t>(0);
 			auto& overlayman = g_fxo->get<display_manager>();
 
 			overlayman.attach_thread_input(
 				uid, "Home menu",
-				[notify]() { *notify = true; notify->notify_one(); }
+				[notify]() { retro_atomic_store_release_int(notify.get(), 1); retro_waitaddr_notify_one(notify.get()); }
 			);
 
 			if (g_cfg.misc.pause_during_home_menu)
@@ -182,7 +182,7 @@ namespace rsx
 				});
 			}
 
-			while (!Emu.IsStopped() && !*notify)
+			while (!Emu.IsStopped() && !retro_atomic_load_acquire_int(notify.get()))
 			{
 				libretro_wait_on(*notify, u32{0});
 			}

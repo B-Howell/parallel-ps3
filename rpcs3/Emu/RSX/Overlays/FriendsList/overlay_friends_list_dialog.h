@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../overlays.h"
+#include <retro_atomic.h>
 #include "../overlay_list_view.hpp"
 #include "../HomeMenu/overlay_home_menu_message_box.h"
 #include "Emu/Cell/ErrorCodes.h"
@@ -48,9 +49,9 @@ namespace rsx
 			rpcn::friend_data m_friend_data;
 			std::vector<game_invite> m_game_invite_messages;
 			std::vector<game_invite> m_game_invites;
-			atomic_t<bool> m_list_dirty { true };
-			atomic_t<friends_list_dialog_page> m_current_page { friends_list_dialog_page::friends };
-			atomic_t<friends_list_dialog_page> m_last_page { friends_list_dialog_page::friends };
+			retro_atomic_int_t m_list_dirty{1}; // 0 or 1
+			retro_atomic_int_t m_current_page{static_cast<int>(friends_list_dialog_page::friends)};
+			retro_atomic_int_t m_last_page{static_cast<int>(friends_list_dialog_page::friends)};
 
 			void reload();
 			void remove_game_invite(u64 message_id);

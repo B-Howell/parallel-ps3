@@ -213,13 +213,13 @@ namespace rsx
 					break;
 
 				if (button_press == pad_button::triangle &&
-					m_current_page != friends_list_dialog_page::friend_requests &&
-					m_current_page != friends_list_dialog_page::game_invites)
+					static_cast<friends_list_dialog_page>(retro_atomic_load_acquire_int(&m_current_page)) != friends_list_dialog_page::friend_requests &&
+					static_cast<friends_list_dialog_page>(retro_atomic_load_acquire_int(&m_current_page)) != friends_list_dialog_page::game_invites)
 					break;
 
 				const usz index = static_cast<usz>(m_list->get_selected_index());
 
-				switch (m_current_page)
+				switch (static_cast<friends_list_dialog_page>(retro_atomic_load_acquire_int(&m_current_page)))
 				{
 				case friends_list_dialog_page::friends:
 				{
@@ -382,14 +382,14 @@ namespace rsx
 				close_dialog = true;
 				break;
 			case pad_button::square:
-				switch (m_current_page)
+				switch (static_cast<friends_list_dialog_page>(retro_atomic_load_acquire_int(&m_current_page)))
 				{
-				case friends_list_dialog_page::friends: m_current_page = friends_list_dialog_page::friend_requests; break;
-				case friends_list_dialog_page::friend_requests: m_current_page = friends_list_dialog_page::game_invites; break;
-				case friends_list_dialog_page::game_invites: m_current_page = friends_list_dialog_page::blocked; break;
-				case friends_list_dialog_page::blocked: m_current_page = friends_list_dialog_page::friends; break;
+				case friends_list_dialog_page::friends: retro_atomic_store_release_int(&m_current_page, static_cast<int>(friends_list_dialog_page::friend_requests)); break;
+				case friends_list_dialog_page::friend_requests: retro_atomic_store_release_int(&m_current_page, static_cast<int>(friends_list_dialog_page::game_invites)); break;
+				case friends_list_dialog_page::game_invites: retro_atomic_store_release_int(&m_current_page, static_cast<int>(friends_list_dialog_page::blocked)); break;
+				case friends_list_dialog_page::blocked: retro_atomic_store_release_int(&m_current_page, static_cast<int>(friends_list_dialog_page::friends)); break;
 				}
-				m_list_dirty = true;
+				retro_atomic_store_release_int(&m_list_dirty, 1);
 				break;
 			case pad_button::dpad_up:
 			case pad_button::ls_up:
@@ -442,12 +442,12 @@ namespace rsx
 			compiled_resource result;
 			result.add(m_dim_background->get_compiled());
 			{
-				if (m_list_dirty.exchange(false))
+				if (retro_atomic_exchange_int(&m_list_dirty, 0) != 0)
 				{
-					if (m_current_page != m_last_page)
+					if (static_cast<friends_list_dialog_page>(retro_atomic_load_acquire_int(&m_current_page)) != static_cast<friends_list_dialog_page>(retro_atomic_load_acquire_int(&m_last_page)))
 					{
 						localized_string_id title_id = localized_string_id::INVALID;
-						switch (m_current_page)
+						switch (static_cast<friends_list_dialog_page>(retro_atomic_load_acquire_int(&m_current_page)))
 						{
 						case friends_list_dialog_page::friends: title_id = localized_string_id::HOME_MENU_FRIENDS; break;
 						case friends_list_dialog_page::friend_requests: title_id = localized_string_id::HOME_MENU_FRIENDS_REQUESTS; break;
@@ -460,7 +460,7 @@ namespace rsx
 
 					reload();
 
-					m_last_page.store(m_current_page);
+					retro_atomic_store_release_int(&m_last_page, retro_atomic_load_acquire_int(&m_current_page));
 				}
 
 				if (m_message_box && m_message_box->visible)
@@ -477,12 +477,12 @@ namespace rsx
 						{
 							const usz index = static_cast<usz>(m_list->get_selected_index());
 
-							if (m_current_page == friends_list_dialog_page::friend_requests && index < m_friend_data.requests_received.size())
+							if (static_cast<friends_list_dialog_page>(retro_atomic_load_acquire_int(&m_current_page)) == friends_list_dialog_page::friend_requests && index < m_friend_data.requests_received.size())
 							{
 								m_extra_btn.set_text(get_localized_string(localized_string_id::HOME_MENU_FRIENDS_REJECT_REQUEST));
 								result.add(m_extra_btn.get_compiled());
 							}
-							else if (m_current_page == friends_list_dialog_page::game_invites && index < m_game_invites.size())
+							else if (static_cast<friends_list_dialog_page>(retro_atomic_load_acquire_int(&m_current_page)) == friends_list_dialog_page::game_invites && index < m_game_invites.size())
 							{
 								m_extra_btn.set_text(get_localized_string(localized_string_id::HOME_MENU_FRIENDS_REJECT_GAME_INVITE));
 								result.add(m_extra_btn.get_compiled());
@@ -509,7 +509,7 @@ namespace rsx
 			case rpcn::NotificationType::FriendLost: // Remove friend from the friendlist(user removed friend or friend removed friend)
 			case rpcn::NotificationType::FriendPresenceChanged:
 			{
-				m_list_dirty = true;
+				retro_atomic_store_release_int(&m_list_dirty, 1);
 				break;
 			}
 			default:
@@ -531,7 +531,7 @@ namespace rsx
 				}))
 				{
 					m_game_invite_messages.emplace_back(message_id, message);
-					m_list_dirty = true;
+					retro_atomic_store_release_int(&m_list_dirty, 1);
 				}
 			});
 		}
@@ -545,7 +545,7 @@ namespace rsx
 
 			std::erase_if(m_game_invite_messages, has_message_id);
 			std::erase_if(m_game_invites, has_message_id);
-			m_list_dirty = true;
+			retro_atomic_store_release_int(&m_list_dirty, 1);
 		}
 
 		void friends_list_dialog::reload()
@@ -557,12 +557,12 @@ namespace rsx
 			bool rpcn_connected = true;
 
 			// Get selected user name
-			if (m_list && m_current_page == m_last_page)
+			if (m_list && static_cast<friends_list_dialog_page>(retro_atomic_load_acquire_int(&m_current_page)) == static_cast<friends_list_dialog_page>(retro_atomic_load_acquire_int(&m_last_page)))
 			{
 				const s32 old_index = m_list->get_selected_index();
 				s32 i = 0;
 
-				switch (m_current_page)
+				switch (static_cast<friends_list_dialog_page>(retro_atomic_load_acquire_int(&m_current_page)))
 				{
 				case friends_list_dialog_page::friends:
 				{
@@ -640,7 +640,7 @@ namespace rsx
 				m_friend_data = {};
 			}
 
-			switch (m_current_page)
+			switch (static_cast<friends_list_dialog_page>(retro_atomic_load_acquire_int(&m_current_page)))
 			{
 			case friends_list_dialog_page::friends:
 			{
@@ -667,7 +667,7 @@ namespace rsx
 						selected_index = ::size32(entries);
 					}
 
-					std::unique_ptr<overlay_element> entry = std::make_unique<friends_list_entry>(m_current_page, username, data);
+					std::unique_ptr<overlay_element> entry = std::make_unique<friends_list_entry>(static_cast<friends_list_dialog_page>(retro_atomic_load_acquire_int(&m_current_page)), username, data);
 					entries.emplace_back(std::move(entry));
 				}
 				for (const auto& [username, data] : friends_offline)
@@ -677,7 +677,7 @@ namespace rsx
 						selected_index = ::size32(entries);
 					}
 
-					std::unique_ptr<overlay_element> entry = std::make_unique<friends_list_entry>(m_current_page, username, data);
+					std::unique_ptr<overlay_element> entry = std::make_unique<friends_list_entry>(static_cast<friends_list_dialog_page>(retro_atomic_load_acquire_int(&m_current_page)), username, data);
 					entries.emplace_back(std::move(entry));
 				}
 				break;
@@ -691,7 +691,7 @@ namespace rsx
 						selected_index = ::size32(entries);
 					}
 
-					std::unique_ptr<overlay_element> entry = std::make_unique<friends_list_entry>(m_current_page, username, rpcn::friend_online_data(true, 0));
+					std::unique_ptr<overlay_element> entry = std::make_unique<friends_list_entry>(static_cast<friends_list_dialog_page>(retro_atomic_load_acquire_int(&m_current_page)), username, rpcn::friend_online_data(true, 0));
 					entries.emplace_back(std::move(entry));
 				}
 				for (const std::string& username : m_friend_data.requests_sent)
@@ -701,7 +701,7 @@ namespace rsx
 						selected_index = ::size32(entries);
 					}
 
-					std::unique_ptr<overlay_element> entry = std::make_unique<friends_list_entry>(m_current_page, username, rpcn::friend_online_data(false, 0));
+					std::unique_ptr<overlay_element> entry = std::make_unique<friends_list_entry>(static_cast<friends_list_dialog_page>(retro_atomic_load_acquire_int(&m_current_page)), username, rpcn::friend_online_data(false, 0));
 					entries.emplace_back(std::move(entry));
 				}
 				break;
@@ -747,7 +747,7 @@ namespace rsx
 						selected_index = ::size32(entries);
 					}
 
-					std::unique_ptr<overlay_element> entry = std::make_unique<friends_list_entry>(m_current_page, username, rpcn::friend_online_data(false, 0));
+					std::unique_ptr<overlay_element> entry = std::make_unique<friends_list_entry>(static_cast<friends_list_dialog_page>(retro_atomic_load_acquire_int(&m_current_page)), username, rpcn::friend_online_data(false, 0));
 					entries.emplace_back(std::move(entry));
 				}
 				break;
@@ -807,7 +807,7 @@ namespace rsx
 			{
 				m_game_invite_messages.clear();
 				m_game_invites.clear();
-				m_list_dirty = true;
+				retro_atomic_store_release_int(&m_list_dirty, 1);
 			});
 
 			m_rpcn->register_friend_cb(friend_callback, this);
@@ -828,15 +828,15 @@ namespace rsx
 			this->on_close = std::move(on_close);
 			retro_atomic_store_release_int(&visible, 1);
 
-			const auto notify = std::make_shared<atomic_t<u32>>(0);
+			const auto notify = std::make_shared<retro_atomic_int_t>(0);
 			auto& overlayman = g_fxo->get<display_manager>();
 
 			overlayman.attach_thread_input(
 				uid, "Friends list dialog",
-				[notify]() { *notify = true; notify->notify_one(); }
+				[notify]() { retro_atomic_store_release_int(notify.get(), 1); retro_waitaddr_notify_one(notify.get()); }
 			);
 
-			while (!Emu.IsStopped() && !*notify)
+			while (!Emu.IsStopped() && !retro_atomic_load_acquire_int(notify.get()))
 			{
 				libretro_wait_on(*notify, u32{0});
 			}

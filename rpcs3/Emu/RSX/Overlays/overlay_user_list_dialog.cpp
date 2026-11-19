@@ -237,15 +237,15 @@ namespace rsx
 			this->on_close = std::move(on_close);
 			retro_atomic_store_release_int(&visible, 1);
 
-			const auto notify = std::make_shared<atomic_t<u32>>(0);
+			const auto notify = std::make_shared<retro_atomic_int_t>(0);
 			auto& overlayman = g_fxo->get<display_manager>();
 
 			overlayman.attach_thread_input(
 				uid, "User list dialog",
-				[notify]() { *notify = true; notify->notify_one(); }
+				[notify]() { retro_atomic_store_release_int(notify.get(), 1); retro_waitaddr_notify_one(notify.get()); }
 			);
 
-			while (!Emu.IsStopped() && !*notify)
+			while (!Emu.IsStopped() && !retro_atomic_load_acquire_int(notify.get()))
 			{
 				libretro_wait_on(*notify, u32{0});
 			}

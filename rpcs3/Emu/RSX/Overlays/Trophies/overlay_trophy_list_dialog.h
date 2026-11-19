@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../overlays.h"
+#include <retro_atomic.h>
 #include "../overlay_list_view.hpp"
 
 #include "Loader/TROPUSR.h"
@@ -47,14 +48,14 @@ namespace rsx
 
 			std::unique_ptr<trophy_data> m_trophy_data;
 			std::string m_trop_name;
-			atomic_t<bool> m_list_dirty { true };
+			retro_atomic_int_t m_list_dirty{1}; // 0 or 1
 			bool m_show_hidden_trophies = false;
 			bool m_show_hidden_trophies_last = false;
 			trophy_sort_mode m_sort_mode = trophy_sort_mode::game_default;
 			trophy_sort_mode m_sort_mode_last = trophy_sort_mode::game_default;
 
 			// Sync state: 0 = idle, 1 = syncing, 2 = success, 3 = error
-			atomic_t<u8> m_sync_status { 0 };
+			retro_atomic_int_t m_sync_status{0};
 
 		public:
 			trophy_list_dialog();

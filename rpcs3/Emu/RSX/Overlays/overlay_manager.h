@@ -1,6 +1,7 @@
 #pragma once
 
 #include "overlays.h"
+#include <retro_atomic.h>
 #include "overlay_audio.h"
 
 #include "Emu/IdManager.h"
@@ -17,7 +18,7 @@ namespace rsx
 		class display_manager
 		{
 		private:
-			atomic_t<u32> m_uid_ctr = 0;
+			retro_atomic_int_t m_uid_ctr{0};
 
 			// The overlays shown, and those taken off whose resources the
 			// renderer has yet to free: published whole, with no lock. A
@@ -103,7 +104,7 @@ namespace rsx
 			template <typename T>
 			std::shared_ptr<T> add(std::shared_ptr<T>& entry, bool remove_existing = true)
 			{
-				entry->uid = m_uid_ctr.fetch_add(1);
+				entry->uid = static_cast<u32>(retro_atomic_fetch_add_int(&m_uid_ctr, 1));
 				entry->type_index = stx::typeindex<id_manager::typeinfo, T>();
 
 				const std::shared_ptr<overlay> added = std::move(entry);
@@ -282,8 +283,8 @@ namespace rsx
 			// Pushed by any thread; the input thread keeps its own stack of
 			// what it has taken, so nothing is pushed back here
 			lf_queue<input_thread_context_t> m_input_token_stack;
-			atomic_t<bool> m_input_thread_abort = false;
-			atomic_t<bool> m_input_thread_interrupted = false;
+			retro_atomic_int_t m_input_thread_abort{0}; // 0 or 1
+			retro_atomic_int_t m_input_thread_interrupted{0}; // 0 or 1
 
 			std::shared_ptr<named_thread<overlay_input_thread>> m_input_thread;
 			void input_thread_loop();

@@ -1191,6 +1191,8 @@ check: all
 	@if grep -nw "atomic_t" ../../Emu/Cell/Modules/cellSysutil.h ../../Emu/Cell/Modules/cellSysutil.cpp || ! grep -q "registered_cb saved\[4\];" ../../Emu/Cell/Modules/cellSysutil.cpp; then echo "cellSysutil uses atomic_t again, or its savestate no longer writes the callbacks as structs"; exit 1; else echo "cellSysutil is retro_atomic"; fi
 	@# rsx_utils is off atomic_t: resource refs, the shared tag and the video out setup
 	@if grep -nw "atomic_t" ../../Emu/RSX/Utils/rsx_utils.h ../../Emu/RSX/Utils/rsx_utils.cpp; then echo "rsx_utils uses atomic_t again"; exit 1; else echo "rsx_utils is retro_atomic"; fi
+	@# the overlays (dialogs, home menu, overlay manager, shader loading dialog) are off atomic_t
+	@if grep -rlw "atomic_t" ../../Emu/RSX/Overlays --include=*.cpp --include=*.h --include=*.hpp || grep -n "atomic_t<bool> g_user_asked_for" ../../Emu/RSX/RSXThread.cpp ../../Emu/RSX/GL/GLPresent.cpp ../../Emu/RSX/VK/VKPresent.cpp; then echo "atomic_t is back in the overlays"; exit 1; else echo "the overlays are retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

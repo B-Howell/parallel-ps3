@@ -9,7 +9,7 @@
 #include "Emu/System.h"
 #include "Emu/Cell/Modules/sceNpTrophy.h"
 
-extern atomic_t<bool> g_user_asked_for_recording;
+extern retro_atomic_int_t g_user_asked_for_recording;
 
 namespace rsx
 {
@@ -93,7 +93,7 @@ namespace rsx
 				if (btn != pad_button::cross) return page_navigation::stay;
 
 				rsx_log.notice("User selected recording in home menu");
-				g_user_asked_for_recording = true;
+				retro_atomic_store_release_int(&g_user_asked_for_recording, 1);
 				return page_navigation::exit;
 			});
 

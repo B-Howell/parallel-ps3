@@ -1,5 +1,7 @@
 #pragma once
 
+#include <retro_atomic.h>
+
 class MsgDialogBase;
 
 namespace rsx
@@ -7,7 +9,7 @@ namespace rsx
 	struct shader_loading_dialog
 	{
 		std::shared_ptr<MsgDialogBase> dlg{};
-		atomic_t<int> ref_cnt{0};
+		retro_atomic_int_t ref_cnt{0};
 
 		void wait_unreferenced();
 
