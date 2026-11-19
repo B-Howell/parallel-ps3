@@ -51,7 +51,7 @@ namespace gl
 		lf_queue<pipe_compiler_job> m_work_queue;
 
 		draw_context_t m_context = 0;
-		atomic_t<bool> m_context_ready = false;
+		retro_atomic_int_t m_context_ready{0}; // 0 or 1
 
 		std::function<void(draw_context_t context)> m_context_bind_func;
 		std::function<void(draw_context_t context)> m_context_destroy_func;

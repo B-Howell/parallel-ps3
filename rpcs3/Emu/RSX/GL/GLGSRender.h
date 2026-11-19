@@ -125,7 +125,7 @@ class GLGSRender : public GSRender, public ::rsx::reports::ZCULL_control
 	gl::vao m_vao;
 
 	// The renderer's: every sampler is looked at again at the next load
-	atomic_t<bool> m_samplers_dirty = {true};
+	retro_atomic_int_t m_samplers_dirty{1}; // 0 or 1
 	// Another thread's ask for that (a tile unbound), taken by the renderer
 	// at its next load, so no lock keeps one from being lost meanwhile
 	retro_atomic_int_t m_samplers_reload_asked{};
@@ -134,7 +134,7 @@ class GLGSRender : public GSRender, public ::rsx::reports::ZCULL_control
 	{
 		if (is_current_thread())
 		{
-			m_samplers_dirty.store(true);
+			retro_atomic_store_release_int(&m_samplers_dirty, 1);
 		}
 		else
 		{

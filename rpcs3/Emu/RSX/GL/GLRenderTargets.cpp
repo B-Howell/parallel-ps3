@@ -397,7 +397,7 @@ void GLGSRender::init_buffers(rsx::framebuffer_creation_context context, bool /*
 	if (m_gl_texture_cache.get_ro_tex_invalidate_intr())
 	{
 		// Invalidate cached sampler state
-		m_samplers_dirty.store(true);
+		retro_atomic_store_release_int(&m_samplers_dirty, 1);
 	}
 }
 

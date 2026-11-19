@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The GL renderer is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the samplers-dirty flag, a shader's compile state, the pipeline compiler's context-ready flag and its thread index counter are `retro_atomic_int_t`. A thread that finds a shader being compiled by another waits on its compile state with `retro_waitaddr`, woken as the other is done. glutils/program.h no longer includes util/atomic.hpp. Nothing is saved in savestates.
+  - **Tests:** none at runtime: everything here needs a GL context, which the test machine does not have. A check fails if `atomic_t` comes back to the GL renderer.
+
+
 - **PPUModule is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the liblv2 address range (which PPUThread reads to skip lwmutex notifications) and the libusbd flag (which sys_usbd reads) are `retro_atomic_int_t`. The PRX name table, read with no lock by the thread that names a crashing address, holds `retro_atomic_ptr_t`s. The library lock map is touched only on the HLE thread (`hle_call`), so its flags are plain `bool`s with no atomic at all. Nothing is saved in savestates.
   - **Tests:** none at runtime: each of these is set as a PRX loads or unloads, which needs a game's modules. A check fails if `atomic_t` comes back to PPUModule or its two `extern`s.

@@ -171,11 +171,13 @@ namespace gl
 		shader& shader::compile()
 		{
 			// The first thread to mark it compiles; any other waits for that one
-			if (!m_compile_state.compare_and_swap_test(0, 1))
+			if (!retro_atomic_cas_int(&m_compile_state, 0, 1))
 			{
-				while (m_compile_state != 2)
+				// Woken by the compiling thread as it is done
+				const retro_waitaddr_t w{&m_compile_state, 1};
+				while (retro_atomic_load_acquire_int(&m_compile_state) != 2)
 				{
-					m_compile_state.wait(1);
+					retro_waitaddr_wait(&w, 1, -1);
 				}
 
 				return *this;
@@ -208,8 +210,8 @@ namespace gl
 			m_compiled_fence.create();
 			flush_command_queue(m_compiled_fence);
 
-			m_compile_state = 2;
-			m_compile_state.notify_all();
+			retro_atomic_store_release_int(&m_compile_state, 2);
+			retro_waitaddr_notify_all(&m_compile_state);
 			return *this;
 		}
 

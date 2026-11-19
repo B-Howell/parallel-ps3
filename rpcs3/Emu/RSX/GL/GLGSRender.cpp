@@ -1453,7 +1453,7 @@ bool GLGSRender::scaled_image_from_memory(const rsx::blit_src_info& src, const r
 	gl::command_context cmd{ gl_state };
 	if (m_gl_texture_cache.blit(cmd, src, dst, interpolate, m_rtts))
 	{
-		m_samplers_dirty.store(true);
+		retro_atomic_store_release_int(&m_samplers_dirty, 1);
 		return true;
 	}
 

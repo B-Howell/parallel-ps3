@@ -320,7 +320,7 @@ void GLGSRender::load_texture_env()
 	// asked for during it counts for the next.
 	if (retro_atomic_load_relaxed_int(&m_samplers_reload_asked) && retro_atomic_exchange_int(&m_samplers_reload_asked, 0))
 	{
-		m_samplers_dirty.store(true);
+		retro_atomic_store_release_int(&m_samplers_dirty, 1);
 	}
 
 	for (u32 textures_ref = current_fp_metadata.referenced_textures_mask, i = 0; textures_ref; textures_ref >>= 1, ++i)
@@ -339,7 +339,7 @@ void GLGSRender::load_texture_env()
 		const auto& tex = rsx::method_registers.fragment_textures[i];
 		const auto previous_format_class = sampler_state->format_class;
 
-		if (!m_samplers_dirty &&
+		if (!retro_atomic_load_acquire_int(&m_samplers_dirty) &&
 			!m_textures_dirty[i] &&
 			!m_gl_texture_cache.test_if_descriptor_expired(cmd, m_rtts, sampler_state, tex))
 		{
@@ -473,7 +473,7 @@ void GLGSRender::load_texture_env()
 		const auto& tex = rsx::method_registers.vertex_textures[i];
 		const auto previous_format_class = sampler_state->format_class;
 
-		if (!m_samplers_dirty &&
+		if (!retro_atomic_load_acquire_int(&m_samplers_dirty) &&
 			!m_vertex_textures_dirty[i] &&
 			!m_gl_texture_cache.test_if_descriptor_expired(cmd, m_rtts, sampler_state, tex))
 		{
@@ -506,7 +506,7 @@ void GLGSRender::load_texture_env()
 		}
 	}
 
-	m_samplers_dirty.store(false);
+	retro_atomic_store_release_int(&m_samplers_dirty, 0);
 }
 
 void GLGSRender::bind_texture_env()

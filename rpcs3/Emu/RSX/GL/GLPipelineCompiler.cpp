@@ -8,7 +8,7 @@ namespace gl
 	// Global list of worker threads
 	std::unique_ptr<named_thread_group<pipe_compiler>> g_pipe_compilers;
 	int g_num_pipe_compilers = 0;
-	atomic_t<int> g_compiler_index{};
+	retro_atomic_int_t g_compiler_index{0};
 
 	pipe_compiler::pipe_compiler()
 	{
@@ -39,7 +39,7 @@ namespace gl
 		{
 			for (auto&& job : m_work_queue.pop_all())
 			{
-				if (!m_context_ready.test_and_set())
+				if (!retro_atomic_exchange_int(&m_context_ready, 1))
 				{
 					// Bind context on first use
 					m_context_bind_func(m_context);
@@ -136,7 +136,7 @@ namespace gl
 	pipe_compiler* get_pipe_compiler()
 	{
 		ensure(g_pipe_compilers);
-		int thread_index = g_compiler_index++;
+		int thread_index = retro_atomic_fetch_add_int(&g_compiler_index, 1);
 
 		return g_pipe_compilers.get()->begin() + (thread_index % g_num_pipe_compilers);
 	}

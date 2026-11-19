@@ -5,7 +5,8 @@
 
 #include "Emu/RSX/Program/GLSLTypes.h"
 #include "Utilities/geometry.h"
-#include "util/atomic.hpp"
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 
 #include <span>
 
@@ -23,7 +24,7 @@ namespace gl
 			fence m_init_fence;
 
 			// 0: not yet, 1: one thread compiling (the others wait for it), 2: compiled
-			atomic_t<u32> m_compile_state{};
+			retro_atomic_int_t m_compile_state{0}; // 0 not compiled, 1 being compiled, 2 compiled
 
 			void precompile();
 
@@ -61,7 +62,7 @@ namespace gl
 
 			bool created() const { return m_id != GL_NONE; }
 
-			bool compiled() const { return m_compile_state == 2; }
+			bool compiled() const { return retro_atomic_load_acquire_int(&m_compile_state) == 2; }
 
 			explicit operator bool() const { return created(); }
 		};
