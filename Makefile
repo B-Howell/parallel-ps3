@@ -635,7 +635,7 @@ $(GEN_DIR)/libretro_vblank_unlock.stamp: $(EMBED) $(CORE_DIR)/rpcs3/libretro/vbl
 # build fetches them at configure time (rpcs3/libretro/embed_patches.cmake):
 # from rpcs3.net, else the GitHub mirror, else none. `make patches` fetches
 # them again.
-PATCH_ENGINE := $(shell sed -n 's/.*patch_engine_version = "\([0-9.]*\)".*/\1/p' $(CORE_DIR)/Utilities/bin_patch.h)
+PATCH_ENGINE := $(shell sed -n 's/.*PATCH_DB_ENGINE_VERSION "\([0-9.]*\)".*/\1/p' $(CORE_DIR)/Utilities/patch_db.h)
 
 $(GEN_DIR)/libretro_patches.stamp: $(EMBED)
 ifeq ($(EMBED_PATCHES),1)

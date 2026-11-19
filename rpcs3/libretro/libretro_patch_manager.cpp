@@ -131,7 +131,8 @@ static const std::map<std::string_view, std::vector<std::string_view>> s_multiga
 
     std::string s_serial;
     std::map<std::string, std::string> s_last_values; // what a group's switches were, to see which one was turned on
-    patch_engine::patch_map s_map;
+    patch_db_t s_db;
+    bool s_db_ready = false;
     std::vector<patch_option> s_options;
     std::vector<retro_core_option_v2_definition> s_definitions;
     // The strings the option definitions point at: each a block of its
@@ -170,21 +171,28 @@ static const std::map<std::string_view, std::vector<std::string_view>> s_multiga
         return fmt::format("%08x", hash);
     }
 
-    bool for_serial(const patch_engine::patch_info& info, const std::string& serial)
+    std::string_view view(patch_str_t s)
     {
-        for (const auto& [title, serials] : info.titles)
+        return {s.s, s.len};
+    }
+
+    bool for_serial(const patch_info_t& info, const std::string& serial)
+    {
+        for (usz i = info.first_target; i < info.first_target + info.num_targets; i++)
         {
-            if (serials.contains(serial))
+            if (view(s_db.targets[i].serial) == serial)
                 return true;
         }
         return false;
     }
 
     // An "All titles" patch whose notes name this game
-    bool all_titles_for_serial(const patch_engine::patch_info& info, const std::string& description, const std::string& serial)
+    bool all_titles_for_serial(const patch_info_t& info, std::string_view description, const std::string& serial)
     {
-        const auto titles = info.titles.find(patch_key::all);
-        if (titles == info.titles.end() || !titles->second.contains(patch_key::all))
+        bool all = false;
+        for (usz i = info.first_target; i < info.first_target + info.num_targets; i++)
+            all = all || (view(s_db.targets[i].title) == "All" && view(s_db.targets[i].serial) == "All");
+        if (!all)
             return false;
         const auto games = s_multigame_patches.find(description);
         return games != s_multigame_patches.end() &&
@@ -192,8 +200,9 @@ static const std::map<std::string_view, std::vector<std::string_view>> s_multiga
     }
 
     // The notes' first paragraph, as the sublabel
-    std::string first_paragraph(const std::string& notes)
+    std::string first_paragraph(std::string_view notes_view)
     {
+        const std::string notes(notes_view);
         std::string text = notes.substr(0, notes.find("\n\n"));
         for (char& c : text)
         {
@@ -214,7 +223,11 @@ namespace libretro_patches
     void collect(const std::string& serial)
     {
         s_serial = serial;
-        s_map.clear();
+        if (s_db_ready)
+            patch_db_free(&s_db);
+        else
+            patch_db_init(&s_db, &patch_engine::log, nullptr);
+        s_db_ready = true;
         s_options.clear();
         s_text_options.clear();
         s_definitions.clear();
@@ -234,18 +247,20 @@ namespace libretro_patches
         for (const std::string& path : {dir + "patch.yml", patch_engine::get_imported_patch_path(), dir + serial + "_patch.yml"})
         {
             if (fs::is_file(path))
-                patch_engine::load(s_map, path);
+                patch_engine::load(s_db, path);
         }
 
         // One option per description, whichever executables (hashes) it is
         // for, as standalone lists them
         std::map<std::string, patch_option> singles;
-        std::map<std::string, const patch_engine::patch_info*> first_info;
+        std::map<std::string, const patch_info_t*> first_info;
 
-        for (const auto& [hash, container] : s_map)
+        for (usz c = 0; c < s_db.num_containers; c++)
         {
-            for (const auto& [description, info] : container.patch_info_map)
+            for (usz p = s_db.containers[c].first; p != PATCH_DB_NONE; p = s_db.patches[p].next)
             {
+                const patch_info_t& info = s_db.patches[p];
+                const std::string description(view(info.description));
                 const bool all_titles = !for_serial(info, serial) && all_titles_for_serial(info, description, serial);
                 if (!all_titles && !for_serial(info, serial))
                     continue;
@@ -253,7 +268,7 @@ namespace libretro_patches
                 first_info.try_emplace(description, &info);
 
                 patch_option& option = singles[description];
-                option.group = info.patch_group;
+                option.group = view(info.group);
                 option.all_titles = option.all_titles || all_titles;
                 if (option.descriptions.empty())
                     option.descriptions.push_back(description);
@@ -266,17 +281,22 @@ namespace libretro_patches
 
             for (const std::string& description : option.descriptions)
             {
-                const patch_engine::patch_info& info = *first_info.at(description);
-                for (const auto& [value_name, value] : info.default_config_values)
+                const patch_info_t& info = *first_info.at(description);
+                for (usz k = info.first_config; k < info.first_config + info.num_configs; k++)
                 {
-                    if (value.allowed_values.empty())
+                    const patch_config_value_t& value = s_db.configs[k];
+                    if (!value.num_allowed)
                         continue; // a range: the patch's default
 
+                    const std::string value_name(view(value.name));
                     config_value_option config{};
                     config.key = option.key + "_" + key_hash(description + '\x1f' + value_name);
                     config.name = value_name;
-                    for (const auto& allowed : value.allowed_values)
-                        config.values.emplace_back(allowed.label.empty() ? value_text(allowed.value) : allowed.label, allowed.value);
+                    for (usz a = value.first_allowed; a < value.first_allowed + value.num_allowed; a++)
+                    {
+                        const patch_allowed_value_t& allowed = s_db.allowed[a];
+                        config.values.emplace_back(allowed.label.len ? std::string(view(allowed.label)) : value_text(allowed.value), allowed.value);
+                    }
                     option.config_values[description].push_back(std::move(config));
                 }
             }
@@ -294,10 +314,10 @@ namespace libretro_patches
             def.key = keep(option.key);
             def.category_key = "patches";
 
-            const patch_engine::patch_info& first = *first_info.at(option.descriptions.front());
-            std::string info = first_paragraph(first.notes);
-            if (!first.author.empty())
-                info += (info.empty() ? "" : " ") + fmt::format("(%s)", first.author);
+            const patch_info_t& first = *first_info.at(option.descriptions.front());
+            std::string info = first_paragraph(view(first.notes));
+            if (first.author.len)
+                info += (info.empty() ? "" : " ") + fmt::format("(%s)", view(first.author));
             if (!option.group.empty())
                 info += (info.empty() ? "" : " ") + fmt::format("One patch of the group %s at most is on.", option.group);
             if (option.all_titles)
@@ -310,7 +330,7 @@ namespace libretro_patches
 
             for (const auto& [description, configs] : option.config_values)
             {
-                const patch_engine::patch_info& info = *first_info.at(description);
+                const patch_info_t& info = *first_info.at(description);
                 for (const config_value_option& config : configs)
                 {
                     retro_core_option_v2_definition& value_def = s_definitions.emplace_back();
@@ -319,7 +339,12 @@ namespace libretro_patches
                     value_def.desc = keep(fmt::format("%s: %s", description, config.name));
                     value_def.info = keep(fmt::format("A value of the patch \"%s\".", description));
 
-                    const f64 default_value = ::at32(info.default_config_values, config.name).value;
+                    f64 default_value = 0;
+                    for (usz k = info.first_config; k < info.first_config + info.num_configs; k++)
+                    {
+                        if (view(s_db.configs[k].name) == config.name)
+                            default_value = s_db.configs[k].value;
+                    }
                     usz index = 0;
                     for (const auto& [label, value] : config.values)
                     {
@@ -425,7 +450,10 @@ namespace libretro_patches
 
         // The whole file from the options: what standalone or an earlier game
         // left in it would otherwise stay on
-        patch_engine::patch_map config;
+        std::vector<patch_config_choice_t> choices;
+        std::vector<std::vector<patch_config_pick_t>> picks;
+        choices.reserve(s_options.size());
+        picks.reserve(s_options.size());
 
         std::set<std::string> groups_on;
         for (const patch_option& option : s_options)
@@ -441,7 +469,7 @@ namespace libretro_patches
             }
 
             // The values picked, by name
-            std::map<std::string, f64> picked;
+            std::vector<patch_config_pick_t>& picked = picks.emplace_back();
             if (const auto it = option.config_values.find(on); it != option.config_values.end())
             {
                 for (const config_value_option& value : it->second)
@@ -450,39 +478,20 @@ namespace libretro_patches
                     for (const auto& [value_label, number] : value.values)
                     {
                         if (value_label == label)
-                            picked[value.name] = number;
+                            picked.push_back({value.name.c_str(), value.name.size(), number});
                     }
                 }
             }
 
-            for (const auto& [hash, container] : s_map)
-            {
-                const auto info = container.patch_info_map.find(on);
-                if (info == container.patch_info_map.end())
-                    continue;
-
-                patch_engine::patch_info& out = config[hash].patch_info_map[on];
-                out.default_config_values = info->second.default_config_values;
-                // An "All titles" patch is configured for all, as standalone
-                // does; RPCS3 matches its hash itself
-                const std::string& serial_key = option.all_titles ? patch_key::all : s_serial;
-                for (const auto& [title, serials] : info->second.titles)
-                {
-                    const auto serial = serials.find(serial_key);
-                    if (serial == serials.end())
-                        continue;
-                    for (const auto& [app_version, values] : serial->second)
-                    {
-                        patch_engine::patch_config_values& out_values = out.titles[title][serial_key][app_version];
-                        out_values.enabled = true;
-                        out_values.config_values = info->second.default_config_values;
-                        for (const auto& [name, number] : picked)
-                            out_values.config_values[name].value = number;
-                    }
-                }
-            }
+            // An "All titles" patch is configured for all, as standalone
+            // does; RPCS3 matches its hash itself
+            const std::string& description = option.descriptions.front();
+            choices.push_back({description.c_str(), description.size(), option.all_titles ? "All" : s_serial.c_str(), picked.data(), picked.size()});
         }
 
-        patch_engine::save_config(config);
+        if (!s_db_ready)
+            patch_db_init(&s_db, &patch_engine::log, nullptr);
+        s_db_ready = true;
+        patch_engine::save_config(s_db, choices.data(), choices.size());
     }
 }

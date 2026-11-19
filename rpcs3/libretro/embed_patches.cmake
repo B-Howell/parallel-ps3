@@ -3,13 +3,13 @@
 # Standalone RPCS3 downloads it from its server at run time, from the patch
 # manager; a libretro core may not download anything at run time, so it is
 # fetched here, each time the build is configured, from the same server and
-# for the patch engine version of this code (Utilities/bin_patch.h). Unlike
+# for the patch engine version of this code (Utilities/patch_db.h). Unlike
 # config_database.dat it is kept current: patches are versioned for the patch
 # engine, not for the emulator (NNshi). github.com/illusionyy/rpcs3-game-patch,
 # a mirror of the server's file, stands in when the server cannot be reached;
 # without either the core is built without it.
 function(libretro_embed_patches out_file)
-    file(STRINGS "${CMAKE_SOURCE_DIR}/Utilities/bin_patch.h" version_line REGEX "patch_engine_version = \"[0-9.]+\"")
+    file(STRINGS "${CMAKE_SOURCE_DIR}/Utilities/patch_db.h" version_line REGEX "PATCH_DB_ENGINE_VERSION \"[0-9.]+\"")
     string(REGEX REPLACE ".*\"([0-9.]+)\".*" "\\1" version "${version_line}")
     set(patch "")
 

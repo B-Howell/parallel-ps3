@@ -1,6 +1,6 @@
 // RPCS3's game patches as the core carries them (patch.yml, embedded by
 // make/embed.c and written to patches/ by install_patches), read by RPCS3's
-// patch engine on util/yaml.cpp, the yaml-cpp replacement:
+// patch engine (Utilities/patch_db.c, on libretro-common's ryaml):
 //
 // - the file reads without an error, and every executable (a top-level key)
 //   and every patch under one that a plain scan of the text finds is there;
@@ -20,11 +20,22 @@
 #include <cstdio>
 #include <set>
 #include <sstream>
+#include <string>
 
 extern const unsigned char g_libretro_patch_yml[];
 extern const std::size_t g_libretro_patch_yml_size;
 
 static int failures = 0;
+
+// What the patch engine said to the person (its patch manager's list)
+static std::string s_user_log;
+
+static void user_log(void*, int level, const char* msg, usz len)
+{
+	if (level & PATCH_LOG_USER)
+		s_user_log.append(msg, len).append("\n");
+	patch_engine::log(nullptr, level, msg, len);
+}
 
 #define CHECK(cond) do { if (!(cond)) { std::fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #cond); failures++; } } while (0)
 
@@ -83,12 +94,12 @@ int main()
 	fs::create_path(dir);
 	CHECK(fs::write_file(dir + "patch.yml", fs::rewrite, text));
 
-	patch_engine::patch_map map;
-	std::stringstream log;
-	CHECK(patch_engine::load(map, dir + "patch.yml", "", false, &log));
-	CHECK(log.str().empty());
-	if (!log.str().empty())
-		std::fprintf(stderr, "%s\n", log.str().substr(0, 2000).c_str());
+	patch_db_t db;
+	patch_db_init(&db, user_log, nullptr);
+	CHECK(patch_engine::load(db, dir + "patch.yml"));
+	CHECK(s_user_log.empty());
+	if (!s_user_log.empty())
+		std::fprintf(stderr, "%s\n", s_user_log.substr(0, 2000).c_str());
 
 	std::set<std::string> hashes;
 	std::set<std::pair<std::string, std::string>> patches;
@@ -97,13 +108,13 @@ int main()
 	usz missing = 0;
 	for (const std::string& hash : hashes)
 	{
-		if (!map.contains(hash) && missing++ < 5)
+		if (patch_db_find(&db, hash.data(), hash.size()) == PATCH_DB_NONE && missing++ < 5)
 			std::fprintf(stderr, "executable %s not read\n", hash.c_str());
 	}
 	for (const auto& [hash, description] : patches)
 	{
-		const auto found = map.find(hash);
-		if ((found == map.end() || !found->second.patch_info_map.contains(description)) && missing++ < 10)
+		const usz found = patch_db_find(&db, hash.data(), hash.size());
+		if (patch_db_find_patch(&db, found, description.data(), description.size()) == PATCH_DB_NONE && missing++ < 10)
 			std::fprintf(stderr, "patch \"%s\" of %s not read\n", description.c_str(), hash.c_str());
 	}
 	CHECK(missing == 0);
@@ -112,12 +123,9 @@ int main()
 
 	// Every game a patch names, and its options
 	std::set<std::string> serials;
-	for (const auto& [hash, container] : map)
-		for (const auto& [description, info] : container.patch_info_map)
-			for (const auto& [title, title_serials] : info.titles)
-				for (const auto& [serial, versions] : title_serials)
-					if (serial != patch_key::all)
-						serials.insert(serial);
+	for (usz i = 0; i < db.num_targets; i++)
+		if (!patch_db_str_is(db.targets[i].serial, "All"))
+			serials.insert(std::string(db.targets[i].serial.s, db.targets[i].serial.len));
 
 	usz without = 0, tried = 0, nth = 0;
 	for (const std::string& serial : serials)
@@ -136,6 +144,7 @@ int main()
 	CHECK(!libretro_patches::any());
 
 	std::printf("test_game_patches: %zu executables, %zu patches; %zu of %zu games tried have their options\n",
-		map.size(), patches.size(), tried - without, tried);
+		db.num_containers, patches.size(), tried - without, tried);
+	patch_db_free(&db);
 	return failures ? 1 : 0;
 }

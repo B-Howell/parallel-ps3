@@ -76,6 +76,8 @@ target_sources(rpcs3_emu PRIVATE
     ../util/video_provider.cpp
     ../util/logs.cpp
     ../util/yaml.cpp
+    ../util/yaml_value.c
+    ../util/init_word.c
     ../util/vm_native.cpp
     ../util/dyn_lib.cpp
     ../util/sysinfo.cpp
@@ -95,6 +97,7 @@ target_sources(rpcs3_emu PRIVATE
     ../../Utilities/lf_hazard.c
     ../../Utilities/lf_u64_map.c
     ../../Utilities/object_pack.c
+    ../../Utilities/patch_db.c
     ../../Utilities/rw_word.c
     ../../Utilities/stack_trace.cpp
     ../../Utilities/stereo_config.cpp
