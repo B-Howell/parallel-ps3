@@ -320,7 +320,7 @@ protected:
 		retro_atomic_ptr_t ready{};
 	};
 
-	atomic_t<usz> m_next_id = 0;
+	retro_atomic_64_t m_next_id{0}; // usz
 	bool m_cache_miss_flag; // Set if last lookup did not find any usable cached programs
 
 	binary_to_vertex_program m_vertex_shader_cache;
@@ -358,7 +358,7 @@ protected:
 
 		if (recompile)
 		{
-			backend_traits::recompile_vertex_program(rsx_vp, *new_shader, m_next_id++);
+			backend_traits::recompile_vertex_program(rsx_vp, *new_shader, static_cast<usz>(retro_atomic_fetch_add_64(&m_next_id, 1)));
 		}
 
 		rsx::program_cache_hint_t::cache_vertex_program(cache_hint, rsx_vp, new_shader);
@@ -387,7 +387,7 @@ protected:
 		rsx_log.trace("FP not found in buffer!");
 
 		entry->key.clone_data();
-		backend_traits::recompile_fragment_program(rsx_fp, *new_shader, m_next_id++);
+		backend_traits::recompile_fragment_program(rsx_fp, *new_shader, static_cast<usz>(retro_atomic_fetch_add_64(&m_next_id, 1)));
 
 		rsx::program_cache_hint_t::cache_fragment_program(cache_hint, rsx_fp, new_shader);
 		return std::forward_as_tuple(*new_shader, false);

@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The program state cache's shader id counter is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the counter that numbers each vertex and fragment program as it is compiled is a `retro_atomic_64_t`, taken with `retro_atomic_fetch_add_64`. Nothing is saved in savestates.
+  - **Tests:** none at runtime: the counter is taken only as a renderer compiles a program. A check fails if `atomic_t` comes back to the program state cache.
+
+
 - **The game-window-focused flag is gone.** Not yet run on a game.
   - **What changed:** `is_input_allowed()` read an `atomic_t<bool>` that nothing in the core ever set. In the core the frontend owns the window and its focus, so the flag was always false. The function now reads the background input setting alone, which is what it already came to. Behaviour is unchanged.
   - **Tests:** none: nothing changes at runtime. A check fails if the flag comes back.
