@@ -470,7 +470,7 @@ struct spu_limits_t
 		// What is in use: counted once every group and raw SPU is loaded
 		Emu.PostponeInitCode([this]()
 		{
-			u64 in_use = put(std::min<u32>(spu_thread::g_raw_spu_ctr, 7), 5);
+			u64 in_use = put(std::min<u32>(static_cast<u32>(retro_atomic_load_acquire_int(&spu_thread::g_raw_spu_ctr)), 7), 5);
 
 			idm::select<lv2_spu_group>([&](u32, lv2_spu_group& group)
 			{
@@ -2731,7 +2731,7 @@ error_code sys_raw_spu_create(ppu_thread& ppu, vm::ptr<u32> id, vm::ptr<void> at
 		return CELL_EAGAIN;
 	}
 
-	if (!spu_thread::g_raw_spu_ctr.try_inc(5))
+	if (!spu_thread::try_inc_below(&spu_thread::g_raw_spu_ctr, 5))
 	{
 		limits.give_back(spu_limits_t::put(1, 5));
 		return CELL_EAGAIN;
@@ -2740,7 +2740,7 @@ error_code sys_raw_spu_create(ppu_thread& ppu, vm::ptr<u32> id, vm::ptr<void> at
 	u32 index = 0;
 
 	// Find free RawSPU ID
-	while (!spu_thread::g_raw_spu_id[index].try_inc(1))
+	while (!spu_thread::try_inc_below(&spu_thread::g_raw_spu_id[index], 1))
 	{
 		if (++index == 5)
 			index = 0;
@@ -2750,7 +2750,7 @@ error_code sys_raw_spu_create(ppu_thread& ppu, vm::ptr<u32> id, vm::ptr<void> at
 	ensure(vm::get(vm::spu)->falloc(spu->vm_offset(), SPU_LS_SIZE, &spu->shm, vm::block_size_64k));
 	spu->map_ls(*spu->shm, spu->ls);
 
-	spu_thread::g_raw_spu_id[index] = idm::last_id();
+	retro_atomic_store_release_int(&spu_thread::g_raw_spu_id[index], static_cast<int>(idm::last_id()));
 
 	ppu.check_state();
 	*id = index;
@@ -2787,7 +2787,7 @@ error_code sys_isolated_spu_create(ppu_thread& ppu, vm::ptr<u32> id, vm::ptr<voi
 		return CELL_EAGAIN;
 	}
 
-	if (!spu_thread::g_raw_spu_ctr.try_inc(5))
+	if (!spu_thread::try_inc_below(&spu_thread::g_raw_spu_ctr, 5))
 	{
 		limits.give_back(spu_limits_t::put(1, 5));
 		return CELL_EAGAIN;
@@ -2796,7 +2796,7 @@ error_code sys_isolated_spu_create(ppu_thread& ppu, vm::ptr<u32> id, vm::ptr<voi
 	u32 index = 0;
 
 	// Find free RawSPU ID
-	while (!spu_thread::g_raw_spu_id[index].try_inc(1))
+	while (!spu_thread::try_inc_below(&spu_thread::g_raw_spu_id[index], 1))
 	{
 		if (++index == 5)
 			index = 0;
@@ -2814,7 +2814,7 @@ error_code sys_isolated_spu_create(ppu_thread& ppu, vm::ptr<u32> id, vm::ptr<voi
 	thread->gpr[5] = v128::from64(0, arg3);
 	thread->gpr[6] = v128::from64(0, arg4);
 
-	spu_thread::g_raw_spu_id[index] = (ensure(thread->id));
+	retro_atomic_store_release_int(&spu_thread::g_raw_spu_id[index], static_cast<int>(ensure(thread->id)));
 
 	sys_spu_image img;
 	img.load(obj);

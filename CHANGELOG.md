@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The raw SPU counters and the SPU compile work count are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the count of raw SPUs, the five raw SPU id slots and the count of SPU programs being compiled are `retro_atomic_int_t`s. A raw SPU's place and its id slot are taken with `spu_thread::try_inc_below()`, a compare-and-swap loop that raises the word only below a limit, as `try_inc` did. sys_spu, RawSPUThread, the SPU thread and the SPU recompiler use them. Nothing saved in savestates changes.
+  - **Tests:** `test_emu_waits` checks that `try_inc_below()` stops at its limit, and that of two threads taking the last place at once one gets it, 20000 times. It was shown to fail with the compare-and-swap made a plain store. A check fails if `atomic_t` comes back to these counters.
+
+
 - **The lock-free array and FIFO (Utilities/lockless.h) are off `atomic_t`.** Not yet run on a game.
   - **What changed:** `lf_array`'s link to its next block is a `retro_atomic_ptr_t`, installed once with a compare-and-swap; a thread that loses goes on to the block that won, as before. `lf_fifo`'s push and pop counter is a `retro_atomic_64_t`. A place is taken with a fetch-add, and letting places go (which empties the counter to 0 when the last is let go) is a compare-and-swap loop, where `atomic_op` was. These carry a PPU thread's command queue, the shader cache's work lists, the progress dialog's text queue and the native memory map list. `lf_queue`'s head and its wait word are left for the thread wait work, since `thread_ctrl::wait_on` waits on them.
   - **Tests:** `test_emu_waits` has two threads grow one array at once and checks they see the same element at each index, 2000 times. It also checks that a FIFO's places, taken by two threads at once, are each taken once, and that it empties to 0. It was shown to fail with the link's compare-and-swap made a plain store, with the emptying taken out, and with the fetch-add made a load and a store. A check fails if `atomic_t` comes back to either.

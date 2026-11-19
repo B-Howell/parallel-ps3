@@ -1045,9 +1045,21 @@ public:
 	bool write_reg(const u32 addr, const u32 value);
 	static bool test_is_problem_state_register_offset(u32 offset, bool for_read, bool for_write) noexcept;
 
-	static atomic_t<u32> g_raw_spu_ctr;
-	static atomic_t<u32> g_raw_spu_id[5];
-	static atomic_t<u32> g_spu_work_count;
+	static retro_atomic_int_t g_raw_spu_ctr; // u32
+	static retro_atomic_int_t g_raw_spu_id[5]; // u32 ids, 1 while being taken, 0 when free
+	static retro_atomic_int_t g_spu_work_count; // u32
+
+	// Raised by one if below @limit, as atomic_t's try_inc did
+	static bool try_inc_below(retro_atomic_int_t* word, u32 limit)
+	{
+		for (u32 value = static_cast<u32>(retro_atomic_load_acquire_int(word)); value < limit; value = static_cast<u32>(retro_atomic_load_acquire_int(word)))
+		{
+			if (retro_atomic_cas_int(word, static_cast<int>(value), static_cast<int>(value + 1)))
+				return true;
+		}
+
+		return false;
+	}
 
 	static atomic_t<u64, 128> g_spu_waiters_by_value[6];
 
@@ -1055,7 +1067,7 @@ public:
 	{
 		if (id < std::size(g_raw_spu_id)) [[likely]]
 		{
-			return g_raw_spu_id[id];
+			return static_cast<u32>(retro_atomic_load_acquire_int(&g_raw_spu_id[id]));
 		}
 
 		return -1;

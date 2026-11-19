@@ -1724,8 +1724,9 @@ struct raw_spu_cleanup
 
 	~raw_spu_cleanup()
 	{
-		std::memset(spu_thread::g_raw_spu_id, 0, sizeof(spu_thread::g_raw_spu_id));
-		spu_thread::g_raw_spu_ctr = 0;
+		for (retro_atomic_int_t& raw_id : spu_thread::g_raw_spu_id)
+			retro_atomic_store_release_int(&raw_id, 0);
+		retro_atomic_store_release_int(&spu_thread::g_raw_spu_ctr, 0);
 		g_fxo->get<raw_spu_cleanup>(); // Register destructor
 	}
 };
@@ -1740,8 +1741,8 @@ void spu_thread::cleanup()
 	// Deallocate RawSPU ID
 	if (get_type() >= spu_type::raw)
 	{
-		g_raw_spu_id[index] = 0;
-		g_raw_spu_ctr--;
+		retro_atomic_store_release_int(&g_raw_spu_id[index], 0);
+		retro_atomic_fetch_sub_int(&g_raw_spu_ctr, 1);
 		lv2_spu_limits_raw_gone();
 	}
 
@@ -1974,8 +1975,8 @@ spu_thread::spu_thread(utils::serial& ar, lv2_spu_group* group)
 			ctrl.set_tag(idm::get_unlocked<lv2_obj, lv2_int_tag>(ar.pop<u32>()));
 		}
 
-		g_raw_spu_ctr++;
-		g_raw_spu_id[index] = id;
+		retro_atomic_fetch_add_int(&g_raw_spu_ctr, 1);
+		retro_atomic_store_release_int(&g_raw_spu_id[index], static_cast<int>(id));
 	}
 
 	ar(stop_flag_removal_protection);
@@ -5837,14 +5838,15 @@ s64 spu_thread::get_ch_value(u32 ch)
 
 				if (true)
 				{
-					if (u32 work_count = g_spu_work_count)
+					if (u32 work_count = static_cast<u32>(retro_atomic_load_acquire_int(&g_spu_work_count)))
 					{
 						const u32 true_free = utils::sub_saturate<u32>(utils::get_thread_count(), 10);
 
 						if (work_count > true_free)
 						{
 							// SPU thread count estimation
-							const u32 thread_count = (group ? g_raw_spu_ctr + group->max_num : g_raw_spu_ctr + 3);
+							const u32 raw_count = static_cast<u32>(retro_atomic_load_acquire_int(&g_raw_spu_ctr));
+							const u32 thread_count = (group ? raw_count + group->max_num : raw_count + 3);
 
 							if (thread_count && seed % thread_count < work_count - true_free)
 							{
@@ -7604,7 +7606,7 @@ void fmt_class_string<spu_channel_4_t>::format(std::string& out, u64 arg)
 	}
 }
 
-DECLARE(spu_thread::g_raw_spu_ctr){};
+DECLARE(spu_thread::g_raw_spu_ctr){0};
 DECLARE(spu_thread::g_raw_spu_id){};
-DECLARE(spu_thread::g_spu_work_count){};
+DECLARE(spu_thread::g_spu_work_count){0};
 DECLARE(spu_thread::g_spu_waiters_by_value){};

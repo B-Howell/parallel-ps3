@@ -1036,6 +1036,47 @@ int main()
 		std::printf("test_emu_waits: the lock-free array grown by two threads at once (2000 times) and the FIFO's places taken once each\n");
 	}
 
+	// A raw SPU's place (spu_thread::try_inc_below): raised only below its
+	// limit, and of two threads raising it to its last place at once, one
+	// gets it, 20000 times
+	{
+		retro_atomic_int_t word{0};
+		CHECK(spu_thread::try_inc_below(&word, 2) && spu_thread::try_inc_below(&word, 2));
+		CHECK(!spu_thread::try_inc_below(&word, 2) && retro_atomic_load_acquire_int(&word) == 2);
+
+		constexpr int rounds = 20000;
+		std::vector<std::atomic<int>> wins(rounds), arrived(rounds), done(rounds);
+		const auto taker = [&](bool resets)
+		{
+			for (int i = 0; i < rounds; i++)
+			{
+				arrived[i]++;
+				while (arrived[i] < 2) {}
+				wins[i] += spu_thread::try_inc_below(&word, 5);
+				done[i]++;
+				if (resets)
+				{
+					while (done[i] < 2) {}
+					retro_atomic_store_release_int(&word, 4);
+					done[i] = 3;
+				}
+				else
+				{
+					while (done[i] < 3) {}
+				}
+			}
+		};
+		retro_atomic_store_release_int(&word, 4);
+		std::thread a(taker, true), b(taker, false);
+		a.join();
+		b.join();
+		int not_one = 0;
+		for (auto& w : wins)
+			not_one += w != 1;
+		CHECK(not_one == 0);
+		std::printf("test_emu_waits: a raw SPU's place raised below its limit only, 20000 races with one winner each\n");
+	}
+
 	// A game's callback and its argument in one retro_atomic word: installed
 	// only where none is, taken off whole, and of two threads installing at
 	// once, one wins

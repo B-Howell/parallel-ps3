@@ -509,7 +509,7 @@ bool spu_thread::test_is_problem_state_register_offset(u32 offset, bool for_read
 
 void spu_load_exec(const spu_exec_object& elf)
 {
-	spu_thread::g_raw_spu_ctr++;
+	retro_atomic_fetch_add_int(&spu_thread::g_raw_spu_ctr, 1);
 
 	auto spu = idm::make_ptr<named_thread<spu_thread>>(nullptr, 0, "test_spu", 0);
 	ensure(vm::get(vm::spu)->falloc(spu->vm_offset(), SPU_LS_SIZE, &spu->shm, vm::block_size_64k));
@@ -529,7 +529,7 @@ void spu_load_exec(const spu_exec_object& elf)
 		}
 	}
 
-	spu_thread::g_raw_spu_id[0] = spu->id;
+	retro_atomic_store_release_int(&spu_thread::g_raw_spu_id[0], static_cast<int>(spu->id));
 
 	spu->status_npc = {SPU_STATUS_RUNNING, elf.header.e_entry};
 	atomic_storage<u32>::release(spu->pc, elf.header.e_entry);
@@ -570,7 +570,7 @@ void spu_load_exec(const spu_exec_object& elf)
 
 void spu_load_rel_exec(const spu_rel_object& elf)
 {
-	spu_thread::g_raw_spu_ctr++;
+	retro_atomic_fetch_add_int(&spu_thread::g_raw_spu_ctr, 1);
 
 	auto spu = idm::make_ptr<named_thread<spu_thread>>(nullptr, 0, "test_spu", 0);
 	ensure(vm::get(vm::spu)->falloc(spu->vm_offset(), SPU_LS_SIZE, &spu->shm, vm::block_size_64k));
@@ -607,7 +607,7 @@ void spu_load_rel_exec(const spu_rel_object& elf)
 
 	spu_log.success("Loaded 0x%x of SPU relocatable executable data", total_memsize);
 
-	spu_thread::g_raw_spu_id[0] = spu->id;
+	retro_atomic_store_release_int(&spu_thread::g_raw_spu_id[0], static_cast<int>(spu->id));
 
 	spu->status_npc = {SPU_STATUS_RUNNING, elf.header.e_entry};
 	atomic_storage<u32>::release(spu->pc, elf.header.e_entry);

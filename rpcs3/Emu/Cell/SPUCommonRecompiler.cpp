@@ -9075,7 +9075,7 @@ struct spu_llvm_worker
 
 			if (set_relax_flag)
 			{
-				spu_thread::g_spu_work_count--;
+				retro_atomic_fetch_sub_int(&spu_thread::g_spu_work_count, 1);
 				set_relax_flag = false;
 			}
 
@@ -9111,7 +9111,7 @@ struct spu_llvm_worker
 
 			if (!set_relax_flag)
 			{
-				spu_thread::g_spu_work_count++;
+				retro_atomic_fetch_add_int(&spu_thread::g_spu_work_count, 1);
 				set_relax_flag = true;
 			}
 
@@ -9172,7 +9172,7 @@ struct spu_llvm_worker
 
 		if (set_relax_flag)
 		{
-			spu_thread::g_spu_work_count--;
+			retro_atomic_fetch_sub_int(&spu_thread::g_spu_work_count, 1);
 			set_relax_flag = false;
 		}
 	}

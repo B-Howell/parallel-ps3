@@ -1263,6 +1263,8 @@ check: all
 	@if grep -nw "atomic_t" ../../Emu/Cell/PPUThread.h; then echo "atomic_t is back in PPUThread.h"; exit 1; else echo "PPUThread.h has no atomic_t"; fi
 	@# the lock-free array's links and the FIFO's counter (Utilities/lockless.h) are off atomic_t (lf_queue goes with the thread waits)
 	@if grep -n "atomic_t<lf_array\*> m_next\|atomic_t<u64> m_ctrl" ../../../Utilities/lockless.h; then echo "atomic_t is back in lf_array or lf_fifo"; exit 1; else echo "lf_array and lf_fifo are retro_atomic"; fi
+	@# the raw SPU count, raw SPU ids and SPU compile work count are retro_atomic words
+	@if grep -n "static atomic_t<u32> g_raw_spu\|static atomic_t<u32> g_spu_work_count" ../../Emu/Cell/SPUThread.h; then echo "atomic_t is back in the raw SPU counters"; exit 1; else echo "the raw SPU counters are retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
