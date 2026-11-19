@@ -1373,7 +1373,7 @@ void spu_thread::cpu_init()
 		retro_atomic_store_release_128(&mfc_prxy_word, retro_u128_t{});
 	}
 
-	status_npc.raw() = {get_type() == spu_type::isolated ? SPU_STATUS_IS_ISOLATED : 0, 0};
+	store_status_npc({get_type() == spu_type::isolated ? SPU_STATUS_IS_ISOLATED : 0u, 0u});
 	retro_atomic_store_relaxed_int(&run_ctrl, 0);
 
 	spurs_last_task_timestamp = 0;
@@ -1393,7 +1393,7 @@ void spu_thread::cpu_return()
 {
 	if (get_type() >= spu_type::raw)
 	{
-		if (status_npc.fetch_op([this](status_npc_sync_var& state)
+		if (status_npc_op([this](status_npc_sync_var& state)
 		{
 			if (state.status & SPU_STATUS_RUNNING)
 			{
@@ -1407,7 +1407,7 @@ void spu_thread::cpu_return()
 			return false;
 		}).second)
 		{
-			status_npc.notify_one();
+			notify_status_npc();
 			count_stop();
 		}
 	}
@@ -1417,7 +1417,7 @@ void spu_thread::cpu_return()
 
 		// A thread that exited by sys_spu_thread_exit has its status before it
 		// counts itself out, so the last to stop waits for none
-		if (status_npc.load().status >> 16 == SYS_SPU_THREAD_STOP_THREAD_EXIT)
+		if (load_status_npc().status >> 16 == SYS_SPU_THREAD_STOP_THREAD_EXIT)
 		{
 			exit_status.set_value(static_cast<u32>(retro_atomic_load_acquire_int(&last_exit_status)));
 		}
@@ -1493,7 +1493,7 @@ void spu_thread::cpu_task()
 	start_time = 0;
 
 	// Get next PC and SPU Interrupt status
-	pc = status_npc.load().npc;
+	pc = load_status_npc().npc;
 
 	// Note: works both on RawSPU and threaded SPU!
 	set_interrupt_status((pc & 1) != 0);
@@ -1881,8 +1881,9 @@ void spu_thread::serialize_common(utils::serial& ar)
 	u32 prxy_mask = static_cast<u32>(retro_atomic_load_acquire_int(&mfc_prxy_mask));
 	u32 run_control = static_cast<u32>(retro_atomic_load_acquire_int(&run_ctrl));
 
-	// The events word as the u64 it was
+	// The events word as the u64 it was, and the status as the u32 it was
 	u64 events_all = load_events().all;
+	u32 status_saved = load_status_npc().status;
 
 	// The channels' words as the u64s they were
 	spu_channel* const chans[] = {&ch_tag_stat, &ch_stall_stat, &ch_atomic_stat, &ch_out_mbox, &ch_out_intr_mbox, &ch_snr1, &ch_snr2, &exit_status};
@@ -1893,13 +1894,14 @@ void spu_thread::serialize_common(utils::serial& ar)
 	ar(gpr, pc, ch_mfc_cmd, mfc_size, mfc_barrier, mfc_fence, prxy_cmd, prxy_mask, prxy_written
 		, srr0, ch_tag_upd, ch_tag_mask, words[0], ch_stall_mask, words[1], words[2]
 		, words[3], words[4], snr_config, words[5], words[6], events_all, interrupts_enabled
-		, run_control, words[7], status_npc.raw().status, ch_dec_start_timestamp, ch_dec_value, is_dec_frozen);
+		, run_control, words[7], status_saved, ch_dec_start_timestamp, ch_dec_value, is_dec_frozen);
 
 	if (!ar.is_writing())
 	{
 		for (usz i = 0; i < std::size(chans); i++)
 			retro_atomic_store_release_64(&chans[i]->data, static_cast<s64>(words[i]));
 		retro_atomic_store_release_64(&ch_events, static_cast<s64>(events_all));
+		status_npc_op([&](status_npc_sync_var& v) { v.status = status_saved; });
 	}
 
 	if (!ar.is_writing())
@@ -1972,7 +1974,7 @@ spu_thread::spu_thread(utils::serial& ar, lv2_spu_group* group)
 		mov_rdata(rdata, *vm::get_super_ptr<spu_rdata_t>(raddr));
 	}
 
-	status_npc.raw().npc = pc | u8{interrupts_enabled};
+	status_npc_op([&](status_npc_sync_var& v) { v.npc = pc | u8{interrupts_enabled}; });
 
 	if (get_type() == spu_type::threaded)
 	{
@@ -6533,7 +6535,7 @@ bool spu_thread::stop_and_signal(u32 code)
 {
 	auto set_status_npc = [&]()
 	{
-		status_npc.atomic_op([&](status_npc_sync_var& state)
+		status_npc_op([&](status_npc_sync_var& state)
 		{
 			state.status = (state.status & 0xffff) | (code << 16);
 			state.status |= SPU_STATUS_STOPPED_BY_STOP;
@@ -6550,7 +6552,7 @@ bool spu_thread::stop_and_signal(u32 code)
 		state += cpu_flag::stop + cpu_flag::wait + cpu_flag::ret;
 		set_status_npc();
 
-		status_npc.notify_one();
+		notify_status_npc();
 		count_stop();
 
 		int_ctrl[2].set(SPU_INT2_STAT_SPU_STOP_AND_SIGNAL_INT);
@@ -7033,14 +7035,14 @@ void spu_thread::halt()
 	{
 		state += cpu_flag::stop + cpu_flag::wait;
 
-		status_npc.atomic_op([this](status_npc_sync_var& state)
+		status_npc_op([this](status_npc_sync_var& state)
 		{
 			state.status |= SPU_STATUS_STOPPED_BY_HALT;
 			state.status &= ~SPU_STATUS_RUNNING;
 			state.npc = pc | +interrupts_enabled;
 		});
 
-		status_npc.notify_one();
+		notify_status_npc();
 		count_stop();
 
 		int_ctrl[2].set(SPU_INT2_STAT_SPU_HALT_OR_STEP_INT);

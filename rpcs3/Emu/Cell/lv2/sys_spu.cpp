@@ -1419,7 +1419,7 @@ error_code sys_spu_thread_group_start(ppu_thread& ppu, u32 id)
 				thread->gpr[5] = v128::from64(0, args[2]);
 				thread->gpr[6] = v128::from64(0, args[3]);
 
-				thread->status_npc = {SPU_STATUS_RUNNING, img.first};
+				thread->store_status_npc({SPU_STATUS_RUNNING, img.first});
 			}
 		}
 

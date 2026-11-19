@@ -12,9 +12,9 @@ inline void try_start(spu_thread& spu)
 
 	// One compare-and-swap of the status: a stop request in progress is not
 	// held up by it, nor it by the stop (stop_count)
-	if (~spu.status_npc.load().status & SPU_STATUS_RUNNING)
+	if (~spu.load_status_npc().status & SPU_STATUS_RUNNING)
 	{
-		if (spu.status_npc.fetch_op([](spu_thread::status_npc_sync_var& value)
+		if (spu.status_npc_op([](spu_thread::status_npc_sync_var& value)
 		{
 			if (value.status & SPU_STATUS_RUNNING)
 			{
@@ -237,7 +237,7 @@ bool spu_thread::read_reg(const u32 addr, u32& value)
 
 	case SPU_Status_offs:
 	{
-		value = status_npc.load().status;
+		value = load_status_npc().status;
 		return true;
 	}
 
@@ -249,7 +249,7 @@ bool spu_thread::read_reg(const u32 addr, u32& value)
 
 	case SPU_NPC_offs:
 	{
-		const auto current = status_npc.load();
+		const auto current = load_status_npc();
 		value = !(current.status & SPU_STATUS_RUNNING) ? current.npc : 0;
 		return true;
 	}
@@ -410,11 +410,11 @@ bool spu_thread::write_reg(const u32 addr, const u32 value)
 			// with it even if a run request has started the SPU again since
 			const u32 stops = static_cast<u32>(retro_atomic_load_acquire_int(&stop_count));
 
-			if (status_npc.load().status & SPU_STATUS_RUNNING)
+			if (load_status_npc().status & SPU_STATUS_RUNNING)
 			{
 				state += cpu_flag::stop + cpu_flag::ret;
 
-				while (static_cast<u32>(retro_atomic_load_acquire_int(&stop_count)) == stops && (status_npc.load().status & SPU_STATUS_RUNNING))
+				while (static_cast<u32>(retro_atomic_load_acquire_int(&stop_count)) == stops && (load_status_npc().status & SPU_STATUS_RUNNING))
 				{
 					const retro_waitaddr_t w{&stop_count, stops};
 					retro_waitaddr_wait(&w, 1, -1);
@@ -431,7 +431,7 @@ bool spu_thread::write_reg(const u32 addr, const u32 value)
 
 	case SPU_NPC_offs:
 	{
-		status_npc.fetch_op([value = value & 0x3fffd](status_npc_sync_var& state)
+		status_npc_op([value = value & 0x3fffd](status_npc_sync_var& state)
 		{
 			if (!(state.status & SPU_STATUS_RUNNING))
 			{
@@ -532,7 +532,7 @@ void spu_load_exec(const spu_exec_object& elf)
 
 	retro_atomic_store_release_int(&spu_thread::g_raw_spu_id[0], static_cast<int>(spu->id));
 
-	spu->status_npc = {SPU_STATUS_RUNNING, elf.header.e_entry};
+	spu->store_status_npc({SPU_STATUS_RUNNING, elf.header.e_entry});
 	atomic_storage<u32>::release(spu->pc, elf.header.e_entry);
 
 	const auto funcs = spu->discover_functions(0, { spu->ls , SPU_LS_SIZE }, true, umax);
@@ -610,6 +610,6 @@ void spu_load_rel_exec(const spu_rel_object& elf)
 
 	retro_atomic_store_release_int(&spu_thread::g_raw_spu_id[0], static_cast<int>(spu->id));
 
-	spu->status_npc = {SPU_STATUS_RUNNING, elf.header.e_entry};
+	spu->store_status_npc({SPU_STATUS_RUNNING, elf.header.e_entry});
 	atomic_storage<u32>::release(spu->pc, elf.header.e_entry);
 }

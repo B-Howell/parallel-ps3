@@ -1023,7 +1023,41 @@ public:
 		u32 npc; // SPU Next Program Counter register
 	};
 
-	atomic_t<status_npc_sync_var> status_npc{};
+	static_assert(sizeof(status_npc_sync_var) == 8);
+
+	mutable retro_atomic_64_t status_npc{0}; // a status_npc_sync_var
+
+	status_npc_sync_var load_status_npc() const { return std::bit_cast<status_npc_sync_var>(static_cast<u64>(retro_atomic_load_acquire_64(&status_npc))); }
+	void store_status_npc(status_npc_sync_var v) { retro_atomic_store_release_64(&status_npc, std::bit_cast<s64>(v)); }
+	void notify_status_npc() { retro_waitaddr_notify_one(&status_npc); }
+
+	// @f changes the status and NPC it is given: the change made with a
+	// compare-and-swap. A void f: as atomic_op did. A bool f: the value
+	// before and whether f changed it, as fetch_op did
+	template <typename F>
+	auto status_npc_op(F&& f)
+	{
+		for (;;)
+		{
+			const s64 old = retro_atomic_load_acquire_64(&status_npc);
+			status_npc_sync_var v = std::bit_cast<status_npc_sync_var>(old);
+
+			if constexpr (std::is_void_v<std::invoke_result_t<F&, status_npc_sync_var&>>)
+			{
+				f(v);
+
+				if (std::bit_cast<s64>(v) == old || retro_atomic_cas_64(&status_npc, old, std::bit_cast<s64>(v)))
+					return;
+			}
+			else
+			{
+				const bool done = f(v);
+
+				if (!done || std::bit_cast<s64>(v) == old || retro_atomic_cas_64(&status_npc, old, std::bit_cast<s64>(v)))
+					return std::pair<status_npc_sync_var, bool>{std::bit_cast<status_npc_sync_var>(old), done};
+			}
+		}
+	}
 	std::array<spu_int_ctrl_t, 3> int_ctrl{}; // SPU Class 0, 1, 2 Interrupt Management
 
 	// Event Queue Keys for SPU Thread: an entry is claimed (binding or

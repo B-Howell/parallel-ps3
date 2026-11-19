@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **An SPU's status and NPC word is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the status register and the next program counter are one `retro_atomic_64_t`, held to 8 bytes by a static assert. `load_status_npc()` reads them whole and `store_status_npc()` sets them. `status_npc_op()` changes them with a compare-and-swap loop, as `atomic_op` and `fetch_op` did. Setting the NPC alone, and the status alone on a savestate's load, were stores into half the word; they are now compare-and-swaps on the whole word. The SPU thread, the raw SPU MMIO and sys_spu use them.
+  - **Savestates:** the status is written and read as the `u32` it was, and the NPC is set from the program counter on load as before, so the format is unchanged.
+  - **Tests:** none at runtime: the word belongs to an SPU thread, which needs a game's SPU. A check fails if `atomic_t` comes back to it.
+
+
 - **An SPU's event word is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the events, their mask, the lock count and the waiting and count bits are one `retro_atomic_64_t`. It stays 8 bytes at its own offset, where both recompilers load it, held by a static assert on the union's size. `load_events()` reads it whole. `events_op()` and `events_fetch_op()` change it with a compare-and-swap loop, giving back what `atomic_op` and `fetch_op` gave. The SPU thread and both recompilers' helpers use them.
   - **Savestates:** the word is written and read as the `u64` it was, so the format is unchanged.
