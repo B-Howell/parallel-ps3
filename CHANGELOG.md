@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The Vulkan async compute scheduler is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** its submit count and its event and semaphore pool counters are `retro_atomic_64_t`, and its sync-required flag is a `retro_atomic_int_t`. Nothing is saved in savestates.
+  - **Tests:** none at runtime: the scheduler needs a Vulkan device and compute queues. A check fails if `atomic_t` comes back to it.
+
+
 - **The Vulkan driver manager and event counters are off `atomic_t`.** Not yet run on a game.
   - **What changed:** the driver manager's last requested and last completed event ids are `retro_atomic_64_t`, and the two words its thread and a drain wait on are `retro_atomic_int_t`. Both waits go through `thread_ctrl::wait_on_custom`, so they also wake as their thread is told to end. The resource manager's event counter and last completed event are `retro_atomic_64_t`. The two "raise to at least" updates are compare-and-swap loops that never lower the value. Nothing is saved in savestates.
   - **Tests:** `test_emu_waits` runs the driver manager's thread and checks, over 200 rounds with events raised out of order, that each drain returns because the thread woke it, before its own thread is joined. It was shown to fail with the driver thread's wake taken out. The resource manager's counters have no runtime test of their own, because they need a Vulkan device. A check fails if `atomic_t` comes back.

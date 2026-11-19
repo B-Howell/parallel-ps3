@@ -3,6 +3,7 @@
 #include "vkutils/commands.h"
 #include "vkutils/sync.h"
 #include "Emu/system_config_types.h"
+#include <retro_atomic.h>
 
 #define VK_MAX_ASYNC_COMPUTE_QUEUES 256
 
@@ -18,7 +19,7 @@ namespace vk
 		command_buffer* m_last_used_cb = nullptr;
 		command_buffer* m_current_cb = nullptr;
 		usz m_next_cb_index = 0;
-		atomic_t<u64> m_submit_count = 0;
+		retro_atomic_64_t m_submit_count{0};
 
 		// Scheduler. All of it is the renderer's: only its thread records,
 		// syncs and submits here, so nothing is shared and nothing is taken in
@@ -29,15 +30,15 @@ namespace vk
 
 		// Sync
 		event* m_sync_label = nullptr;
-		atomic_t<bool> m_sync_required = false;
+		retro_atomic_int_t m_sync_required{0}; // 0 or 1
 		VkDependencyInfoKHR m_dependency_info{};
 
 		static constexpr u32 events_pool_size = 16384;
 		std::vector<std::unique_ptr<vk::event>> m_events_pool;
-		atomic_t<u64> m_next_event_id = 0;
+		retro_atomic_64_t m_next_event_id{0};
 
 		std::vector<std::unique_ptr<vk::semaphore>> m_semaphore_pool;
-		atomic_t<u64> m_next_semaphore_id = 0;
+		retro_atomic_64_t m_next_semaphore_id{0};
 
 		void init_config_options(vk_gpu_scheduler_mode mode, const VkDependencyInfoKHR& queue_dependency);
 		void delayed_init();

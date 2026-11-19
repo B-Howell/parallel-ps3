@@ -84,7 +84,7 @@ namespace vk
 	void AsyncTaskScheduler::insert_sync_event()
 	{
 		ensure(m_current_cb);
-		auto& sync_label = m_events_pool[m_next_event_id++ % events_pool_size];
+		auto& sync_label = m_events_pool[static_cast<u64>(retro_atomic_fetch_add_64(&m_next_event_id, 1)) % events_pool_size];
 
 		sync_label->reset();
 		sync_label->signal(*m_current_cb, m_dependency_info);
@@ -93,7 +93,7 @@ namespace vk
 
 	command_buffer* AsyncTaskScheduler::get_current()
 	{
-		m_sync_required = true;
+		retro_atomic_store_release_int(&m_sync_required, 1);
 
 		// Anything still active?
 		if (m_current_cb)
@@ -117,11 +117,11 @@ namespace vk
 	{
 		ensure(!m_use_host_scheduler);
 
-		if (m_sync_required) [[unlikely]]
+		if (retro_atomic_load_acquire_int(&m_sync_required)) [[unlikely]]
 		{
 			ensure(m_current_cb);
 			insert_sync_event();
-			m_sync_required = false;
+			retro_atomic_store_release_int(&m_sync_required, 0);
 		}
 
 		return std::exchange(m_sync_label, nullptr);
@@ -132,7 +132,7 @@ namespace vk
 		delayed_init();
 		ensure(!m_semaphore_pool.empty());
 
-		const u32 sema_id = static_cast<u32>(m_next_semaphore_id++ % m_semaphore_pool.size());
+		const u32 sema_id = static_cast<u32>(static_cast<u64>(retro_atomic_fetch_add_64(&m_next_semaphore_id, 1)) % m_semaphore_pool.size());
 		return m_semaphore_pool[sema_id].get();
 	}
 
@@ -145,7 +145,7 @@ namespace vk
 
 		submit_info.queue = get_current_renderer()->get_transfer_queue();
 
-		if (m_sync_required && !m_use_host_scheduler)
+		if (retro_atomic_load_acquire_int(&m_sync_required) && !m_use_host_scheduler)
 		{
 			insert_sync_event();
 		}
@@ -153,11 +153,11 @@ namespace vk
 		m_current_cb->end();
 		m_current_cb->submit(submit_info, force_flush);
 
-		m_submit_count++;
+		retro_atomic_fetch_add_64(&m_submit_count, 1);
 
 		m_last_used_cb = m_current_cb;
 		m_current_cb = nullptr;
-		m_sync_required = false;
+		retro_atomic_store_release_int(&m_sync_required, 0);
 	}
 
 	void AsyncTaskScheduler::destroy()
