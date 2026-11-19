@@ -3,6 +3,7 @@
 #include "util/types.hpp"
 #include "util/atomic.hpp"
 #include "util/bless.hpp"
+#include <retro_atomic.h>
 
 // Simple unshrinkable array base for concurrent access. Only growths automatically.
 // There is no way to know the current size. The smaller index is, the faster it's accessed.
@@ -16,17 +17,32 @@ class lf_array
 	// Data (default-initialized)
 	T m_data[N]{};
 
-	// Next array block
-	atomic_t<lf_array*> m_next{};
+	// Next array block, installed once with a compare-and-swap and never
+	// taken away until the array is destroyed
+	mutable retro_atomic_ptr_t m_next{};
+
+	lf_array* next_block() const { return static_cast<lf_array*>(retro_atomic_load_acquire_ptr(&m_next)); }
+
+	// Installs @_new after this block if none is; gives back the block
+	// that was there (null if @_new went in), as compare_and_swap did
+	lf_array* install_next(lf_array* _new)
+	{
+		if (retro_atomic_cas_ptr(&m_next, nullptr, _new))
+			return nullptr;
+
+		return next_block();
+	}
 
 public:
 	constexpr lf_array() = default;
 
 	~lf_array()
 	{
-		for (auto ptr = m_next.raw(); ptr;)
+		for (lf_array* ptr = next_block(); ptr;)
 		{
-			delete std::exchange(ptr, std::exchange(ptr->m_next.raw(), nullptr));
+			lf_array* const after = ptr->next_block();
+			retro_atomic_store_relaxed_ptr(&ptr->m_next, nullptr);
+			delete std::exchange(ptr, after);
 		}
 	}
 
@@ -45,7 +61,7 @@ public:
 				break;
 			}
 
-			lf_array* next = _this->m_next;
+			lf_array* next = _this->next_block();
 
 			if (!next)
 			{
@@ -57,7 +73,7 @@ public:
 				for (auto _new = new lf_array, ptr = _this; ptr;)
 				{
 					// Install the pointer. If failed, go deeper.
-					ptr = ptr->m_next.compare_and_swap(nullptr, _new);
+					ptr = ptr->install_next(_new);
 
 					if (!next)
 					{
@@ -99,7 +115,7 @@ public:
 				}
 			}
 
-			lf_array* next = _this->m_next;
+			lf_array* next = _this->next_block();
 
 			if constexpr (!std::is_void_v<return_t>)
 			{
@@ -108,7 +124,7 @@ public:
 					for (auto _new = new lf_array, ptr = _this; ptr;)
 					{
 						// Install the pointer. If failed, go deeper.
-						ptr = ptr->m_next.compare_and_swap(nullptr, _new);
+						ptr = ptr->install_next(_new);
 
 						if (!next)
 						{
@@ -132,7 +148,7 @@ public:
 	{
 		u64 size_n = 0;
 
-		for (auto ptr = this; ptr; ptr = ptr->m_next)
+		for (auto ptr = this; ptr; ptr = ptr->next_block())
 		{
 			size_n += N;
 		}
@@ -147,7 +163,9 @@ template<typename T, usz N = std::max<usz>(256 / sizeof(T), 1)>
 class lf_fifo : public lf_array<T, N>
 {
 	// LSB 32-bit: push, MSB 32-bit: pop
-	atomic_t<u64> m_ctrl{};
+	mutable retro_atomic_64_t m_ctrl{0};
+
+	u64 ctrl() const { return static_cast<u64>(retro_atomic_load_acquire_64(&m_ctrl)); }
 
 public:
 	constexpr lf_fifo() = default;
@@ -155,38 +173,42 @@ public:
 	// Get number of elements in the queue
 	u32 size() const
 	{
-		const u64 ctrl = m_ctrl.load();
+		const u64 ctrl = this->ctrl();
 		return static_cast<u32>(ctrl - (ctrl >> 32));
 	}
 
 	// Acquire the place for one or more elements.
 	u32 push_begin(u32 count = 1)
 	{
-		return static_cast<u32>(m_ctrl.fetch_add(count));
+		return static_cast<u32>(retro_atomic_fetch_add_64(&m_ctrl, count));
 	}
 
 	// Get current "pop" position
 	u32 peek() const
 	{
-		return static_cast<u32>(m_ctrl >> 32);
+		return static_cast<u32>(ctrl() >> 32);
 	}
 
 	// Acknowledge processed element, return number of the next one.
 	// Perform clear if possible, zero is returned in this case.
 	u32 pop_end(u32 count = 1)
 	{
-		return m_ctrl.atomic_op([&](u64& ctrl)
+		for (;;)
 		{
-			ctrl += u64{count} << 32;
+			const u64 old = ctrl();
+			u64 value = old + (u64{count} << 32);
 
-			if (ctrl >> 32 == static_cast<u32>(ctrl))
+			if (value >> 32 == static_cast<u32>(value))
 			{
 				// Clean if possible
-				ctrl = 0;
+				value = 0;
 			}
 
-			return static_cast<u32>(ctrl >> 32);
-		});
+			if (retro_atomic_cas_64(&m_ctrl, static_cast<s64>(old), static_cast<s64>(value)))
+			{
+				return static_cast<u32>(value >> 32);
+			}
+		}
 	}
 };
 

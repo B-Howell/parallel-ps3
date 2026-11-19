@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The lock-free array and FIFO (Utilities/lockless.h) are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** `lf_array`'s link to its next block is a `retro_atomic_ptr_t`, installed once with a compare-and-swap; a thread that loses goes on to the block that won, as before. `lf_fifo`'s push and pop counter is a `retro_atomic_64_t`. A place is taken with a fetch-add, and letting places go (which empties the counter to 0 when the last is let go) is a compare-and-swap loop, where `atomic_op` was. These carry a PPU thread's command queue, the shader cache's work lists, the progress dialog's text queue and the native memory map list. `lf_queue`'s head and its wait word are left for the thread wait work, since `thread_ctrl::wait_on` waits on them.
+  - **Tests:** `test_emu_waits` has two threads grow one array at once and checks they see the same element at each index, 2000 times. It also checks that a FIFO's places, taken by two threads at once, are each taken once, and that it empties to 0. It was shown to fail with the link's compare-and-swap made a plain store, with the emptying taken out, and with the fetch-add made a load and a store. A check fails if `atomic_t` comes back to either.
+
+
 - **A PPU thread's command queue is off `atomic_t`, the last of PPUThread.h.** Not yet run on a game.
   - **What changed:** each of the queue's 127 slots is a `retro_atomic_64_t` holding a `cmd64`'s word. A command's tail is written relaxed and its head with a release store, as before. The thread takes the head with an exchange to zero and reads the tail with acquire loads. The queue's own counters (lf_fifo, in Utilities/lockless.h) are not changed here.
   - **Tests:** none at runtime: commands are pushed to a game's PPU threads. A check fails if `atomic_t` comes back to PPUThread.h.

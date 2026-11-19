@@ -988,6 +988,54 @@ int main()
 		std::printf("test_emu_waits: an SPU group's priority, changed by two threads at once, 400000 changes kept\n");
 	}
 
+	// The lock-free array and FIFO (Utilities/lockless.h): two threads
+	// growing one array at once see the same element at each index, 2000
+	// times; and a FIFO's places, taken by two threads at once, are each
+	// taken once, and it empties to 0 as the last is let go
+	{
+		int mismatched = 0;
+		for (int round = 0; round < 2000; round++)
+		{
+			auto arr = std::make_unique<lf_array<u64, 4>>();
+			u64* seen[2][32]{};
+			std::atomic<int> arrived{0};
+			const auto grow = [&](int t)
+			{
+				arrived++;
+				while (arrived < 2) {}
+				for (int i = 0; i < 32; i++)
+					seen[t][i] = &(*arr)[i];
+			};
+			std::thread a(grow, 0), b(grow, 1);
+			a.join();
+			b.join();
+			for (int i = 0; i < 32; i++)
+				mismatched += seen[0][i] != seen[1][i];
+		}
+		CHECK(mismatched == 0);
+
+		lf_fifo<u32, 8> fifo;
+		std::vector<std::atomic<int>> taken(2000);
+		std::atomic<int> arrived{0};
+		const auto take = [&]
+		{
+			arrived++;
+			while (arrived < 2) {}
+			for (int i = 0; i < 1000; i++)
+				taken[fifo.push_begin()]++;
+		};
+		std::thread a(take), b(take);
+		a.join();
+		b.join();
+		int once = 0;
+		for (auto& t : taken)
+			once += t == 1;
+		CHECK(once == 2000 && fifo.size() == 2000);
+		CHECK(fifo.pop_end(1999) == 1999 && fifo.peek() == 1999);
+		CHECK(fifo.pop_end() == 0 && fifo.size() == 0 && fifo.peek() == 0);
+		std::printf("test_emu_waits: the lock-free array grown by two threads at once (2000 times) and the FIFO's places taken once each\n");
+	}
+
 	// A game's callback and its argument in one retro_atomic word: installed
 	// only where none is, taken off whole, and of two threads installing at
 	// once, one wins
