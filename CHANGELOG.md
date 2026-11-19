@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The JIT's memory allocators are C89 (Utilities/jit_bump.c) on `retro_atomic`.** Not yet run on a game.
+  - **What changed:**
+    - **Code and data ranges:** the JIT's code and data each come from 1 GiB of reserved memory, handed out by moving a counter on. The counter's low half is the next free byte and its high half is how far the range is committed. It is a `retro_atomic_64_t`, taken with the compare-and-swap loop `atomic_op` ran, now in C89: `jit_bump_alloc()`. An allocation past the end fails, and every one after it too, as before. `jit_bump_commit()` raises the committed top once more memory is committed.
+    - **The 16 MiB runtime for asmjit's own needs:** its bump pointer is a `retro_atomic_ptr_t`, taken by `jit_bump_ptr_alloc()`.
+    - **The ASMJIT dump's index and data counters** (written only when the ASMJIT folder exists) are `retro_atomic_64_t`. An entry's address is stored last with a release store, so a reader of the dump sees it complete.
+  - **Tests:** `test_jit_bump` (C89, and a ThreadSanitizer build) checks offsets come aligned and in order, the committed top steps up and stays, a failure past the limit sticks, and the pointer form does the same within its range. It also runs two threads, each on a CPU of its own, taking a block each at once 200000 times, and checks they never take the same one. It was shown to fail (12731 rounds where both took the same block) with the compare-and-swap made a plain store. A check fails if `atomic_t` comes back to the JIT allocators.
+
+
 - **The file layer's Windows position and the directory size cancel flag are off `atomic_t`.** Not yet run on a game.
   - **What changed:** a Windows file's position (read and written by overlapped I/O, so two threads can share a file) is a `retro_atomic_64_t`, moved on with a fetch-and-add as before. `fs::get_dir_size()`'s optional cancel flag is a `retro_atomic_int_t` pointer; no caller passes one.
   - **Tests:** none at runtime: the position is in the Windows file code, which the Linux test machine does not run. It is compile-checked with MinGW. A check fails if `atomic_t` comes back to the file layer.

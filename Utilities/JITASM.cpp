@@ -8,6 +8,8 @@
 #include "util/asm.hpp"
 #include "util/v128.hpp"
 #include "util/simd.hpp"
+#include "jit_bump.h"
+#include <retro_atomic.h>
 
 #ifdef __linux__
 #include <unistd.h>
@@ -61,8 +63,8 @@ void jit_announce(uptr func, usz size, std::string_view name)
 	// If directory ASMJIT doesn't exist, nothing will be written
 	static constexpr u64 c_dump_size = 0x1'0000'0000;
 	static constexpr u64 c_index_size = c_dump_size / 16;
-	static atomic_t<u64> g_index_off = 0;
-	static atomic_t<u64> g_data_off = c_index_size;
+	static retro_atomic_64_t g_index_off{0};
+	static retro_atomic_64_t g_data_off{static_cast<s64>(c_index_size)};
 
 	static void* g_asm = []() -> void*
 	{
@@ -88,9 +90,9 @@ void jit_announce(uptr func, usz size, std::string_view name)
 		};
 
 		// Write index entry at the beginning of file, and data + NTS name at fixed offset
-		const u64 index_off = g_index_off.fetch_add(1);
+		const u64 index_off = static_cast<u64>(retro_atomic_fetch_add_64(&g_index_off, 1));
 		const u64 size_all = size + name.size() + 1;
-		const u64 data_off = g_data_off.fetch_add(size_all);
+		const u64 data_off = static_cast<u64>(retro_atomic_fetch_add_64(&g_data_off, static_cast<s64>(size_all)));
 
 		// If either index or data area is exhausted, nothing will be written
 		if (index_off < c_index_size / sizeof(entry) && data_off + size_all < c_dump_size)
@@ -101,7 +103,8 @@ void jit_announce(uptr func, usz size, std::string_view name)
 			std::memcpy(static_cast<char*>(g_asm) + data_off + size, name.data(), name.size());
 			index.size = static_cast<u32>(size);
 			index.off = static_cast<u32>(data_off);
-			atomic_storage<u64>::store(index.addr, func);
+			// Last, a release store: the entry complete once its address is
+			retro_atomic_store_release_64(reinterpret_cast<retro_atomic_64_t*>(&index.addr), static_cast<s64>(func));
 		}
 	}
 
@@ -134,12 +137,12 @@ static u8* get_jit_memory()
 }
 
 // Allocation counters (1G code, 1G data subranges)
-static atomic_t<u64> s_code_pos{0}, s_data_pos{0};
+static retro_atomic_64_t s_code_pos{0}, s_data_pos{0};
 
 // Snapshot of code generated before main()
 static std::vector<u8> s_code_init, s_data_init;
 
-template <atomic_t<u64>& Ctr, uint Off, utils::protection Prot>
+template <retro_atomic_64_t& Ctr, uint Off, utils::protection Prot>
 static u8* add_jit_memory(usz size, usz align)
 {
 	// Select subrange
@@ -154,37 +157,14 @@ static u8* add_jit_memory(usz size, usz align)
 	if (!size && align == 1)
 	{
 		// Return memory top address
-		return pointer + (Ctr.load() & 0xffff'ffff);
+		return pointer + jit_bump_used(&Ctr);
 	}
 
 	u64 olda, newa;
 
 	// Simple allocation by incrementing pointer to the next free data
-	const u64 pos = Ctr.atomic_op([&](u64& ctr) -> u64
-	{
-		const u64 _pos = utils::align(ctr & 0xffff'ffff, align);
-		const u64 _new = utils::align(_pos + size, align);
-
-		if (_new > 0x40000000) [[unlikely]]
-		{
-			// Sorry, we failed, and further attempts should fail too.
-			ctr |= 0x40000000;
-			return -1;
-		}
-
-		// Last allocation is stored in highest bits
-		olda = ctr >> 32;
-		newa = olda;
-
-		// Check the necessity to commit more memory
-		if (_new > olda) [[unlikely]]
-		{
-			newa = utils::align(_new, 0x200000);
-		}
-
-		ctr += _new - (ctr & 0xffff'ffff);
-		return _pos;
-	});
+	// (jit_bump.c); the last allocation's committed top in the high bits
+	const u64 pos = jit_bump_alloc(&Ctr, size, align, 0x40000000, 0x200000, &olda, &newa);
 
 	if (pos == umax) [[unlikely]]
 	{
@@ -199,13 +179,7 @@ static u8* add_jit_memory(usz size, usz align)
 		utils::memory_commit(pointer + olda, newa - olda, Prot);
 #endif
 		// Acknowledge committed memory
-		Ctr.atomic_op([&](u64& ctr)
-		{
-			if ((ctr >> 32) < newa)
-			{
-				ctr += (newa - (ctr >> 32)) << 32;
-			}
-		});
+		jit_bump_commit(&Ctr, newa);
 	}
 
 	ensure(pointer + pos >= get_jit_memory() + Off);
@@ -303,9 +277,9 @@ void jit_runtime::initialize()
 	}
 
 	// Create code/data snapshot
-	s_code_init.resize(s_code_pos & 0xffff'ffff);
+	s_code_init.resize(jit_bump_used(&s_code_pos));
 	std::memcpy(s_code_init.data(), alloc(0, 0, true), s_code_init.size());
-	s_data_init.resize(s_data_pos & 0xffff'ffff);
+	s_data_init.resize(jit_bump_used(&s_data_pos));
 	std::memcpy(s_data_init.data(), alloc(0, 0, false), s_data_init.size());
 }
 
@@ -322,8 +296,8 @@ void jit_runtime::finalize() noexcept
 	utils::memory_decommit(get_jit_memory(), 0x80000000, true);
 #endif
 
-	s_code_pos = 0;
-	s_data_pos = 0;
+	retro_atomic_store_release_64(&s_code_pos, 0);
+	retro_atomic_store_release_64(&s_data_pos, 0);
 
 	// Restore code/data snapshot
 	std::memcpy(alloc(s_code_init.size(), 1, true), s_code_init.data(), s_code_init.size());
@@ -348,33 +322,24 @@ jit_runtime_base& asmjit::get_global_runtime()
 	{
 		custom_runtime() noexcept
 		{
-			ensure(m_pos.raw() = static_cast<uchar*>(utils::memory_reserve(size, true)));
+			uchar* const base = static_cast<uchar*>(utils::memory_reserve(size, true));
+			ensure(base);
+			retro_atomic_store_release_ptr(&m_pos, base);
 
 			// Initialize "end" pointer
-			m_max = m_pos + size;
+			m_max = base + size;
 
 			// Make memory writable + executable
-			utils::memory_commit(m_pos, size, utils::protection::wx);
+			utils::memory_commit(base, size, utils::protection::wx);
 		}
 
 		uchar* _alloc(usz size, usz align) noexcept override
 		{
-			return m_pos.atomic_op([&](uchar*& pos) -> uchar*
-			{
-				const auto r = reinterpret_cast<uchar*>(utils::align(uptr(pos), align));
-
-				if (r >= pos && r + size > pos && r + size <= m_max)
-				{
-					pos = r + size;
-					return r;
-				}
-
-				return nullptr;
-			});
+			return jit_bump_ptr_alloc(&m_pos, m_max, size, align);
 		}
 
 	private:
-		atomic_t<uchar*> m_pos{};
+		retro_atomic_ptr_t m_pos{nullptr};
 
 		uchar* m_max{};
 	};
