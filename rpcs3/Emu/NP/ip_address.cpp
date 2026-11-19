@@ -116,7 +116,7 @@ namespace np
 		ipv6_support_state(const ipv6_support_state&) = delete;
 		ipv6_support_state& operator=(const ipv6_support_state&) = delete;
 
-		atomic_t<IPV6_SUPPORT> status = IPV6_SUPPORT::IPV6_UNKNOWN;
+		retro_atomic_int_t status{static_cast<int>(IPV6_SUPPORT::IPV6_UNKNOWN)};
 	};
 
 	// Finds out, and sets the answer (ipv6_support.status), once
@@ -125,7 +125,7 @@ namespace np
 		auto notice_and_disable = [&](std::string_view reason) -> bool
 		{
 			IPv6_log.notice("is_ipv6_supported(): disabled cause: %s", reason);
-			ipv6_support.status = IPV6_SUPPORT::IPV6_UNSUPPORTED;
+			retro_atomic_store_release_int(&ipv6_support.status, static_cast<int>(IPV6_SUPPORT::IPV6_UNSUPPORTED));
 			return false;
 		};
 
@@ -155,7 +155,7 @@ namespace np
 		auto error_and_disable = [&](std::string_view message) -> bool
 		{
 			IPv6_log.error("is_ipv6_supported(): disabled cause: %s", message);
-			ipv6_support.status = IPV6_SUPPORT::IPV6_UNSUPPORTED;
+			retro_atomic_store_release_int(&ipv6_support.status, static_cast<int>(IPV6_SUPPORT::IPV6_UNSUPPORTED));
 			cleanup();
 			return false;
 		};
@@ -220,7 +220,7 @@ namespace np
 		cleanup();
 
 		IPv6_log.success("Successfully tested IPv6 support!");
-		ipv6_support.status = IPV6_SUPPORT::IPV6_SUPPORTED;
+		retro_atomic_store_release_int(&ipv6_support.status, static_cast<int>(IPV6_SUPPORT::IPV6_SUPPORTED));
 		return true;
 	}
 
@@ -237,25 +237,28 @@ namespace np
 
 		if (force_state)
 		{
-			ipv6_support.status = *force_state;
-			ipv6_support.status.notify_all();
+			retro_atomic_store_release_int(&ipv6_support.status, static_cast<int>(*force_state));
+			retro_waitaddr_notify_all(&ipv6_support.status);
 		}
 
-		for (IPV6_SUPPORT status = ipv6_support.status; status != IPV6_SUPPORT::IPV6_UNKNOWN; status = ipv6_support.status)
+		const auto load = [&] { return static_cast<IPV6_SUPPORT>(retro_atomic_load_acquire_int(&ipv6_support.status)); };
+
+		for (IPV6_SUPPORT status = load(); status != IPV6_SUPPORT::IPV6_UNKNOWN; status = load())
 		{
 			if (status != IPV6_SUPPORT::IPV6_CHECKING)
 				return status == IPV6_SUPPORT::IPV6_SUPPORTED;
 
 			// Another thread is finding out: woken by its answer
-			ipv6_support.status.wait(IPV6_SUPPORT::IPV6_CHECKING);
+			const retro_waitaddr_t w{&ipv6_support.status, static_cast<int>(IPV6_SUPPORT::IPV6_CHECKING)};
+			retro_waitaddr_wait(&w, 1, -1);
 		}
 
 		// One thread finds out, the first to mark it; one that loses looks again
-		if (!ipv6_support.status.compare_and_swap_test(IPV6_SUPPORT::IPV6_UNKNOWN, IPV6_SUPPORT::IPV6_CHECKING))
+		if (!retro_atomic_cas_int(&ipv6_support.status, static_cast<int>(IPV6_SUPPORT::IPV6_UNKNOWN), static_cast<int>(IPV6_SUPPORT::IPV6_CHECKING)))
 			return is_ipv6_supported();
 
 		const bool supported = find_ipv6_support(ipv6_support);
-		ipv6_support.status.notify_all();
+		retro_waitaddr_notify_all(&ipv6_support.status);
 		return supported;
 	}
 

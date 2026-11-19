@@ -2,6 +2,8 @@
 #include "Emu/Cell/Modules/sceNp.h"
 #include "Emu/Cell/Modules/sceNp2.h"
 #include "Utilities/Thread.h"
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 #include "Emu/CPU/owner_calls.h"
 #include "Emu/Cell/Modules/hle_service.h"
 #include <unordered_map>
@@ -132,7 +134,7 @@ private:
 	// The peers, packets and contexts are this thread's alone: other threads
 	// hand it what they need (on_thread), so it takes no lock
 	mutable owner_calls_t calls{};
-	atomic_t<u32> wakey = 0;
+	retro_atomic_int_t wakey{0};
 
 	static bool on_owner();
 

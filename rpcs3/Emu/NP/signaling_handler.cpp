@@ -435,16 +435,18 @@ void signaling_handler::operator()()
 {
 	t_on_signaling_thread = true;
 
-	atomic_wait_timeout timeout = atomic_wait_timeout::inf;
+	u64 timeout_us = umax; // none: until woken
 
 	while (thread_ctrl::state() != thread_state::aborting)
 	{
-		if (!wakey)
+		if (!retro_atomic_load_acquire_int(&wakey))
 		{
-			wakey.wait(0, timeout);
+			// Woken by a packet or a call, at the next resend, or as this
+			// thread is told to end
+			thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&wakey, 0u); }, timeout_us);
 		}
 
-		wakey = 0;
+		retro_atomic_store_release_int(&wakey, 0);
 
 		if (thread_ctrl::state() == thread_state::aborting)
 			break;
@@ -535,16 +537,16 @@ void signaling_handler::operator()()
 			const auto expected_timepoint = qpackets.begin()->first;
 			if (current_timepoint > expected_timepoint)
 			{
-				wakey = 1;
+				retro_atomic_store_release_int(&wakey, 1);
 			}
 			else
 			{
-				timeout = static_cast<atomic_wait_timeout>(std::chrono::duration_cast<std::chrono::nanoseconds>(expected_timepoint - current_timepoint).count());
+				timeout_us = std::max<u64>(1, std::chrono::duration_cast<std::chrono::microseconds>(expected_timepoint - current_timepoint).count());
 			}
 		}
 		else
 		{
-			timeout = atomic_wait_timeout::inf;
+			timeout_us = umax;
 		}
 	}
 
@@ -556,14 +558,14 @@ void signaling_handler::operator()()
 
 void signaling_handler::wake_up()
 {
-	wakey.release(1);
-	wakey.notify_one();
+	retro_atomic_store_release_int(&wakey, 1);
+	retro_waitaddr_notify_one(&wakey);
 }
 
 signaling_handler& signaling_handler::operator=(thread_state)
 {
-	wakey.release(1);
-	wakey.notify_one();
+	retro_atomic_store_release_int(&wakey, 1);
+	retro_waitaddr_notify_one(&wakey);
 	return *this;
 }
 

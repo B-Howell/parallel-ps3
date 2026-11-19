@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The rest of the networking code (Emu/NP) is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the signaling thread's wake flag, UPnP's active flag, the net_http thread's completion words and stopping flag, the clans manager's initialized flag and the IPv6 support state are `retro_atomic_int_t`. A net_http caller and a thread waiting for another's IPv6 check wait on their word with `retro_waitaddr`. The signaling thread waits through `thread_ctrl::wait_on_custom`, so it wakes on a packet or call, at the next packet resend (a network timeout), or as it is told to end. Nothing is saved in savestates.
+  - **Tests:** `test_emu_waits` checks that the net_http thread runs work from two callers at once, 200 calls in all, on its own thread, and wakes each caller. It was shown to fail with the wake taken out. The signaling thread, UPnP and the IPv6 check have no runtime test, because they need the network. A check fails if `atomic_t` comes back to Emu/NP.
+
+
 - **The NP contexts are off `atomic_t`.** Not yet run on a game.
   - **What changed:** an NP transaction's state (pending, being finished, done), the score context's started flag, and the matching context's busy flag, QuickMatch wake flag and room list version are `retro_atomic_int_t`. A transaction's waiter and the QuickMatch timeout worker wait through `thread_ctrl::wait_on_custom`, so they wake on the word, on their deadline, or as their thread is told to end. The QuickMatch wait keeps the game's own timeout, a network timeout. Nothing is saved in savestates.
   - **Tests:** `test_emu_waits` already raced claims on 20000 transactions and checked the reply and timeout paths. It now also checks that a reply wakes the waiter before its thread is joined, because the join woke it too and hid a missing wake. It was shown to fail with the wake taken out of `finish()`. The QuickMatch worker has no runtime test, because it needs an RPCN server. A check fails if `atomic_t` comes back to the NP contexts.

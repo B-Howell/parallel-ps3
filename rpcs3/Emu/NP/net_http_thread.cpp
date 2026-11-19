@@ -34,8 +34,8 @@ namespace np
 				for (auto&& j : m_queue.pop_all())
 				{
 					j.work();
-					*j.done = 1;
-					j.done->notify_one();
+					retro_atomic_store_release_int(j.done, 1);
+					retro_waitaddr_notify_one(j.done);
 				}
 
 				thread_ctrl::wait_on(m_queue);
@@ -49,7 +49,7 @@ namespace np
 
 	net_http_thread::~net_http_thread()
 	{
-		m_stopping = true;
+		retro_atomic_store_release_int(&m_stopping, 1);
 
 		auto& thread = *m_thread;
 		thread = thread_state::aborting;
@@ -60,24 +60,26 @@ namespace np
 		// Whatever came in as it stopped
 		for (auto&& j : m_queue.pop_all())
 		{
-			*j.done = 2;
-			j.done->notify_one();
+			retro_atomic_store_release_int(j.done, 2);
+			retro_waitaddr_notify_one(j.done);
 		}
 	}
 
 	bool net_http_thread::run(std::function<void()> work)
 	{
-		if (m_stopping)
+		if (retro_atomic_load_acquire_int(&m_stopping))
 			return false;
 
-		atomic_t<u32> done = 0;
+		retro_atomic_int_t done{0};
 		m_queue.push(job{std::move(work), &done});
 
-		while (!done)
+		// Woken as the net_http thread has run it, or dropped it stopping
+		const retro_waitaddr_t w{&done, 0};
+		while (!retro_atomic_load_acquire_int(&done))
 		{
-			done.wait(0);
+			retro_waitaddr_wait(&w, 1, -1);
 		}
 
-		return done == 1;
+		return retro_atomic_load_acquire_int(&done) == 1;
 	}
 }

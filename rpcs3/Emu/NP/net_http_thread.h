@@ -1,7 +1,8 @@
 #pragma once
 
 #include "util/types.hpp"
-#include "util/atomic.hpp"
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 #include "Utilities/lockless.h"
 #include "Utilities/Thread.h"
 
@@ -35,11 +36,11 @@ namespace np
 		struct job
 		{
 			std::function<void()> work;
-			atomic_t<u32>* done; // 1: ran, 2: dropped
+			retro_atomic_int_t* done; // 1: ran, 2: dropped
 		};
 
 		lf_queue<job> m_queue;
-		atomic_t<bool> m_stopping = false;
+		retro_atomic_int_t m_stopping{0}; // 0 or 1
 		std::unique_ptr<named_thread<std::function<void()>>> m_thread;
 	};
 }

@@ -3,6 +3,7 @@
 #include <unordered_map>
 
 #include <net/net_upnp.h>
+#include <retro_atomic.h>
 
 #include "upnp_config.h"
 #include "net_http_thread.h"
@@ -30,7 +31,7 @@ private:
 
 private:
 	np::net_http_thread& m_http;
-	atomic_t<bool> m_active = false;
+	retro_atomic_int_t m_active{0}; // 0 or 1
 
 	cfg_upnp m_cfg;
 	net_upnp_gateway m_gateway{};

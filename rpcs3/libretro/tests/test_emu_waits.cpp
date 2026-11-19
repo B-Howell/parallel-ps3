@@ -28,6 +28,7 @@
 #include "Emu/RSX/Utils/rsx_utils.h"
 #include "Emu/RSX/Overlays/Shaders/shader_loading_dialog.h"
 #include "Emu/Cell/Modules/cellMsgDialog.h"
+#include "Emu/NP/net_http_thread.h"
 #include "Emu/savestate_utils.hpp"
 
 #include <atomic>
@@ -696,6 +697,38 @@ int main()
 		CHECK(retro_atomic_load_acquire_int(&d.ref_cnt) == 0);
 		g_emu_callbacks.call_from_main_thread = saved;
 		std::printf("test_emu_waits: the shader loading dialog closes after its last queued call\n");
+	}
+
+	// The net_http thread: a caller's work runs on that thread, and the
+	// caller wakes on its own completion word as it has run, 200 times from
+	// two callers at once
+	{
+		std::atomic<int> ran{0}, returned{0};
+		std::thread::id worker{};
+		{
+			np::net_http_thread t;
+			const auto caller = [&]
+			{
+				for (int i = 0; i < 100; i++)
+				{
+					CHECK(t.run([&] { worker = std::this_thread::get_id(); ran++; }));
+					returned++;
+				}
+			};
+			std::thread a(caller), b(caller);
+			// Each woken by its own work having run; a caller never woken
+			// cannot be joined, so the test ends here
+			if (!reaches(returned, 200))
+			{
+				std::fprintf(stderr, "%s:%d: check failed: a net_http caller not woken\n", __FILE__, __LINE__);
+				std::_Exit(1);
+			}
+			a.join();
+			b.join();
+			CHECK(ran == 200);
+			CHECK(worker != std::thread::id{} && worker != std::this_thread::get_id());
+		}
+		std::printf("test_emu_waits: the net_http thread runs its callers' work and wakes each, 200 calls\n");
 	}
 
 	// A game's callback and its argument in one retro_atomic word: installed

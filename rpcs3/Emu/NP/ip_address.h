@@ -84,7 +84,7 @@ namespace np
 
 	u32 register_ip(std::string_view ip_bytes);
 
-	enum class IPV6_SUPPORT : u32 // waited on (atomic_t waits on 4 bytes)
+	enum class IPV6_SUPPORT : u32 // kept in a retro_atomic_int_t and waited on
 	{
 		IPV6_UNKNOWN,
 		IPV6_UNSUPPORTED,

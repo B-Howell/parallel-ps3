@@ -21,7 +21,7 @@ upnp_handler::~upnp_handler()
 		}
 	});
 
-	m_active = false;
+	retro_atomic_store_release_int(&m_active, 0);
 }
 
 void upnp_handler::upnp_enable()
@@ -40,7 +40,7 @@ void upnp_handler::upnp_enable_owned()
 		if (net_upnp_gateway_from_url(&m_gateway, dev_url.c_str(), upnp_timeout_ms))
 		{
 			upnp_log.notice("Saved UPNP(%s) enabled", dev_url);
-			m_active = true;
+			retro_atomic_store_release_int(&m_active, 1);
 			return;
 		}
 
@@ -60,12 +60,12 @@ void upnp_handler::upnp_enable_owned()
 	m_cfg.set_device_url(m_gateway.desc_url);
 	m_cfg.save();
 
-	m_active = true;
+	retro_atomic_store_release_int(&m_active, 1);
 }
 
 void upnp_handler::add_port_redir(const std::string& addr, u16 internal_port, std::string_view protocol)
 {
-	if (!m_active)
+	if (!retro_atomic_load_acquire_int(&m_active))
 		return;
 
 	m_http.run([&]() { add_port_redir_owned(addr, internal_port, protocol); });
@@ -100,7 +100,7 @@ void upnp_handler::add_port_redir_owned(const std::string& addr, u16 internal_po
 
 void upnp_handler::remove_port_redir(u16 internal_port, std::string_view protocol)
 {
-	if (!m_active)
+	if (!retro_atomic_load_acquire_int(&m_active))
 		return;
 
 	m_http.run([&]() { remove_port_redir_owned(internal_port, protocol); });
@@ -135,5 +135,5 @@ void upnp_handler::remove_port_redir_external(u16 external_port, std::string_vie
 
 bool upnp_handler::is_active() const
 {
-	return m_active;
+	return retro_atomic_load_acquire_int(&m_active) != 0;
 }

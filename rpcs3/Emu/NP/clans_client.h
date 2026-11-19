@@ -1,6 +1,7 @@
 #pragma once
 
 #include <formats/rxml.h>
+#include <retro_atomic.h>
 
 #include <Emu/Cell/Modules/sceNpClans.h>
 #include <Emu/NP/np_handler.h>
@@ -124,6 +125,6 @@ namespace clan
 
 struct sce_np_clans_manager
 {
-	atomic_t<bool> is_initialized = false;
+	retro_atomic_int_t is_initialized{0}; // 0 or 1
 	std::shared_ptr<clan::clans_client> client;
 };
