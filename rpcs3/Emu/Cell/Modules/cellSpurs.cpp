@@ -2359,10 +2359,10 @@ s32 _spurs::add_workload(ppu_thread& ppu, vm::ptr<CellSpurs> spurs, vm::ptr<u32>
 		return CELL_SPURS_POLICY_MODULE_ERROR_AGAIN;
 	}
 
-	auto& spurs_res = vm::reservation_acquire(spurs.addr());
-	auto& spurs_res2 = vm::reservation_acquire(spurs.addr() + 0x80);
+	const auto spurs_res = vm::reservation_word(spurs.addr());
+	const auto spurs_res2 = vm::reservation_word(spurs.addr() + 0x80);
 
-	if (!spurs_res2.fetch_op([&](u64& r)
+	if (!vm::reservation_fetch_op(spurs_res2, [&](u64& r)
 	{
 		if (r & vm::rsrv_unique_lock)
 		{
@@ -2376,7 +2376,7 @@ s32 _spurs::add_workload(ppu_thread& ppu, vm::ptr<CellSpurs> spurs, vm::ptr<u32>
 		vm::reservation_shared_lock_internal(spurs_res2);
 	}
 
-	if (!spurs_res.fetch_op([&](u64& r)
+	if (!vm::reservation_fetch_op(spurs_res, [&](u64& r)
 	{
 		if (r & vm::rsrv_unique_lock)
 		{
@@ -2475,11 +2475,11 @@ s32 _spurs::add_workload(ppu_thread& ppu, vm::ptr<CellSpurs> spurs, vm::ptr<u32>
 		//
 	}
 
-	spurs_res += 127;
-	spurs_res2 += 127;
+	vm::reservation_add(spurs_res, 127);
+	vm::reservation_add(spurs_res2, 127);
 
-	spurs_res.notify_all();
-	spurs_res2.notify_all();
+	retro_waitaddr_notify_all(spurs_res);
+	retro_waitaddr_notify_all(spurs_res2);
 
 	u32 res_wkl;
 	const auto wkl = &spurs->wklInfo(wnum);

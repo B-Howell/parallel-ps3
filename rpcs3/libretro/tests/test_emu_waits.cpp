@@ -37,6 +37,7 @@
 #include "Emu/Cell/lv2/sys_spu.h"
 #include "Emu/savestate_utils.hpp"
 #include "Emu/Memory/vm_locking.h"
+#include "Emu/Memory/vm_reservation.h"
 
 #include <atomic>
 #include <cstdio>
@@ -1412,6 +1413,65 @@ int main()
 		CHECK(vm::passive_lock_owner(&slot) == nullptr);
 		CHECK(!vm::passive_lock_drop(&slot, a));
 		std::printf("test_emu_waits: a passive lock slot: given up only by its owner\n");
+	}
+
+	// A reservation's word: where it sits in reservation memory (64 bytes
+	// a cache line, the 16-byte view on the word, the byte bits after it),
+	// and two threads stepping its time on at once 200000 times
+	// each (each on a CPU of its own), none of the counts lost and none
+	// taken while it is locked
+	{
+		CHECK(reinterpret_cast<u8*>(vm::reservation_word(0x10080)) == vm::g_reservations + (0x10080 & 0xff80) / 2);
+		CHECK(reinterpret_cast<u8*>(vm::reservation_wide(0x100ff)) == reinterpret_cast<u8*>(vm::reservation_word(0x10080)));
+		CHECK(reinterpret_cast<u8*>(vm::reservation_byte_bits(0x10080)) == reinterpret_cast<u8*>(vm::reservation_word(0x10080)) + 16);
+
+		alignas(128) static vm::reservation_t word{};
+		constexpr int rounds = 200000;
+		std::atomic<int> refused{0};
+		auto taker = [&](int cpu)
+		{
+#ifdef __linux__
+			cpu_set_t set;
+			CPU_ZERO(&set);
+			CPU_SET(cpu % std::max(1u, std::thread::hardware_concurrency()), &set);
+			pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+#endif
+			for (int i = 0; i < rounds; i++)
+			{
+				const auto [old, ok] = vm::reservation_fetch_op(&word, [](u64& r)
+				{
+					if (r & vm::rsrv_unique_lock)
+					{
+						return false;
+					}
+
+					r += 128;
+					return true;
+				});
+
+				if (!ok)
+				{
+					refused++;
+				}
+			}
+		};
+		std::thread a(taker, 0), b(taker, 1);
+		a.join();
+		b.join();
+		CHECK(vm::reservation_load(&word) == 2ull * rounds * 128);
+		CHECK(refused == 0);
+
+		// Locked: refused, the word untouched
+		vm::reservation_release(&word, vm::rsrv_unique_lock);
+		CHECK(!vm::reservation_fetch_op(&word, [](u64& r) { if (r & vm::rsrv_unique_lock) return false; r += 1; return true; }).second);
+		CHECK(vm::reservation_load(&word) == vm::rsrv_unique_lock);
+		CHECK(vm::reservation_try_lock(&word, 0) == false);
+		vm::reservation_release(&word, 128);
+		CHECK(vm::reservation_try_lock(&word, 128));
+		CHECK(vm::reservation_load(&word) == (128 | vm::rsrv_unique_lock));
+		CHECK(vm::reservation_add(&word, 0 - vm::rsrv_unique_lock + 128) == (128 | vm::rsrv_unique_lock));
+		CHECK(vm::reservation_load(&word) == 256);
+		std::printf("test_emu_waits: a reservation's word: in place, and 400000 steps from two threads none lost\n");
 	}
 
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");

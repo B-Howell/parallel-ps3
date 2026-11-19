@@ -1342,9 +1342,9 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 					return true;
 				}
 
-				auto& res = vm::reservation_acquire(eal);
+				const auto res = vm::reservation_word(eal);
 
-				if (res % 128)
+				if (vm::reservation_load(res) % 128)
 				{
 					return false;
 				}
@@ -1355,7 +1355,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 					// Touch memory
 					utils::trigger_write_page_fault(vm::base(dest ^ (4096 / 2)));
 
-					auto [old_res, ok] = res.fetch_op([&](u64& rval)
+					auto [old_res, ok] = vm::reservation_fetch_op(res, [&](u64& rval)
 					{
 						if (rval % 128)
 						{
@@ -1373,12 +1373,12 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 
 					if (!_dest->compare_and_swap_test(rdata, to_write))
 					{
-						res.release(old_res);
+						vm::reservation_release(res, old_res);
 						return false;
 					}
 
 					// Success
-					res.release(old_res + 128);
+					vm::reservation_release(res, old_res + 128);
 				}
 
 				_spu->ch_atomic_stat.set_value(MFC_PUTLLC_SUCCESS);
@@ -1386,7 +1386,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 
 				if (notify)
 				{
-					res.notify_all();
+					retro_waitaddr_notify_all(res);
 				}
 
 				return true;

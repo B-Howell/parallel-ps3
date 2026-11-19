@@ -161,14 +161,14 @@ namespace rsx
 				for (int i = 0;; i = (std::countr_zero<u32>(std::rotl<u8>(to_fetch, 0 - i - 1)) + i + 1) % 8)
 				{
 					// If a reservation is being updated, try to load another
-					const auto& res = vm::reservation_acquire(addr1 + i * 128);
-					const u64 time0 = res;
+					const auto res = vm::reservation_word(addr1 + i * 128);
+					const u64 time0 = vm::reservation_load(res);
 
 					if (!(time0 & 127))
 					{
 						mov_rdata(m_cache[i], src[i]);
 
-						if (time0 == res && cmp_rdata(m_cache[i], src[i]))
+						if (time0 == vm::reservation_load(res) && cmp_rdata(m_cache[i], src[i]))
 						{
 							// The fetch of the cache line content has been successful, unset its bit
 							to_fetch &= ~(1u << i);

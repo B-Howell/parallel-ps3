@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The reservation word is off `atomic_t`.** Not yet run on a game.
+  - **What changed:**
+    - **The word:** each 128-byte cache line of guest memory has a reservation word: the time of its last update and its lock bits, used by the SPU and PPU atomics (GETLLAR/PUTLLC, lwarx/stwcx), cellSpurs and the RSX FIFO's reads. It is a `retro_atomic_64_t` in reservation memory, as before. `vm::reservation_acquire()` is gone. `vm::reservation_word()` gives the word, and `reservation_time()` reads it. `reservation_load()`, `reservation_cas()`, `reservation_add()` (the old value, as `fetch_add`/`fetch_sub` gave), `reservation_release()` and `reservation_fetch_op()` (a compare-and-swap loop, as `fetch_op` did) work on it.
+    - **The 16-byte views:** the word with the shared memory base after it (a full-line store from another SPU) and the byte-lock bits after that (a partial store) are `retro_atomic_128_t`, reached by `vm::reservation_wide()` and `reservation_byte_bits()`. They are changed with a 16-byte compare-and-swap loop.
+    - **One difference:** the SPU's MONITORX/MWAITX wait (AMD) took the reservation word's value before the monitor was armed, so a change between the two could be missed until the wait timed out. It now passes the word itself, read after the monitor is armed, as `atomic_t`'s reference did.
+    - **Wakes:** the notify on the word after a light atomic op is a `retro_waitaddr` notify on its low half.
+  - **Tests:** `test_emu_waits` checks where the word and its two views sit in reservation memory. It also checks that two threads, each on a CPU of its own, step one word's time on at once 200000 times each with none lost, and the lock bit refusing a shared lock and a second lock. It was shown to fail with `reservation_fetch_op`'s compare-and-swap made a plain store. A check fails if `atomic_t` comes back to the reservation word.
+
+
 - **A memory block's id (vm::block_t) is off `atomic_t`.** Not yet run on a game.
   - **What changed:** each memory block (a location such as main memory, or one a game maps) takes a unique id from a counter, and the id is cleared to 0 once, on unmapping, so only one unmap frees the block's memory. The id and the counter are `retro_atomic_64_t`. The id is taken with a fetch-and-add and cleared with an exchange, as before.
   - **Tests:** none at runtime: blocks are made only with the memory manager set up for a game. A check fails if `atomic_t` comes back to the id.

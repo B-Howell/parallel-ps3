@@ -102,10 +102,10 @@ namespace vm
 	std::pair<bool, u64> try_reservation_update(u32 addr)
 	{
 		// Update reservation info with new timestamp
-		auto& res = reservation_acquire(addr);
-		const u64 rtime = res;
+		const auto res = reservation_word(addr);
+		const u64 rtime = reservation_load(res);
 
-		return {!(rtime & vm::rsrv_unique_lock) && res.compare_and_swap_test(rtime, rtime + 128), rtime};
+		return {!(rtime & vm::rsrv_unique_lock) && reservation_cas(res, rtime, rtime + 128), rtime};
 	}
 
 	void reservation_update(u32 addr)
@@ -522,11 +522,11 @@ namespace vm
 		return nullptr;
 	}
 
-	u64 reservation_lock_internal(u32 addr, atomic_t<u64>& res)
+	u64 reservation_lock_internal(u32 addr, reservation_t* res)
 	{
 		for (u64 i = 0;; i++)
 		{
-			if (u64 rtime = res; !(rtime & 127) && reservation_try_lock(res, rtime)) [[likely]]
+			if (u64 rtime = reservation_load(res); !(rtime & 127) && reservation_try_lock(res, rtime)) [[likely]]
 			{
 				return rtime;
 			}
@@ -552,11 +552,11 @@ namespace vm
 		}
 	}
 
-	void reservation_shared_lock_internal(atomic_t<u64>& res)
+	void reservation_shared_lock_internal(reservation_t* res)
 	{
 		for (u64 i = 0;; i++)
 		{
-			auto [_oldd, _ok] = res.fetch_op([&](u64& r)
+			auto [_oldd, _ok] = reservation_fetch_op(res, [&](u64& r)
 			{
 				if (r & rsrv_unique_lock)
 				{
@@ -589,20 +589,20 @@ namespace vm
 
 	void reservation_op_internal(u32 addr, std::function<bool()> func)
 	{
-		auto& res = vm::reservation_acquire(addr);
+		const auto res = vm::reservation_word(addr);
 		auto* ptr = vm::get_super_ptr(addr & -128);
 
-		cpu_thread::suspend_all<+1>(get_current_cpu_thread(), {ptr, ptr + 64, &res}, [&]
+		cpu_thread::suspend_all<+1>(get_current_cpu_thread(), {ptr, ptr + 64, res}, [&]
 		{
 			if (func())
 			{
 				// Success, release the lock and progress
-				res += 127;
+				reservation_add(res, 127);
 			}
 			else
 			{
 				// Only release the lock on failure
-				res -= 1;
+				reservation_add(res, u64{umax});
 			}
 		});
 	}

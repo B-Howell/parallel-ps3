@@ -2907,7 +2907,7 @@ void ppu_thread::cpu_wait(bs_t<cpu_flag> old)
 		res_notify = 0;
 		res_notify_postpone_streak = 0;
 
-		if (res_notify_time + 128 == (vm::reservation_acquire(addr) & -128))
+		if (res_notify_time + 128 == (vm::reservation_time(addr) & -128))
 		{
 			vm::reservation_notifier_notify(addr, res_notify_time);
 		}
@@ -3682,7 +3682,7 @@ static T ppu_load_acquire_reservation(ppu_thread& ppu, u32 addr)
 		ppu_log.trace(u8"LARX after fail: addr=0x%x, faddr=0x%x, time=%u c", addr, ppu.last_faddr, (now - ppu.last_ftsc));
 	}
 
-	if ((addr & addr_mask) == (ppu.last_faddr & addr_mask) && (now - ppu.last_ftsc) < 600 && (vm::reservation_acquire(addr) & -128) == ppu.last_ftime)
+	if ((addr & addr_mask) == (ppu.last_faddr & addr_mask) && (now - ppu.last_ftsc) < 600 && (vm::reservation_time(addr) & -128) == ppu.last_ftime)
 	{
 		be_t<u64> rdata;
 		std::memcpy(&rdata, &ppu.rdata[addr & 0x78], 8);
@@ -3713,7 +3713,7 @@ static T ppu_load_acquire_reservation(ppu_thread& ppu, u32 addr)
 	}
 	else
 	{
-		ppu.rtime = vm::reservation_acquire(addr) & -128;
+		ppu.rtime = vm::reservation_time(addr) & -128;
 	}
 
 	be_t<u64> rdata;
@@ -3760,7 +3760,7 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 	vm::write<void>(addr, T{0}, &ppu);
 
 	auto& data = const_cast<atomic_be_t<u64>&>(vm::_ref<atomic_be_t<u64>>(addr & -8));
-	auto& res = vm::reservation_acquire(addr);
+	const auto res = vm::reservation_word(addr);
 	const u64 rtime = ppu.rtime;
 
 	be_t<u64> old_data = 0;
@@ -3798,7 +3798,7 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 		}
 	}
 
-	if (old_data != data || rtime != (res & -128))
+	if (old_data != data || rtime != (vm::reservation_load(res) & -128))
 	{
 		ppu.raddr = 0;
 		ppu.res_cached = 0;
@@ -3809,7 +3809,7 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 	{
 		if (ppu.use_full_rdata) [[unlikely]]
 		{
-			auto [_oldd, _ok] = res.fetch_op([&](u64& r)
+			auto [_oldd, _ok] = vm::reservation_fetch_op(res, [&](u64& r)
 			{
 				if ((r & -128) != rtime || (r & 127))
 				{
@@ -3849,11 +3849,11 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 					if (cmp_rdata(ppu.rdata, super_data))
 					{
 						data.release(new_data);
-						res += 64;
+						vm::reservation_add(res, 64);
 						return true;
 					}
 
-					res -= 64;
+					vm::reservation_add(res, 0 - u64{64});
 					return false;
 				}();
 			}
@@ -3866,7 +3866,7 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 		if (new_data == old_data)
 		{
 			ppu.last_faddr = 0;
-			return res.compare_and_swap_test(rtime, rtime + 128);
+			return vm::reservation_cas(res, rtime, rtime + 128);
 		}
 
 		// Aligned 8-byte reservations will be used here
@@ -3874,7 +3874,7 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 
 		const u64 lock_bits = vm::rsrv_unique_lock;
 
-		auto [_oldd, _ok] = res.fetch_op([&](u64& r)
+		auto [_oldd, _ok] = vm::reservation_fetch_op(res, [&](u64& r)
 		{
 			if ((r & -128) != rtime || (r & 127))
 			{
@@ -3895,11 +3895,11 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 		// Store previous value in old_data on failure
 		if (data.compare_exchange(old_data, new_data))
 		{
-			res += 128 - lock_bits;
+			vm::reservation_add(res, 128 - lock_bits);
 			return true;
 		}
 
-		const u64 old_rtime = res.fetch_sub(lock_bits);
+		const u64 old_rtime = vm::reservation_add(res, 0 - lock_bits);
 
 		// TODO: disabled with this setting on, since it's dangerous to mix
 		if (!g_cfg.core.ppu_128_reservations_loop_max_length)

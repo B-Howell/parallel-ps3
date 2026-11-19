@@ -2443,7 +2443,7 @@ void lv2_obj::notify_all() noexcept
 					}).second)
 					{
 						notifies[i] = raddr;
-						notifies_time[i] = vm::reservation_acquire(raddr);
+						notifies_time[i] = vm::reservation_time(raddr);
 					}
 				}
 
@@ -2472,7 +2472,7 @@ void lv2_obj::notify_all() noexcept
 				}).second)
 				{
 					notifies[i] = raddr;
-					notifies_time[i] = vm::reservation_acquire(raddr);
+					notifies_time[i] = vm::reservation_time(raddr);
 				}
 			}
 		}

@@ -3,6 +3,8 @@
 #include "vm.h"
 #include "vm_locking.h"
 #include "util/atomic.hpp"
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 #include "util/tsc.hpp"
 #include <functional>
 
@@ -23,11 +25,77 @@ namespace vm
 		rsrv_putunc_flag = 32,
 	};
 
-	// Get reservation status for further atomic update: last update timestamp
-	inline atomic_t<u64>& reservation_acquire(u32 addr)
+	// A reservation's word: the time of its last update (a multiple of
+	// 128) and its lock bits (rsrv_lock_mask); 64 bytes of reservation
+	// memory per 128-byte cache line, the word first
+	using reservation_t = retro_atomic_64_t;
+
+	inline reservation_t* reservation_word(u32 addr)
 	{
-		// Access reservation info: stamp and the lock bit
-		return *reinterpret_cast<atomic_t<u64>*>(g_reservations + (addr & 0xff80) / 2);
+		return reinterpret_cast<reservation_t*>(g_reservations + (addr & 0xff80) / 2);
+	}
+
+	inline u64 reservation_load(reservation_t* res)
+	{
+		return static_cast<u64>(retro_atomic_load_acquire_64(res));
+	}
+
+	// The reservation's word as it is now: its time and lock bits
+	inline u64 reservation_time(u32 addr)
+	{
+		return reservation_load(reservation_word(addr));
+	}
+
+	inline bool reservation_cas(reservation_t* res, u64 old, u64 value)
+	{
+		return retro_atomic_cas_64(res, static_cast<s64>(old), static_cast<s64>(value)) != 0;
+	}
+
+	// Adds @v (or, negative, takes away): the old word
+	inline u64 reservation_add(reservation_t* res, u64 v)
+	{
+		return static_cast<u64>(retro_atomic_fetch_add_64(res, static_cast<s64>(v)));
+	}
+
+	inline void reservation_release(reservation_t* res, u64 value)
+	{
+		retro_atomic_store_release_64(res, static_cast<s64>(value));
+	}
+
+	// @f changes a copy of the word and says whether to store it: the old
+	// word and whether it was stored (as atomic_t::fetch_op did)
+	template <typename F>
+	inline std::pair<u64, bool> reservation_fetch_op(reservation_t* res, F f)
+	{
+		while (true)
+		{
+			const u64 old = reservation_load(res);
+			u64 value = old;
+
+			if (!f(value))
+			{
+				return {old, false};
+			}
+
+			if (reservation_cas(res, old, value))
+			{
+				return {old, true};
+			}
+		}
+	}
+
+	// The first 16 bytes of a reservation's memory: the word (low half)
+	// and, while a full-line store is in progress, the shared memory base
+	// (high half)
+	inline retro_atomic_128_t* reservation_wide(u32 addr)
+	{
+		return reinterpret_cast<retro_atomic_128_t*>(g_reservations + (addr & 0xff80) / 2);
+	}
+
+	// The next 16: a bit per byte of the cache line being written
+	inline retro_atomic_128_t* reservation_byte_bits(u32 addr)
+	{
+		return reinterpret_cast<retro_atomic_128_t*>(g_reservations + (addr & 0xff80) / 2 + 16);
 	}
 
 	// Update reservation status
@@ -92,7 +160,7 @@ namespace vm
 			value.waiters_count++;
 		});
 
-		if ((reservation_acquire(raddr) & -128) != rtime)
+		if ((reservation_time(raddr) & -128) != rtime)
 		{
 			reservation_notifier_end_wait(waiter);
 			return {};
@@ -103,13 +171,13 @@ namespace vm
 
 	atomic_t<u32>* reservation_notifier_notify(u32 raddr, u64 rtime, bool postpone = false);
 
-	u64 reservation_lock_internal(u32, atomic_t<u64>&);
+	u64 reservation_lock_internal(u32, reservation_t*);
 
-	void reservation_shared_lock_internal(atomic_t<u64>&);
+	void reservation_shared_lock_internal(reservation_t*);
 
-	inline bool reservation_try_lock(atomic_t<u64>& res, u64 rtime)
+	inline bool reservation_try_lock(reservation_t* res, u64 rtime)
 	{
-		if (res.compare_and_swap_test(rtime, rtime | rsrv_unique_lock)) [[likely]]
+		if (reservation_cas(res, rtime, rtime | rsrv_unique_lock)) [[likely]]
 		{
 			return true;
 		}
@@ -117,16 +185,16 @@ namespace vm
 		return false;
 	}
 
-	inline std::pair<atomic_t<u64>&, u64> reservation_lock(u32 addr)
+	inline std::pair<reservation_t*, u64> reservation_lock(u32 addr)
 	{
-		auto res = &vm::reservation_acquire(addr);
-		auto rtime = res->load();
+		auto res = vm::reservation_word(addr);
+		auto rtime = reservation_load(res);
 
-		if (rtime & 127 || !reservation_try_lock(*res, rtime)) [[unlikely]]
+		if (rtime & 127 || !reservation_try_lock(res, rtime)) [[unlikely]]
 		{
-			static atomic_t<u64> no_lock{};
+			static reservation_t no_lock{};
 
-			rtime = reservation_lock_internal(addr, *res);
+			rtime = reservation_lock_internal(addr, res);
 
 			if (rtime == umax)
 			{
@@ -134,7 +202,7 @@ namespace vm
 			}
 		}
 
-		return {*res, rtime};
+		return {res, rtime};
 	}
 
 	// TODO: remove and make it external
@@ -157,8 +225,8 @@ namespace vm
 		// Use 128-byte aligned addr
 		const u32 addr = static_cast<u32>(ptr.addr()) & -128;
 
-		auto& res = vm::reservation_acquire(addr);
-		//_m_prefetchw(&res);
+		auto res = vm::reservation_word(addr);
+		//_m_prefetchw(res);
 
 		// Lock reservation and perform heavyweight lock
 		reservation_shared_lock_internal(res);
@@ -170,7 +238,7 @@ namespace vm
 			{
 				vm::writer_lock lock(addr);
 				std::invoke(op, *sptr);
-				old_time = res.fetch_add(127);
+				old_time = reservation_add(res, 127);
 			}
 
 			if constexpr (Ack)
@@ -185,11 +253,11 @@ namespace vm
 
 				if ((result = std::invoke(op, *sptr)))
 				{
-					old_time = res.fetch_add(127);
+					old_time = reservation_add(res, 127);
 				}
 				else
 				{
-					old_time = res.fetch_sub(1);
+					old_time = reservation_add(res, u64{umax});
 				}
 			}
 
@@ -222,7 +290,7 @@ namespace vm
 				}
 			}
 
-			const u64 rtime = vm::reservation_acquire(addr);
+			const u64 rtime = vm::reservation_time(addr);
 
 			if (rtime & 127)
 			{
@@ -234,7 +302,7 @@ namespace vm
 			{
 				std::invoke(op, *ptr);
 
-				if (rtime == vm::reservation_acquire(addr))
+				if (rtime == vm::reservation_time(addr))
 				{
 					return;
 				}
@@ -243,7 +311,7 @@ namespace vm
 			{
 				auto res = std::invoke(op, *ptr);
 
-				if (rtime == vm::reservation_acquire(addr))
+				if (rtime == vm::reservation_time(addr))
 				{
 					return res;
 				}
@@ -261,9 +329,9 @@ namespace vm
 		const auto sptr = vm::get_super_ptr<T>(addr);
 
 		// "Lock" reservation
-		auto& res = vm::reservation_acquire(addr);
+		auto res = vm::reservation_word(addr);
 
-		auto [_old, _ok] = res.fetch_op([&](u64& r)
+		auto [_old, _ok] = reservation_fetch_op(res, [&](u64& r)
 		{
 			if (r & vm::rsrv_unique_lock)
 			{
@@ -282,21 +350,23 @@ namespace vm
 		if constexpr (std::is_void_v<std::invoke_result_t<F, T&>>)
 		{
 			std::invoke(op, *sptr);
-			res += 127;
+			reservation_add(res, 127);
 
 			if constexpr (Ack)
 			{
-				res.notify_all();
+				// The word's low half, where a waiter on it waits
+				retro_waitaddr_notify_all(res);
 			}
 		}
 		else
 		{
 			auto result = std::invoke(op, *sptr);
-			res += 127;
+			reservation_add(res, 127);
 
 			if constexpr (Ack)
 			{
-				res.notify_all();
+				// The word's low half, where a waiter on it waits
+				retro_waitaddr_notify_all(res);
 			}
 
 			return result;

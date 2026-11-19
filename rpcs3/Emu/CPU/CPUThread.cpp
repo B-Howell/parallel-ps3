@@ -714,7 +714,7 @@ bool cpu_thread::check_state() noexcept
 			{
 				if (auto spu = try_get<spu_thread>())
 				{
-					if (spu->raddr && spu->rtime == vm::reservation_acquire(spu->raddr) && spu->getllar_spin_count < 10)
+					if (spu->raddr && spu->rtime == vm::reservation_time(spu->raddr) && spu->getllar_spin_count < 10)
 					{
 						// Reservation operation is a critical section (but this may result in false positives)
 						continue;
@@ -734,7 +734,7 @@ bool cpu_thread::check_state() noexcept
 						continue;
 					}
 
-					if (ppu->raddr && ppu->rtime == vm::reservation_acquire(ppu->raddr))
+					if (ppu->raddr && ppu->rtime == vm::reservation_time(ppu->raddr))
 					{
 						// Same
 						continue;
