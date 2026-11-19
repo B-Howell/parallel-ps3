@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Dynamic imports and shared memory's own mapping (util/dyn_lib.hpp, util/vm.hpp) are off `atomic_t`.** Not yet run on a game.
+  - **What changed:**
+    - **A function looked up from a system library on first use** (`DYNAMIC_IMPORT`) keeps it in a `retro_atomic_64_t`: -1 before the lookup, 0 when there is none. It stays constant-initialised.
+    - **Shared memory mapped into its own storage** (`shm::map_self`, the memory manager's view of a game's shared memory) keeps the mapping in a `retro_atomic_ptr_t`. When two threads map at once, one installs its mapping with a compare-and-swap; the other takes that one and unmaps its own, as before.
+    - **The table of mappings in progress on Windows** keeps each entry's state in a `retro_atomic_int_t`.
+  - **Tests:** `test_emu_waits` looks up a libc function on first use and checks a missing one reads false. It also checks that two threads mapping one shared memory block into its own storage at once get the same mapping, which is kept and then unmapped. It was shown to fail with the compare-and-swap made a plain store. A check fails if `atomic_t` comes back to either.
+
+
 - **The unused fifo_mutex lock and spin_wait spin loop are gone, and asm.hpp's fallback is on `retro_atomic`.** Not yet run on a game.
   - **What changed:** `util/fifo_mutex.hpp` (a lock, which nothing took) and `utils::spin_wait` in `util/asm.hpp` (a loop spinning on a monitor until a condition held, which nothing called) are removed. On a CPU other than x86-64 or ARM64, the store fence on another thread's memory (`utils::memory_barrier`'s portable form) is a `retro_atomic` fetch-and-add of 0 instead of an `atomic_t` one.
   - **Tests:** none: what is removed had no callers, and the fallback is not built on the machines the core targets. A check fails if the lock, the spin loop or that `atomic_t` comes back.

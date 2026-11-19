@@ -99,7 +99,8 @@ namespace utils
 	{
 		u64 addr = 0;
 		u64 size = 0;
-		atomic_t<u8> state{};
+		// 0 free, 2 being filled, 1 in use
+		mutable retro_atomic_int_t state{0};
 	};
 
 	lf_array<map_info_t, 32> s_is_mapping{};
@@ -113,7 +114,7 @@ namespace utils
 
 		return s_is_mapping.for_each([addr](const map_info_t& info)
 		{
-			if (info.state == 1)
+			if (retro_atomic_load_acquire_int(&info.state) == 1)
 			{
 				if (addr >= info.addr && addr < info.addr + info.size)
 				{
@@ -134,11 +135,11 @@ namespace utils
 
 		return s_is_mapping.for_each([addr, size](map_info_t& info) -> u64
 		{
-			if (info.state == 1)
+			if (retro_atomic_load_acquire_int(&info.state) == 1)
 			{
 				if (addr == info.addr && size == info.size)
 				{
-					if (info.state.compare_and_swap_test(1, 0))
+					if (retro_atomic_cas_int(&info.state, 1, 0))
 					{
 						return info.size;
 					}
@@ -158,11 +159,11 @@ namespace utils
 
 		ensure(s_is_mapping.for_each([addr, size](map_info_t& info)
 		{
-			if (!info.addr && info.state.compare_and_swap_test(0, 2))
+			if (!info.addr && retro_atomic_cas_int(&info.state, 0, 2))
 			{
 				info.addr = addr;
 				info.size = size;
-				info.state = 1;
+				retro_atomic_store_release_int(&info.state, 1);
 				return true;
 			}
 
@@ -994,7 +995,7 @@ namespace utils
 
 	u8* shm::map_self(protection prot)
 	{
-		void* ptr = m_ptr;
+		void* ptr = retro_atomic_load_acquire_ptr(&m_ptr);
 
 		for (void* mapped = nullptr; !ptr;)
 		{
@@ -1004,7 +1005,7 @@ namespace utils
 
 				if (!mapped)
 				{
-					if ((ptr = m_ptr))
+					if ((ptr = retro_atomic_load_acquire_ptr(&m_ptr)))
 					{
 						break;
 					}
@@ -1014,11 +1015,11 @@ namespace utils
 			}
 
 			// Install mapped memory
-			if (m_ptr.compare_exchange(ptr, mapped))
+			if (retro_atomic_cas_ptr(&m_ptr, nullptr, mapped))
 			{
 				ptr = mapped;
 			}
-			else if (ptr)
+			else if ((ptr = retro_atomic_load_acquire_ptr(&m_ptr)))
 			{
 				// Mapped already, nothing to do.
 				ensure(ptr != mapped);
@@ -1095,7 +1096,7 @@ namespace utils
 
 	void shm::unmap_self()
 	{
-		if (auto ptr = m_ptr.exchange(nullptr))
+		if (auto ptr = retro_atomic_exchange_ptr(&m_ptr, nullptr))
 		{
 			this->unmap(ptr);
 		}

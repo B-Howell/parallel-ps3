@@ -1395,6 +1395,8 @@ check: all
 	@if grep -n "std::string lower\|const std::string str(s)\|std::from_chars" ../../util/yaml.cpp; then echo "util/yaml.cpp reads values with string copies again"; exit 1; else echo "YAML values are read in C89, in place"; fi
 	@# the unused fifo_mutex lock and spin_wait spin loop are gone; asm.hpp's fallback is retro_atomic
 	@if test -f ../../util/fifo_mutex.hpp || grep -n "spin_wait\|static_cast<atomic_t<u32> \*>" ../../util/asm.hpp; then echo "fifo_mutex, spin_wait or atomic_t is back in util"; exit 1; else echo "no fifo_mutex, no spin_wait"; fi
+	@# dynamic imports and shared memory's own mapping (dyn_lib.hpp, vm.hpp) are retro_atomic
+	@if grep -n "atomic_t<" ../../util/dyn_lib.hpp ../../util/vm.hpp ../../util/vm_native.cpp; then echo "atomic_t is back in dyn_lib or vm"; exit 1; else echo "dyn_lib and vm are retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

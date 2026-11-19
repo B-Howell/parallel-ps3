@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <retro_atomic.h>
 
 namespace utils
 {
@@ -62,7 +63,8 @@ namespace utils
 	template <typename R, typename... Args>
 	struct dynamic_import<R(Args...)>
 	{
-		atomic_t<uptr> ptr;
+		// The function, 0 when there is none, -1 before it was looked up
+		retro_atomic_64_t ptr;
 		const char* const lib;
 		const char* const name;
 
@@ -76,28 +78,28 @@ namespace utils
 
 		void init() noexcept
 		{
-			ptr.release(reinterpret_cast<uptr>(get_proc_address(lib, name)));
+			retro_atomic_store_release_64(&ptr, static_cast<s64>(reinterpret_cast<uptr>(get_proc_address(lib, name))));
 		}
 
-		operator bool() noexcept
+		uptr get() noexcept
 		{
-			if (ptr == umax) [[unlikely]]
+			if (retro_atomic_load_acquire_64(&ptr) == -1) [[unlikely]]
 			{
 				init();
 			}
 
-			return ptr != 0;
+			return static_cast<uptr>(retro_atomic_load_acquire_64(&ptr));
+		}
+
+		operator bool() noexcept
+		{
+			return get() != 0;
 		}
 
 		// Caller
 		R operator()(Args... args) noexcept
 		{
-			if (ptr == umax) [[unlikely]]
-			{
-				init();
-			}
-
-			return reinterpret_cast<R (*)(Args...)>(ptr.load())(args...);
+			return reinterpret_cast<R (*)(Args...)>(get())(args...);
 		}
 	};
 }

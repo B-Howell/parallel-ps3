@@ -2,6 +2,7 @@
 
 #include "util/types.hpp"
 #include "util/atomic.hpp"
+#include <retro_atomic.h>
 
 #include <string>
 
@@ -76,7 +77,7 @@ namespace utils
 #endif
 		u32 m_flags{};
 		u64 m_size{};
-		atomic_t<void*> m_ptr{nullptr};
+		mutable retro_atomic_ptr_t m_ptr{nullptr};
 		std::string m_storage;
 
 	public:
@@ -115,7 +116,7 @@ namespace utils
 		// Get memory mapped by map_self()
 		u8* get() const
 		{
-			return static_cast<u8*>(+m_ptr);
+			return static_cast<u8*>(retro_atomic_load_acquire_ptr(&m_ptr));
 		}
 
 		u64 size() const

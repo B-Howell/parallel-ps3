@@ -41,6 +41,8 @@
 #include "Emu/Cell/SPURecompiler.h"
 #include "Utilities/Config.h"
 #include "Loader/TROPUSR.h"
+#include "util/dyn_lib.hpp"
+#include "util/vm.hpp"
 #include "Emu/system_config_types.h"
 
 #include <atomic>
@@ -1877,6 +1879,28 @@ int main()
 		}
 		CHECK(count == 20000 && sum == 19999ull * 20000 / 2);
 		std::printf("test_emu_waits: a lock-free queue: 200000 items from two producers, none lost, in order; a bunch keeps all\n");
+	}
+
+	// A function looked up once, on first use (libc, loaded already), a
+	// missing one false; shared memory mapped into its own storage once
+	// though two threads ask at once, and unmapped
+	{
+		utils::dynamic_import<size_t(const char*)> found("libc.so.6", "strlen");
+		utils::dynamic_import<size_t(const char*)> missing("libc.so.6", "no_such_function_here");
+		CHECK(found && found("abc") == 3);
+		CHECK(!missing && !missing);
+
+		utils::shm mem(0x10000);
+		u8* seen[2]{};
+		std::thread m1([&] { seen[0] = mem.map_self(); }), m2([&] { seen[1] = mem.map_self(); });
+		m1.join();
+		m2.join();
+		CHECK(seen[0] && seen[0] == seen[1] && mem.get() == seen[0]);
+		seen[0][0] = 7;
+		CHECK(mem.map_self() == seen[0] && mem.get()[0] == 7);
+		mem.unmap_self();
+		CHECK(mem.get() == nullptr);
+		std::printf("test_emu_waits: a function looked up once, shared memory mapped once by two threads\n");
 	}
 
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");
