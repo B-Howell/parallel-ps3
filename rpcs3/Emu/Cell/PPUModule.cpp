@@ -54,8 +54,8 @@ std::unordered_map<std::string, ppu_static_module*>& ppu_module_manager::get()
 // HLE function name cache
 std::vector<std::string> g_ppu_function_names;
 
-atomic_t<u32> liblv2_begin = 0, liblv2_end = 0;
-atomic_t<bool> libusbd_active = false;
+retro_atomic_int_t liblv2_begin{0}, liblv2_end{0}; // u32 addresses
+retro_atomic_int_t libusbd_active{0}; // 0 or 1
 
 extern u32 ppu_generate_id(std::string_view name)
 {
@@ -212,7 +212,7 @@ struct ppu_linkage_info
 	// The tables, and the libraries' locks, are the HLE thread's: every
 	// change to them is made there (hle_call), one at a time, so they take
 	// no lock
-	std::map<std::string, atomic_t<bool>, std::less<>> lib_lock;
+	std::map<std::string, bool, std::less<>> lib_lock; // the HLE thread's (hle_call): no atomic
 
 	// A function's link entry by its module and FNID, for those who only
 	// look an export up and should not wait on the lock the tables are built
@@ -768,7 +768,7 @@ extern bool ppu_register_library_lock(std::string_view libname, bool lock_lib)
 	{
 		if (auto it = link->lib_lock.find(libname); it != link->lib_lock.cend())
 		{
-			return lock_lib ? !it->second.test_and_set() : it->second.test_and_reset();
+			return lock_lib ? !std::exchange(it->second, true) : std::exchange(it->second, false);
 		}
 
 		if (!lock_lib)
@@ -779,7 +779,7 @@ extern bool ppu_register_library_lock(std::string_view libname, bool lock_lib)
 
 		auto& lib_lock = link->lib_lock.emplace(std::string{libname}, false).first->second;
 
-		return !lib_lock.test_and_set();
+		return !std::exchange(lib_lock, true);
 	});
 }
 
@@ -1584,7 +1584,7 @@ struct prx_names_table
 	// The HLE thread's: names are added there (hle_call), so with no lock;
 	// the table of where they are is read with none
 	std::set<std::string, std::less<>> registered;
-	atomic_t<const char*> lut[0x1000'0000 / 0x1'0000]{};
+	retro_atomic_ptr_t lut[0x1000'0000 / 0x1'0000]{}; // const char*
 
 	SAVESTATE_INIT_POS(4.1); // Dependency on lv2_obj
 
@@ -1628,7 +1628,7 @@ struct prx_names_table
 
 			for (u32 i = seg.addr >> 16; i < max; i++)
 			{
-				lut[i].release(ptr);
+				retro_atomic_store_release_ptr(&lut[i], const_cast<char*>(ptr));
 			}
 		}
 	}
@@ -1642,7 +1642,7 @@ const char* get_prx_name_by_cia(u32 addr)
 
 		if (addr < std::size(t->lut))
 		{
-			return t->lut[addr];
+			return static_cast<const char*>(retro_atomic_load_acquire_ptr(&t->lut[addr]));
 		}
 	}
 
@@ -2004,12 +2004,12 @@ shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object& elf, bool virtual_load, c
 
 	if (prx->path.ends_with("sys/external/liblv2.sprx"sv))
 	{
-		liblv2_begin = prx->segs[0].addr;
-		liblv2_end = prx->segs[0].addr + prx->segs[0].size;
+		retro_atomic_store_release_int(&liblv2_begin, static_cast<int>(prx->segs[0].addr));
+		retro_atomic_store_release_int(&liblv2_end, static_cast<int>(prx->segs[0].addr + prx->segs[0].size));
 	}
 	if (prx->path.ends_with("sys/external/libusbd.sprx"sv))
 	{
-		libusbd_active = true;
+		retro_atomic_store_release_int(&libusbd_active, 1);
 	}
 
 	std::vector<u32> applied;
@@ -2136,12 +2136,12 @@ void ppu_unload_prx(const lv2_prx& prx)
 
 	if (prx.path.ends_with("sys/external/liblv2.sprx"sv))
 	{
-		liblv2_begin = 0;
-		liblv2_end = 0;
+		retro_atomic_store_release_int(&liblv2_begin, 0);
+		retro_atomic_store_release_int(&liblv2_end, 0);
 	}
 	if (prx.path.ends_with("sys/external/libusbd.sprx"sv))
 	{
-		libusbd_active = false;
+		retro_atomic_store_release_int(&libusbd_active, 0);
 	}
 
 	// Format patch name
@@ -2818,8 +2818,8 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 			init_system_shared_memory();
 		}
 
-		liblv2_begin = 0;
-		liblv2_end = 0;
+		retro_atomic_store_release_int(&liblv2_begin, 0);
+		retro_atomic_store_release_int(&liblv2_end, 0);
 	}
 	else
 	{

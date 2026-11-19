@@ -1211,6 +1211,8 @@ check: all
 	@if grep -nw "atomic_t" ../../Emu/Cell/Modules/cellSaveData.cpp || grep -n "atomic_t<bool> g_cellsavedata_auto_confirm" ../../libretro/libretro_core.cpp; then echo "atomic_t is back in cellSaveData"; exit 1; else echo "cellSaveData is retro_atomic"; fi
 	@# cellUserInfo's overlay and dialog flags are off atomic_t
 	@if grep -nw "atomic_t" ../../Emu/Cell/Modules/cellUserInfo.cpp; then echo "atomic_t is back in cellUserInfo"; exit 1; else echo "cellUserInfo is retro_atomic"; fi
+	@# PPUModule's liblv2 range, libusbd flag, library locks and PRX name table are off atomic_t
+	@if grep -nw "atomic_t" ../../Emu/Cell/PPUModule.cpp || grep -n "extern atomic_t<u32> liblv2_begin\|extern atomic_t<bool> libusbd_active" ../../Emu/Cell/PPUThread.cpp ../../Emu/Cell/lv2/sys_usbd.cpp; then echo "atomic_t is back in PPUModule"; exit 1; else echo "PPUModule is retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

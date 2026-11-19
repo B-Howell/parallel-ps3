@@ -3911,12 +3911,12 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 		return false;
 	}())
 	{
-		extern atomic_t<u32> liblv2_begin, liblv2_end;
+		extern retro_atomic_int_t liblv2_begin, liblv2_end;
 
 		u32 notify = ppu.res_notify;
 
 		// Avoid notifications from lwmutex or sys_spinlock
-		const bool is_liblv2_or_null = (ppu.cia >= liblv2_begin && ppu.cia < liblv2_end);
+		const bool is_liblv2_or_null = (ppu.cia >= static_cast<u32>(retro_atomic_load_acquire_int(&liblv2_begin)) && ppu.cia < static_cast<u32>(retro_atomic_load_acquire_int(&liblv2_end)));
 
 		if (!is_liblv2_or_null)
 		{

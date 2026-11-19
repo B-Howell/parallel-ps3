@@ -65,7 +65,7 @@ cfg_guncon3 g_cfg_guncon3;
 cfg_topshotelite g_cfg_topshotelite;
 cfg_topshotfearmaster g_cfg_topshotfearmaster;
 
-extern atomic_t<bool> libusbd_active;
+extern retro_atomic_int_t libusbd_active;
 
 template <>
 void fmt_class_string<libusb_transfer>::format(std::string& out, u64 arg)
@@ -778,7 +778,7 @@ void usb_handler_thread::operator()()
 		u64 delay = 1'000;
 
 		// Process fake transfers
-		if (libusbd_active && !fake_transfers.empty())
+		if (retro_atomic_load_acquire_int(&libusbd_active) && !fake_transfers.empty())
 		{
 			const u64 timestamp = get_guest_system_time();
 

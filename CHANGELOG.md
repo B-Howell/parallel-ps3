@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **PPUModule is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the liblv2 address range (which PPUThread reads to skip lwmutex notifications) and the libusbd flag (which sys_usbd reads) are `retro_atomic_int_t`. The PRX name table, read with no lock by the thread that names a crashing address, holds `retro_atomic_ptr_t`s. The library lock map is touched only on the HLE thread (`hle_call`), so its flags are plain `bool`s with no atomic at all. Nothing is saved in savestates.
+  - **Tests:** none at runtime: each of these is set as a PRX loads or unloads, which needs a game's modules. A check fails if `atomic_t` comes back to PPUModule or its two `extern`s.
+
+
 - **cellUserInfo is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the overlay flag and the dialog-open flag are `retro_atomic_int_t`. The dialog is still claimed by swapping the flag to 1, so of two calls at once one opens it. Nothing is saved in savestates.
   - **Tests:** none at runtime: the flags are set and read only inside the game's user info calls, and nothing waits on them. A check fails if `atomic_t` comes back to cellUserInfo.
