@@ -2866,7 +2866,7 @@ void ppu_thread::cpu_sleep()
 
 	if (auto ptr = vm::g_tls_locked)
 	{
-		ptr->compare_and_swap(this, nullptr);
+		vm::passive_lock_drop(ptr, this);
 	}
 
 	hw_sleep_time = 0;

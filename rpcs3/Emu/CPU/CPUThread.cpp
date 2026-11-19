@@ -317,7 +317,7 @@ void cpu_thread::operator()()
 
 			if (auto ptr = vm::g_tls_locked)
 			{
-				ptr->compare_and_swap(_this, nullptr);
+				vm::passive_lock_drop(ptr, _this);
 			}
 
 			g_tls_log_control = [](const char*, u64){};
@@ -619,7 +619,7 @@ bool cpu_thread::check_state() noexcept
 
 		if (escape)
 		{
-			if (vm::range_lock_writers() && vm::g_tls_locked && *vm::g_tls_locked == this)
+			if (vm::range_lock_writers() && vm::g_tls_locked && vm::passive_lock_owner(vm::g_tls_locked) == this)
 			{
 				state += cpu_flag::wait + cpu_flag::memory;
 				cpu_sleep_called = false;

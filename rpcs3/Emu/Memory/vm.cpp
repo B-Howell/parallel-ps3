@@ -67,10 +67,10 @@ namespace vm
 	alignas(64) std::vector<std::shared_ptr<block_t>> g_locations;
 
 	// Memory mutex acknowledgement
-	thread_local atomic_t<cpu_thread*>* g_tls_locked = nullptr;
+	thread_local passive_lock_t* g_tls_locked = nullptr;
 
 	// Memory mutex: passive locks
-	std::array<atomic_t<cpu_thread*>, g_cfg.core.ppu_threads.max> g_locks{};
+	alignas(64) std::array<passive_lock_t, g_cfg.core.ppu_threads.max> g_locks{};
 
 	// Range lock slot allocation bits
 	alignas(128) range_lock_t g_range_lock_bits[2]{};
@@ -144,8 +144,11 @@ namespace vm
 	{
 		for (u32 i = 0, max = g_cfg.core.ppu_threads;;)
 		{
-			if (!g_locks[i] && g_locks[i].compare_and_swap_test(nullptr, _cpu))
+			if (!passive_lock_owner(&g_locks[i]) && retro_atomic_cas_ptr(&g_locks[i], nullptr, static_cast<void*>(_cpu)))
 			{
+				// Held before the writers' bits are read: a writer setting
+				// its bit sees this thread, or this thread sees the bit
+				vm_range_lock_fence_after_rmw();
 				g_tls_locked = g_locks.data() + i;
 				break;
 			}
@@ -294,7 +297,7 @@ namespace vm
 
 		bool ok = true;
 
-		if (!g_tls_locked || *g_tls_locked != &cpu) [[unlikely]]
+		if (!g_tls_locked || passive_lock_owner(g_tls_locked) != &cpu) [[unlikely]]
 		{
 			_register_lock(&cpu);
 
@@ -341,7 +344,7 @@ namespace vm
 	{
 		bs_t<cpu_flag> add_state = cpu_flag::wait;
 
-		if (g_tls_locked && g_tls_locked->compare_and_swap_test(&cpu, nullptr))
+		if (g_tls_locked && passive_lock_drop(g_tls_locked, &cpu))
 		{
 			add_state += cpu_flag::memory;
 		}
@@ -439,7 +442,7 @@ namespace vm
 
 			for (auto lock = g_locks.cbegin(), end = lock + g_cfg.core.ppu_threads; lock != end; lock++)
 			{
-				if (auto ptr = +*lock; ptr && ptr->state.none_of(cpu_flag::wait + cpu_flag::memory))
+				if (auto ptr = passive_lock_owner(const_cast<passive_lock_t*>(&*lock)); ptr && ptr->state.none_of(cpu_flag::wait + cpu_flag::memory))
 				{
 					ptr->state.test_and_set(cpu_flag::memory);
 				}
@@ -476,7 +479,7 @@ namespace vm
 
 			for (auto lock = g_locks.cbegin(), end = lock + g_cfg.core.ppu_threads; lock != end; lock++)
 			{
-				if (auto ptr = +*lock)
+				if (auto ptr = passive_lock_owner(const_cast<passive_lock_t*>(&*lock)))
 				{
 					while (!(ptr->state & cpu_flag::wait))
 					{

@@ -9,7 +9,16 @@ class shared_mutex;
 
 namespace vm
 {
-	extern thread_local atomic_t<cpu_thread*>* g_tls_locked;
+	// A passive lock slot: the PPU thread holding it, or null
+	using passive_lock_t = retro_atomic_ptr_t;
+
+	// This thread's passive lock slot, or null
+	extern thread_local passive_lock_t* g_tls_locked;
+
+	inline cpu_thread* passive_lock_owner(passive_lock_t* lock) { return static_cast<cpu_thread*>(retro_atomic_load_acquire_ptr(lock)); }
+
+	// Given up by @cpu if it holds it
+	inline bool passive_lock_drop(passive_lock_t* lock, cpu_thread* cpu) { return retro_atomic_cas_ptr(lock, static_cast<void*>(cpu), nullptr) != 0; }
 
 	enum range_lock_flags : u64
 	{

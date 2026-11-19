@@ -36,6 +36,7 @@
 #include "Emu/RSX/Common/bitfield.hpp"
 #include "Emu/Cell/lv2/sys_spu.h"
 #include "Emu/savestate_utils.hpp"
+#include "Emu/Memory/vm_locking.h"
 
 #include <atomic>
 #include <cstdio>
@@ -1393,6 +1394,24 @@ int main()
 		b.join();
 		CHECK(doubled == 0);
 		std::printf("test_emu_waits: a sysutil callback word: installed only where none is, 20000 races with one winner each\n");
+	}
+
+	// A passive lock slot: its owner read back, and given up only by the
+	// thread holding it
+	{
+		vm::passive_lock_t slot{};
+		alignas(64) static char a_obj[64], b_obj[64];
+		cpu_thread* const a = reinterpret_cast<cpu_thread*>(a_obj);
+		cpu_thread* const b = reinterpret_cast<cpu_thread*>(b_obj);
+		CHECK(vm::passive_lock_owner(&slot) == nullptr);
+		CHECK(retro_atomic_cas_ptr(&slot, nullptr, static_cast<void*>(a)));
+		CHECK(vm::passive_lock_owner(&slot) == a);
+		CHECK(!vm::passive_lock_drop(&slot, b));
+		CHECK(vm::passive_lock_owner(&slot) == a);
+		CHECK(vm::passive_lock_drop(&slot, a));
+		CHECK(vm::passive_lock_owner(&slot) == nullptr);
+		CHECK(!vm::passive_lock_drop(&slot, a));
+		std::printf("test_emu_waits: a passive lock slot: given up only by its owner\n");
 	}
 
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");

@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The passive lock slots (vm::g_locks) are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** each PPU thread holds one slot while it reads guest memory without the range locks. The slot holds the thread, or null. The slots and the thread's own slot pointer are `retro_atomic_ptr_t`. `vm::passive_lock_owner()` reads a slot, and `vm::passive_lock_drop()` gives it up, but only for the thread holding it, with a compare-and-swap as before. A thread taking a slot is followed by a full barrier before it reads the writers' bits (free on x86, where the compare-and-swap is one). A writer setting its bit has the same barrier before it reads the slots, so one of them always sees the other. The memory manager, the PPU thread and the CPU thread use them.
+  - **Tests:** `test_emu_waits` checks that a slot's owner is read back and that only the thread holding the slot gives it up. It was shown to fail with the slot given up whoever asks. The barrier pairing is the one `test_vm_range_locks` already checks. A check fails if `atomic_t` comes back to the slots.
+
+
 - **The memory range locks are off `atomic_t`, and their scans are C89 (Emu/Memory/vm_range_locks.c).** Not yet run on a game.
   - **What changed:**
     - **The slots:** the 64 range lock slots (the range a thread is reading or writing guest memory over, address in the low half, size and flags in the high) and the two words of slot bits (the slots in use, the slots locked for writing) are `retro_atomic_64_t`s, each on a 128-byte line of its own as before. `vm::range_lock_t` is the slot; `range_lock_value()`, `range_lock_publish()`, `range_lock_release()`, `range_lock_writers()` and `range_lock_main()` read and set them. The SPU thread, lv2's reservation wait, PPU thread exit and the CPU thread use them.
