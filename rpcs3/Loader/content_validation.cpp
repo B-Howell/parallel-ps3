@@ -5,7 +5,7 @@
 
 #include "Emu/system_utils.hpp"
 #include "Utilities/File.h"
-#include "Utilities/rXml.h"
+#include "Loader/TROPUSR.h"
 #include <lrc_hash.h>
 #include "Crypto/utils.h"
 
@@ -54,9 +54,9 @@ content_integrity_status content_validation::check_integrity(content_file_type f
 		return content_integrity_status::NO_MATCH;
 	}
 
-	rXmlDocument db;
+	rxml_document_t* const db = xml_read_file(db_file);
 
-	if (!db.Read(db_file))
+	if (!db)
 	{
 		sys_log.error("check_integrity: Failed to process file: %s", db_path);
 		return content_integrity_status::ERROR_PARSING_DB;
@@ -65,7 +65,14 @@ content_integrity_status content_validation::check_integrity(content_file_type f
 	// Close the file and work with the data loaded into the "db" document
 	db_file.close();
 
-	std::shared_ptr<rXmlNode> db_base = db.GetRoot();
+	// Freed on every way out
+	struct db_guard
+	{
+		rxml_document_t* doc;
+		~db_guard() { rxml_free_document(doc); }
+	} const guard{db};
+
+	rxml_node_t* const db_base = rxml_root_node(db);
 
 	if (!db_base)
 	{
@@ -73,7 +80,7 @@ content_integrity_status content_validation::check_integrity(content_file_type f
 		return content_integrity_status::ERROR_PARSING_DB;
 	}
 
-	if (db_base = db_base->GetChild(std::string_view("datafile")); !db_base)
+	if (!xml_name_is(db_base, "datafile"))
 	{
 		sys_log.error("check_integrity: Failed to get 'datafile' node on file: %s", db_path);
 		return content_integrity_status::ERROR_PARSING_DB;
@@ -83,18 +90,18 @@ content_integrity_status content_validation::check_integrity(content_file_type f
 	// Check for a match on Redump db
 	//
 
-	for (auto node = db_base->GetChildren(); node; node = node->GetNext())
+	for (rxml_node_t* node = db_base->children; node; node = node->next)
 	{
-		if (node->GetName() == "game")
+		if (xml_name_is(node, "game"))
 		{
-			for (auto child = node->GetChildren(); child; child = child->GetNext())
+			for (rxml_node_t* child = node->children; child; child = child->next)
 			{
 				// If a match is found, fill in "game_desc" (if requested) and return FOUND_MATCH
-				if (child->GetName() == "rom" && hash == child->GetAttribute(std::string_view("md5")))
+				if (xml_name_is(child, "rom") && hash == xml_attr(child, "md5"))
 				{
 					if (game_name)
 					{
-						*game_name = node->GetAttribute(std::string_view("name"));
+						*game_name = xml_attr(node, "name");
 					}
 
 					return content_integrity_status::FOUND_MATCH;

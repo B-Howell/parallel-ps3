@@ -40,6 +40,7 @@
 #include "Emu/Memory/vm_reservation.h"
 #include "Emu/Cell/SPURecompiler.h"
 #include "Utilities/Config.h"
+#include "Loader/TROPUSR.h"
 #include "Emu/system_config_types.h"
 
 #include <atomic>
@@ -1695,6 +1696,48 @@ int main()
 		f.notify_all();
 		waiter.join();
 		std::printf("test_emu_waits: an atomic bitset: each operation right, 400000 flag flips none lost, a waiter woken\n");
+	}
+
+	// A trophy config read with libretro-common's rxml: the walk is
+	// trophyconf's children, names, attributes ("" when missing) and text
+	// as written, and another root element walked alone, as before
+	{
+		const std::string dir = fs::get_temp_dir();
+		const std::string conf = dir + "test_tropconf.sfm";
+		const std::string other = dir + "test_tropother.sfm";
+		fs::write_file(conf, fs::rewrite, std::string("<?xml version=\"1.0\"?><trophyconf version=\"1.0\"><title-name>Game &amp; More</title-name>"
+			"<trophy id=\"000\" hidden=\"no\" ttype=\"P\" pid=\"-1\"><name>All</name><detail>Every one</detail></trophy>"
+			"<trophy id=\"001\" hidden=\"yes\" ttype=\"B\" pid=\"000\"><name>First</name></trophy></trophyconf>"));
+		fs::write_file(other, fs::rewrite, std::string("<trophy id=\"7\"/>"));
+
+		trophy_xml_document doc;
+		CHECK(doc.Read(fs::file(conf)) && doc.GetRoot() && xml_name_is(doc.GetRoot(), "trophyconf"));
+		int trophies = 0, platinum = 0, hidden = 0;
+		std::string title;
+		for (rxml_node_t* n = doc.First(); n; n = n->next)
+		{
+			if (xml_name_is(n, "title-name"))
+			{
+				title = xml_text(n);
+			}
+			else if (xml_name_is(n, "trophy"))
+			{
+				trophies++;
+				platinum += xml_attr(n, "ttype")[0] == 'P';
+				hidden += xml_attr(n, "hidden")[0] == 'y';
+				CHECK(atoi(xml_attr(n, "id")) == trophies - 1);
+				CHECK(*xml_attr(n, "missing") == '\0');
+			}
+		}
+		CHECK(trophies == 2 && platinum == 1 && hidden == 1 && title == "Game & More");
+
+		trophy_xml_document other_doc;
+		CHECK(other_doc.Read(fs::file(other)) && other_doc.First() == other_doc.GetRoot() && !other_doc.First()->next);
+		trophy_xml_document none;
+		CHECK(!none.Read(fs::file(dir + "test_tropmissing.sfm")) && !none.First());
+		fs::remove_file(conf);
+		fs::remove_file(other);
+		std::printf("test_emu_waits: a trophy config read with rxml: its trophies, names, attributes and text\n");
 	}
 
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");

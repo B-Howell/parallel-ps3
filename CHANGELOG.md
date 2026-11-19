@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Utilities/rXml is gone: trophy configs and the content databases are read with libretro-common's rxml directly.** Not yet run on a game.
+  - **What changed:**
+    - **The wrapper is removed:** `rXml` was a C++ layer over libretro-common's `rxml`. It handed out a new `std::shared_ptr<rXmlNode>` for every node a walk stepped onto, and a `std::string` copy of every name, attribute and text. The trophy code (`TROPUSR`, `sceNpTrophy`, the trophy list overlay) and the content check against the Redump and PSN databases now walk `rxml_node_t` directly (`->children`, `->next`). Small inline helpers in `TROPUSR.h` read names (`xml_name_is`), attributes (`xml_attr`, `""` when missing, as before) and text (`xml_text`) in place, so a walk allocates and copies nothing.
+    - **Reading files:** `xml_read_file()` reads a file straight into the buffer the document keeps (`rxml_load_document_owned`), with no copy.
+    - **trophy_xml_document** owns its `rxml` document. `First()` is the first node to walk for trophies: `trophyconf`'s first child, or (with another root element) that element alone, as the old walk was.
+    - **Text into the guest's structures:** trophy names and details are copied into them with `strlcpy` (libretro-common) instead of `strcpy_trunc`. The structures are zeroed first, as before.
+  - **Tests:** `test_emu_waits` reads a trophy config written to a file and walks it. It checks the two trophies, the platinum and the hidden one, the ids, a missing attribute reading `""`, and the title with its `&amp;` decoded. It also checks that another root element is walked alone and that a missing file gives no document. It was shown to fail with `First()` walking the root element instead of `trophyconf`'s children. A check fails if `Utilities/rXml` comes back.
+
+
 - **The atomic bitset (atomic_bs_t: every CPU thread's state, a socket's poll events) is off `atomic_t`.** Not yet run on a game.
   - **What changed:** `atomic_bs_t` no longer derives from `atomic_t`. It holds one `retro_atomic_int_t` (the flags of a 32-bit enum), and every operation on it is a `retro_atomic` call:
     - setting and clearing flags (`+=`, `-=`, `test_and_set`, `test_and_reset`) is one atomic or/and, as before;

@@ -1,6 +1,9 @@
 #pragma once
 #include "stdafx.h"
-#include "Utilities/rXml.h"
+#include <formats/rxml.h>
+#include <compat/strl.h>
+#include <cstring>
+#include <cstdlib>
 #include "Utilities/File.h"
 
 struct TROPUSRHeader
@@ -57,10 +60,61 @@ struct TROPUSREntry6
 	// Note: One of the fields should hold a flag showing whether the trophy is hidden or not
 };
 
-struct trophy_xml_document : public rXmlDocument
+// An XML file parsed with libretro-common's rxml, read straight into the
+// buffer the document keeps: null when it cannot be read or parsed
+rxml_document_t* xml_read_file(const fs::file& file);
+
+// A node's name is @name
+inline bool xml_name_is(const rxml_node_t* node, const char* name)
 {
-	trophy_xml_document() : rXmlDocument() {}
-	std::shared_ptr<rXmlNode> GetRoot() override;
+	return node->name && std::strcmp(node->name, name) == 0;
+}
+
+// A node's attribute, "" when it has none
+inline const char* xml_attr(rxml_node_t* node, const char* name)
+{
+	const char* const value = rxml_node_attrib(node, name);
+	return value ? value : "";
+}
+
+// A node's text, "" when it has none
+inline const char* xml_text(const rxml_node_t* node)
+{
+	return node->data ? node->data : "";
+}
+
+// A trophy config (TROPCONF.SFM)
+struct trophy_xml_document
+{
+	rxml_document_t* doc = nullptr;
+
+	trophy_xml_document() = default;
+	trophy_xml_document(const trophy_xml_document&) = delete;
+	trophy_xml_document& operator=(const trophy_xml_document&) = delete;
+
+	~trophy_xml_document()
+	{
+		rxml_free_document(doc);
+	}
+
+	// Whether it read and has a root element
+	bool Read(const fs::file& file)
+	{
+		rxml_free_document(doc);
+		doc = xml_read_file(file);
+		return doc && rxml_root_node(doc);
+	}
+
+	// The root element, null when there is none
+	rxml_node_t* GetRoot() const
+	{
+		return doc ? rxml_root_node(doc) : nullptr;
+	}
+
+	// The first node to walk for trophies: trophyconf's first child; with
+	// another root element, that element alone (as before); null with no
+	// root
+	rxml_node_t* First() const;
 };
 
 class TROPUSRLoader

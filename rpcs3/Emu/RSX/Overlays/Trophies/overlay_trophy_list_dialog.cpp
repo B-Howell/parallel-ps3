@@ -465,18 +465,18 @@ namespace rsx
 				return game_trophy_data;
 			}
 
-			std::shared_ptr<rXmlNode> trophy_base = game_trophy_data->trop_config.GetRoot();
+			rxml_node_t* const trophy_base = game_trophy_data->trop_config.GetRoot();
 			if (!trophy_base)
 			{
 				rsx_log.error("Failed to read trophy xml (root is null): %s", tropconf_path);
 				return game_trophy_data;
 			}
 
-			for (std::shared_ptr<rXmlNode> n = trophy_base->GetChildren(); n; n = n->GetNext())
+			for (rxml_node_t* n = game_trophy_data->trop_config.First(); n; n = n->next)
 			{
-				if (n->GetName() == "title-name")
+				if (xml_name_is(n, "title-name"))
 				{
-					game_trophy_data->game_name = n->GetNodeContent();
+					game_trophy_data->game_name = xml_text(n);
 					break;
 				}
 			}
@@ -509,7 +509,7 @@ namespace rsx
 			const int unlocked_trophies = m_trophy_data->trop_usr->GetUnlockedTrophiesCount();
 			const int percentage = (all_trophies > 0) ? (100 * unlocked_trophies / all_trophies) : 0;
 
-			std::shared_ptr<rXmlNode> trophy_base = m_trophy_data->trop_config.GetRoot();
+			rxml_node_t* const trophy_base = m_trophy_data->trop_config.GetRoot();
 			if (!trophy_base)
 			{
 				rsx_log.error("Populating Trophy List Overlay failed (root is null): %s %s", m_trophy_data->game_name, m_trophy_data->path);
@@ -529,18 +529,18 @@ namespace rsx
 
 			std::vector<trophy_entry_data> trophy_entries;
 
-			for (std::shared_ptr<rXmlNode> n = trophy_base ? trophy_base->GetChildren() : nullptr; n; n = n->GetNext())
+			for (rxml_node_t* n = m_trophy_data->trop_config.First(); n; n = n->next)
 			{
 				// Only show trophies.
-				if (n->GetName() != "trophy")
+				if (!xml_name_is(n, "trophy"))
 				{
 					continue;
 				}
 
 				// Get data (stolen graciously from sceNpTrophy.cpp)
 				trophy_entry_data entry{};
-				entry.details.trophyId = atoi(n->GetAttribute("id").c_str());
-				entry.details.hidden = n->GetAttribute("hidden")[0] == 'y';
+				entry.details.trophyId = atoi(xml_attr(n, "id"));
+				entry.details.hidden = xml_attr(n, "hidden")[0] == 'y';
 
 				entry.unlocked = m_trophy_data->trop_usr->GetTrophyUnlockState(entry.details.trophyId);
 				entry.timestamp = m_trophy_data->trop_usr->GetTrophyTimestamp(entry.details.trophyId);
@@ -557,17 +557,17 @@ namespace rsx
 				}
 
 				// Get platinum link id (we assume there only exists one platinum trophy per game for now)
-				const s32 platinum_link_id = atoi(n->GetAttribute("pid").c_str());
+				const s32 platinum_link_id = atoi(xml_attr(n, "pid"));
 				entry.platinum_relevant = platinum_link_id >= 0;
 
 				// Get trophy type
-				switch (n->GetAttribute("ttype")[0])
+				switch (xml_attr(n, "ttype")[0])
 				{
 				case 'B': entry.details.trophyGrade = SCE_NP_TROPHY_GRADE_BRONZE; break;
 				case 'S': entry.details.trophyGrade = SCE_NP_TROPHY_GRADE_SILVER; break;
 				case 'G': entry.details.trophyGrade = SCE_NP_TROPHY_GRADE_GOLD; break;
 				case 'P': entry.details.trophyGrade = SCE_NP_TROPHY_GRADE_PLATINUM; break;
-				default: rsx_log.warning("Unknown trophy grade %s", n->GetAttribute("ttype")); break;
+				default: rsx_log.warning("Unknown trophy grade %s", xml_attr(n, "ttype")); break;
 				}
 
 				// Get name and detail
@@ -578,16 +578,15 @@ namespace rsx
 				}
 				else
 				{
-					for (std::shared_ptr<rXmlNode> n2 = n->GetChildren(); n2; n2 = n2->GetNext())
+					for (rxml_node_t* n2 = n->children; n2; n2 = n2->next)
 					{
-						const std::string name = n2->GetName();
-						if (name == "name")
+						if (xml_name_is(n2, "name"))
 						{
-							strcpy_trunc(entry.details.name, n2->GetNodeContent());
+							strlcpy(entry.details.name, xml_text(n2), sizeof(entry.details.name));
 						}
-						else if (name == "detail")
+						else if (xml_name_is(n2, "detail"))
 						{
-							strcpy_trunc(entry.details.description, n2->GetNodeContent());
+							strlcpy(entry.details.description, xml_text(n2), sizeof(entry.details.description));
 						}
 					}
 				}

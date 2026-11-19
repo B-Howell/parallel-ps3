@@ -8,7 +8,6 @@
 #include "Emu/Cell/timers.hpp"
 #include "Emu/Cell/Modules/cellMsgDialog.h"
 
-#include "Utilities/rXml.h"
 #include "Loader/TRP.h"
 #include "Loader/TROPUSR.h"
 
@@ -1036,7 +1035,7 @@ error_code sceNpTrophyGetGameInfo(u32 context, u32 handle, vm::ptr<SceNpTrophyGa
 			return CELL_OK;
 		}
 
-		std::shared_ptr<rXmlNode> trophy_base = doc.GetRoot();
+		rxml_node_t* const trophy_base = doc.GetRoot();
 		if (!trophy_base)
 		{
 			sceNpTrophy.error("sceNpTrophyGetGameInfo: Failed to read TROPCONF.SFM (root is null): %s", config_path);
@@ -1044,30 +1043,28 @@ error_code sceNpTrophyGetGameInfo(u32 context, u32 handle, vm::ptr<SceNpTrophyGa
 			return CELL_OK;
 		}
 
-		for (std::shared_ptr<rXmlNode> n = trophy_base->GetChildren(); n; n = n->GetNext())
+		for (rxml_node_t* n = doc.First(); n; n = n->next)
 		{
-			const std::string n_name = n->GetName();
-
 			if (details)
 			{
-				if (n_name == "title-name")
+				if (xml_name_is(n, "title-name"))
 				{
-					strcpy_trunc(details->title, n->GetNodeContent());
+					strlcpy(details->title, xml_text(n), sizeof(details->title));
 					continue;
 				}
-				else if (n_name == "title-detail")
+				else if (xml_name_is(n, "title-detail"))
 				{
-					strcpy_trunc(details->description, n->GetNodeContent());
+					strlcpy(details->description, xml_text(n), sizeof(details->description));
 					continue;
 				}
 			}
 
-			if (n_name == "trophy")
+			if (xml_name_is(n, "trophy"))
 			{
 				if (details)
 				{
 					details->numTrophies++;
-					switch (n->GetAttribute("ttype")[0])
+					switch (xml_attr(n, "ttype")[0])
 					{
 					case 'B': details->numBronze++;   break;
 					case 'S': details->numSilver++;   break;
@@ -1078,12 +1075,12 @@ error_code sceNpTrophyGetGameInfo(u32 context, u32 handle, vm::ptr<SceNpTrophyGa
 
 				if (data)
 				{
-					const u32 trophy_id = atoi(n->GetAttribute("id").c_str());
+					const u32 trophy_id = atoi(xml_attr(n, "id"));
 
 					if (ctxt->tropusr->GetTrophyUnlockState(trophy_id))
 					{
 						data->unlockedTrophies++;
-						switch (n->GetAttribute("ttype")[0])
+						switch (xml_attr(n, "ttype")[0])
 						{
 						case 'B': data->unlockedBronze++;   break;
 						case 'S': data->unlockedSilver++;   break;
@@ -1337,7 +1334,7 @@ static error_code NpTrophyGetTrophyInfo(const trophy_context_t* ctxt, s32 trophy
 		// TODO: return some error
 	}
 
-	auto trophy_base = doc.GetRoot();
+	rxml_node_t* const trophy_base = doc.GetRoot();
 	if (!trophy_base)
 	{
 		sceNpTrophy.error("sceNpTrophyGetGameInfo: Failed to read TROPCONF.SFM (root is null): %s", config_path);
@@ -1345,13 +1342,13 @@ static error_code NpTrophyGetTrophyInfo(const trophy_context_t* ctxt, s32 trophy
 	}
 
 	bool found = false;
-	for (std::shared_ptr<rXmlNode> n = trophy_base ? trophy_base->GetChildren() : nullptr; n; n = n->GetNext())
+	for (rxml_node_t* n = doc.First(); n; n = n->next)
 	{
-		if (n->GetName() == "trophy" && (trophyId == atoi(n->GetAttribute("id").c_str())))
+		if (xml_name_is(n, "trophy") && (trophyId == atoi(xml_attr(n, "id"))))
 		{
 			found = true;
 
-			const bool hidden = n->GetAttribute("hidden")[0] == 'y';
+			const bool hidden = xml_attr(n, "hidden")[0] == 'y';
 			const bool unlocked = !!ctxt->tropusr->GetTrophyUnlockState(trophyId);
 
 			if (hidden && !unlocked) // Trophy is hidden
@@ -1364,7 +1361,7 @@ static error_code NpTrophyGetTrophyInfo(const trophy_context_t* ctxt, s32 trophy
 				tmp_details.trophyId = trophyId;
 				tmp_details.hidden = hidden;
 
-				switch (n->GetAttribute("ttype")[0])
+				switch (xml_attr(n, "ttype")[0])
 				{
 				case 'B': tmp_details.trophyGrade = SCE_NP_TROPHY_GRADE_BRONZE;   break;
 				case 'S': tmp_details.trophyGrade = SCE_NP_TROPHY_GRADE_SILVER;   break;
@@ -1373,17 +1370,15 @@ static error_code NpTrophyGetTrophyInfo(const trophy_context_t* ctxt, s32 trophy
 				default: break;
 				}
 
-				for (std::shared_ptr<rXmlNode> n2 = n->GetChildren(); n2; n2 = n2->GetNext())
+				for (rxml_node_t* n2 = n->children; n2; n2 = n2->next)
 				{
-					const std::string n2_name = n2->GetName();
-
-					if (n2_name == "name")
+					if (xml_name_is(n2, "name"))
 					{
-						strcpy_trunc(tmp_details.name, n2->GetNodeContent());
+						strlcpy(tmp_details.name, xml_text(n2), sizeof(tmp_details.name));
 					}
-					else if (n2_name == "detail")
+					else if (xml_name_is(n2, "detail"))
 					{
-						strcpy_trunc(tmp_details.description, n2->GetNodeContent());
+						strlcpy(tmp_details.description, xml_text(n2), sizeof(tmp_details.description));
 					}
 				}
 			}
@@ -1600,16 +1595,16 @@ error_code sceNpTrophyGetTrophyIcon(u32 context, u32 handle, s32 trophyId, vm::p
 					// TODO: return some error
 				}
 
-				auto trophy_base = doc.GetRoot();
+				rxml_node_t* const trophy_base = doc.GetRoot();
 				if (!trophy_base)
 				{
 					sceNpTrophy.error("sceNpTrophyGetTrophyIcon: Failed to read TROPCONF.SFM (root is null): %s", config_path);
 					// TODO: return some error
 				}
 
-				for (std::shared_ptr<rXmlNode> n = trophy_base ? trophy_base->GetChildren() : nullptr; n; n = n->GetNext())
+				for (rxml_node_t* n = doc.First(); n; n = n->next)
 				{
-					if (n->GetName() == "trophy" && trophyId == atoi(n->GetAttribute("id").c_str()) && n->GetAttribute("hidden")[0] == 'y')
+					if (xml_name_is(n, "trophy") && trophyId == atoi(xml_attr(n, "id")) && xml_attr(n, "hidden")[0] == 'y')
 					{
 						return SCE_NP_TROPHY_ERROR_HIDDEN;
 					}

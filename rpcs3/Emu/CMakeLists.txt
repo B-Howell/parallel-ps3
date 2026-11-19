@@ -96,7 +96,6 @@ target_sources(rpcs3_emu PRIVATE
     ../../Utilities/lf_u64_map.c
     ../../Utilities/object_pack.c
     ../../Utilities/rw_word.c
-    ../../Utilities/rXml.cpp
     ../../Utilities/stack_trace.cpp
     ../../Utilities/stereo_config.cpp
     ../../Utilities/StrFmt.cpp

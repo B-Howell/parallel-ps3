@@ -1375,6 +1375,8 @@ check: all
 	@if test -f ../../../Utilities/mutex.cpp || grep -n "atomic_t<\|busy_wait" ../../../Utilities/mutex.h ../../../Utilities/rw_word.c; then echo "shared_mutex is back on atomic_t or spinning"; exit 1; else echo "shared_mutex is C89 on retro_atomic with no spinning"; fi
 	@# the atomic bitset (cpu_thread::state's kind) is one retro_atomic_int_t, off atomic_t
 	@if grep -n "public atomic_t\|atomic_storage<" ../../../Utilities/bit_set.h; then echo "the atomic bitset is back on atomic_t"; exit 1; else echo "the atomic bitset is retro_atomic"; fi
+	@# Utilities/rXml is gone: trophy configs and the content databases are read with libretro-common's rxml directly
+	@if test -f ../../../Utilities/rXml.cpp || test -f ../../../Utilities/rXml.h || grep -rn "rXml" ../../Loader ../../Emu --include=*.cpp --include=*.h; then echo "Utilities/rXml is back"; exit 1; else echo "XML is read with libretro-common's rxml directly"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

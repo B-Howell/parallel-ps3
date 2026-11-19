@@ -9,26 +9,55 @@ enum : u32
 	TROPUSR_MAGIC = 0x818F54AD
 };
 
-std::shared_ptr<rXmlNode> trophy_xml_document::GetRoot()
+rxml_document_t* xml_read_file(const fs::file& file)
 {
-	auto trophy_base = rXmlDocument::GetRoot();
-	if (!trophy_base)
+	if (!file)
 	{
 		return nullptr;
 	}
 
-	if (auto trophy_conf = trophy_base->GetChildren();
-		trophy_conf && trophy_conf->GetName() == "trophyconf")
+	const u64 size = file.size();
+
+	if (size >= usz{umax})
 	{
-		trophy_base = trophy_conf;
-	}
-	else
-	{
-		trp_log.error("trophy_xml_document: Root name does not match trophyconf in trophy. Name: %s", trophy_conf ? trophy_conf->GetName() : trophy_base->GetName());
-		// TODO: return nullptr or is this possible?
+		return nullptr;
 	}
 
-	return trophy_base;
+	char* const buf = static_cast<char*>(std::malloc(static_cast<usz>(size) + 1));
+
+	if (!buf)
+	{
+		return nullptr;
+	}
+
+	if (file.read_at(0, buf, size) != size)
+	{
+		std::free(buf);
+		return nullptr;
+	}
+
+	// The document takes the buffer whatever happens
+	buf[size] = '\0';
+	return rxml_load_document_owned(buf, static_cast<usz>(size));
+}
+
+rxml_node_t* trophy_xml_document::First() const
+{
+	rxml_node_t* const root = GetRoot();
+
+	if (!root)
+	{
+		return nullptr;
+	}
+
+	if (xml_name_is(root, "trophyconf"))
+	{
+		return root->children;
+	}
+
+	trp_log.error("trophy_xml_document: Root name does not match trophyconf in trophy. Name: %s", root->name ? root->name : "");
+	// TODO: return nullptr or is this possible?
+	return root;
 }
 
 TROPUSRLoader::load_result TROPUSRLoader::Load(std::string_view filepath, std::string_view configpath)
@@ -180,22 +209,22 @@ bool TROPUSRLoader::Generate(std::string_view filepath, std::string_view configp
 	m_table4.clear();
 	m_table6.clear();
 
-	auto trophy_base = doc.GetRoot();
+	rxml_node_t* const trophy_base = doc.GetRoot();
 	if (!trophy_base)
 	{
 		trp_log.error("TROPUSRLoader::Generate: Failed to read file (root is null): %s", filepath);
 		return false;
 	}
 
-	for (std::shared_ptr<rXmlNode> n = trophy_base->GetChildren(); n; n = n->GetNext())
+	for (rxml_node_t* n = doc.First(); n; n = n->next)
 	{
-		if (n->GetName() == "trophy")
+		if (xml_name_is(n, "trophy"))
 		{
-			const u32 trophy_id = std::atoi(n->GetAttribute("id").c_str());
-			const u32 trophy_pid = std::atoi(n->GetAttribute("pid").c_str());
+			const u32 trophy_id = std::atoi(xml_attr(n, "id"));
+			const u32 trophy_pid = std::atoi(xml_attr(n, "pid"));
 
 			u32 trophy_grade;
-			switch (n->GetAttribute("ttype")[0])
+			switch (xml_attr(n, "ttype")[0])
 			{
 			case 'B': trophy_grade = trophy_grade::bronze; break;
 			case 'S': trophy_grade = trophy_grade::silver; break;
@@ -282,7 +311,7 @@ u32 TROPUSRLoader::GetUnlockedPlatinumID(u32 trophy_id, const std::string& confi
 		return invalid_trophy_id;
 	}
 
-	auto trophy_base = doc.GetRoot();
+	rxml_node_t* const trophy_base = doc.GetRoot();
 	if (!trophy_base)
 	{
 		trp_log.error("TROPUSRLoader::GetUnlockedPlatinumID: Failed to read file (root is null): %s", config_path);
@@ -291,12 +320,12 @@ u32 TROPUSRLoader::GetUnlockedPlatinumID(u32 trophy_id, const std::string& confi
 
 	const usz trophy_count = m_table4.size();
 
-	for (std::shared_ptr<rXmlNode> n = trophy_base->GetChildren(); n; n = n->GetNext())
+	for (rxml_node_t* n = doc.First(); n; n = n->next)
 	{
-		if (n->GetName() == "trophy")
+		if (xml_name_is(n, "trophy"))
 		{
-			const u32 trophy_id = std::atoi(n->GetAttribute("id").c_str());
-			const u32 trophy_pid = std::atoi(n->GetAttribute("pid").c_str());
+			const u32 trophy_id = std::atoi(xml_attr(n, "id"));
+			const u32 trophy_pid = std::atoi(xml_attr(n, "pid"));
 
 			// We currently assume that trophies are ordered
 			if (trophy_id < trophy_count && m_table4[trophy_id].trophy_id == trophy_id)
