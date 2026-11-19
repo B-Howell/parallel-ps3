@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **ZCULL's own fields are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the two report pages' accessed flags and the count of critical reports in flight are `retro_atomic_int_t`. The report written into the game's memory through an `atomic_t` view is left for the guest memory work. Nothing is saved in savestates.
+  - **Tests:** none at runtime: they are set as the renderer writes ZCULL reports and the game's memory is accessed, which needs a running RSX. A check fails if `atomic_t` comes back to these two fields.
+
+
 - **The RSX DMA offloader is off `atomic_t`.** Not yet run on a game.
   - **What changed:** its enqueued and processed job counts are `retro_atomic_64_t`, and its memory fault flag is a `retro_atomic_int_t`. A sync off the renderer thread waited on the 64-bit processed count. It now waits on a 32-bit word that the offloader moves each time it has caught up and as it ends, through `retro_waitaddr`. The sync on the renderer thread is unchanged (`wait_attending`). Nothing is saved in savestates.
   - **Tests:** none at runtime: the offloader's thread calls into the current renderer as it catches up, and the test machine runs none. A check fails if `atomic_t` comes back to the offloader.

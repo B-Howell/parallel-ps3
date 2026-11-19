@@ -99,8 +99,8 @@ namespace rsx
 		{
 		private:
 			std::unordered_map<u32, MMIO_page_data_t> m_locked_pages[2];
-			atomic_t<bool> m_pages_accessed[2] = { false, false };
-			atomic_t<s32> m_critical_reports_in_flight = { 0 };
+			retro_atomic_int_t m_pages_accessed[2] = { 0, 0 }; // 0 or 1
+			retro_atomic_int_t m_critical_reports_in_flight{0};
 
 			// The locked pages are the renderer's alone: a fault on one from
 			// another thread is handed to the renderer (may_own), so they take
@@ -208,7 +208,7 @@ namespace rsx
 			bool may_own(u32 address) const;
 
 			// Optimization check
-			bool is_query_result_urgent(u32 address) const { return m_pages_accessed[rsx::classify_location(address)]; }
+			bool is_query_result_urgent(u32 address) const { return retro_atomic_load_acquire_int(&m_pages_accessed[rsx::classify_location(address)]) != 0; }
 
 			// Backend methods (optional, will return everything as always visible by default)
 			virtual void begin_occlusion_query(occlusion_query_info* /*query*/) {}

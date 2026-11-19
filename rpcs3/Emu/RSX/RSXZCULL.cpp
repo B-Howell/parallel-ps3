@@ -416,7 +416,7 @@ namespace rsx
 				return;
 			}
 
-			if (!m_critical_reports_in_flight)
+			if (!retro_atomic_load_acquire_int(&m_critical_reports_in_flight))
 			{
 				// Valid call, but nothing important queued up
 				return;
@@ -564,7 +564,7 @@ namespace rsx
 					m_next_tsc = m_tsc + min_zcull_tick_us;
 
 					// Schedule a queue flush if needed
-					if (!g_cfg.video.relaxed_zcull_sync && m_critical_reports_in_flight &&
+					if (!g_cfg.video.relaxed_zcull_sync && retro_atomic_load_acquire_int(&m_critical_reports_in_flight) &&
 						front.query && front.query->num_draws && front.query->sync_tag > m_sync_tag)
 					{
 						const auto elapsed = m_tsc - front.query->timestamp;
@@ -699,12 +699,12 @@ namespace rsx
 				const auto location1 = rsx::classify_location(memory_address);
 				const auto location2 = rsx::classify_location(memory_end - 1);
 
-				if (!m_pages_accessed[location1])
+				if (!retro_atomic_load_acquire_int(&m_pages_accessed[location1]))
 				{
 					disable_optimizations(ptimer, location1);
 				}
 
-				if (!m_pages_accessed[location2])
+				if (!retro_atomic_load_acquire_int(&m_pages_accessed[location2]))
 				{
 					disable_optimizations(ptimer, location2);
 				}
@@ -825,7 +825,7 @@ namespace rsx
 		void ZCULL_control::on_report_enqueued(vm::addr_t address)
 		{
 			const auto location = rsx::classify_location(address);
-			if (!m_pages_accessed[location]) [[ likely ]]
+			if (!retro_atomic_load_acquire_int(&m_pages_accessed[location])) [[ likely ]]
 			{
 				const auto page_address = utils::page_start(static_cast<u32>(address));
 				auto& page = m_locked_pages[location][page_address];
@@ -845,14 +845,14 @@ namespace rsx
 			}
 			else
 			{
-				m_critical_reports_in_flight++;
+				retro_atomic_fetch_add_int(&m_critical_reports_in_flight, 1);
 			}
 		}
 
 		void ZCULL_control::on_report_completed(vm::addr_t address)
 		{
 			const auto location = rsx::classify_location(address);
-			if (!m_pages_accessed[location])
+			if (!retro_atomic_load_acquire_int(&m_pages_accessed[location]))
 			{
 				const auto page_address = utils::page_start(static_cast<u32>(address));
 				if (auto found = m_locked_pages[location].find(page_address);
@@ -865,9 +865,9 @@ namespace rsx
 				}
 			}
 
-			if (m_pages_accessed[location])
+			if (retro_atomic_load_acquire_int(&m_pages_accessed[location]))
 			{
-				m_critical_reports_in_flight--;
+				retro_atomic_fetch_sub_int(&m_critical_reports_in_flight, 1);
 			}
 		}
 
@@ -875,7 +875,7 @@ namespace rsx
 		{
 			// Externally synchronized
 			rsx_log.warning("Reports area at location %s was accessed. ZCULL optimizations will be disabled.", location_tostring(location));
-			m_pages_accessed[location] = true;
+			retro_atomic_store_release_int(&m_pages_accessed[location], 1);
 
 			// Unlock pages
 			for (auto& p : m_locked_pages[location])
@@ -892,7 +892,7 @@ namespace rsx
 
 				while (page.has_refs())
 				{
-					m_critical_reports_in_flight++;
+					retro_atomic_fetch_add_int(&m_critical_reports_in_flight, 1);
 					page.release();
 				}
 			}
@@ -904,7 +904,7 @@ namespace rsx
 		bool ZCULL_control::may_own(u32 address) const
 		{
 			const auto location = rsx::classify_location(address);
-			return !m_pages_accessed[location] && retro_atomic_load_acquire_int(&m_locked_page_count[location]) != 0;
+			return !retro_atomic_load_acquire_int(&m_pages_accessed[location]) && retro_atomic_load_acquire_int(&m_locked_page_count[location]) != 0;
 		}
 
 		bool ZCULL_control::on_access_violation(u32 address)
@@ -912,7 +912,7 @@ namespace rsx
 			const auto page_address = utils::page_start(address);
 			const auto location = rsx::classify_location(address);
 
-			if (m_pages_accessed[location])
+			if (retro_atomic_load_acquire_int(&m_pages_accessed[location]))
 			{
 				// Already faulted, no locks possible
 				return false;
@@ -938,7 +938,7 @@ namespace rsx
 						{
 							// R/W to active block
 							need_disable_optimizations = true;    // Defer actual operation
-							m_pages_accessed[location] = true;
+							retro_atomic_store_release_int(&m_pages_accessed[location], 1);
 						}
 						else
 						{
