@@ -115,7 +115,7 @@ extern thread_local std::string(*g_tls_log_prefix)();
 
 namespace stx
 {
-	atomic_t<u32> g_launch_retainer{0};
+	retro_atomic_int_t g_launch_retainer{0};
 }
 
 // Report error and call std::abort(), defined in main.cpp
@@ -2849,20 +2849,26 @@ thread_local DECLARE(thread_ctrl::g_tls_this_thread) = nullptr;
 
 thread_local DECLARE(thread_ctrl::g_tls_error_callback) = nullptr;
 
-DECLARE(thread_ctrl::g_native_core_layout) { native_core_arrangement::undefined };
+DECLARE(thread_ctrl::g_native_core_layout) { static_cast<int>(native_core_arrangement::undefined) };
 
 void thread_base::start()
 {
-	m_sync.atomic_op([&](u32& v)
+	for (u32 v = sync_word();;)
 	{
-		v &= ~static_cast<u32>(thread_state::mask);
-		v |= static_cast<u32>(thread_state::created);
-	});
+		const u32 value = (v & ~static_cast<u32>(thread_state::mask)) | static_cast<u32>(thread_state::created);
+
+		if (retro_atomic_cas_int(&m_sync, static_cast<int>(v), static_cast<int>(value)))
+		{
+			break;
+		}
+
+		v = sync_word();
+	}
 
 #ifdef _WIN32
-	m_thread = ::_beginthreadex(nullptr, 0, entry_point, this, CREATE_SUSPENDED, nullptr);
-	ensure(m_thread);
-	ensure(::ResumeThread(reinterpret_cast<HANDLE>(+m_thread)) != static_cast<DWORD>(-1));
+	retro_atomic_store_release_64(&m_thread, static_cast<s64>(::_beginthreadex(nullptr, 0, entry_point, this, CREATE_SUSPENDED, nullptr)));
+	ensure(thread_handle());
+	ensure(::ResumeThread(reinterpret_cast<HANDLE>(thread_handle())) != static_cast<DWORD>(-1));
 #elif defined(__APPLE__)
 	pthread_attr_t attrs;
 	pthread_t thread_id{};
@@ -2886,9 +2892,9 @@ void thread_base::start()
 	u64 dest_id = 0;
 	std::memcpy(&dest_id, &thread_id, sizeof(thread_id));
 
-	if (!m_thread && !m_thread.compare_and_swap_test(0, dest_id))
+	if (!thread_handle() && !retro_atomic_cas_64(&m_thread, 0, static_cast<s64>(dest_id)))
 	{
-		ensure(m_thread == dest_id);
+		ensure(thread_handle() == dest_id);
 	}
 #endif
 }
@@ -2896,21 +2902,19 @@ void thread_base::start()
 void thread_base::initialize(void (*error_cb)())
 {
 #ifndef _WIN32
-#ifdef __APPLE__
-	while (!m_thread)
-	{
-		busy_wait();
-	}
-	[[maybe_unused]] u64 new_tid = 0;
+#if defined(__APPLE__)
+	// As the creator stores it (pthread_t is a pointer): whichever comes
+	// first, the other finds the same, with no spin for the creator
+	const u64 new_tid = reinterpret_cast<u64>(pthread_self());
 #elif defined(ANDROID)
 	const u64 new_tid = pthread_self();
 #else
 	const u64 new_tid = reinterpret_cast<u64>(pthread_self());
 #endif
 
-	if (!m_thread && !m_thread.compare_and_swap_test(0, new_tid))
+	if (!thread_handle() && !retro_atomic_cas_64(&m_thread, 0, static_cast<s64>(new_tid)))
 	{
-		ensure(m_thread == new_tid);
+		ensure(thread_handle() == new_tid);
 	}
 #endif
 
@@ -3064,17 +3068,21 @@ u64 thread_base::finalize(thread_state result_state) noexcept
 	atomic_wait_engine::set_wait_callback(nullptr);
 
 	// Avoid race with the destructor
-	const u64 _self = m_thread;
+	const u64 _self = thread_handle();
 
 	// Set result state (errored or finalized)
-	m_sync.fetch_op([&](u32& v)
+	for (u32 v = sync_word();;)
 	{
-		v &= -4;
-		v |= static_cast<u32>(result_state);
-	});
+		if (retro_atomic_cas_int(&m_sync, static_cast<int>(v), static_cast<int>((v & ~3u) | static_cast<u32>(result_state))))
+		{
+			break;
+		}
+
+		v = sync_word();
+	}
 
 	// Signal waiting threads
-	m_sync.notify_all();
+	retro_waitaddr_notify_all(&m_sync);
 
 	return _self;
 }
@@ -3158,7 +3166,7 @@ thread_state thread_ctrl::state()
 		s_tls_exec = false;
 	}
 
-	return static_cast<thread_state>(_this->m_sync & 3);
+	return static_cast<thread_state>(_this->sync_word() & 3);
 }
 
 void thread_ctrl::wait_for(u64 usec, [[maybe_unused]] bool alert /* true */)
@@ -3221,7 +3229,7 @@ void thread_ctrl::wait_for(u64 usec, [[maybe_unused]] bool alert /* true */)
 
 	if (alert)
 	{
-		if (_this->m_sync.bit_test_reset(2) || _this->m_taskq)
+		if (_this->take_notification() || _this->m_taskq)
 		{
 			return;
 		}
@@ -3232,12 +3240,12 @@ void thread_ctrl::wait_for(u64 usec, [[maybe_unused]] bool alert /* true */)
 
 	if (alert)
 	{
-		list.set<0>(_this->m_sync, 0);
+		list.set_raw<0>(&_this->m_sync, 0);
 		list.template set<1>(_this->m_taskq);
 	}
 	else
 	{
-		list.set<0>(_this->m_dummy, 0);
+		list.set_raw<0>(&_this->m_dummy, 0);
 	}
 
 	list.wait(atomic_wait_timeout{usec <= 0xffff'ffff'ffff'ffff / 1000 ? usec * 1000 : 0xffff'ffff'ffff'ffff});
@@ -3361,13 +3369,13 @@ thread_base::~thread_base() noexcept
 	// Cleanup
 	{
 #ifdef _WIN32
-		const HANDLE handle0 = reinterpret_cast<HANDLE>(m_thread.load());
+		const HANDLE handle0 = reinterpret_cast<HANDLE>(thread_handle());
 		WaitForSingleObject(handle0, INFINITE);
 		CloseHandle(handle0);
 #elif defined(ANDROID)
-		pthread_join(m_thread.load(), nullptr);
+		pthread_join(thread_handle(), nullptr);
 #else
-		pthread_join(reinterpret_cast<pthread_t>(m_thread.load()), nullptr);
+		pthread_join(reinterpret_cast<pthread_t>(thread_handle()), nullptr);
 #endif
 	}
 }
@@ -3375,9 +3383,9 @@ thread_base::~thread_base() noexcept
 bool thread_base::join(bool dtor) const
 {
 	// Check if already finished
-	if (m_sync & 2)
+	if (sync_word() & 2)
 	{
-		return (m_sync & 3) == 3;
+		return (sync_word() & 3) == 3;
 	}
 
 	// Hacked for too sleepy threads (1ms) TODO: make sure it's unneeded and remove
@@ -3385,11 +3393,13 @@ bool thread_base::join(bool dtor) const
 
 	auto stamp0 = utils::get_tsc();
 
-	for (u64 i = 0; (m_sync & 3) <= 1; i++)
+	for (u64 i = 0; (sync_word() & 3) <= 1; i++)
 	{
-		m_sync.wait(m_sync & ~2, timeout);
+		atomic_wait::list<1> list{};
+		list.set_raw<0>(&m_sync, sync_word() & ~2);
+		list.wait(timeout);
 
-		if (m_sync & 2)
+		if (sync_word() & 2)
 		{
 			break;
 		}
@@ -3400,22 +3410,22 @@ bool thread_base::join(bool dtor) const
 		}
 	}
 
-	return (m_sync & 3) == 3;
+	return (sync_word() & 3) == 3;
 }
 
 void thread_base::notify()
 {
 	// Set notification
-	m_sync |= 4;
-	m_sync.notify_all();
+	retro_atomic_fetch_or_int(&m_sync, 4);
+	retro_waitaddr_notify_all(&m_sync);
 }
 
 u64 thread_base::get_native_id() const
 {
 #ifdef _WIN32
-	return GetThreadId(reinterpret_cast<HANDLE>(m_thread.load()));
+	return GetThreadId(reinterpret_cast<HANDLE>(thread_handle()));
 #else
-	return m_thread.load();
+	return thread_handle();
 #endif
 }
 
@@ -3423,7 +3433,7 @@ u64 thread_base::get_cycles()
 {
 	u64 cycles = 0;
 
-	const u64 handle = m_thread;
+	const u64 handle = thread_handle();
 
 #ifdef _WIN32
 	if (QueryThreadCycleTime(reinterpret_cast<HANDLE>(handle), &cycles))
@@ -3449,7 +3459,7 @@ u64 thread_base::get_cycles()
 	{
 		cycles = static_cast<u64>(thread_time.tv_sec) * 1'000'000'000 + thread_time.tv_nsec;
 #endif
-		if (const u64 old_cycles = m_cycles.exchange(cycles))
+		if (const u64 old_cycles = static_cast<u64>(retro_atomic_exchange_64(&m_cycles, static_cast<s64>(cycles))))
 		{
 			return cycles - old_cycles;
 		}
@@ -3459,7 +3469,7 @@ u64 thread_base::get_cycles()
 	}
 	else
 	{
-		return m_cycles;
+		return static_cast<u64>(retro_atomic_load_acquire_64(&m_cycles));
 	}
 }
 
@@ -3484,7 +3494,7 @@ void thread_base::exec()
 
 		for (thread_future* prev{};;)
 		{
-			utils::prefetch_exec(prev_head->exec.load());
+			utils::prefetch_exec(reinterpret_cast<void*>(prev_head->get_exec()));
 
 			if (auto next = prev_head->next.get())
 			{
@@ -3499,10 +3509,10 @@ void thread_base::exec()
 
 		for (auto ptr = prev_head; ptr; ptr = ptr->prev)
 		{
-			if (auto task = ptr->exec.load()) [[likely]]
+			if (auto task = ptr->get_exec()) [[likely]]
 			{
 				// Execute or discard (if aborting)
-				if ((m_sync & 3) == 0) [[likely]]
+				if ((sync_word() & 3) == 0) [[likely]]
 				{
 					task(this, ptr);
 				}
@@ -3512,8 +3522,8 @@ void thread_base::exec()
 				}
 
 				// Notify waiters
-				ptr->done.release(1);
-				ptr->done.notify_all();
+				retro_atomic_store_release_int(&ptr->done, 1);
+				retro_waitaddr_notify_all(&ptr->done);
 			}
 
 			if (ptr->next)
@@ -3586,26 +3596,37 @@ void thread_ctrl::set_name(std::string name)
 	if (IsDebuggerPresent())
 	{
 		// Prevent repeatedly halting the debugger in case multiple threads crashed at once
-		static atomic_t<u64> s_last_break = 0;
+		static retro_atomic_64_t s_last_break{0};
 		const u64 current_break = get_system_time() & -2;
 
-		if (s_last_break.fetch_op([current_break](u64& v)
+		const auto may_break = [&]()
 		{
-			if (current_break >= (v & -2) && current_break - (v & -2) >= 20'000'000)
+			for (u64 v = static_cast<u64>(retro_atomic_load_acquire_64(&s_last_break));; v = static_cast<u64>(retro_atomic_load_acquire_64(&s_last_break)))
 			{
-				v = current_break;
-				return true;
-			}
+				u64 value;
 
-			// Let's allow a single more thread to halt the debugger so the programmer sees the pattern
-			if (!(v & 1))
-			{
-				v |= 1;
-				return true;
-			}
+				if (current_break >= (v & -2) && current_break - (v & -2) >= 20'000'000)
+				{
+					value = current_break;
+				}
+				// Let's allow a single more thread to halt the debugger so the programmer sees the pattern
+				else if (!(v & 1))
+				{
+					value = v | 1;
+				}
+				else
+				{
+					return false;
+				}
 
-			return false;
-		}).second)
+				if (retro_atomic_cas_64(&s_last_break, static_cast<s64>(v), static_cast<s64>(value)))
+				{
+					return true;
+				}
+			}
+		};
+
+		if (may_break())
 		{
 #ifndef __APPLE__
 			utils::trap();
@@ -3665,13 +3686,13 @@ void thread_ctrl::silent_exit() noexcept
 
 void thread_ctrl::detect_cpu_layout()
 {
-	if (!g_native_core_layout.compare_and_swap_test(native_core_arrangement::undefined, native_core_arrangement::generic))
+	if (!retro_atomic_cas_int(&g_native_core_layout, static_cast<int>(native_core_arrangement::undefined), static_cast<int>(native_core_arrangement::generic)))
 		return;
 
 	const auto system_id = utils::get_cpu_brand();
 	if (system_id.find("Ryzen") != umax)
 	{
-		g_native_core_layout.store(native_core_arrangement::amd_ccx);
+		retro_atomic_store_release_int(&g_native_core_layout, static_cast<int>(native_core_arrangement::amd_ccx));
 	}
 	else if (system_id.find("Intel") != umax)
 	{
@@ -3710,7 +3731,7 @@ void thread_ctrl::detect_cpu_layout()
 				auto info = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *>(ptr);
 				if (info->Relationship == relationship && info->Processor.Flags == LTP_PC_SMT)
 				{
-					g_native_core_layout.store(native_core_arrangement::intel_ht);
+					retro_atomic_store_release_int(&g_native_core_layout, static_cast<int>(native_core_arrangement::intel_ht));
 					break;
 				}
 				ptr += info->Size;
@@ -3730,7 +3751,7 @@ u64 thread_ctrl::get_affinity_mask(thread_class group)
 	{
 		const u64 all_cores_mask = process_affinity_mask;
 
-		switch (g_native_core_layout)
+		switch (static_cast<native_core_arrangement>(retro_atomic_load_acquire_int(&g_native_core_layout)))
 		{
 		default:
 		case native_core_arrangement::generic:
@@ -4160,28 +4181,24 @@ usz map_workload(std::string_view thread_name, usz thread_count, usz count, std:
 		return 1;
 	}
 
-	atomic_t<u32> num_threads_succeeded {0}; // Check if any thread didn't finish. For example when hitting an exception.
+	retro_atomic_int_t num_threads_succeeded{0}; // Check if any thread didn't finish. For example when hitting an exception.
 
-	atomic_t<usz> indexer = 0;
+	retro_atomic_64_t indexer{0};
 	const auto iterate = [count, &func, &indexer]()
 	{
 		while (thread_ctrl::state() != thread_state::aborting)
 		{
 			// Make sure indexer does not exceed count
-			const usz index = indexer.fetch_op([count](usz& v)
-			{
-				if (v < count)
-				{
-					v++;
-					return true;
-				}
-
-				return false;
-			}).first;
+			const usz index = static_cast<usz>(retro_atomic_load_acquire_64(&indexer));
 
 			if (index >= count)
 			{
 				break;
+			}
+
+			if (!retro_atomic_cas_64(&indexer, static_cast<s64>(index), static_cast<s64>(index + 1)))
+			{
+				continue;
 			}
 
 			func(index);
@@ -4190,14 +4207,14 @@ usz map_workload(std::string_view thread_name, usz thread_count, usz count, std:
 	named_thread_group workers(thread_name, ::narrow<u32>(thread_count) - 1, [&iterate, &num_threads_succeeded]()
 	{
 		iterate();
-		num_threads_succeeded++;
+		retro_atomic_fetch_add_int(&num_threads_succeeded, 1);
 	});
 
 	iterate();
 
 	workers.join();
 
-	return num_threads_succeeded + 1;
+	return static_cast<usz>(retro_atomic_load_acquire_int(&num_threads_succeeded)) + 1;
 }
 
 usz map_workload(std::string_view thread_name, usz thread_count, std::function<void()>&& func)
@@ -4210,17 +4227,17 @@ usz map_workload(std::string_view thread_name, usz thread_count, std::function<v
 		return 1;
 	}
 
-	atomic_t<u32> num_threads_succeeded {0}; // Check if any thread didn't finish. For example when hitting an exception.
+	retro_atomic_int_t num_threads_succeeded{0}; // Check if any thread didn't finish. For example when hitting an exception.
 
 	named_thread_group workers(thread_name, ::narrow<u32>(thread_count) - 1, [&func, &num_threads_succeeded]()
 	{
 		func();
-		num_threads_succeeded++;
+		retro_atomic_fetch_add_int(&num_threads_succeeded, 1);
 	});
 
 	func();
 
 	workers.join();
 
-	return num_threads_succeeded + 1;
+	return static_cast<usz>(retro_atomic_load_acquire_int(&num_threads_succeeded)) + 1;
 }

@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Thread control (Utilities/Thread.h and Thread.cpp) is off `atomic_t`.** Not yet run on a game.
+  - **What changed:**
+    - **A thread's state word** (its state in the low bits and a notification bit) is a `retro_atomic_int_t`. `notify()` sets the bit and wakes the thread with `retro_waitaddr`, an abort marks it with a compare-and-swap loop and wakes it, and waits sleep on the word through the wait engine, as before. The thread's handle and cycle count are `retro_atomic_64_t`.
+    - **A task pushed to a thread** keeps its function in a `retro_atomic_ptr_t` and its done word in a `retro_atomic_int_t`. A waiter sleeps on the done word until the thread has run the task and woken it.
+    - **The launch retainer and the core layout** are `retro_atomic_int_t`. The workload splitter's index and count, and the debugger break stamp, are `retro_atomic`.
+    - **No spin on macOS:** a new thread spun with `busy_wait` until its creator had stored its handle. It now takes its handle from `pthread_self()`, the same value the creator stores (whichever is first, the other finds the same), as on Linux.
+  - **Tests:** `test_emu_waits` checks that a thread asleep in `wait_for` is woken by `notify()` long before its 5-second bound, that one asleep in `wait()` is woken by an abort, that a task pushed to a thread runs there and its waiter is woken, and that `map_workload` (from a named thread, as the emulator calls it) hands out every index once. It was shown to fail (the thread slept the whole bound) with `notify()`'s wake removed. A check fails if `atomic_t` comes back to thread control.
+
+
 - **Utilities/rXml is gone: trophy configs and the content databases are read with libretro-common's rxml directly.** Not yet run on a game.
   - **What changed:**
     - **The wrapper is removed:** `rXml` was a C++ layer over libretro-common's `rxml`. It handed out a new `std::shared_ptr<rXmlNode>` for every node a walk stepped onto, and a `std::string` copy of every name, attribute and text. The trophy code (`TROPUSR`, `sceNpTrophy`, the trophy list overlay) and the content check against the Redump and PSN databases now walk `rxml_node_t` directly (`->children`, `->next`). Small inline helpers in `TROPUSR.h` read names (`xml_name_is`), attributes (`xml_attr`, `""` when missing, as before) and text (`xml_text`) in place, so a walk allocates and copies nothing.

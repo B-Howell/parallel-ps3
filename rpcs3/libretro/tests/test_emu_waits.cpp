@@ -1740,6 +1740,64 @@ int main()
 		std::printf("test_emu_waits: a trophy config read with rxml: its trophies, names, attributes and text\n");
 	}
 
+	// Thread control: a thread asleep in wait_for is woken by notify() long
+	// before its 5 s bound, one asleep in wait() by an abort, a task pushed
+	// to a thread runs there and its waiter is woken, and map_workload
+	// hands every index out once
+	{
+		std::atomic<s64> woke_ms{-1};
+		named_thread notified("Test notify", [&]
+		{
+			const auto t0 = std::chrono::steady_clock::now();
+			thread_ctrl::wait_for(5'000'000);
+			woke_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+		});
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		thread_ctrl::notify(notified);
+		notified();
+		CHECK(woke_ms >= 0 && woke_ms < 2000);
+
+		std::atomic<int> left{0};
+		named_thread aborted("Test abort", [&]
+		{
+			while (thread_ctrl::state() != thread_state::aborting)
+			{
+				thread_ctrl::wait();
+			}
+			left = 1;
+		});
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		aborted = thread_state::aborting;
+		aborted = thread_state::finished;
+		CHECK(left == 1);
+
+		std::atomic<int> ran_on{0};
+		named_thread worker("Test tasks", [&]
+		{
+			while (thread_ctrl::state() != thread_state::aborting)
+			{
+				thread_ctrl::wait();
+			}
+		});
+		auto task = worker.operator()<false>([&] { ran_on = thread_ctrl::get_current() ? 1 : 2; });
+		task->wait();
+		CHECK(ran_on == 1);
+		worker = thread_state::finished;
+
+		std::atomic<int> seen[64]{};
+		// From a named thread, as the emulator's callers are (it reads the
+		// calling thread's state)
+		named_thread mapper("Test mapper", [&] { map_workload("Test map", 3, 64, [&](usz i) { seen[i]++; }); });
+		mapper();
+		int once = 0;
+		for (auto& v : seen)
+		{
+			once += v == 1;
+		}
+		CHECK(once == 64);
+		std::printf("test_emu_waits: thread control: notify and abort wake, a pushed task runs, every index once\n");
+	}
+
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");
 	return failures ? 1 : 0;
 }

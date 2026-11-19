@@ -237,7 +237,7 @@ void init_fxo_for_exec(utils::serial* ar, bool full = false)
 
 	Emu.ConfigurePPUCache();
 
-	stx::g_launch_retainer = 1;
+	retro_atomic_store_release_int(&stx::g_launch_retainer, 1);
 
 	g_fxo->init(false, ar, [](){ Emu.ExecPostponedInitCode(); });
 
@@ -245,8 +245,8 @@ void init_fxo_for_exec(utils::serial* ar, bool full = false)
 	g_emu_callbacks.init_kb_handler();
 	g_emu_callbacks.init_mouse_handler();
 
-	stx::g_launch_retainer = 0;
-	stx::g_launch_retainer.notify_all();
+	retro_atomic_store_release_int(&stx::g_launch_retainer, 0);
+	retro_waitaddr_notify_all(&stx::g_launch_retainer);
 
 	g_emu_callbacks.init_pad_handler(Emu.GetTitleID());
 

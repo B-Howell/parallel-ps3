@@ -2,6 +2,8 @@
 
 #include "util/types.hpp"
 #include "util/atomic.hpp"
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 #include "util/shared_ptr.hpp"
 
 #include <thread>
@@ -97,21 +99,29 @@ class thread_future
 	thread_future* prev{};
 
 protected:
-	atomic_t<void(*)(const thread_base*, thread_future*)> exec{};
+	using exec_fn = void(*)(const thread_base*, thread_future*);
 
-	atomic_t<u32> done{0};
+	// The task, null once run
+	retro_atomic_ptr_t exec{nullptr};
 
-public:
-	// Get reference to the atomic variable for inspection and waiting for
-	const auto& get_wait() const
+	// Set, with a wake, once run
+	mutable retro_atomic_int_t done{0};
+
+	exec_fn get_exec() const
 	{
-		return done;
+		return reinterpret_cast<exec_fn>(retro_atomic_load_acquire_ptr(const_cast<retro_atomic_ptr_t*>(&exec)));
 	}
 
+public:
 	// Wait (preset)
 	void wait() const
 	{
-		done.wait(0);
+		if (!retro_atomic_load_acquire_int(&done))
+		{
+			atomic_wait::list<1> list{};
+			list.template set_raw<0>(&done, 0);
+			list.wait();
+		}
 	}
 };
 
@@ -133,15 +143,23 @@ public:
 
 private:
 	// Thread handle (platform-specific)
-	atomic_t<u64> m_thread{0};
+	retro_atomic_64_t m_thread{0};
 
 	// Thread cycles
-	atomic_t<u64> m_cycles{0};
+	retro_atomic_64_t m_cycles{0};
 
-	atomic_t<u32> m_dummy{0};
+	// Never changed: a word to wait on for a plain timed wait
+	retro_atomic_int_t m_dummy{0};
 
-	// Thread state
-	atomic_t<u32> m_sync{0};
+	// Thread state: thread_state in the low 2 bits, bit 2 a notification
+	mutable retro_atomic_int_t m_sync{0};
+
+	u64 thread_handle() const { return static_cast<u64>(retro_atomic_load_acquire_64(const_cast<retro_atomic_64_t*>(&m_thread))); }
+
+	u32 sync_word() const { return static_cast<u32>(retro_atomic_load_acquire_int(&m_sync)); }
+
+	// The notification bit taken: whether it was set
+	bool take_notification() { return (retro_atomic_fetch_and_int(&m_sync, ~4) & 4) != 0; }
 
 	// Thread name
 	atomic_ptr<std::string> m_tname;
@@ -205,7 +223,7 @@ class thread_ctrl final
 	static thread_local void(*g_tls_error_callback)();
 
 	// Target cpu core layout
-	static atomic_t<native_core_arrangement> g_native_core_layout;
+	static retro_atomic_int_t g_native_core_layout;
 
 	friend class thread_base;
 
@@ -288,13 +306,13 @@ public:
 	{
 		auto _this = g_tls_this_thread;
 
-		if (_this->m_sync.bit_test_reset(2) || _this->m_taskq)
+		if (_this->take_notification() || _this->m_taskq)
 		{
 			return;
 		}
 
 		atomic_wait::list<Max + 2> list{};
-		list.template set<Max>(_this->m_sync, 0);
+		list.template set_raw<Max>(&_this->m_sync, 0);
 		list.template set<Max + 1>(_this->m_taskq);
 		setter(list);
 		list.wait(atomic_wait_timeout{usec <= 0xffff'ffff'ffff'ffff / 1000 ? usec * 1000 : 0xffff'ffff'ffff'ffff});
@@ -399,7 +417,7 @@ public:
 		: m_args(std::forward<Args>(args)...)
 		, m_func(std::forward<Ctx>(func))
 	{
-		thread_future::exec.raw() = +[](const thread_base* tb, thread_future* tf)
+		exec_fn fn = +[](const thread_base* tb, thread_future* tf)
 		{
 			const auto _this = static_cast<future*>(tf);
 
@@ -422,13 +440,15 @@ public:
 				new (_this->_get()) decltype(auto)(std::apply(_this->m_func, std::move(_this->m_args)));
 			}
 		};
+
+		retro_atomic_store_relaxed_ptr(&this->exec, reinterpret_cast<void*>(fn));
 	}
 
 	~thread_future_t() noexcept
 	{
 		if constexpr (!future::empty && !Discard)
 		{
-			if (!this->exec)
+			if (!this->get_exec())
 			{
 				this->destroy();
 			}
@@ -437,7 +457,7 @@ public:
 
 	decltype(auto) get()
 	{
-		while (this->exec)
+		while (this->get_exec())
 		{
 			this->wait();
 		}
@@ -450,7 +470,7 @@ public:
 
 	decltype(auto) get() const
 	{
-		while (this->exec)
+		while (this->get_exec())
 		{
 			this->wait();
 		}
@@ -466,7 +486,7 @@ namespace stx
 {
 	struct launch_retainer;
 
-	extern atomic_t<u32> g_launch_retainer;
+	extern retro_atomic_int_t g_launch_retainer;
 }
 
 // Derived from the callable object Context, possibly a lambda
@@ -483,9 +503,11 @@ class named_thread final : public Context, result_storage<Context>, thread_base
 
 	u64 entry_point2()
 	{
-		while (u32 value = stx::g_launch_retainer)
+		while (const int value = retro_atomic_load_acquire_int(&stx::g_launch_retainer))
 		{
-			stx::g_launch_retainer.wait(value);
+			atomic_wait::list<1> list{};
+			list.template set_raw<0>(&stx::g_launch_retainer, static_cast<u32>(value));
+			list.wait();
 		}
 
 		thread::initialize([]()
@@ -559,7 +581,7 @@ public:
 		, thread(trampoline, std::string(Context::thread_name))
 	{
 		// Create a stand-by thread context
-		m_sync |= static_cast<u32>(thread_state::finished);
+		retro_atomic_fetch_or_int(&m_sync, static_cast<int>(thread_state::finished));
 	}
 
 	// Normal forwarding constructor
@@ -683,7 +705,7 @@ public:
 	// Access thread state
 	operator thread_state() const noexcept
 	{
-		return static_cast<thread_state>(thread::m_sync.load() & 3);
+		return static_cast<thread_state>(thread::sync_word() & 3);
 	}
 
 	named_thread& operator=(thread_state s) noexcept
@@ -700,9 +722,17 @@ public:
 
 		// Try to abort by assigning thread_state::aborting/finished
 		// Join thread by thread_state::finished
-		if (s >= thread_state::aborting && thread::m_sync.fetch_op([](u32& v) { return !(v & 3) && (v |= 1); }).second)
+		// Running: marked aborting, once
+		if (s >= thread_state::aborting)
 		{
-			notify_sync = true;
+			for (u32 v = thread::sync_word(); !(v & 3); v = thread::sync_word())
+			{
+				if (retro_atomic_cas_int(&this->m_sync, static_cast<int>(v), static_cast<int>(v | 1)))
+				{
+					notify_sync = true;
+					break;
+				}
+			}
 		}
 
 		if constexpr (std::is_assignable_v<Context&, thread_state>)
@@ -713,7 +743,7 @@ public:
 		if (notify_sync)
 		{
 			// Notify after context abortion has been made so all conditions for wake-up be satisfied by the time of notification
-			thread::m_sync.notify_all();
+			retro_waitaddr_notify_all(&this->m_sync);
 		}
 
 		if (s == thread_state::finished || s == thread_state::destroying_context)
