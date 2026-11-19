@@ -125,11 +125,11 @@ public:
 	// 1 once cellGemInit is through; `starting` while one is under way:
 	// taken for another cellGemInit, not initialized yet for every other call
 	static constexpr u8 starting = 2;
-	atomic_t<u8> state = 0;
+	retro_atomic_int_t state{0};
 
 	bool initialized() const
 	{
-		return state == 1;
+		return retro_atomic_load_acquire_int(&state) == 1;
 	}
 
 	struct gem_color
@@ -282,38 +282,61 @@ public:
 	// otherwise changing anything: in atomics, beside the record
 	retro_atomic_int_t ext_status[CELL_GEM_MAX_NUM]{}; // External port connection status
 	retro_atomic_int_t ext_id[CELL_GEM_MAX_NUM]{};     // External device ID (type). For example SHARP_SHOOTER_DEVICE_ID
-	atomic_t<bool> video_conversion_in_progress{false};
-	atomic_t<bool> updating{false};
+	retro_atomic_int_t video_conversion_in_progress{0}; // 0 or 1
+	retro_atomic_int_t updating{0}; // 0 or 1
 
 	std::array<ps_move_data, CELL_GEM_MAX_NUM> fake_move_data {}; // No need to be in savestate
 
-	atomic_t<u32> m_wake_up = 0;
-	atomic_t<u32> m_done = 0;
+	retro_atomic_int_t m_wake_up{0};
+	retro_atomic_int_t m_done{0};
+
+	// Until @word is not 0, or the PPU is told to stop (its state wakes it)
+	static void wait_ppu_on(retro_atomic_int_t* word, ppu_thread& ppu)
+	{
+		while (!retro_atomic_load_acquire_int(word) && !ppu.is_stopped())
+		{
+			const auto old_state = +ppu.state;
+
+			if (::is_stopped(old_state) || retro_atomic_load_acquire_int(word))
+			{
+				break;
+			}
+
+			const retro_waitaddr_t w[2] = {{word, 0}, {&ppu.state, std::bit_cast<u32>(old_state)}};
+			retro_waitaddr_wait(w, 2, -1);
+		}
+	}
+
+	// On a named thread: until @word is not @old (a join wakes it too)
+	static void wait_named_on(retro_atomic_int_t* word, u32 old)
+	{
+		thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list)
+		{
+			list.template set_raw<0>(word, old);
+		});
+	}
 
 	void wake_up()
 	{
-		m_wake_up.release(1);
-		m_wake_up.notify_one();
+		retro_atomic_store_release_int(&m_wake_up, 1);
+		retro_waitaddr_notify_one(&m_wake_up);
 	}
 
 	void done()
 	{
-		m_done.release(1);
-		m_done.notify_one();
+		retro_atomic_store_release_int(&m_done, 1);
+		retro_waitaddr_notify_one(&m_done);
 	}
 
 	bool wait_for_result(ppu_thread& ppu)
 	{
 		// Notify gem thread that the initial state after loading a savestate can be updated.
-		if (m_done.compare_and_swap_test(2, 0))
+		if (retro_atomic_cas_int(&m_done, 2, 0))
 		{
-			m_done.notify_one();
+			retro_waitaddr_notify_one(&m_done);
 		}
 
-		while (!m_done && !ppu.is_stopped())
-		{
-			thread_ctrl::wait_on(m_done, 0);
-		}
+		wait_ppu_on(&m_done, ppu);
 
 		if (ppu.is_stopped())
 		{
@@ -321,7 +344,7 @@ public:
 			return false;
 		}
 
-		m_done = 0;
+		retro_atomic_store_release_int(&m_done, 0);
 		return true;
 	}
 
@@ -527,9 +550,12 @@ public:
 
 	void save(utils::serial& ar)
 	{
-		ar(state);
+		// Through the u8 it was in the savestate
+		u8 state_v = static_cast<u8>(retro_atomic_load_acquire_int(&state));
+		ar(state_v);
+		retro_atomic_store_release_int(&state, state_v);
 
-		if (!state)
+		if (!state_v)
 		{
 			return;
 		}
@@ -577,11 +603,16 @@ public:
 			}
 		}
 
-		ar(gs.connected_controllers, updating, gs.camera_frame, gs.memory_ptr, gs.start_timestamp_us);
+		// The two flags through bools, as they were in the savestate
+		bool updating_v = retro_atomic_load_acquire_int(&updating) != 0;
+		ar(gs.connected_controllers, updating_v, gs.camera_frame, gs.memory_ptr, gs.start_timestamp_us);
+		retro_atomic_store_release_int(&updating, updating_v ? 1 : 0);
 
 		if (ar.is_writing() || version >= 3)
 		{
-			ar(video_conversion_in_progress, gs.video_data_out_size);
+			bool converting_v = retro_atomic_load_acquire_int(&video_conversion_in_progress) != 0;
+			ar(converting_v, gs.video_data_out_size);
+			retro_atomic_store_release_int(&video_conversion_in_progress, converting_v ? 1 : 0);
 		}
 
 		if (!ar.is_writing())
@@ -660,16 +691,16 @@ namespace gem
 		// Both in one word: read and written whole, no lock
 		void set_position(f32 x, f32 y)
 		{
-			m_xy.release(u64{std::bit_cast<u32>(x)} << 32 | std::bit_cast<u32>(y));
+			retro_atomic_store_release_64(&m_xy, static_cast<s64>(u64{std::bit_cast<u32>(x)} << 32 | std::bit_cast<u32>(y)));
 		}
 		void get_position(f32& x, f32& y)
 		{
-			const u64 xy = m_xy.load();
+			const u64 xy = static_cast<u64>(retro_atomic_load_acquire_64(&m_xy));
 			x = std::bit_cast<f32>(static_cast<u32>(xy >> 32));
 			y = std::bit_cast<f32>(static_cast<u32>(xy));
 		}
 	private:
-		atomic_t<u64> m_xy{0};
+		retro_atomic_64_t m_xy{0};
 	};
 
 	std::array<gem_position, CELL_GEM_MAX_NUM> positions {};
@@ -1453,30 +1484,30 @@ void gem_config_data::operator()()
 	u64 last_update_us = 0;
 
 	// Handle initial state after loading a savestate
-	if (initialized() && video_conversion_in_progress)
+	if (initialized() && (retro_atomic_load_acquire_int(&video_conversion_in_progress) != 0))
 	{
 		// Wait for cellGemConvertVideoFinish. The initial savestate loading may take a while.
 		// For up to 5 seconds of the game's time, looked at a frame at a time
-		m_done = 2; // Use special value 2 for this case
+		retro_atomic_store_release_int(&m_done, 2); // Use special value 2 for this case
 		const u64 since = get_hw_clock_time();
-		while (m_done == 2u && get_hw_clock_time() - since < 5'000'000 && thread_ctrl::state() != thread_state::aborting && !Emu.IsStopped())
+		while (retro_atomic_load_acquire_int(&m_done) == 2 && get_hw_clock_time() - since < 5'000'000 && thread_ctrl::state() != thread_state::aborting && !Emu.IsStopped())
 		{
 			const u32 frames_seen = libretro_events_seen();
 
-			if (m_done != 2u)
+			if (retro_atomic_load_acquire_int(&m_done) != 2)
 			{
 				break;
 			}
 
 			thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
 			{
-				list.template set<0>(m_done, 2u);
+				list.template set_raw<0>(&m_done, 2u);
 				list.template set_raw<1>(&g_libretro_events, frames_seen);
 			});
 		}
 
 		// Just mark this conversion as complete (there's no real downside to this, except for a black image)
-		video_conversion_in_progress = false;
+		retro_atomic_store_release_int(&video_conversion_in_progress, 0);
 		done();
 	}
 
@@ -1486,7 +1517,7 @@ void gem_config_data::operator()()
 		const u32 frames_seen = libretro_events_seen();
 		bool by_frame = false;
 
-		if (initialized() && !video_conversion_in_progress)
+		if (initialized() && !(retro_atomic_load_acquire_int(&video_conversion_in_progress) != 0))
 		{
 			// Update controllers at 10Hz of the game's time, looked at
 			// once a frame (retro_run), not on a host timer
@@ -1507,25 +1538,25 @@ void gem_config_data::operator()()
 			}
 		}
 
-		if (!m_wake_up)
+		if (!retro_atomic_load_acquire_int(&m_wake_up))
 		{
 			if (by_frame)
 			{
 				thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
 				{
-					list.template set<0>(m_wake_up, 0u);
+					list.template set_raw<0>(&m_wake_up, 0u);
 					list.template set_raw<1>(&g_libretro_events, frames_seen);
 				});
 			}
 			else
 			{
-				thread_ctrl::wait_on(m_wake_up, 0);
+				gem_config_data::wait_named_on(&m_wake_up, 0);
 			}
 		}
 
-		m_wake_up = 0;
+		retro_atomic_store_release_int(&m_wake_up, 0);
 
-		if (!video_conversion_in_progress)
+		if (!(retro_atomic_load_acquire_int(&video_conversion_in_progress) != 0))
 		{
 			continue;
 		}
@@ -1547,7 +1578,7 @@ void gem_config_data::operator()()
 			break;
 		case camera_handler::fake:
 		case camera_handler::null:
-			video_conversion_in_progress = false;
+			retro_atomic_store_release_int(&video_conversion_in_progress, 0);
 			done();
 			continue;
 		}
@@ -1566,7 +1597,7 @@ void gem_config_data::operator()()
 			}
 		}
 
-		video_conversion_in_progress = false;
+		retro_atomic_store_release_int(&video_conversion_in_progress, 0);
 		done();
 	}
 }
@@ -1583,33 +1614,30 @@ public:
 
 	bool is_busy()
 	{
-		return m_busy;
+		return retro_atomic_load_acquire_int(&m_busy) != 0;
 	}
 
 	void wake_up_tracker()
 	{
-		m_wake_up_tracker.release(1);
-		m_wake_up_tracker.notify_one();
+		retro_atomic_store_release_int(&m_wake_up_tracker, 1);
+		retro_waitaddr_notify_one(&m_wake_up_tracker);
 	}
 
 	void tracker_done()
 	{
-		m_tracker_done.release(1);
-		m_tracker_done.notify_one();
+		retro_atomic_store_release_int(&m_tracker_done, 1);
+		retro_waitaddr_notify_one(&m_tracker_done);
 	}
 
 	bool wait_for_tracker_result(ppu_thread& ppu)
 	{
 		if (g_cfg.io.move != move_handler::real)
 		{
-			m_tracker_done = 0;
+			retro_atomic_store_release_int(&m_tracker_done, 0);
 			return true;
 		}
 
-		while (!m_tracker_done && !ppu.is_stopped())
-		{
-			thread_ctrl::wait_on(m_tracker_done, 0);
-		}
+		gem_config_data::wait_ppu_on(&m_tracker_done, ppu);
 
 		if (ppu.is_stopped())
 		{
@@ -1617,7 +1645,7 @@ public:
 			return false;
 		}
 
-		m_tracker_done = 0;
+		retro_atomic_store_release_int(&m_tracker_done, 0);
 		return true;
 	}
 
@@ -1653,7 +1681,7 @@ public:
 		}
 
 		m_tracker.set_image_data(m_camera_info.buffer.get_ptr(), m_camera_info.bytesize, m_camera_info.width, m_camera_info.height, m_camera_info.format);
-		m_framenumber++; // using framenumber instead of timestamp since the timestamp could be identical
+		retro_atomic_fetch_add_64(&m_framenumber, 1); // using framenumber instead of timestamp since the timestamp could be identical
 		return true;
 	}
 
@@ -1692,10 +1720,10 @@ public:
 		while (thread_ctrl::state() != thread_state::aborting)
 		{
 			// Check if we have a new frame
-			if (!m_wake_up_tracker)
+			if (!retro_atomic_load_acquire_int(&m_wake_up_tracker))
 			{
-				thread_ctrl::wait_on(m_wake_up_tracker, 0);
-				m_wake_up_tracker.release(0);
+				gem_config_data::wait_named_on(&m_wake_up_tracker, 0);
+				retro_atomic_store_release_int(&m_wake_up_tracker, 0);
 
 				if (thread_ctrl::state() == thread_state::aborting)
 				{
@@ -1703,14 +1731,14 @@ public:
 				}
 			}
 
-			if (std::exchange(last_framenumber, m_framenumber.load()) == last_framenumber)
+			if (std::exchange(last_framenumber, static_cast<u64>(retro_atomic_load_acquire_64(&m_framenumber))) == last_framenumber)
 			{
 				cellGem.warning("Tracker woke up without new frame. Skipping processing (framenumber=%d)", last_framenumber);
 				tracker_done();
 				continue;
 			}
 
-			m_busy.release(true);
+			retro_atomic_store_release_int(&m_busy, 1);
 
 			// cellGem's record as it is, for this frame
 			gem_config_data::gem_copy copy;
@@ -1797,7 +1825,7 @@ public:
 			// Notify that we are finished with this frame
 			tracker_done();
 
-			m_busy.release(false);
+			retro_atomic_store_release_int(&m_busy, 0);
 		}
 	}
 
@@ -1831,10 +1859,10 @@ public:
 	}
 
 private:
-	atomic_t<u32> m_wake_up_tracker = 0;
-	atomic_t<u32> m_tracker_done = 0;
-	atomic_t<u64> m_framenumber = 0;
-	atomic_t<bool> m_busy = false;
+	retro_atomic_int_t m_wake_up_tracker{0};
+	retro_atomic_int_t m_tracker_done{0};
+	retro_atomic_64_t m_framenumber{0};
+	retro_atomic_int_t m_busy{0}; // 0 or 1
 	ps_move_tracker<false> m_tracker{};
 	CellCameraInfoEx m_camera_info{};
 
@@ -2807,7 +2835,7 @@ error_code cellGemConvertVideoFinish(ppu_thread& ppu)
 		return CELL_GEM_ERROR_UNINITIALIZED;
 	}
 
-	if (!gem.video_conversion_in_progress)
+	if (!(retro_atomic_load_acquire_int(&gem.video_conversion_in_progress) != 0))
 	{
 		return CELL_GEM_ERROR_CONVERT_NOT_STARTED;
 	}
@@ -2843,7 +2871,7 @@ error_code cellGemConvertVideoStart(ppu_thread& ppu, vm::cptr<void> video_frame)
 		return CELL_GEM_ERROR_INVALID_ALIGNMENT;
 	}
 
-	if (gem.video_conversion_in_progress)
+	if ((retro_atomic_load_acquire_int(&gem.video_conversion_in_progress) != 0))
 	{
 		return CELL_GEM_ERROR_CONVERT_NOT_FINISHED;
 	}
@@ -2852,7 +2880,7 @@ error_code cellGemConvertVideoStart(ppu_thread& ppu, vm::cptr<void> video_frame)
 	gem.video_data_in.resize(static_cast<s32>(retro_atomic_load_acquire_int(&shared_data.size)));
 	std::memcpy(gem.video_data_in.data(), video_frame.get_ptr(), gem.video_data_in.size());
 
-	gem.video_conversion_in_progress = true;
+	retro_atomic_store_release_int(&gem.video_conversion_in_progress, 1);
 	gem.wake_up();
 
 	return CELL_OK;
@@ -2984,14 +3012,14 @@ error_code cellGemEnd(ppu_thread& ppu)
 	// Not initialized for the other calls from here, and no cellGemInit
 	// until the memory is taken out of the record (a cellGemInit just after
 	// would have had its own freed).
-	if (gem.state.compare_and_swap_test(1, gem_config_data::starting))
+	if (retro_atomic_cas_int(&gem.state, 1, gem_config_data::starting))
 	{
 		const u32 addr = gem.change([](gem_config::gem_shared& gs)
 		{
 			return std::exchange(gs.memory_ptr, 0);
 		});
 
-		gem.state = 0;
+		retro_atomic_store_release_int(&gem.state, 0);
 
 		if (addr)
 		{
@@ -3007,7 +3035,7 @@ error_code cellGemEnd(ppu_thread& ppu)
 		return {};
 	}
 
-	gem.updating = false;
+	retro_atomic_store_release_int(&gem.updating, 0);
 
 	return CELL_GEM_ERROR_UNINITIALIZED;
 }
@@ -3674,7 +3702,7 @@ error_code cellGemInit(ppu_thread& ppu, vm::cptr<CellGemAttribute> attribute)
 
 	// Taken, for one of two callers; not initialized yet for the other calls
 	// until the record is set up (gem_config_data::starting)
-	if (!gem.state.compare_and_swap_test(0, gem_config_data::starting))
+	if (!retro_atomic_cas_int(&gem.state, 0, gem_config_data::starting))
 	{
 		return CELL_GEM_ERROR_ALREADY_INITIALIZED;
 	}
@@ -3689,14 +3717,14 @@ error_code cellGemInit(ppu_thread& ppu, vm::cptr<CellGemAttribute> attribute)
 		if (sys_memory_allocate(ppu, GemGetMemorySize(attribute->max_connect), SYS_MEMORY_PAGE_SIZE_64K, +addr) != CELL_OK)
 		{
 			// Initialized all the same, as it was when the lock was held to here
-			gem.state = 1;
+			retro_atomic_store_release_int(&gem.state, 1);
 			return CELL_GEM_ERROR_RESOURCE_ALLOCATION_FAILED;
 		}
 
 		memory_ptr = *addr;
 	}
 
-	gem.updating = false;
+	retro_atomic_store_release_int(&gem.updating, 0);
 
 	gem.change([&](gem_config::gem_shared& gs)
 	{
@@ -3715,7 +3743,7 @@ error_code cellGemInit(ppu_thread& ppu, vm::cptr<CellGemAttribute> attribute)
 		return true;
 	});
 
-	gem.state = 1;
+	retro_atomic_store_release_int(&gem.state, 1);
 	gem.wake_up();
 
 	return CELL_OK;
@@ -4185,7 +4213,7 @@ error_code cellGemUpdateFinish(ppu_thread& ppu)
 		return CELL_GEM_ERROR_UNINITIALIZED;
 	}
 
-	if (!gem.updating)
+	if (!(retro_atomic_load_acquire_int(&gem.updating) != 0))
 	{
 		return CELL_GEM_ERROR_UPDATE_NOT_STARTED;
 	}
@@ -4196,7 +4224,7 @@ error_code cellGemUpdateFinish(ppu_thread& ppu)
 		return {};
 	}
 
-	gem.updating = false;
+	retro_atomic_store_release_int(&gem.updating, 0);
 
 	gem_config::gem_copy copy;
 	retro_cas_record_read(&gem.shared, &copy.gs);
@@ -4229,7 +4257,7 @@ error_code cellGemUpdateStart(vm::cptr<void> camera_frame, u64 timestamp)
 	}
 
 	// Update is starting even when camera_frame is null
-	if (gem.updating.exchange(true))
+	if ((retro_atomic_exchange_int(&gem.updating, 1) != 0))
 	{
 		return CELL_GEM_ERROR_UPDATE_NOT_FINISHED;
 	}

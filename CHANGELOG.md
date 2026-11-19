@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellGem (PS Move) is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the init state, the video-conversion and updating flags, the gem thread's and the tracker's wake and done words, the tracker's frame number and busy flag, and each controller's packed x and y are `retro_atomic_int_t` and `retro_atomic_64_t`. The PPU's waits for the gem thread's and the tracker's result now also watch the PPU's own state, as cellVdec's wait does, so a stop wakes them directly. The gem and tracker threads wait through `wait_on_custom`, so a join still wakes them.
+  - **Savestates:** the init state is written and read through the `u8` it was, and the two flags through bools, so the format is unchanged.
+  - **Tests:** none of its own. The words and waits are inside the module's own classes, which a test cannot make without the module. A check fails if `atomic_t` comes back, or if the savestate stops writing the flags as bools.
+
+
 - **The main thread's calls and System.cpp's last words are off `atomic_t`.** Not yet run on a game.
   - **What changed:** the word `BlockingCallFromMainThread` waits on is a `retro_atomic_int_t`, through `CallFromMainThread` and the frontend's `call_from_main_thread`, and the wait is on `retro_waitaddr`. The emulator-available flag and the pause mark are `retro_atomic_int_t` too. `System.cpp` has no `atomic_t` left.
   - **Removed:** two frontend callbacks nothing called (`on_emulation_stop_no_response`, `on_save_state_progress`), and a watchdog hold counter the PPU compiler moved up and down but nothing read.
