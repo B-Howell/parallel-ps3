@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The shader cache's loading workers are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the count the workers take shaders by as they load and compile the on-disk cache is a `retro_atomic_int_t`, taken with `retro_atomic_fetch_add_int`. The thread updating the loading dialog waits on it with `set_raw`, woken as a worker finishes or once a frontend frame. Nothing is saved in savestates.
+  - **Tests:** none at runtime: the workers need a renderer's pipeline storage. A check fails if `atomic_t` comes back to the shader cache.
+
+
 - **The RSX context's unsent events are off `atomic_t`.** Not yet run on a game.
   - **What changed:** the event bits left unsent when the RSX or VBLANK thread stops (sent again on a savestate's load) are a `retro_atomic_64_t`. sys_rsx adds to them with `retro_atomic_fetch_or_64`, and the renderer takes them whole with an exchange.
   - **Savestates:** written and read through a `u64` temporary, the 8 bytes `atomic_t<u64>` made, so the format is unchanged.

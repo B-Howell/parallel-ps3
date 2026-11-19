@@ -4,6 +4,8 @@
 #include "Utilities/object_pack.h"
 #include "Utilities/lockless.h"
 #include "Utilities/Thread.h"
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 #include "Common/bitfield.hpp"
 #include "Common/unordered_map.hpp"
 #include "Emu/System.h"
@@ -223,13 +225,13 @@ namespace rsx
 		void load_shaders(uint nb_workers, unpacked_type& unpacked, std::vector<const object_pack_entry*>& entries, u32 entry_count,
 		    shader_loading_dialog* dlg)
 		{
-			atomic_t<u32> processed(0);
+			retro_atomic_int_t processed{0}; // u32
 
 			std::function<void(u32)> shader_load_worker = [&](u32 stop_at)
 			{
 				u32 pos;
 				// Processed is incremented before work starts in order to avoid two workers working on the same shader
-				while (((pos = processed++) < stop_at) && !Emu.IsStopped())
+				while (((pos = static_cast<u32>(retro_atomic_fetch_add_int(&processed, 1))) < stop_at) && !Emu.IsStopped())
 				{
 					const object_pack_entry* record = entries[pos];
 
@@ -252,8 +254,8 @@ namespace rsx
 					unpacked[unpacked.push_begin()] = std::move(entry);
 				}
 				// Do not account for an extra shader that was never processed
-				processed--;
-				processed.notify_all(); // await_workers looks
+				retro_atomic_fetch_sub_int(&processed, 1);
+				retro_waitaddr_notify_all(&processed); // await_workers looks
 			};
 
 			await_workers(nb_workers, 0, shader_load_worker, processed, entry_count, dlg);
@@ -262,26 +264,26 @@ namespace rsx
 		template <typename... Args>
 		void compile_shaders(uint nb_workers, unpacked_type& unpacked, u32 entry_count, shader_loading_dialog* dlg, Args&&... args)
 		{
-			atomic_t<u32> processed(0);
+			retro_atomic_int_t processed{0}; // u32
 
 			std::function<void(u32)> shader_comp_worker = [&](u32 stop_at)
 			{
 				u32 pos;
 				// Processed is incremented before work starts in order to avoid two workers working on the same shader
-				while (((pos = processed++) < stop_at) && !Emu.IsStopped())
+				while (((pos = static_cast<u32>(retro_atomic_fetch_add_int(&processed, 1))) < stop_at) && !Emu.IsStopped())
 				{
 					auto& entry = unpacked[pos];
 					m_storage.add_pipeline_entry(std::get<1>(entry), std::get<2>(entry), std::get<0>(entry), std::forward<Args>(args)...);
 				}
 				// Do not account for an extra shader that was never processed
-				processed--;
-				processed.notify_all(); // await_workers looks
+				retro_atomic_fetch_sub_int(&processed, 1);
+				retro_waitaddr_notify_all(&processed); // await_workers looks
 			};
 
 			await_workers(nb_workers, 1, shader_comp_worker, processed, entry_count, dlg);
 		}
 
-		void await_workers(uint nb_workers, u8 step, std::function<void(u32)>& worker, atomic_t<u32>& processed, u32 entry_count, shader_loading_dialog* dlg)
+		void await_workers(uint nb_workers, u8 step, std::function<void(u32)>& worker, retro_atomic_int_t& processed, u32 entry_count, shader_loading_dialog* dlg)
 		{
 			if (nb_workers == 1)
 			{
@@ -320,12 +322,12 @@ namespace rsx
 					// dialog, or as a worker is done - it slept 16 ms
 					{
 						const u32 events = libretro_events_seen();
-						const u32 seen = processed.load();
+						const u32 seen = static_cast<u32>(retro_atomic_load_acquire_int(&processed));
 
 						if (seen < entry_count && !Emu.IsStopped())
 						{
 							atomic_wait::list<2> list;
-							list.template set<0>(processed, seen);
+							list.template set_raw<0>(&processed, seen);
 							list.template set_raw<1>(&g_libretro_events, events);
 							list.wait();
 						}
@@ -333,7 +335,7 @@ namespace rsx
 
 					if (Emu.IsStopped()) break;
 
-					current_progress = std::min(processed.load(), entry_count);
+					current_progress = std::min(static_cast<u32>(retro_atomic_load_acquire_int(&processed)), entry_count);
 
 					if (last_update_progress != current_progress)
 					{
@@ -346,7 +348,7 @@ namespace rsx
 
 			if (!Emu.IsStopped())
 			{
-				ensure(processed == entry_count);
+				ensure(static_cast<u32>(retro_atomic_load_acquire_int(&processed)) == entry_count);
 			}
 		}
 

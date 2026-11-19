@@ -1229,6 +1229,8 @@ check: all
 	@if grep -n "atomic_t<bool> m_pages_accessed\|atomic_t<s32> m_critical_reports_in_flight" ../../Emu/RSX/RSXZCULL.h; then echo "atomic_t is back in ZCULL's own fields"; exit 1; else echo "ZCULL's own fields are retro_atomic"; fi
 	@# the RSX context's unsent event bits are off atomic_t and saved as the u64 they were
 	@if grep -n "atomic_t<u64> unsent_gcm_events" ../../Emu/RSX/Core/RSXContext.h || grep -n "ar(unsent_gcm_events" ../../Emu/RSX/RSXThread.cpp; then echo "atomic_t is back in the RSX context's unsent events"; exit 1; else echo "the RSX context's unsent events are retro_atomic"; fi
+	@# the shader cache's worker count is off atomic_t
+	@if grep -nw "atomic_t" ../../Emu/RSX/rsx_cache.h; then echo "atomic_t is back in the shader cache"; exit 1; else echo "the shader cache is retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
