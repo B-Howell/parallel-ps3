@@ -12,7 +12,7 @@ namespace vk
 	// Global list of worker threads
 	std::unique_ptr<named_thread_group<pipe_compiler>> g_pipe_compilers;
 	int g_num_pipe_compilers = 0;
-	atomic_t<int> g_compiler_index{};
+	retro_atomic_int_t g_compiler_index{0};
 	VkPipelineCache g_pipeline_cache = VK_NULL_HANDLE;
 
 	// Where g_pipeline_cache is kept between boots; empty when it is not
@@ -429,7 +429,7 @@ namespace vk
 	pipe_compiler* get_pipe_compiler()
 	{
 		ensure(g_pipe_compilers);
-		int thread_index = g_compiler_index++;
+		int thread_index = retro_atomic_fetch_add_int(&g_compiler_index, 1);
 
 		return g_pipe_compilers.get()->begin() + (thread_index % g_num_pipe_compilers);
 	}

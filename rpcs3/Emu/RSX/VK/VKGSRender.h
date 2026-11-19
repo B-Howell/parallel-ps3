@@ -79,7 +79,7 @@ private:
 	std::unique_ptr<vk::buffer> m_cond_render_buffer;
 	u64 m_cond_render_sync_tag = 0;
 
-	atomic_t<bool> m_samplers_dirty = { true };
+	retro_atomic_int_t m_samplers_dirty{1}; // 0 or 1
 
 	// Set by any thread that wants every sampler looked at again - a guest
 	// thread that wrote over a texture (on_access_violation), an unmap or a
@@ -95,7 +95,7 @@ private:
 	{
 		if (is_current_thread())
 		{
-			m_samplers_dirty.store(true);
+			retro_atomic_store_release_int(&m_samplers_dirty, 1);
 		}
 		else
 		{

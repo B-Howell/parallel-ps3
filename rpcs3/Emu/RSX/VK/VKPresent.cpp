@@ -211,7 +211,7 @@ void VKGSRender::advance_queued_frames()
 
 	// Texture cache is also double buffered to prevent use-after-free
 	m_texture_cache.on_frame_end();
-	m_samplers_dirty.store(true);
+	retro_atomic_store_release_int(&m_samplers_dirty, 1);
 
 	vk::remove_unused_framebuffers();
 

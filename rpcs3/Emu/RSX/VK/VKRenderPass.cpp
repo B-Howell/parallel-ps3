@@ -16,7 +16,7 @@ namespace vk
 		VkFramebuffer fbo = VK_NULL_HANDLE;
 	};
 
-	atomic_t<u64> g_cached_renderpass_key = 0;
+	retro_atomic_64_t g_cached_renderpass_key{0};
 	VkRenderPass  g_cached_renderpass = VK_NULL_HANDLE;
 	rsx::unordered_map<VkCommandBuffer, active_renderpass_info_t>  g_current_renderpass;
 
@@ -401,7 +401,7 @@ namespace vk
 	void clear_renderpass_cache(VkDevice dev)
 	{
 		// Wipe current status
-		g_cached_renderpass_key = 0;
+		retro_atomic_store_release_64(&g_cached_renderpass_key, 0);
 		g_cached_renderpass = VK_NULL_HANDLE;
 		g_current_renderpass.clear();
 
@@ -443,10 +443,10 @@ namespace vk
 
 	void begin_renderpass(VkDevice dev, const vk::command_buffer& cmd, u64 renderpass_key, VkFramebuffer target, const coordu& framebuffer_region)
 	{
-		if (renderpass_key != g_cached_renderpass_key)
+		if (renderpass_key != static_cast<u64>(retro_atomic_load_acquire_64(&g_cached_renderpass_key)))
 		{
 			g_cached_renderpass = get_renderpass(dev, renderpass_key);
-			g_cached_renderpass_key = renderpass_key;
+			retro_atomic_store_release_64(&g_cached_renderpass_key, static_cast<s64>(renderpass_key));
 		}
 
 		begin_renderpass(cmd, g_cached_renderpass, target, framebuffer_region);

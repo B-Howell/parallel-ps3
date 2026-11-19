@@ -1132,7 +1132,7 @@ bool VKGSRender::on_vram_exhausted(rsx::problem_severity severity)
 		return any_cache_relieved;
 	}
 
-	if (surface_cache_relieved && !m_samplers_dirty)
+	if (surface_cache_relieved && !retro_atomic_load_acquire_int(&m_samplers_dirty))
 	{
 		// If surface cache was modified destructively, then we must reload samplers touching the surface cache.
 		bool invalidate_samplers = false;
@@ -1160,7 +1160,7 @@ bool VKGSRender::on_vram_exhausted(rsx::problem_severity severity)
 
 		if (invalidate_samplers)
 		{
-			m_samplers_dirty.store(true);
+			retro_atomic_store_release_int(&m_samplers_dirty, 1);
 		}
 	}
 
@@ -2820,7 +2820,7 @@ bool VKGSRender::scaled_image_from_memory(const rsx::blit_src_info& src, const r
 
 	if (m_texture_cache.blit(src, dst, interpolate, m_rtts, *m_current_command_buffer))
 	{
-		m_samplers_dirty.store(true);
+		retro_atomic_store_release_int(&m_samplers_dirty, 1);
 		m_current_command_buffer->set_flag(vk::command_buffer::cb_has_blit_transfer);
 
 		if (m_current_command_buffer->flags & vk::command_buffer::cb_has_dma_transfer)

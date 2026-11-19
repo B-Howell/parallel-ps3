@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The Vulkan renderer's flags and counters are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the samplers-dirty flag, a flush request's pending flag, the command buffer ring's index, the cached render pass key and the pipeline compiler's thread index are `retro_atomic_int_t` and `retro_atomic_64_t`. Nothing is saved in savestates.
+  - **Tests:** none at runtime: they need a Vulkan device. A check fails if `atomic_t` comes back to these files.
+
+
 - **The Vulkan async compute scheduler is off `atomic_t`.** Not yet run on a game.
   - **What changed:** its submit count and its event and semaphore pool counters are `retro_atomic_64_t`, and its sync-required flag is a `retro_atomic_int_t`. Nothing is saved in savestates.
   - **Tests:** none at runtime: the scheduler needs a Vulkan device and compute queues. A check fails if `atomic_t` comes back to it.

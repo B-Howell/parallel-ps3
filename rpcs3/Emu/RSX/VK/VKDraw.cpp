@@ -293,7 +293,7 @@ void VKGSRender::load_texture_env()
 	// Taken before the look, so one asked for during it counts for the next.
 	if (retro_atomic_load_relaxed_int(&m_guest_wrote_textures) && retro_atomic_exchange_int(&m_guest_wrote_textures, 0))
 	{
-		m_samplers_dirty.store(true);
+		retro_atomic_store_release_int(&m_samplers_dirty, 1);
 	}
 
 	for (u32 textures_ref = current_fp_metadata.referenced_textures_mask, i = 0; textures_ref; textures_ref >>= 1, ++i)
@@ -312,7 +312,7 @@ void VKGSRender::load_texture_env()
 		const auto& tex = rsx::method_registers.fragment_textures[i];
 		const auto previous_format_class = fs_sampler_state[i]->format_class;
 
-		if (!m_samplers_dirty &&
+		if (!retro_atomic_load_acquire_int(&m_samplers_dirty) &&
 			!m_textures_dirty[i] &&
 			check_surface_cache_sampler_valid(sampler_state, tex))
 		{
@@ -545,7 +545,7 @@ void VKGSRender::load_texture_env()
 		const auto& tex = rsx::method_registers.vertex_textures[i];
 		const auto previous_format_class = sampler_state->format_class;
 
-		if (!m_samplers_dirty &&
+		if (!retro_atomic_load_acquire_int(&m_samplers_dirty) &&
 			!m_vertex_textures_dirty[i] &&
 			check_surface_cache_sampler_valid(sampler_state, tex))
 		{
@@ -614,7 +614,7 @@ void VKGSRender::load_texture_env()
 			VK_FILTER_NEAREST, VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST, border_color);
 	}
 
-	m_samplers_dirty.store(false);
+	retro_atomic_store_release_int(&m_samplers_dirty, 0);
 
 	if (current_fragment_program.ctrl & RSX_SHADER_CONTROL_EMULATE_DEPTH_COMPARE)
 	{
@@ -1358,7 +1358,7 @@ void VKGSRender::end()
 	// Now bind the shader resources. It is important that this takes place after the barriers so that we don't end up with stale descriptors
 	for (int retry = 0; retry < 3; ++retry)
 	{
-		if (retry > 0 && m_samplers_dirty) [[ unlikely ]]
+		if (retry > 0 && retro_atomic_load_acquire_int(&m_samplers_dirty)) [[ unlikely ]]
 		{
 			// Reload texture env if referenced objects were invalidated during OOM handling.
 			load_texture_env();

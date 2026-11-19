@@ -230,7 +230,7 @@ namespace vk
 	// renderer posts and serves it, so nobody waits on it
 	struct flush_request_task
 	{
-		atomic_t<bool> pending_state{ false };  //Flush request status; true if rsx::thread is yet to service this request
+		retro_atomic_int_t pending_state{0};  //Flush request status; 1 if rsx::thread is yet to service this request
 		bool hard_sync = false;
 
 		flush_request_task() = default;
@@ -238,18 +238,18 @@ namespace vk
 		void post(bool _hard_sync)
 		{
 			hard_sync = (hard_sync || _hard_sync);
-			pending_state = true;
+			retro_atomic_store_release_int(&pending_state, 1);
 		}
 
 		void clear_pending_flag()
 		{
 			hard_sync = false;
-			pending_state.store(false);
+			retro_atomic_store_release_int(&pending_state, 0);
 		}
 
 		bool pending() const
 		{
-			return pending_state.load();
+			return retro_atomic_load_acquire_int(&pending_state) != 0;
 		}
 	};
 
@@ -271,7 +271,7 @@ namespace vk
 	template<int Count>
 	class command_buffer_chain
 	{
-		atomic_t<u32> m_current_index = 0;
+		retro_atomic_int_t m_current_index{0}; // u32
 		std::array<vk::command_buffer_chunk, Count> m_cb_list;
 
 	public:
@@ -312,7 +312,7 @@ namespace vk
 
 		inline command_buffer_chunk* next()
 		{
-			const auto result_id = ++m_current_index % Count;
+			const u32 result_id = (static_cast<u32>(retro_atomic_fetch_add_int(&m_current_index, 1)) + 1) % Count;
 			auto result = &m_cb_list[result_id];
 
 			if (!result->poke())
@@ -325,7 +325,7 @@ namespace vk
 
 		inline command_buffer_chunk* get()
 		{
-			return &m_cb_list[m_current_index % Count];
+			return &m_cb_list[static_cast<u32>(retro_atomic_load_acquire_int(&m_current_index)) % Count];
 		}
 	};
 }
