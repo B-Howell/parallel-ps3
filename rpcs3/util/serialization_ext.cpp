@@ -296,10 +296,12 @@ bool compressed_serialization_file_handler::handle_file_op(utils::serial& ar, us
 			{
 				// Avoid flooding RAM, wait if there is too much pending memory.
 				// The wake count is read first, so a wake after the look counts
-				const u32 wake = m_pending_wake.load();
-				const usz new_value = m_pending_bytes.atomic_op([&](usz& v)
+				const u32 wake = static_cast<u32>(retro_atomic_load_acquire_int(&m_pending_wake));
+				usz new_value = 0;
+
+				for (s64 old = retro_atomic_load_acquire_64(&m_pending_bytes);;)
 				{
-					v &= ~pending_data_wait_bit;
+					usz v = static_cast<usz>(old) & ~pending_data_wait_bit;
 
 					if (v >= pending_compress_bytes_bound)
 					{
@@ -313,12 +315,19 @@ bool compressed_serialization_file_handler::handle_file_op(utils::serial& ar, us
 						v += ar.data.size();
 					}
 
-					return v;
-				});
+					if (retro_atomic_cas_64(&m_pending_bytes, old, static_cast<s64>(v)))
+					{
+						new_value = v;
+						break;
+					}
+
+					old = retro_atomic_load_acquire_64(&m_pending_bytes);
+				}
 
 				if (new_value & pending_data_wait_bit)
 				{
-					m_pending_wake.wait(wake);
+					const retro_waitaddr_t w{&m_pending_wake, wake};
+					retro_waitaddr_wait(&w, 1, -1);
 				}
 				else
 				{
@@ -660,13 +669,13 @@ void compressed_serialization_file_handler::stream_data_prepare_thread_op()
 			const usz queued_size = data.size();
 
 			const usz size_diff = buffer_offset - queued_size;
-			const usz new_val = m_pending_bytes.add_fetch(size_diff);
+			const usz new_val = static_cast<usz>(retro_atomic_fetch_add_64(&m_pending_bytes, static_cast<s64>(size_diff))) + size_diff;
 			const usz left = new_val & ~pending_data_wait_bit;
 
-			if (new_val & pending_data_wait_bit && left < pending_compress_bytes_bound && left - size_diff >= pending_compress_bytes_bound && !m_pending_signal)
+			if (new_val & pending_data_wait_bit && left < pending_compress_bytes_bound && left - size_diff >= pending_compress_bytes_bound && !retro_atomic_load_acquire_int(&m_pending_signal))
 			{
 				// Notification is postponed until data write and memory release
-				m_pending_signal = true;
+				retro_atomic_store_release_int(&m_pending_signal, 1);
 			}
 
 			// Ensure wait bit state has not changed by the update
@@ -674,10 +683,10 @@ void compressed_serialization_file_handler::stream_data_prepare_thread_op()
 
 			if (!buffer_offset)
 			{
-				if (m_pending_signal)
+				if (retro_atomic_load_acquire_int(&m_pending_signal))
 				{
-					m_pending_wake++;
-					m_pending_wake.notify_all();
+					retro_atomic_fetch_add_int(&m_pending_wake, 1);
+					retro_waitaddr_notify_all(&m_pending_wake);
 				}
 
 				continue;
@@ -708,14 +717,14 @@ void compressed_serialization_file_handler::file_writer_thread_op()
 			m_file->write(data);
 			data = {}; // Deallocate before notification
 
-			const usz new_val = m_pending_bytes.sub_fetch(last_size);
+			const usz new_val = static_cast<usz>(retro_atomic_fetch_sub_64(&m_pending_bytes, static_cast<s64>(last_size))) - last_size;
 			const usz left = new_val & ~pending_data_wait_bit;
-			const bool pending_sig = m_pending_signal && m_pending_signal.exchange(false);
+			const bool pending_sig = retro_atomic_load_acquire_int(&m_pending_signal) && retro_atomic_exchange_int(&m_pending_signal, 0);
 
 			if (pending_sig || (new_val & pending_data_wait_bit && left < pending_compress_bytes_bound && left + last_size >= pending_compress_bytes_bound))
 			{
-				m_pending_wake++;
-				m_pending_wake.notify_all();
+				retro_atomic_fetch_add_int(&m_pending_wake, 1);
+				retro_waitaddr_notify_all(&m_pending_wake);
 			}
 
 			// Ensure wait bit state has not changed by the update
@@ -808,7 +817,7 @@ void compressed_zstd_serialization_file_handler::initialize(utils::serial& ar)
 		}
 
 		m_write_inited = true;
-		m_errored = false;
+		retro_atomic_store_release_int(&m_errored, 0);
 
 		m_compression_threads.reset();
 		m_compression_thread_count = 0;
@@ -843,7 +852,7 @@ void compressed_zstd_serialization_file_handler::initialize(utils::serial& ar)
 
 		// Each frame opens when the reader reaches it
 		m_read_inited = true;
-		m_errored = false;
+		retro_atomic_store_release_int(&m_errored, 0);
 	}
 }
 
@@ -853,7 +862,7 @@ bool compressed_zstd_serialization_file_handler::handle_file_op(utils::serial& a
 	{
 		initialize(ar);
 
-		if (m_errored)
+		if (retro_atomic_load_acquire_int(&m_errored))
 		{
 			return false;
 		}
@@ -902,7 +911,7 @@ bool compressed_zstd_serialization_file_handler::handle_file_op(utils::serial& a
 
 	initialize(ar);
 
-	if (m_errored)
+	if (retro_atomic_load_acquire_int(&m_errored))
 	{
 		return false;
 	}
@@ -1006,7 +1015,7 @@ usz compressed_zstd_serialization_file_handler::read_at(utils::serial& ar, usz r
 {
 	ensure(read_pos == ar.data.size() + ar.data_offset - size);
 
-	if (!size || m_errored)
+	if (!size || retro_atomic_load_acquire_int(&m_errored))
 	{
 		return 0;
 	}
@@ -1071,7 +1080,7 @@ usz compressed_zstd_serialization_file_handler::read_at(utils::serial& ar, usz r
 
 		if (!stream.m_frame && !(stream.m_frame = rzstd_blocks_open()))
 		{
-			m_errored = true;
+			retro_atomic_store_release_int(&m_errored, 1);
 			sys_log.error("Failure of compressed data reading: out of memory. (read_size=0x%x, ar=%s)", read_size, ar);
 			return read_size;
 		}
@@ -1088,7 +1097,7 @@ usz compressed_zstd_serialization_file_handler::read_at(utils::serial& ar, usz r
 
 		if (rzstd_blocks_give(stream.m_frame, m_stream_data.data() + m_stream_data_index, want, &block, &block_size) != RZSTD_PROCESS_NEXT)
 		{
-			m_errored = true;
+			retro_atomic_store_release_int(&m_errored, 1);
 			sys_log.error("Failure of compressed data reading. (read_size=0x%x, avail_in=0x%x, ar=%s)", read_size, avail_in, ar);
 			return read_size;
 		}
@@ -1149,7 +1158,7 @@ void compressed_zstd_serialization_file_handler::finalize(utils::serial& ar)
 
 	for (bool has_pending_threads = true; has_pending_threads;)
 	{
-		const u32 seen = m_taken.load();
+		const u32 seen = taken_seen();
 		has_pending_threads = false;
 
 		// Try to notify all in bulk
@@ -1184,11 +1193,11 @@ void compressed_zstd_serialization_file_handler::finalize(utils::serial& ar)
 		// Woken as a thread takes what it was given, or writes it out
 		if (has_pending_threads)
 		{
-			m_taken.wait(seen);
+			wait_taken_from(seen);
 		}
 	}
 
-	for (usz idx = m_output_buffer_index;;)
+	for (usz idx = static_cast<usz>(retro_atomic_load_acquire_64(&m_output_buffer_index));;)
 	{
 		auto& out_cur = m_compression_threads[idx % m_compression_thread_count].m_output;
 		auto& out_next = m_compression_threads[(idx + 1) % m_compression_thread_count].m_output;
@@ -1196,7 +1205,7 @@ void compressed_zstd_serialization_file_handler::finalize(utils::serial& ar)
 		out_cur.compare_and_swap_test(null_ptr, empty_data);
 		out_next.compare_and_swap_test(null_ptr, empty_data);
 
-		if (usz new_val = m_output_buffer_index; idx != new_val)
+		if (usz new_val = static_cast<usz>(retro_atomic_load_acquire_64(&m_output_buffer_index)); idx != new_val)
 		{
 			// Index was changed inbetween, retry on the next index
 			idx = new_val;
@@ -1237,7 +1246,7 @@ void compressed_zstd_serialization_file_handler::stream_data_prepare_thread_op()
 	std::vector<u8> stream_data;
 
 	const stx::shared_ptr<std::vector<u8>> null_ptr = stx::null_ptr;
-	const usz thread_index = m_thread_buffer_index++;
+	const usz thread_index = static_cast<usz>(retro_atomic_fetch_add_64(&m_thread_buffer_index, 1));
 
 	while (true)
 	{
@@ -1267,7 +1276,7 @@ void compressed_zstd_serialization_file_handler::stream_data_prepare_thread_op()
 		size_t out_size = 0;
 		ensure(::rzstd_encode(stream_data.data(), stream_data.size(), data->data(), data->size(), 5, &out_size) == RZSTD_PROCESS_END && out_size);
 
-		if (m_errored)
+		if (retro_atomic_load_acquire_int(&m_errored))
 		{
 			break;
 		}
@@ -1277,10 +1286,10 @@ void compressed_zstd_serialization_file_handler::stream_data_prepare_thread_op()
 		const stx::shared_ptr<std::vector<u8>> data_ptr = make_single<std::vector<u8>>(std::move(stream_data));
 
 		// Into the slot once the writer has emptied it
-		for (u32 seen = m_taken.load(); output || !output.compare_and_swap_test(null_ptr, data_ptr); seen = m_taken.load())
+		for (u32 seen = taken_seen(); output || !output.compare_and_swap_test(null_ptr, data_ptr); seen = taken_seen())
 		{
 			if (output)
-				m_taken.wait(seen);
+				wait_taken_from(seen);
 		}
 
 		//if (m_output_buffer_index % m_compression_thread_count == thread_index)
@@ -1292,9 +1301,12 @@ void compressed_zstd_serialization_file_handler::stream_data_prepare_thread_op()
 
 void compressed_zstd_serialization_file_handler::file_writer_thread_op()
 {
-	for (m_output_buffer_index = 0;; m_output_buffer_index++)
+	// The slot written next, published for finalize() to look at
+	retro_atomic_store_release_64(&m_output_buffer_index, 0);
+
+	for (usz index = 0;; index++, retro_atomic_store_release_64(&m_output_buffer_index, static_cast<s64>(index)))
 	{
-		auto& output = m_compression_threads[m_output_buffer_index % m_compression_thread_count].m_output;
+		auto& output = m_compression_threads[index % m_compression_thread_count].m_output;
 
 		while (!output)
 		{

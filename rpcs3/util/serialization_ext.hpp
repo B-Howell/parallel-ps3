@@ -4,6 +4,8 @@
 #include "util/shared_ptr.hpp"
 
 #include "Utilities/Thread.h"
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 
 #include <deque>
 
@@ -95,11 +97,11 @@ private:
 	std::vector<u8> m_stream_data;
 	usz m_stream_data_index = 0;
 	usz m_file_read_index = 0;
-	atomic_t<usz> m_pending_bytes = 0;
+	retro_atomic_64_t m_pending_bytes{0}; // usz
 	// Counted up at each wake for m_pending_bytes: the 32-bit word a writer
 	// waiting for pending memory to go down waits on
-	atomic_t<u32> m_pending_wake = 0;
-	atomic_t<bool> m_pending_signal = false;
+	retro_atomic_int_t m_pending_wake{0};
+	retro_atomic_int_t m_pending_signal{0}; // 0 or 1
 	bool m_write_inited = false;
 	bool m_read_inited = false;
 	bool m_errored = false;
@@ -153,7 +155,7 @@ struct compressed_zstd_serialization_file_handler : utils::serialization_file_ha
 
 	bool is_valid() const override
 	{
-		return !m_errored;
+		return !retro_atomic_load_acquire_int(&m_errored);
 	}
 
 	void finalize(utils::serial& ar) override;
@@ -164,35 +166,41 @@ private:
 	std::vector<u8> m_stream_data;
 	usz m_stream_data_index = 0;
 	usz m_file_read_index = 0;
-	atomic_t<usz> m_pending_bytes = 0;
-	atomic_t<bool> m_pending_signal = false;
 	bool m_write_inited = false;
 	bool m_read_inited = false;
-	atomic_t<bool> m_errored = false;
+	mutable retro_atomic_int_t m_errored{0}; // 0 or 1
 
 	usz m_input_buffer_index = 0;
-	atomic_t<usz> m_output_buffer_index = 0;
-	atomic_t<usz> m_thread_buffer_index = 0;
+	retro_atomic_64_t m_output_buffer_index{0}; // usz
+	retro_atomic_64_t m_thread_buffer_index{0}; // usz
 
 	// Bumped, and its waiters woken, as any thread takes data in or out of
 	// a context: what a thread waiting for a slot to empty waits on (an
 	// atomic_ptr can be waited on to fill, not to empty)
-	atomic_t<u32> m_taken = 0;
+	retro_atomic_int_t m_taken{0};
 
 	void taken()
 	{
-		m_taken++;
-		m_taken.notify_all();
+		retro_atomic_fetch_add_int(&m_taken, 1);
+		retro_waitaddr_notify_all(&m_taken);
+	}
+
+	u32 taken_seen() const { return static_cast<u32>(retro_atomic_load_acquire_int(&m_taken)); }
+
+	void wait_taken_from(u32 seen)
+	{
+		const retro_waitaddr_t w{&m_taken, seen};
+		retro_waitaddr_wait(&w, 1, -1);
 	}
 
 	// Until @busy() is false, woken as data is taken: no clock
 	template <typename F>
 	void wait_taken(F&& busy)
 	{
-		for (u32 seen = m_taken.load(); busy(); seen = m_taken.load())
+		for (u32 seen = taken_seen(); busy(); seen = taken_seen())
 		{
 			if (busy())
-				m_taken.wait(seen);
+				wait_taken_from(seen);
 		}
 	}
 
