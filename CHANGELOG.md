@@ -4,11 +4,16 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The sysutil callback word's race test now races.** A test change only.
+  - **What changed:** it made two new threads for each of 500 rounds. The first was mostly done before the second started, so an install that was a plain store instead of a compare-and-swap still passed. Two threads now stay for 20000 rounds and meet before each install, as the NP transaction test's threads do.
+  - **Checked:** the test now fails with the install's compare-and-swap made a plain store. The NP transaction claim test was checked the same way, with the claim made a load and a store, and it already failed. The 0456 entry's note on the test's threads is corrected: they were not held to one CPU, they just did not overlap.
+
+
 - **PPU thread and SPU thread group priorities are off `atomic_t`.** Not yet run on a game.
   - **What changed:** each priority (its level, its enqueue order and, for a PPU thread, the bit kept for a savestate's load) is one `retro_atomic_64_t`. `get_prio()` reads it whole, `set_prio()` writes it, and `prio_op()` changes it with a compare-and-swap loop, as `atomic_op` did. The scheduler's queue code (sys_sync.h), lv2's priority changes, the sync primitives' priority look-ups, sys_ppu_thread and sys_spu use them.
   - **SPU threads:** an SPU thread's priority is its group's. The little `priority_t` proxy that stood in for it is replaced by `get_prio()` and `prio_op()` on the SPU thread itself.
   - **Savestates:** a PPU thread's priority is written and read through the `u64` it was, and an SPU group's as the `u64` it was, so the format is unchanged.
-  - **Tests:** `test_emu_waits` makes an SPU thread group and checks that its priority is the one it was made with. Two threads, each held to a CPU of its own, then change the order 200000 times each with none lost, and the level stays as it was. It was shown to fail with the compare-and-swap made a plain store. The test found that the test process's threads were all held to one CPU, so the race only showed once each thread was given its own; earlier race tests may need the same. A check fails if `atomic_t` comes back to the priorities.
+  - **Tests:** `test_emu_waits` makes an SPU thread group and checks that its priority is the one it was made with. Two threads, each held to a CPU of its own, then change the order 200000 times each with none lost, and the level stays as it was. It was shown to fail with the compare-and-swap made a plain store. Left to the scheduler, the two threads did not overlap enough to show a lost change; the race only showed once each was put on a CPU of its own. A check fails if `atomic_t` comes back to the priorities.
 
 
 - **The PPU and SPU threads' debugger mode is off `atomic_t`.** Not yet run on a game.

@@ -964,8 +964,8 @@ int main()
 		const auto bump = [&](int cpu)
 		{
 #ifdef __linux__
-			// Each on a CPU of its own, whatever the thread making them was
-			// held to, so that the two do race
+			// Each on a CPU of its own: left to the scheduler, the two did
+			// not overlap enough to lose a change with a plain store
 			cpu_set_t set;
 			CPU_ZERO(&set);
 			CPU_SET(cpu % std::max(1u, std::thread::hardware_concurrency()), &set);
@@ -1003,20 +1003,39 @@ int main()
 		CHECK(w.cb() == 0xfffffff0 && w.get().second == 0xdeadbeef);
 		CHECK(w.clear());
 
+		// Two threads that stay, meeting at each round (a thread made for
+		// each round mostly comes after the other has finished)
+		constexpr int rounds = 20000;
 		int doubled = 0;
-		for (int round = 0; round < 500; round++)
+		std::vector<std::atomic<int>> wins(rounds), arrived(rounds), done(rounds);
+		const auto installer = [&](u32 cb, u32 arg)
 		{
-			std::atomic<int> wins{0};
-			std::thread a([&] { wins += w.install(0x1000, 1); });
-			std::thread b([&] { wins += w.install(0x2000, 2); });
-			a.join();
-			b.join();
-			const auto [cb, arg] = w.get();
-			doubled += wins != 1 || !((cb == 0x1000 && arg == 1) || (cb == 0x2000 && arg == 2));
-			w.clear();
-		}
+			for (int i = 0; i < rounds; i++)
+			{
+				arrived[i]++;
+				while (arrived[i] < 2) {}
+				wins[i] += w.install(cb, arg);
+				done[i]++;
+				// The first thread clears the word once both are done
+				if (cb == 0x1000)
+				{
+					while (done[i] < 2) {}
+					const auto [got_cb, got_arg] = w.get();
+					doubled += wins[i] != 1 || !((got_cb == 0x1000 && got_arg == 1) || (got_cb == 0x2000 && got_arg == 2));
+					w.clear();
+					done[i] = 3;
+				}
+				else
+				{
+					while (done[i] < 3) {}
+				}
+			}
+		};
+		std::thread a(installer, 0x1000u, 1u), b(installer, 0x2000u, 2u);
+		a.join();
+		b.join();
 		CHECK(doubled == 0);
-		std::printf("test_emu_waits: a sysutil callback word: installed only where none is, 500 races with one winner each\n");
+		std::printf("test_emu_waits: a sysutil callback word: installed only where none is, 20000 races with one winner each\n");
 	}
 
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");
