@@ -92,8 +92,8 @@ void lv2_int_serv::join() const
 		std::bit_cast<u64>(&ppu_thread_exit)
 	});
 
-	thread->cmd_notify.store(1);
-	thread->cmd_notify.notify_one();
+	retro_atomic_store_release_int(&thread->cmd_notify, 1);
+	retro_waitaddr_notify_one(&thread->cmd_notify);
 	(*thread)();
 
 	idm::remove_verify<named_thread<ppu_thread>>(thread->id, thread);
@@ -301,11 +301,11 @@ void ppu_interrupt_thread_entry(ppu_thread& ppu, ppu_opcode_t, be_t<u32>*, struc
 
 		const auto state = +ppu.state;
 
-		if (::is_stopped(state) || ppu.cmd_notify.exchange(0))
+		if (::is_stopped(state) || retro_atomic_exchange_int(&ppu.cmd_notify, 0))
 		{
 			return;
 		}
 
-		thread_ctrl::wait_on(ppu.cmd_notify, 0);
+		thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&ppu.cmd_notify, 0u); });
 	}
 }

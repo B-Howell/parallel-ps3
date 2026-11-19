@@ -1249,6 +1249,8 @@ check: all
 	@if grep -nw "atomic_t" ../../util/logs.hpp ../../util/logs.cpp; then echo "atomic_t is back in logging"; exit 1; else echo "logging is retro_atomic"; fi
 	@# PPUThread.cpp's own atomics (precompile workers, breakpoint range, savestate tags) are off atomic_t; ppu_thread's fields are next
 	@if grep -nw "atomic_t" ../../Emu/Cell/PPUThread.cpp; then echo "atomic_t is back in PPUThread.cpp"; exit 1; else echo "PPUThread.cpp's own atomics are retro_atomic"; fi
+	@# a PPU thread's command and start gate words (cmd_notify, start_gate_*, entry_reached, sched_watch) are off atomic_t
+	@if grep -n "atomic_t<u32> \(cmd_notify\|start_gate_caller\|start_gate_open\|entry_reached\|sched_watch\)" ../../Emu/Cell/PPUThread.h; then echo "atomic_t is back in a PPU thread's gate words"; exit 1; else echo "a PPU thread's gate words are retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

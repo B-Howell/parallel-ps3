@@ -1059,8 +1059,8 @@ namespace rsx
 					{ ppu_cmd::sleep, 0 }
 				});
 
-				intr_thread->cmd_notify.store(1);
-				intr_thread->cmd_notify.notify_one();
+				retro_atomic_store_release_int(&intr_thread->cmd_notify, 1);
+				retro_waitaddr_notify_one(&intr_thread->cmd_notify);
 			}
 		}
 		else
@@ -1129,7 +1129,7 @@ namespace rsx
 		// Until the game sets the RSX up and the emulator runs: looked at
 		// once a frame (retro_run's, g_libretro_events), as the emulator's
 		// state changes or as the RSX is set up (both notify it), or a stop
-		while (!(retro_atomic_load_acquire_int(&rsx_thread_running) != 0) || Emu.IsPausedOrReady())
+		while (retro_atomic_load_acquire_int(&rsx_thread_running) == 0 || Emu.IsPausedOrReady())
 		{
 			const u32 events = libretro_events_seen();
 
@@ -1250,7 +1250,7 @@ namespace rsx
 			{
 				wait_pause();
 
-				if (!(retro_atomic_load_acquire_int(&rsx_thread_running) != 0))
+				if (retro_atomic_load_acquire_int(&rsx_thread_running) == 0)
 				{
 					return;
 				}
@@ -3100,7 +3100,7 @@ namespace rsx
 		// we must block until RSX has invalidated the memory
 		// (the renderer handles it, and this thread waits for it to)
 
-		if (!(retro_atomic_load_acquire_int(&rsx_thread_running) != 0))
+		if (retro_atomic_load_acquire_int(&rsx_thread_running) == 0)
 			return;
 
 		// Nearly always there is no unmap waiting to be handled: one load.
@@ -3621,8 +3621,8 @@ namespace rsx
 					{ ppu_cmd::sleep, 0 }
 				});
 
-				intr_thread->cmd_notify.store(1);
-				intr_thread->cmd_notify.notify_one();
+				retro_atomic_store_release_int(&intr_thread->cmd_notify, 1);
+				retro_waitaddr_notify_one(&intr_thread->cmd_notify);
 			}
 		}
 	}

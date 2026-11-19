@@ -55,8 +55,8 @@ namespace rsx
 				{ ppu_cmd::sleep, 0 }
 			});
 
-			RSX(ctx)->intr_thread->cmd_notify.store(1);
-			RSX(ctx)->intr_thread->cmd_notify.notify_one();
+			retro_atomic_store_release_int(&RSX(ctx)->intr_thread->cmd_notify, 1);
+			retro_waitaddr_notify_one(&RSX(ctx)->intr_thread->cmd_notify);
 		}
 
 		RSX(ctx)->reset();
@@ -85,8 +85,8 @@ namespace rsx
 				{ ppu_cmd::sleep, 0 }
 			});
 
-			RSX(ctx)->intr_thread->cmd_notify.store(1);
-			RSX(ctx)->intr_thread->cmd_notify.notify_one();
+			retro_atomic_store_release_int(&RSX(ctx)->intr_thread->cmd_notify, 1);
+			retro_waitaddr_notify_one(&RSX(ctx)->intr_thread->cmd_notify);
 		}
 	}
 

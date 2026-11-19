@@ -302,12 +302,12 @@ public:
 	void cmd_pop(u32 = 0);
 	cmd64 cmd_wait(); // Empty command means caller must return, like true from cpu_thread::check_status().
 	cmd64 cmd_get(u32 index) { return cmd_queue[cmd_queue.peek() + index].load(); }
-	atomic_t<u32> cmd_notify = 0;
+	retro_atomic_int_t cmd_notify{0};
 
-	atomic_t<u32> start_gate_caller = 0; // Caller of sys_ppu_thread_start waiting for this thread to reach its entry command, cleared by this thread
-	atomic_t<u32> start_gate_open = 0; // Set by that caller as it leaves sys_ppu_thread_start: this thread may run its entry
-	atomic_t<u32> entry_reached = 0; // Set as this thread takes its entry command
-	atomic_t<u32> sched_watch = 0; // Moved by every scheduler edge put to this thread, and as it reaches its entry command: what threads watching it wait on
+	retro_atomic_int_t start_gate_caller{0}; // Caller of sys_ppu_thread_start waiting for this thread to reach its entry command, cleared by this thread
+	retro_atomic_int_t start_gate_open{0}; // Set by that caller as it leaves sys_ppu_thread_start: this thread may run its entry
+	retro_atomic_int_t entry_reached{0}; // Set as this thread takes its entry command
+	retro_atomic_int_t sched_watch{0}; // Moved by every scheduler edge put to this thread, and as it reaches its entry command: what threads watching it wait on
 
 	alignas(64) const ppu_func_opd_t entry_func;
 	u64 start_time{0}; // Sleep start timepoint

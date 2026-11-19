@@ -4,6 +4,17 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **A PPU thread's command and start gate words are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** five words are now `retro_atomic_int_t`:
+    - the command notify word, which interrupt threads wait on and which sys_interrupt, sys_ppu_thread and the RSX set;
+    - the start gate's caller, the caller waiting in sys_ppu_thread_start for the new thread to reach its entry command;
+    - the start gate's open flag;
+    - the entry-reached flag;
+    - the scheduler watch word, which every scheduler edge put to the thread moves.
+  - Every wait on them goes through `set_raw` and `thread_ctrl::wait_on_custom`, as before on the same words. Nothing saved in savestates changes.
+  - **Tests:** none at runtime: they are moved only by a game's PPU threads and syscalls, which the test machine cannot run. A check fails if `atomic_t` comes back to these words.
+
+
 - **PPUThread.cpp's own atomics are off `atomic_t`.** Not yet run on a game. `ppu_thread`'s fields, in PPUThread.h, are next.
   - **What changed:** the precompiler's file counter and its memory budget are `retro_atomic`. A file takes its share of the budget with a compare-and-swap loop, where `fetch_op` was, and a worker with none left waits through `thread_ctrl::wait_on_custom`. Also converted: the LLVM workers' job and done counters and thread index, the breakpoint table's address range, the pause-all-on-breakpoint flag, the precompile-disable flag, the savestate's saved and loaded tags, and the flag a PPU thread waits on until the first one is initialised. That last wait also goes through `thread_ctrl::wait_on_custom`. Nothing saved in savestates changes.
   - **Tests:** none at runtime: these need a game's modules compiled or a PPU thread run. The existing tests that boot the core run through the precompiler's set-up. A check fails if `atomic_t` comes back to PPUThread.cpp.

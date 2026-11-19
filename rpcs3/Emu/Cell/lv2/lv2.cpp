@@ -1417,8 +1417,8 @@ static void sched_edge(void* ctx, unsigned slot, int edge)
 
 	sched_edge_put(target, ctx, edge);
 
-	target->sched_watch++;
-	target->sched_watch.notify_all();
+	retro_atomic_fetch_add_int(&target->sched_watch, 1);
+	retro_waitaddr_notify_all(&target->sched_watch);
 }
 
 static void sched_edge_put(ppu_thread* target, void* ctx, int edge)

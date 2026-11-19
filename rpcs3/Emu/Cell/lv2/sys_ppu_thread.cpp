@@ -602,7 +602,7 @@ error_code sys_ppu_thread_start(ppu_thread& ppu, u32 thread_id)
 
 		if (!is_lower_prio)
 		{
-			thread.start_gate_caller = ppu.id;
+			retro_atomic_store_release_int(&thread.start_gate_caller, static_cast<int>(ppu.id));
 		}
 
 		ensure(lv2_obj::awake(&thread));
@@ -625,8 +625,8 @@ error_code sys_ppu_thread_start(ppu_thread& ppu, u32 thread_id)
 		return thread.ret;
 	}
 
-	thread->cmd_notify.store(1);
-	thread->cmd_notify.notify_one();
+	retro_atomic_store_release_int(&thread->cmd_notify, 1);
+	retro_waitaddr_notify_one(&thread->cmd_notify);
 
 	// Woken by a scheduler edge put to either thread, the new one reaching
 	// its entry, or this one stopped - no spin, no clock
@@ -634,8 +634,8 @@ error_code sys_ppu_thread_start(ppu_thread& ppu, u32 thread_id)
 	{
 		for (;;)
 		{
-			const u32 seen_new = thread->sched_watch.load();
-			const u32 seen_own = ppu.sched_watch.load();
+			const u32 seen_new = static_cast<u32>(retro_atomic_load_acquire_int(&thread->sched_watch));
+			const u32 seen_own = static_cast<u32>(retro_atomic_load_acquire_int(&ppu.sched_watch));
 			const auto old_state = +ppu.state;
 
 			if (done() || ::is_stopped(old_state))
@@ -646,8 +646,8 @@ error_code sys_ppu_thread_start(ppu_thread& ppu, u32 thread_id)
 			thread_ctrl::wait_on_custom<3>([&](atomic_wait::list<5>& list)
 			{
 				list.template set<0>(ppu.state, old_state);
-				list.template set<1>(thread->sched_watch, seen_new);
-				list.template set<2>(ppu.sched_watch, seen_own);
+				list.template set_raw<1>(&thread->sched_watch, seen_new);
+				list.template set_raw<2>(&ppu.sched_watch, seen_own);
 			});
 		}
 	};
@@ -657,17 +657,17 @@ error_code sys_ppu_thread_start(ppu_thread& ppu, u32 thread_id)
 		// The new thread has higher priority: wait until it has started -
 		// taken its entry command. From there the scheduler decides: this
 		// thread, past the run slots, is told to stop as it leaves
-		wait_for([&]() { return thread->entry_reached || ::is_stopped(+thread->state); });
+		wait_for([&]() { return (retro_atomic_load_acquire_int(&thread->entry_reached) != 0) || ::is_stopped(+thread->state); });
 	}
 	else
 	{
 		// The new thread has lower or equal priority: if it got a free hardware thread, wait until it reaches its entry command
 		// It then waits in turn for this caller to leave the syscall before running (see ppu_cmd::entry_call)
-		wait_for([&]() { return !thread->start_gate_caller || !(cpu_flag::suspend - thread->state) || !(cpu_flag::suspend - ppu.state) || ::is_stopped(+thread->state); });
+		wait_for([&]() { return retro_atomic_load_acquire_int(&thread->start_gate_caller) == 0 || !(cpu_flag::suspend - thread->state) || !(cpu_flag::suspend - ppu.state) || ::is_stopped(+thread->state); });
 
 		// Leaving: the new thread may run
-		thread->start_gate_open.release(1);
-		thread->start_gate_open.notify_all();
+		retro_atomic_store_release_int(&thread->start_gate_open, 1);
+		retro_waitaddr_notify_all(&thread->start_gate_open);
 	}
 
 	return CELL_OK;

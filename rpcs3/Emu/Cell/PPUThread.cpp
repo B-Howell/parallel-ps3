@@ -2719,23 +2719,23 @@ void ppu_thread::cpu_task()
 		}
 		case ppu_cmd::entry_call:
 		{
-			const bool gated = start_gate_caller.exchange(0) != 0;
+			const bool gated = retro_atomic_exchange_int(&start_gate_caller, 0) != 0;
 
 			// Reached: the caller of sys_ppu_thread_start, which may be
 			// waiting for this, told
-			entry_reached.release(1);
-			sched_watch++;
-			sched_watch.notify_all();
+			retro_atomic_store_release_int(&entry_reached, 1);
+			retro_atomic_fetch_add_int(&sched_watch, 1);
+			retro_waitaddr_notify_all(&sched_watch);
 
 			if (gated)
 			{
 				// No guest code before that caller has left the syscall: woken as
 				// it does (start_gate_open), or as this thread stops - no spin
-				while (!start_gate_open && !is_stopped())
+				while (retro_atomic_load_acquire_int(&start_gate_open) == 0 && !is_stopped())
 				{
 					const auto old_state = +state;
 
-					if (start_gate_open || ::is_stopped(old_state))
+					if ((retro_atomic_load_acquire_int(&start_gate_open) != 0) || ::is_stopped(old_state))
 					{
 						break;
 					}
@@ -2743,7 +2743,7 @@ void ppu_thread::cpu_task()
 					thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
 					{
 						list.template set<0>(state, old_state);
-						list.template set<1>(start_gate_open, 0u);
+						list.template set_raw<1>(&start_gate_open, 0u);
 					});
 				}
 			}
@@ -3392,8 +3392,8 @@ cmd64 ppu_thread::cmd_wait()
 			return {};
 		}
 
-		thread_ctrl::wait_on(cmd_notify, 0);
-		cmd_notify = 0;
+		thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&cmd_notify, 0u); });
+		retro_atomic_store_release_int(&cmd_notify, 0);
 	}
 }
 
