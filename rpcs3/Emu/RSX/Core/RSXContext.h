@@ -1,6 +1,7 @@
 #pragma once
 
 #include <util/types.hpp>
+#include <retro_atomic.h>
 #include "Emu/Cell/lv2/sys_rsx.h"
 #include "Emu/RSX/GCM.h"
 #include "RSXIOMap.hpp"
@@ -54,7 +55,7 @@ namespace rsx
 		u32 rsx_event_port{ 0 };
 		u32 driver_info{ 0 };
 
-		atomic_t<u64> unsent_gcm_events = 0; // Unsent event bits when aborting RSX/VBLANK thread (will be sent on savestate load)
+		retro_atomic_64_t unsent_gcm_events{0}; // Unsent event bits when aborting RSX/VBLANK thread (will be sent on savestate load); saved as the u64 it was
 
 		GCM_tile_reference get_tiled_memory_region(const utils::address_range32& range) const;
 	};

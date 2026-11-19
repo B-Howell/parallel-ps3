@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The RSX context's unsent events are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the event bits left unsent when the RSX or VBLANK thread stops (sent again on a savestate's load) are a `retro_atomic_64_t`. sys_rsx adds to them with `retro_atomic_fetch_or_64`, and the renderer takes them whole with an exchange.
+  - **Savestates:** written and read through a `u64` temporary, the 8 bytes `atomic_t<u64>` made, so the format is unchanged.
+  - **Tests:** none at runtime: they are set as sys_rsx fails to send an event to a stopped thread, and saved with the whole RSX thread, which the test machine cannot run. A check fails if `atomic_t` comes back or the field is saved directly again.
+
+
 - **ZCULL's own fields are off `atomic_t`.** Not yet run on a game.
   - **What changed:** the two report pages' accessed flags and the count of critical reports in flight are `retro_atomic_int_t`. The report written into the game's memory through an `atomic_t` view is left for the guest memory work. Nothing is saved in savestates.
   - **Tests:** none at runtime: they are set as the renderer writes ZCULL reports and the game's memory is accessed, which needs a running RSX. A check fails if `atomic_t` comes back to these two fields.

@@ -756,7 +756,11 @@ namespace rsx
 		ar(device_addr, label_addr, main_mem_size, local_mem_size, rsx_event_port, driver_info);
 		ar(in_begin_end);
 		ar(display_buffers, display_buffers_count, current_display_buffer);
-		ar(unsent_gcm_events, rsx::method_registers.current_draw_clause);
+		{
+			u64 unsent = static_cast<u64>(retro_atomic_load_acquire_64(&unsent_gcm_events));
+			ar(unsent, rsx::method_registers.current_draw_clause);
+			retro_atomic_store_release_64(&unsent_gcm_events, static_cast<s64>(unsent));
+		}
 
 		if (ar.is_writing() || version >= 2)
 		{
@@ -1100,7 +1104,7 @@ namespace rsx
 
 		performance_counters.state = FIFO::state::empty;
 
-		const u64 event_flags = unsent_gcm_events.exchange(0);
+		const u64 event_flags = static_cast<u64>(retro_atomic_exchange_64(&unsent_gcm_events, 0));
 
 		if (Emu.IsStarting())
 		{
@@ -1171,7 +1175,7 @@ namespace rsx
 			u32 frontend_vblanks = static_cast<u32>(retro_atomic_load_acquire_int(&g_libretro_vblank_requests)); // wraps; only compared for equality
 
 			// TODO: exit condition
-			while (!is_stopped() && !unsent_gcm_events && thread_ctrl::state() != thread_state::aborting)
+			while (!is_stopped() && !retro_atomic_load_acquire_64(&unsent_gcm_events) && thread_ctrl::state() != thread_state::aborting)
 			{
 				// VBLANK on the frontend's clock, and on nothing else: one per
 				// retro_run. The game makes exactly one frame per frame the
@@ -3587,7 +3591,7 @@ namespace rsx
 			{
 				sys_rsx_context_attribute(0x55555555, 0xFEC, buffer, 0, 0, 0);
 
-				if (unsent_gcm_events)
+				if (retro_atomic_load_acquire_64(&unsent_gcm_events))
 				{
 					// TODO: A proper fix
 					return;

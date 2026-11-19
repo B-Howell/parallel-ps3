@@ -282,7 +282,7 @@ bool rsx::thread::send_event(u64 data1, u64 event_flags, u64 data3)
 	if (error + 0u == CELL_EAGAIN)
 	{
 		// Thread has aborted when sending event (VBLANK duplicates are allowed)
-		ensure((unsent_gcm_events.fetch_or(event_flags) & event_flags & ~(SYS_RSX_EVENT_VBLANK | SYS_RSX_EVENT_SECOND_VBLANK_BASE | SYS_RSX_EVENT_SECOND_VBLANK_BASE * 2)) == 0);
+		ensure((static_cast<u64>(retro_atomic_fetch_or_64(&unsent_gcm_events, static_cast<s64>(event_flags))) & event_flags & ~(SYS_RSX_EVENT_VBLANK | SYS_RSX_EVENT_SECOND_VBLANK_BASE | SYS_RSX_EVENT_SECOND_VBLANK_BASE * 2)) == 0);
 		return false;
 	}
 
