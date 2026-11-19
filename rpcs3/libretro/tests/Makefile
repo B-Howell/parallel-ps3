@@ -1181,6 +1181,8 @@ check: all
 	@if grep -nw "atomic_t" ../../Emu/Cell/Modules/cellCamera.h ../../Emu/Cell/Modules/cellCamera.cpp; then echo "cellCamera uses atomic_t again"; exit 1; else echo "cellCamera is retro_atomic"; fi
 	@# np_handler is off atomic_t, and its savestate keeps the NP flags as the bools they were
 	@if grep -nw "atomic_t" ../../Emu/NP/np_handler.h || [ $$(grep -c "bool flags\[7\]{};" ../../Emu/NP/np_handler.cpp) -ne 2 ] || [ $$(grep -c "ar(flags\[0\], flags\[1\]);" ../../Emu/NP/np_handler.cpp) -ne 2 ]; then echo "np_handler uses atomic_t again, or its savestate no longer writes the NP flags as bools"; exit 1; else echo "np_handler is retro_atomic and saves its flags as bools"; fi
+	@# the RPCN client is off atomic_t: it must not come back
+	@if grep -nw "atomic_t" ../../Emu/NP/rpcn_client.h ../../Emu/NP/rpcn_client.cpp; then echo "the RPCN client uses atomic_t again"; exit 1; else echo "the RPCN client is retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

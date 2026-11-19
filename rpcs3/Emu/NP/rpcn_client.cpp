@@ -346,7 +346,7 @@ namespace rpcn
 	rpcn_client::~rpcn_client()
 	{
 		terminate_connection();
-		terminate = true;
+		retro_atomic_store_release_int(&terminate, 1);
 		event();
 		sem_rpcn.release();
 		sem_reader.release();
@@ -372,8 +372,8 @@ namespace rpcn
 		get_replies();
 		get_presence_updates();
 
-		next_gen(conn_gen);
-		next_gen(auth_gen);
+		next_gen(&conn_gen);
+		next_gen(&auth_gen);
 	}
 
 	std::shared_ptr<rpcn_client> rpcn_client::get_instance(u32 binding_address, bool check_config)
@@ -390,10 +390,12 @@ namespace rpcn
 				return sptr;
 			}
 
-			if (!instance_making.compare_and_swap_test(0, 1))
+			if (!retro_atomic_cas_int(&instance_making, 0, 1))
 			{
-				// Another thread makes it: woken as it is made
-				instance_making.wait(1);
+				// Another thread makes it (its threads started, its connection
+				// begun: not made twice): woken as it is made
+				const retro_waitaddr_t w{&instance_making, 1};
+				retro_waitaddr_wait(&w, 1, -1);
 				continue;
 			}
 
@@ -411,8 +413,8 @@ namespace rpcn
 				retro_retire(&instance_retire, old ? &old->node : nullptr, free_instance_box);
 			}
 
-			instance_making.release(0);
-			instance_making.notify_all();
+			retro_atomic_store_release_int(&instance_making, 0);
+			retro_waitaddr_notify_all(&instance_making);
 			return sptr;
 		}
 	}
@@ -434,7 +436,7 @@ namespace rpcn
 	// inform rpcn that the server infos have been updated and signal rpcn_thread to try again
 	void rpcn_client::server_infos_updated()
 	{
-		if (connected)
+		if ((retro_atomic_load_acquire_int(&connected) != 0))
 		{
 			disconnect();
 		}
@@ -454,9 +456,9 @@ namespace rpcn
 			// Busy before connected is looked at: disconnect() clears
 			// connected before it looks at busy, so one of the two sees the
 			// other (both sequentially consistent)
-			reader_busy = 1;
+			retro_atomic_store_release_int(&reader_busy, static_cast<int>(1));
 
-			while (!terminate && connected)
+			while (!(retro_atomic_load_acquire_int(&terminate) != 0) && (retro_atomic_load_acquire_int(&connected) != 0))
 			{
 				if (!handle_input())
 				{
@@ -464,10 +466,10 @@ namespace rpcn
 				}
 			}
 
-			reader_busy = 0;
-			reader_busy.notify_all();
+			retro_atomic_store_release_int(&reader_busy, static_cast<int>(0));
+			retro_waitaddr_notify_all(&reader_busy);
 
-			if (terminate)
+			if ((retro_atomic_load_acquire_int(&terminate) != 0))
 			{
 				return;
 			}
@@ -482,19 +484,19 @@ namespace rpcn
 		{
 			sem_writer.acquire();
 
-			writer_busy = 1;
+			retro_atomic_store_release_int(&writer_busy, static_cast<int>(1));
 
 			// A failed send ends the connection (connected cleared); the
 			// thread waits for the next one instead of ending
-			if (!terminate && connected)
+			if (!(retro_atomic_load_acquire_int(&terminate) != 0) && (retro_atomic_load_acquire_int(&connected) != 0))
 			{
 				handle_output();
 			}
 
-			writer_busy = 0;
-			writer_busy.notify_all();
+			retro_atomic_store_release_int(&writer_busy, static_cast<int>(0));
+			retro_waitaddr_notify_all(&writer_busy);
 
-			if (terminate)
+			if ((retro_atomic_load_acquire_int(&terminate) != 0))
 			{
 				return;
 			}
@@ -515,31 +517,31 @@ namespace rpcn
 
 			while (true)
 			{
-				if (terminate)
+				if ((retro_atomic_load_acquire_int(&terminate) != 0))
 				{
 					return;
 				}
 
 				// By default is the object is alive we should be connected
-				if (!connected)
+				if (!(retro_atomic_load_acquire_int(&connected) != 0))
 				{
-					if (want_conn)
+					if ((retro_atomic_load_acquire_int(&want_conn) != 0))
 					{
-						want_conn = false;
+						retro_atomic_store_release_int(&want_conn, 0);
 						connect(g_cfg_rpcn.get_host());
-						next_gen(conn_gen);
+						next_gen(&conn_gen);
 					}
 
 					break;
 				}
 
-				if (!authentified)
+				if (!(retro_atomic_load_acquire_int(&authentified) != 0))
 				{
-					if (want_auth)
+					if ((retro_atomic_load_acquire_int(&want_auth) != 0))
 					{
 						bool result_login;
 						result_login = login(g_cfg_rpcn.get_npid(), g_cfg_rpcn.get_password(), g_cfg_rpcn.get_token());
-						next_gen(auth_gen);
+						next_gen(&auth_gen);
 
 						if (!result_login)
 						{
@@ -554,7 +556,7 @@ namespace rpcn
 					}
 				}
 
-				if (authentified && !Emu.IsStopped())
+				if ((retro_atomic_load_acquire_int(&authentified) != 0) && !Emu.IsStopped())
 				{
 					// Ping the UDP Signaling Server if we're authentified & ingame
 					const auto now = steady_clock::now();
@@ -566,24 +568,24 @@ namespace rpcn
 						{
 							const u32 new_addr_sig = read_from_ptr<le_t<u32>>(msg, 0);
 							const u16 new_port_sig = read_from_ptr<be_t<u16>>(msg, 4);
-							const u32 old_addr_sig = addr_sig;
-							const u32 old_port_sig = port_sig;
+							const u32 old_addr_sig = static_cast<u32>(retro_atomic_load_acquire_int(&addr_sig));
+							const u32 old_port_sig = static_cast<u32>(retro_atomic_load_acquire_int(&port_sig));
 
 							if (new_addr_sig != old_addr_sig)
 							{
-								addr_sig = new_addr_sig;
+								retro_atomic_store_release_int(&addr_sig, static_cast<int>(new_addr_sig));
 								if (old_addr_sig == 0)
 								{
-									addr_sig.notify_one();
+									retro_waitaddr_notify_one(&addr_sig);
 								}
 							}
 
 							if (new_port_sig != old_port_sig)
 							{
-								port_sig = new_port_sig;
+								retro_atomic_store_release_int(&port_sig, static_cast<int>(new_port_sig));
 								if (old_port_sig == 0)
 								{
-									port_sig.notify_one();
+									retro_waitaddr_notify_one(&port_sig);
 								}
 							}
 
@@ -614,7 +616,7 @@ namespace rpcn
 						std::vector<u8> ping(13);
 						ping[0] = 1;
 						write_to_ptr<le_t<s64>>(ping, 1, user_id);
-						write_to_ptr<be_t<u32>>(ping, 9, +local_addr_sig);
+						write_to_ptr<be_t<u32>>(ping, 9, +static_cast<u32>(retro_atomic_load_acquire_int(&local_addr_sig)));
 						return ping;
 					};
 
@@ -803,7 +805,7 @@ namespace rpcn
 				return error_and_disconnect("Invalid size of ServerInfo packet");
 
 			received_version = read_from_ptr<le_t<u32>>(data, 0);
-			server_info_received = true;
+			retro_atomic_store_release_int(&server_info_received, 1);
 			break;
 		}
 
@@ -842,10 +844,10 @@ namespace rpcn
 		usz n_recv = 0;
 		while (n_recv != n)
 		{
-			if (!connected)
+			if (!(retro_atomic_load_acquire_int(&connected) != 0))
 				return recvn_result::recvn_noconn;
 
-			if (terminate)
+			if ((retro_atomic_load_acquire_int(&terminate) != 0))
 				return recvn_result::recvn_terminate;
 
 			bool error = false;
@@ -864,10 +866,10 @@ namespace rpcn
 
 					while ((poll_fd.revents & POLLIN) != POLLIN && (poll_fd.revents & POLLRDNORM) != POLLRDNORM)
 					{
-						if (!connected)
+						if (!(retro_atomic_load_acquire_int(&connected) != 0))
 							return recvn_result::recvn_noconn;
 
-						if (terminate)
+						if ((retro_atomic_load_acquire_int(&terminate) != 0))
 							return recvn_result::recvn_terminate;
 
 						poll_fd.fd = sockfd;
@@ -928,10 +930,10 @@ namespace rpcn
 		usz n_sent = 0;
 		while (true)
 		{
-			if (terminate)
+			if ((retro_atomic_load_acquire_int(&terminate) != 0))
 				return error_and_disconnect("send_packet was forcefully aborted");
 
-			if (!connected)
+			if (!(retro_atomic_load_acquire_int(&connected) != 0))
 				return false;
 
 			// As much as the socket takes now; the rest, and a KeyUpdate the
@@ -963,7 +965,7 @@ namespace rpcn
 
 			while ((poll_fd.revents & POLLOUT) != POLLOUT)
 			{
-				if (terminate)
+				if ((retro_atomic_load_acquire_int(&terminate) != 0))
 					return error_and_disconnect("send_packet was forcefully aborted");
 
 				poll_fd.fd = sockfd;
@@ -1018,9 +1020,13 @@ namespace rpcn
 	{
 		// The reader and the writer thread out of the connection first: they
 		// look at connected at least every RPCN_TIMEOUT_INTERVAL
-		connected = false;
-		reader_busy.wait(1);
-		writer_busy.wait(1);
+		retro_atomic_store_release_int(&connected, 0);
+		for (retro_atomic_int_t* busy : {&reader_busy, &writer_busy})
+		{
+			const retro_waitaddr_t w{busy, 1};
+			while (retro_atomic_load_acquire_int(busy) == 1)
+				retro_waitaddr_wait(&w, 1, -1);
+		}
 
 		if (tls)
 		{
@@ -1044,9 +1050,9 @@ namespace rpcn
 			sockfd = 0;
 		}
 
-		connected = false;
-		authentified = false;
-		server_info_received = false;
+		retro_atomic_store_release_int(&connected, 0);
+		retro_atomic_store_release_int(&authentified, 0);
+		retro_atomic_store_release_int(&server_info_received, 0);
 		drop_sync_replies();
 		event();
 	}
@@ -1055,13 +1061,13 @@ namespace rpcn
 	{
 		rpcn_log.warning("connect: Attempting to connect");
 
-		state = rpcn_state::failure_no_failure;
+		retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_no_failure));
 
 		const auto hostname_and_port = parse_rpcn_host(host);
 
 		if (!hostname_and_port)
 		{
-			state = rpcn_state::failure_input;
+			retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_input));
 			return false;
 		}
 
@@ -1082,7 +1088,7 @@ namespace rpcn
 			if (getaddrinfo(hostname.c_str(), nullptr, nullptr, &addr_info))
 			{
 				rpcn_log.error("connect: Failed to getaddrinfo %s", host);
-				state = rpcn_state::failure_resolve;
+				retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_resolve));
 				return false;
 			}
 
@@ -1117,7 +1123,7 @@ namespace rpcn
 			if (!found_ipv4)
 			{
 				rpcn_log.error("connect: Failed to find IPv4 for %s", host);
-				state = rpcn_state::failure_resolve;
+				retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_resolve));
 				return false;
 			}
 
@@ -1132,7 +1138,7 @@ namespace rpcn
 #endif
 			{
 				rpcn_log.error("connect: Failed to connect to RPCN server!");
-				state = rpcn_state::failure_connect;
+				retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_connect));
 				return false;
 			}
 
@@ -1142,14 +1148,14 @@ namespace rpcn
 			if (binding_address != 0 && ::bind(sockfd, reinterpret_cast<const sockaddr*>(&sock_addr), sizeof(sock_addr)) == -1)
 			{
 				rpcn_log.error("bind: Failed to bind RPCN client socket to binding address(%s): 0x%x!", np::ip_to_string(binding_address), get_native_error());
-				state = rpcn_state::failure_binding;
+				retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_binding));
 				return false;
 			}
 
 			if (::connect(sockfd, reinterpret_cast<struct sockaddr*>(&addr_rpcn), sizeof(addr_rpcn)) != 0)
 			{
 				rpcn_log.error("connect: Failed to connect to RPCN server!");
-				state = rpcn_state::failure_connect;
+				retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_connect));
 				return false;
 			}
 
@@ -1170,14 +1176,14 @@ namespace rpcn
 			}
 
 			update_local_addr(client_addr.sin_addr.s_addr);
-			// rpcn_log.notice("Updated local address to %s", np::ip_to_string(std::bit_cast<u32, be_t<u32>>(local_addr_sig.load())));
+			// rpcn_log.notice("Updated local address to %s", np::ip_to_string(std::bit_cast<u32, be_t<u32>>(local_addr_sig)));
 
 			// The server's certificate is not checked, as before. Duplex: the
 			// reader thread receives while the writer thread sends
 			if ((tls = ssl_socket_init(::narrow<int>(sockfd), hostname.c_str())) == nullptr)
 			{
 				rpcn_log.error("connect: Failed to create the TLS connection");
-				state = rpcn_state::failure_tls;
+				retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_tls));
 				return false;
 			}
 
@@ -1186,7 +1192,7 @@ namespace rpcn
 			if (ssl_socket_retro_configure(tls, &tls_config) != 0)
 			{
 				rpcn_log.error("connect: Failed to configure the TLS connection");
-				state = rpcn_state::failure_tls;
+				retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_tls));
 				return false;
 			}
 
@@ -1200,9 +1206,9 @@ namespace rpcn
 				if (ret_connect > 0)
 					break;
 
-				if (ret_connect < 0 || terminate || steady_clock::now() >= handshake_deadline)
+				if (ret_connect < 0 || (retro_atomic_load_acquire_int(&terminate) != 0) || steady_clock::now() >= handshake_deadline)
 				{
-					state = rpcn_state::failure_tls;
+					retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_tls));
 					rpcn_log.error("connect: Handshake failed with RPCN Server: %s (TLS error %d)", ret_connect < 0 ? "error" : "timeout", ssl_socket_last_error(tls));
 					return false;
 				}
@@ -1223,7 +1229,7 @@ namespace rpcn
 			rpcn_log.notice("connect: Handshake successful");
 		}
 
-		connected = true;
+		retro_atomic_store_release_int(&connected, 1);
 		// Wake up both read & write threads
 		sem_reader.release();
 		sem_writer.release();
@@ -1231,20 +1237,21 @@ namespace rpcn
 		rpcn_log.notice("connect: Waiting for protocol version");
 
 		// Woken by the server's info taken in, or the connection ending
-		for (u32 seen = m_events.load(); !server_info_received && connected && !terminate; seen = m_events.load())
+		for (u32 seen = static_cast<u32>(retro_atomic_load_acquire_int(&m_events)); !(retro_atomic_load_acquire_int(&server_info_received) != 0) && (retro_atomic_load_acquire_int(&connected) != 0) && !(retro_atomic_load_acquire_int(&terminate) != 0); seen = static_cast<u32>(retro_atomic_load_acquire_int(&m_events)))
 		{
-			m_events.wait(seen);
+			const retro_waitaddr_t w{&m_events, seen};
+			retro_waitaddr_wait(&w, 1, -1);
 		}
 
-		if (!connected || terminate)
+		if (!(retro_atomic_load_acquire_int(&connected) != 0) || (retro_atomic_load_acquire_int(&terminate) != 0))
 		{
-			state = rpcn_state::failure_other;
+			retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_other));
 			return false;
 		}
 
 		if (received_version != RPCN_PROTOCOL_VERSION)
 		{
-			state = rpcn_state::failure_protocol;
+			retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_protocol));
 			rpcn_log.error("Server returned protocol version: %d, expected: %d", received_version, RPCN_PROTOCOL_VERSION);
 			return false;
 		}
@@ -1257,13 +1264,13 @@ namespace rpcn
 	{
 		if (npid.empty())
 		{
-			state = rpcn_state::failure_id_username;
+			retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_id_username));
 			return false;
 		}
 
 		if (password.empty())
 		{
-			state = rpcn_state::failure_id_password;
+			retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_id_password));
 			return false;
 		}
 
@@ -1277,13 +1284,13 @@ namespace rpcn
 		std::copy(token.begin(), token.end(), std::back_inserter(data));
 		data.push_back(0);
 
-		const u64 req_id = rpcn_request_counter.fetch_add(1);
+		const u64 req_id = static_cast<u64>(retro_atomic_fetch_add_64(&rpcn_request_counter, 1));
 
 		std::vector<u8> packet_data;
 
 		if (!forge_send_reply(CommandType::Login, req_id, data, packet_data))
 		{
-			state = rpcn_state::failure_other;
+			retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_other));
 			return false;
 		}
 
@@ -1347,12 +1354,12 @@ namespace rpcn
 		{
 			switch (error)
 			{
-			case rpcn::ErrorType::LoginError: state = rpcn_state::failure_id; break;
-			case rpcn::ErrorType::LoginAlreadyLoggedIn: state = rpcn_state::failure_id_already_logged_in; break;
-			case rpcn::ErrorType::LoginInvalidUsername: state = rpcn_state::failure_id_username; break;
-			case rpcn::ErrorType::LoginInvalidPassword: state = rpcn_state::failure_id_password; break;
-			case rpcn::ErrorType::LoginInvalidToken: state = rpcn_state::failure_id_token; break;
-			default: state = rpcn_state::failure_id; break;
+			case rpcn::ErrorType::LoginError: retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_id)); break;
+			case rpcn::ErrorType::LoginAlreadyLoggedIn: retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_id_already_logged_in)); break;
+			case rpcn::ErrorType::LoginInvalidUsername: retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_id_username)); break;
+			case rpcn::ErrorType::LoginInvalidPassword: retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_id_password)); break;
+			case rpcn::ErrorType::LoginInvalidToken: retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_id_token)); break;
+			default: retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_id)); break;
 			}
 
 			disconnect();
@@ -1363,14 +1370,14 @@ namespace rpcn
 			return error_and_disconnect("Malformed reply to Login command");
 
 		rpcn_log.success("You are now logged in RPCN(%s | %s)!", npid, online_name);
-		authentified = true;
+		retro_atomic_store_release_int(&authentified, 1);
 
 		return true;
 	}
 
 	bool rpcn_client::terminate_connection()
 	{
-		const u64 req_id = rpcn_request_counter.fetch_add(1);
+		const u64 req_id = static_cast<u64>(retro_atomic_fetch_add_64(&rpcn_request_counter, 1));
 
 		std::vector<u8> packet_data;
 		std::vector<u8> data;
@@ -1385,11 +1392,11 @@ namespace rpcn
 
 	void rpcn_client::reset_state()
 	{
-		if (!connected || !authentified)
+		if (!(retro_atomic_load_acquire_int(&connected) != 0) || !(retro_atomic_load_acquire_int(&authentified) != 0))
 			return;
 
 		std::vector<u8> data;
-		forge_send(CommandType::ResetState, rpcn_request_counter.fetch_add(1), data);
+		forge_send(CommandType::ResetState, static_cast<u64>(retro_atomic_fetch_add_64(&rpcn_request_counter, 1)), data);
 	}
 
 	ErrorType rpcn_client::create_user(std::string_view npid, std::string_view password, std::string_view online_name, std::string_view avatar_url, std::string_view email)
@@ -1406,12 +1413,12 @@ namespace rpcn
 		std::copy(email.begin(), email.end(), std::back_inserter(data));
 		data.push_back(0);
 
-		const u64 req_id = rpcn_request_counter.fetch_add(1);
+		const u64 req_id = static_cast<u64>(retro_atomic_fetch_add_64(&rpcn_request_counter, 1));
 
 		std::vector<u8> packet_data;
 		if (!forge_send_reply(CommandType::Create, req_id, data, packet_data))
 		{
-			state = rpcn_state::failure_other;
+			retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_other));
 			return ErrorType::CreationError;
 		}
 
@@ -1428,7 +1435,7 @@ namespace rpcn
 
 	ErrorType rpcn_client::resend_token(std::string_view npid, std::string_view password)
 	{
-		if (authentified)
+		if ((retro_atomic_load_acquire_int(&authentified) != 0))
 		{
 			// If you're already logged in why do you need a token?
 			return ErrorType::LoginAlreadyLoggedIn;
@@ -1440,7 +1447,7 @@ namespace rpcn
 		std::copy(password.begin(), password.end(), std::back_inserter(data));
 		data.push_back(0);
 
-		const u64 req_id = rpcn_request_counter.fetch_add(1);
+		const u64 req_id = static_cast<u64>(retro_atomic_fetch_add_64(&rpcn_request_counter, 1));
 
 		std::vector<u8> packet_data;
 		if (!forge_send_reply(CommandType::SendToken, req_id, data, packet_data))
@@ -1461,7 +1468,7 @@ namespace rpcn
 
 	ErrorType rpcn_client::send_reset_token(std::string_view npid, std::string_view email)
 	{
-		if (authentified)
+		if ((retro_atomic_load_acquire_int(&authentified) != 0))
 		{
 			// If you're already logged in why do you need a password reset token?
 			return ErrorType::LoginAlreadyLoggedIn;
@@ -1473,7 +1480,7 @@ namespace rpcn
 		std::copy(email.begin(), email.end(), std::back_inserter(data));
 		data.push_back(0);
 
-		const u64 req_id = rpcn_request_counter.fetch_add(1);
+		const u64 req_id = static_cast<u64>(retro_atomic_fetch_add_64(&rpcn_request_counter, 1));
 
 		std::vector<u8> packet_data;
 		if (!forge_send_reply(CommandType::SendResetToken, req_id, data, packet_data))
@@ -1494,7 +1501,7 @@ namespace rpcn
 
 	ErrorType rpcn_client::reset_password(std::string_view npid, std::string_view token, std::string_view password)
 	{
-		if (authentified)
+		if ((retro_atomic_load_acquire_int(&authentified) != 0))
 		{
 			// If you're already logged in why do you need to reset the password?
 			return ErrorType::LoginAlreadyLoggedIn;
@@ -1508,7 +1515,7 @@ namespace rpcn
 		std::copy(password.begin(), password.end(), std::back_inserter(data));
 		data.push_back(0);
 
-		const u64 req_id = rpcn_request_counter.fetch_add(1);
+		const u64 req_id = static_cast<u64>(retro_atomic_fetch_add_64(&rpcn_request_counter, 1));
 
 		std::vector<u8> packet_data;
 		if (!forge_send_reply(CommandType::ResetPassword, req_id, data, packet_data))
@@ -1538,7 +1545,7 @@ namespace rpcn
 		std::copy(password.begin(), password.end(), std::back_inserter(data));
 		data.push_back(0);
 
-		const u64 req_id = rpcn_request_counter.fetch_add(1);
+		const u64 req_id = static_cast<u64>(retro_atomic_fetch_add_64(&rpcn_request_counter, 1));
 
 		std::vector<u8> packet_data;
 		if (!forge_send_reply(CommandType::Delete, req_id, data, packet_data))
@@ -1565,7 +1572,7 @@ namespace rpcn
 
 		std::vector<u8> packet_data;
 
-		if (!forge_send_reply(CommandType::DeleteTrophies, rpcn_request_counter.fetch_add(1), data, packet_data))
+		if (!forge_send_reply(CommandType::DeleteTrophies, static_cast<u64>(retro_atomic_fetch_add_64(&rpcn_request_counter, 1)), data, packet_data))
 		{
 			return ErrorType::Malformed;
 		}
@@ -1594,7 +1601,7 @@ namespace rpcn
 		std::copy(friend_username.begin(), friend_username.end(), std::back_inserter(data));
 		data.push_back(0);
 
-		const u64 req_id = rpcn_request_counter.fetch_add(1);
+		const u64 req_id = static_cast<u64>(retro_atomic_fetch_add_64(&rpcn_request_counter, 1));
 
 		std::vector<u8> packet_data;
 		if (!forge_send_reply(CommandType::AddFriend, req_id, data, packet_data))
@@ -1619,7 +1626,7 @@ namespace rpcn
 		std::copy(friend_username.begin(), friend_username.end(), std::back_inserter(data));
 		data.push_back(0);
 
-		const u64 req_id = rpcn_request_counter.fetch_add(1);
+		const u64 req_id = static_cast<u64>(retro_atomic_fetch_add_64(&rpcn_request_counter, 1));
 
 		std::vector<u8> packet_data;
 		if (!forge_send_reply(CommandType::RemoveFriend, req_id, data, packet_data))
@@ -1745,12 +1752,13 @@ namespace rpcn
 		};
 
 		// Woken by the next packet taken in, or the connection ending
-		for (u32 seen = m_events.load(); connected && !terminate; seen = m_events.load())
+		for (u32 seen = static_cast<u32>(retro_atomic_load_acquire_int(&m_events)); (retro_atomic_load_acquire_int(&connected) != 0) && !(retro_atomic_load_acquire_int(&terminate) != 0); seen = static_cast<u32>(retro_atomic_load_acquire_int(&m_events)))
 		{
 			if (check_for_reply())
 				return true;
 
-			m_events.wait(seen);
+			const retro_waitaddr_t w{&m_events, seen};
+			retro_waitaddr_wait(&w, 1, -1);
 		}
 
 		if (check_for_reply())
@@ -2338,7 +2346,7 @@ namespace rpcn
 			pb_req.add_npids(npid);
 		}
 
-		return forge_request_with_data(pb_req, CommandType::SendMessage, rpcn_request_counter.fetch_add(1));
+		return forge_request_with_data(pb_req, CommandType::SendMessage, static_cast<u64>(retro_atomic_fetch_add_64(&rpcn_request_counter, 1)));
 	}
 
 	bool rpcn_client::get_board_infos(u32 req_id, const SceNpCommunicationId& communication_id, SceNpScoreBoardId board_id)
@@ -2673,7 +2681,7 @@ namespace rpcn
 		pb_req.set_comment(pr_comment);
 		pb_req.set_data(pr_data.data(), pr_data.size());
 
-		return forge_request_with_com_id(pb_req, pr_com_id, CommandType::SetPresence, rpcn_request_counter.fetch_add(1));
+		return forge_request_with_com_id(pb_req, pr_com_id, CommandType::SetPresence, static_cast<u64>(retro_atomic_fetch_add_64(&rpcn_request_counter, 1)));
 	}
 
 	bool rpcn_client::unlock_trophy(const SceNpCommunicationId& communication_id, s32 trophy_id, s64 timestamp)
@@ -2682,7 +2690,7 @@ namespace rpcn
 		rpcn_client::write_communication_id(communication_id, data);
 		write_to_ptr<le_t<s32>>(data, COMMUNICATION_ID_SIZE, trophy_id);
 		write_to_ptr<le_t<s64>>(data, COMMUNICATION_ID_SIZE + sizeof(s32), timestamp);
-		return forge_send(CommandType::UnlockTrophy, rpcn_request_counter.fetch_add(1), data);
+		return forge_send(CommandType::UnlockTrophy, static_cast<u64>(retro_atomic_fetch_add_64(&rpcn_request_counter, 1)), data);
 	}
 
 	std::vector<std::pair<s32, s64>> rpcn_client::sync_trophies(
@@ -2705,7 +2713,7 @@ namespace rpcn
 			offset += sizeof(s64);
 		}
 
-		if (!forge_send_reply(CommandType::SyncTrophies, rpcn_request_counter.fetch_add(1), data, reply_data))
+		if (!forge_send_reply(CommandType::SyncTrophies, static_cast<u64>(retro_atomic_fetch_add_64(&rpcn_request_counter, 1)), data, reply_data))
 			return {};
 
 		vec_stream reply(reply_data);
@@ -2999,7 +3007,7 @@ namespace rpcn
 
 	bool rpcn_client::error_and_disconnect(std::string_view error_msg)
 	{
-		connected = false;
+		retro_atomic_store_release_int(&connected, 0);
 		event();
 		rpcn_log.error("%s", error_msg);
 		return false;
@@ -3007,7 +3015,7 @@ namespace rpcn
 
 	bool rpcn_client::error_and_disconnect_notice(std::string_view error_msg)
 	{
-		connected = false;
+		retro_atomic_store_release_int(&connected, 0);
 		event();
 		rpcn_log.notice("%s", error_msg);
 		return false;
@@ -3016,46 +3024,46 @@ namespace rpcn
 	rpcn_state rpcn_client::wait_for_connection()
 	{
 		// Read before looking: a connection tried after it moves it
-		const u32 gen = conn_gen.load();
+		const u32 gen = static_cast<u32>(retro_atomic_load_acquire_int(&conn_gen));
 
-		if (connected)
+		if ((retro_atomic_load_acquire_int(&connected) != 0))
 		{
 			return rpcn_state::failure_no_failure;
 		}
 
-		if (state != rpcn_state::failure_no_failure)
+		if (static_cast<rpcn_state>(retro_atomic_load_acquire_int(&state)) != rpcn_state::failure_no_failure)
 		{
-			return state;
+			return static_cast<rpcn_state>(retro_atomic_load_acquire_int(&state));
 		}
 
-		want_conn = true;
+		retro_atomic_store_release_int(&want_conn, 1);
 		sem_rpcn.release();
 
-		wait_gen(conn_gen, gen);
+		wait_gen(&conn_gen, gen);
 
-		return state;
+		return static_cast<rpcn_state>(retro_atomic_load_acquire_int(&state));
 	}
 
 	rpcn_state rpcn_client::wait_for_authentified()
 	{
-		const u32 gen = auth_gen.load();
+		const u32 gen = static_cast<u32>(retro_atomic_load_acquire_int(&auth_gen));
 
-		if (authentified)
+		if ((retro_atomic_load_acquire_int(&authentified) != 0))
 		{
 			return rpcn_state::failure_no_failure;
 		}
 
-		if (state != rpcn_state::failure_no_failure)
+		if (static_cast<rpcn_state>(retro_atomic_load_acquire_int(&state)) != rpcn_state::failure_no_failure)
 		{
-			return state;
+			return static_cast<rpcn_state>(retro_atomic_load_acquire_int(&state));
 		}
 
-		want_auth = true;
+		retro_atomic_store_release_int(&want_auth, 1);
 		sem_rpcn.release();
 
-		wait_gen(auth_gen, gen);
+		wait_gen(&auth_gen, gen);
 
-		return state;
+		return static_cast<rpcn_state>(retro_atomic_load_acquire_int(&state));
 	}
 
 	void rpcn_client::get_friends(friend_data& friend_infos)
@@ -3279,7 +3287,7 @@ namespace rpcn
 			return;
 		}
 
-		const u64 msg_id = message_counter++;
+		const u64 msg_id = static_cast<u64>(retro_atomic_fetch_add_64(&message_counter, 1));
 
 		message_data mdata = {
 			.msgId = msg_id,
@@ -3441,16 +3449,16 @@ namespace rpcn
 
 	bool rpcn_client::is_connected() const
 	{
-		return connected;
+		return (retro_atomic_load_acquire_int(&connected) != 0);
 	}
 
 	bool rpcn_client::is_authentified() const
 	{
-		return authentified;
+		return (retro_atomic_load_acquire_int(&authentified) != 0);
 	}
 	rpcn_state rpcn_client::get_rpcn_state() const
 	{
-		return state;
+		return static_cast<rpcn_state>(retro_atomic_load_acquire_int(&state));
 	}
 
 	const std::string& rpcn_client::get_online_name() const
@@ -3465,32 +3473,38 @@ namespace rpcn
 
 	u32 rpcn_client::get_addr_sig() const
 	{
-		if (!addr_sig)
+		// The server's answer, or 10 seconds (a network timeout): once, as
+		// before
+		if (!retro_atomic_load_acquire_int(&addr_sig))
 		{
-			addr_sig.wait(0, static_cast<atomic_wait_timeout>(10'000'000'000));
+			const retro_waitaddr_t w{&addr_sig, 0};
+			retro_waitaddr_wait(&w, 1, 10'000'000);
 		}
 
-		return addr_sig.load();
+		return static_cast<u32>(retro_atomic_load_acquire_int(&addr_sig));
 	}
 
 	u16 rpcn_client::get_port_sig() const
 	{
-		if (!port_sig)
+		// The server's answer, or 10 seconds (a network timeout): once, as
+		// before
+		if (!retro_atomic_load_acquire_int(&port_sig))
 		{
-			port_sig.wait(0, static_cast<atomic_wait_timeout>(10'000'000'000));
+			const retro_waitaddr_t w{&port_sig, 0};
+			retro_waitaddr_wait(&w, 1, 10'000'000);
 		}
 
-		return port_sig.load();
+		return static_cast<u32>(retro_atomic_load_acquire_int(&port_sig));
 	}
 
 	u32 rpcn_client::get_addr_local() const
 	{
-		return local_addr_sig.load();
+		return static_cast<u32>(retro_atomic_load_acquire_int(&local_addr_sig));
 	}
 
 	void rpcn_client::update_local_addr(u32 addr)
 	{
-		local_addr_sig = std::bit_cast<u32, be_t<u32>>(addr);
+		retro_atomic_store_release_int(&local_addr_sig, static_cast<int>(std::bit_cast<u32, be_t<u32>>(addr)));
 	}
 
 } // namespace rpcn

@@ -8,6 +8,7 @@
 #include "rpcn_reply_slots.h"
 #include <array>
 #include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 #include <queues/mpsc_stack.h>
 #include <queues/retro_retire.h>
 #include "Utilities/mutex.h"
@@ -232,15 +233,16 @@ namespace rpcn
 
 		static inline retro_atomic_ptr_t instance{}; // instance_box*
 		static inline retro_retire_t instance_retire{};
-		static inline atomic_t<u32> instance_making{0};
+		static inline retro_atomic_int_t instance_making{0}; // a thread is making the instance
 
 		static std::shared_ptr<rpcn_client> load_instance();
 		static void free_instance_box(mpsc_stack_node_t* node);
 
-		atomic_t<bool> connected    = false;
-		atomic_t<bool> authentified = false;
-		atomic_t<bool> want_conn    = false;
-		atomic_t<bool> want_auth    = false;
+		// 0 or 1
+		retro_atomic_int_t connected{0};
+		retro_atomic_int_t authentified{0};
+		retro_atomic_int_t want_conn{0};
+		retro_atomic_int_t want_auth{0};
 		u32 binding_address = 0;
 		// A wake-up for a thread waiting on it, given once until taken
 		// (rpcn_signal.c): no semaphore, no spin
@@ -262,19 +264,20 @@ namespace rpcn
 		// (and by the client going): what wait_for_connection and
 		// wait_for_authentified wait on - every thread waiting is woken,
 		// where a semaphore given once let one go. No lock
-		atomic_t<u32> conn_gen{0}, auth_gen{0};
+		retro_atomic_int_t conn_gen{0}, auth_gen{0};
 
-		static void next_gen(atomic_t<u32>& gen)
+		static void next_gen(retro_atomic_int_t* gen)
 		{
-			gen++;
-			gen.notify_all();
+			retro_atomic_fetch_add_int(gen, 1);
+			retro_waitaddr_notify_all(gen);
 		}
 
-		static void wait_gen(atomic_t<u32>& gen, u32 seen)
+		static void wait_gen(retro_atomic_int_t* gen, u32 seen)
 		{
-			for (u32 now = gen.load(); now == seen; now = gen.load())
+			for (u32 now = static_cast<u32>(retro_atomic_load_acquire_int(gen)); now == seen; now = static_cast<u32>(retro_atomic_load_acquire_int(gen)))
 			{
-				gen.wait(now);
+				const retro_waitaddr_t w{gen, now};
+				retro_waitaddr_wait(&w, 1, -1);
 			}
 		}
 
@@ -282,14 +285,13 @@ namespace rpcn
 		// Set while the reader or the writer thread uses the connection:
 		// disconnect() clears connected, then waits for both to be clear
 		// before it frees the connection. No lock.
-		atomic_t<u32> reader_busy = 0, writer_busy = 0;
+		retro_atomic_int_t reader_busy{0}, writer_busy{0};
 
 		std::thread thread_rpcn, thread_rpcn_reader, thread_rpcn_writer;
 
-		atomic_t<bool> terminate = false;
+		retro_atomic_int_t terminate{0};
 
-		atomic_t<u32> num_failures = 0;
-		atomic_t<rpcn_state> state = rpcn_state::failure_no_failure;
+		mutable retro_atomic_int_t state{static_cast<int>(rpcn_state::failure_no_failure)};
 
 		// Packets for the writer thread: pushed by any thread, taken all at
 		// once by the writer, in order
@@ -548,19 +550,19 @@ namespace rpcn
 		// receives while the writer thread sends, with no lock
 		void* tls = nullptr;
 
-		atomic_t<bool> server_info_received = false;
+		retro_atomic_int_t server_info_received{0};
 
 	public:
 		// Moved, and its waiters woken, by every packet the reader has taken
 		// in (a reply, a notification, the server's info) and by the
 		// connection ending: what get_reply, connect and the NP handler's
 		// thread wait on - they polled every 5 ms, 200 ms for the handler
-		atomic_t<u32> m_events{0};
+		retro_atomic_int_t m_events{0};
 
 		void event()
 		{
-			m_events++;
-			m_events.notify_all();
+			retro_atomic_fetch_add_int(&m_events, 1);
+			retro_waitaddr_notify_all(&m_events);
 		}
 
 	private:
@@ -575,7 +577,7 @@ namespace rpcn
 		int sockfd = 0;
 #endif
 
-		atomic_t<u64> rpcn_request_counter = 0x100000001; // Counter used for commands whose result is not forwarded to NP handler(login, create, sendmessage, etc)
+		retro_atomic_64_t rpcn_request_counter{0x100000001}; // Counter used for commands whose result is not forwarded to NP handler(login, create, sendmessage, etc)
 
 		// What the reader takes in for the NP handler's thread, which takes
 		// each list whole: pushed with no lock (mpsc_stack), oldest first
@@ -662,16 +664,16 @@ namespace rpcn
 
 		mutable retro_atomic_ptr_t m_messages{}; // messages_state*
 		mutable retro_retire_t m_messages_retire{};
-		atomic_t<u64> message_counter = 3; // id counter (the reader's)
+		retro_atomic_64_t message_counter{3}; // id counter (the reader's)
 
 		std::string online_name{};
 		std::string avatar_url{};
 
 		s64 user_id = 0;
 
-		atomic_t<u32> addr_sig = 0;
-		atomic_t<u32> port_sig = 0; // Stores an u16, u32 is used for atomic_t::wait convenience
-		atomic_t<u32> local_addr_sig = 0;
+		mutable retro_atomic_int_t addr_sig{0};
+		mutable retro_atomic_int_t port_sig{0}; // a u16, in a word to wait on
+		retro_atomic_int_t local_addr_sig{0};
 
 		static constexpr int RPCN_TIMEOUT_INTERVAL = 50; // 50ms
 		static constexpr int RPCN_TIMEOUT = 10'000;      // 10s

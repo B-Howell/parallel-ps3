@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The RPCN client is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the connected, logged-in, wanted and stopping flags, the connection state, the counts of connections and logins tried that their waiters wait on, the reader's and writer's busy flags, the event count the reader moves, the two request counters and the signaling addresses and port are `retro_atomic_int_t` and `retro_atomic_64_t`, and their waits are on `retro_waitaddr`. `num_failures`, which nothing used, is gone.
+  - **Waits kept:** the client is made once, the first time a thread asks for it. A second thread asking meanwhile waits until it is made, since making it starts its threads and its connection, and a second one made and thrown away would connect twice. The 10 seconds given to the server for the signaling address and port, and the TLS handshake's deadline, are network timeouts, which are kept exceptions.
+  - **Tests:** none of its own. The client starts its network threads as it is made, and these words have no logic apart from them. A check fails if `atomic_t` comes back.
+
+
 - **The NP handler is off `atomic_t`.** Not yet run on a game.
   - **What changed:** which NP libraries the game has initialised (netctl, NP, lookup, score, NP2, matching 2, auth, TUS, commerce 2), whether the basic handler is registered, the presence's advertised flag, the busy flag that lets one `sceNpInit` or `sceNpTerm` run at a time, the two matching 2 counters and the clan ticket's ready flag are `retro_atomic_int_t`. That is about 420 uses across sceNp, sceNp2, sceNpCommerce2, sceNpTus, cellNetCtl and the friends list. The matching 2 request ids keep their 16-bit wrap.
   - **The clan ticket:** the wait for the server's answer is on `retro_waitaddr`, with the same 60 seconds. It is a network timeout, one of the kept exceptions, not pacing.
