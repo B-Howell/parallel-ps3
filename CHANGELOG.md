@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The Vulkan driver manager and event counters are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the driver manager's last requested and last completed event ids are `retro_atomic_64_t`, and the two words its thread and a drain wait on are `retro_atomic_int_t`. Both waits go through `thread_ctrl::wait_on_custom`, so they also wake as their thread is told to end. The resource manager's event counter and last completed event are `retro_atomic_64_t`. The two "raise to at least" updates are compare-and-swap loops that never lower the value. Nothing is saved in savestates.
+  - **Tests:** `test_emu_waits` runs the driver manager's thread and checks, over 200 rounds with events raised out of order, that each drain returns because the thread woke it, before its own thread is joined. It was shown to fail with the driver thread's wake taken out. The resource manager's counters have no runtime test of their own, because they need a Vulkan device. A check fails if `atomic_t` comes back.
+
+
 - **The GL renderer is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the samplers-dirty flag, a shader's compile state, the pipeline compiler's context-ready flag and its thread index counter are `retro_atomic_int_t`. A thread that finds a shader being compiled by another waits on its compile state with `retro_waitaddr`, woken as the other is done. glutils/program.h no longer includes util/atomic.hpp. Nothing is saved in savestates.
   - **Tests:** none at runtime: everything here needs a GL context, which the test machine does not have. A check fails if `atomic_t` comes back to the GL renderer.

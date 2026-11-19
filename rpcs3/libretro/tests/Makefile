@@ -1215,6 +1215,8 @@ check: all
 	@if grep -nw "atomic_t" ../../Emu/Cell/PPUModule.cpp || grep -n "extern atomic_t<u32> liblv2_begin\|extern atomic_t<bool> libusbd_active" ../../Emu/Cell/PPUThread.cpp ../../Emu/Cell/lv2/sys_usbd.cpp; then echo "atomic_t is back in PPUModule"; exit 1; else echo "PPUModule is retro_atomic"; fi
 	@# the GL renderer (sampler flag, shader compile state, pipeline compiler) is off atomic_t
 	@if grep -rnw "atomic_t" ../../Emu/RSX/GL --include=*.cpp --include=*.h --include=*.hpp || grep -n "util/atomic.hpp" ../../Emu/RSX/GL/glutils/program.h; then echo "atomic_t is back in the GL renderer"; exit 1; else echo "the GL renderer is retro_atomic"; fi
+	@# the Vulkan driver manager and the resource manager's event counters are off atomic_t
+	@if grep -nw "atomic_t" ../../Emu/RSX/VK/VKCommandStream.h ../../Emu/RSX/VK/VKCommandStream.cpp ../../Emu/RSX/VK/VKResourceManager.cpp; then echo "atomic_t is back in the Vulkan driver manager"; exit 1; else echo "the Vulkan driver manager is retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

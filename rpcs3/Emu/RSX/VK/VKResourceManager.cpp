@@ -38,8 +38,8 @@ namespace vk
 	g_vmm_stats;
 
 	resource_manager g_resource_manager;
-	atomic_t<u64> g_event_ctr;
-	atomic_t<u64> g_last_completed_event;
+	retro_atomic_64_t g_event_ctr{0};
+	retro_atomic_64_t g_last_completed_event{0};
 
 	constexpr u64 s_vmm_warn_threshold_size = 2000 * 0x100000; // Warn if allocation on a single heap exceeds this value
 
@@ -81,26 +81,29 @@ namespace vk
 
 	u64 get_event_id()
 	{
-		return g_event_ctr++;
+		return static_cast<u64>(retro_atomic_fetch_add_64(&g_event_ctr, 1));
 	}
 
 	u64 current_event_id()
 	{
-		return g_event_ctr.load();
+		return static_cast<u64>(retro_atomic_load_acquire_64(&g_event_ctr));
 	}
 
 	u64 last_completed_event_id()
 	{
-		return g_last_completed_event.load();
+		return static_cast<u64>(retro_atomic_load_acquire_64(&g_last_completed_event));
 	}
 
 	void on_event_completed(u64 event_id)
 	{
 		g_fxo->get<vk::driver_manager_thread>().notify_completed(event_id);
-		g_last_completed_event.atomic_op([event_id](u64& value)
+		// Raised to event_id, never lowered
+		for (s64 value = retro_atomic_load_acquire_64(&g_last_completed_event); static_cast<u64>(value) < event_id;)
 		{
-			value = std::max(event_id, value);
-		});
+			if (retro_atomic_cas_64(&g_last_completed_event, value, static_cast<s64>(event_id)))
+				break;
+			value = retro_atomic_load_acquire_64(&g_last_completed_event);
+		}
 	}
 
 	void print_debug_markers()
@@ -138,8 +141,8 @@ namespace vk
 	void vmm_reset()
 	{
 		g_vmm_stats.clear();
-		g_event_ctr = 0;
-		g_last_completed_event = 0;
+		retro_atomic_store_release_64(&g_event_ctr, 0);
+		retro_atomic_store_release_64(&g_last_completed_event, 0);
 	}
 
 	u64 vmm_get_application_memory_usage_impl(const memory_type_info& memory_type)

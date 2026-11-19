@@ -2,6 +2,8 @@
 
 #include "VulkanAPI.h"
 #include "Utilities/Thread.h"
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 
 namespace vk
 {
@@ -57,11 +59,11 @@ namespace vk
 		void drain();
 
 	private:
-		atomic_t<u64> m_eid_ctr = 0ull;
-		atomic_t<u64> m_last_completed_eid = 0ull;
+		retro_atomic_64_t m_eid_ctr{0};
+		retro_atomic_64_t m_last_completed_eid{0};
 
-		atomic_t<u32> m_wake_event = 0u;
-		atomic_t<u32> m_completed_signal = 0u;     //<- Works around atomic_engine's lack of 64-bit observables support
+		retro_atomic_int_t m_wake_event{0};
+		retro_atomic_int_t m_completed_signal{0};  //<- A 32-bit word to wait on, moved as m_last_completed_eid is
 	};
 
 	using driver_manager_thread = named_thread<driver_manager_t>;

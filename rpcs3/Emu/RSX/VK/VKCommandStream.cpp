@@ -96,42 +96,46 @@ namespace vk
 	{
 		while (thread_ctrl::state() != thread_state::aborting)
 		{
-			const auto wake_token = m_wake_event.observe();
-			const auto last_eid = m_last_completed_eid.load();
+			const u32 wake_token = static_cast<u32>(retro_atomic_load_acquire_int(&m_wake_event));
+			const u64 last_eid = static_cast<u64>(retro_atomic_load_acquire_64(&m_last_completed_eid));
 
-			if (auto eid = m_eid_ctr.load(); eid != last_eid)
+			if (const u64 eid = static_cast<u64>(retro_atomic_load_acquire_64(&m_eid_ctr)); eid != last_eid)
 			{
 				vk::get_resource_manager()->eid_completed(eid);
 
-				m_last_completed_eid.store(eid);
-				m_completed_signal++;
-				m_completed_signal.notify_all();
+				retro_atomic_store_release_64(&m_last_completed_eid, static_cast<s64>(eid));
+				retro_atomic_fetch_add_int(&m_completed_signal, 1);
+				retro_waitaddr_notify_all(&m_completed_signal);
 			}
 
-			thread_ctrl::wait_on(m_wake_event, wake_token);
+			// Woken by a completed event, or this thread told to end
+			thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&m_wake_event, wake_token); });
 		}
 	}
 
 	void driver_manager_t::notify_completed(u64 eid)
 	{
-		m_eid_ctr.atomic_op([eid](u64& value)
+		// Raised to eid, never lowered
+		for (s64 value = retro_atomic_load_acquire_64(&m_eid_ctr); static_cast<u64>(value) < eid;)
 		{
-			value = std::max(value, eid);
-		});
+			if (retro_atomic_cas_64(&m_eid_ctr, value, static_cast<s64>(eid)))
+				break;
+			value = retro_atomic_load_acquire_64(&m_eid_ctr);
+		}
 
-		m_wake_event++;
-		m_wake_event.notify_one();
+		retro_atomic_fetch_add_int(&m_wake_event, 1);
+		retro_waitaddr_notify_one(&m_wake_event);
 	}
 
 	void driver_manager_t::drain()
 	{
-		const u64 target_eid = m_eid_ctr.load(); //<- Last request at time of calling
+		const u64 target_eid = static_cast<u64>(retro_atomic_load_acquire_64(&m_eid_ctr)); //<- Last request at time of calling
 
 		// Now, we spam queue wake until our EID is reached
 		while (true)
 		{
-			const u32 completion_token = m_completed_signal.observe();
-			if (m_last_completed_eid.load() >= target_eid)
+			const u32 completion_token = static_cast<u32>(retro_atomic_load_acquire_int(&m_completed_signal));
+			if (static_cast<u64>(retro_atomic_load_acquire_64(&m_last_completed_eid)) >= target_eid)
 			{
 				// Abort, watermark reached.
 				break;
@@ -144,11 +148,11 @@ namespace vk
 			}
 
 			// Wake the worker thread.
-			m_wake_event++;
-			m_wake_event.notify_one();
+			retro_atomic_fetch_add_int(&m_wake_event, 1);
+			retro_waitaddr_notify_one(&m_wake_event);
 
 			// Wait for worker thread.
-			thread_ctrl::wait_on(m_completed_signal, completion_token);
+			thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&m_completed_signal, completion_token); });
 		}
 	}
 }

@@ -31,6 +31,7 @@
 #include "Emu/NP/net_http_thread.h"
 #include "Emu/Cell/Modules/cellAudio.h"
 #include "Emu/Cell/Modules/cellDmuxPamf.h"
+#include "Emu/RSX/VK/VKCommandStream.h"
 #include "Emu/savestate_utils.hpp"
 
 #include <atomic>
@@ -808,6 +809,32 @@ int main()
 		}
 		consumer();
 		std::printf("test_emu_waits: the demuxer queue wakes its waiter, 500 entries, and keeps order\n");
+	}
+
+	// The Vulkan driver manager: a drain returns once the driver thread has
+	// taken up the last event completed before it, woken by the thread, not
+	// by its own join; 200 rounds, the events raised out of order
+	{
+		vk::driver_manager_thread drv;
+		std::atomic<int> drained{0};
+		bool all = true;
+		for (int i = 0; i < 200 && all; i++)
+		{
+			drv.notify_completed(static_cast<u64>(2 * i + 2));
+			drv.notify_completed(static_cast<u64>(2 * i + 1)); // lower: kept at 2 * i + 2
+			named_thread drainer("VK drain test", [&] { drv.drain(); drained++; });
+			all = reaches(drained, i + 1);
+			if (!all)
+			{
+				std::fprintf(stderr, "%s:%d: check failed: a drain not woken by the driver thread\n", __FILE__, __LINE__);
+				std::_Exit(1);
+			}
+			drainer();
+		}
+		CHECK(all);
+		drv = thread_state::aborting;
+		drv();
+		std::printf("test_emu_waits: the Vulkan driver manager wakes each drain, 200 rounds\n");
 	}
 
 	// A game's callback and its argument in one retro_atomic word: installed
