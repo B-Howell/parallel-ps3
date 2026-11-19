@@ -6,6 +6,7 @@
 #include "Emu/CPU/Hypervisor.h"
 #include "Emu/Cell/SPUInterpreter.h"
 #include "Emu/Memory/vm.h"
+#include "Emu/Memory/vm_range_locks.h"
 #include "MFC.h"
 
 #include "util/v128.hpp"
@@ -17,6 +18,12 @@
 #include "Loader/ELF.h"
 
 #include <span>
+
+namespace vm
+{
+	// A range lock slot, as in vm_locking.h
+	using range_lock_t = vm_range_lock_slot_t;
+}
 
 LOG_CHANNEL(spu_log, "SPU");
 
@@ -919,7 +926,7 @@ public:
 	const decltype(rdata)* resrv_mem{};
 
 	// Range Lock pointer
-	atomic_t<u64, 128>* range_lock{};
+	vm::range_lock_t* range_lock{};
 
 	u32 srr0 = 0;
 	u32 ch_tag_upd = 0;
@@ -1242,7 +1249,7 @@ public:
 	// It is safe to use on any address, even if not directly accessed by SPU (so it's slower)
 	// Optionally pass a known allocated address for internal optimization (the current Effective-Address of the MFC command)
 	bool reservation_check(u32 addr, const decltype(rdata)& data, u32 current_eal = 0) const;
-	static bool reservation_check(u32 addr, u32 hash, atomic_t<u64, 128>* range_lock);
+	static bool reservation_check(u32 addr, u32 hash, vm::range_lock_t* range_lock);
 	usz register_cache_line_waiter(u32 addr);
 	void deregister_cache_line_waiter(usz index);
 

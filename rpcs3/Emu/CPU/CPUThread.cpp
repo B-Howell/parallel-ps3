@@ -619,7 +619,7 @@ bool cpu_thread::check_state() noexcept
 
 		if (escape)
 		{
-			if (vm::g_range_lock_bits[1] && vm::g_tls_locked && *vm::g_tls_locked == this)
+			if (vm::range_lock_writers() && vm::g_tls_locked && *vm::g_tls_locked == this)
 			{
 				state += cpu_flag::wait + cpu_flag::memory;
 				cpu_sleep_called = false;

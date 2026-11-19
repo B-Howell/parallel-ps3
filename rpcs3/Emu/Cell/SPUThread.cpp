@@ -533,19 +533,17 @@ const extern spu_decoder<spu_iflag> g_spu_iflag;
 
 namespace vm
 {
-	extern atomic_t<u64, 128> g_range_lock_set[64];
-
 	// Defined here for performance reasons
 	writer_lock::~writer_lock() noexcept
 	{
 		if (range_lock)
 		{
-			g_range_lock_bits[1] &= ~(1ull << (range_lock - g_range_lock_set));
-			range_lock->release(0);
+			retro_atomic_fetch_and_64(&g_range_lock_bits[1].word, static_cast<s64>(~(1ull << (range_lock - g_range_lock_set))));
+			range_lock_release(range_lock);
 			return;
 		}
 
-		g_range_lock_bits[1].release(0);
+		range_lock_release(&g_range_lock_bits[1]);
 	}
 }
 
@@ -2214,7 +2212,7 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 
 		cpu_thread* _cpu = _this ? _this : get_current_cpu_thread();
 
-		atomic_t<u64, 128>* range_lock = nullptr;
+		vm::range_lock_t* range_lock = nullptr;
 
 		if (!_this) [[unlikely]]
 		{
@@ -2524,7 +2522,7 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 				}
 				}
 
-				range_lock->release(0);
+				vm::range_lock_release(range_lock);
 
 				res += 127;
 
@@ -2566,28 +2564,28 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 		{
 			vm::range_lock<1>(range_lock, eal, 1);
 			*reinterpret_cast<u8*>(dst) = *reinterpret_cast<const u8*>(src);
-			range_lock->release(0);
+			vm::range_lock_release(range_lock);
 			break;
 		}
 		case 2:
 		{
 			vm::range_lock<2>(range_lock, eal, 2);
 			*reinterpret_cast<u16*>(dst) = *reinterpret_cast<const u16*>(src);
-			range_lock->release(0);
+			vm::range_lock_release(range_lock);
 			break;
 		}
 		case 4:
 		{
 			vm::range_lock<4>(range_lock, eal, 4);
 			*reinterpret_cast<u32*>(dst) = *reinterpret_cast<const u32*>(src);
-			range_lock->release(0);
+			vm::range_lock_release(range_lock);
 			break;
 		}
 		case 8:
 		{
 			vm::range_lock<8>(range_lock, eal, 8);
 			*reinterpret_cast<u64*>(dst) = *reinterpret_cast<const u64*>(src);
-			range_lock->release(0);
+			vm::range_lock_release(range_lock);
 			break;
 		}
 		default:
@@ -2645,7 +2643,7 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 					size -= 16;
 				}
 
-				range_lock->release(0);
+				vm::range_lock_release(range_lock);
 				break;
 			}
 
@@ -2699,7 +2697,7 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 					}
 				}
 
-				range_lock->release(0);
+				vm::range_lock_release(range_lock);
 				range_addr = nexta;
 			}
 
@@ -2740,7 +2738,7 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 				}
 			}
 
-			range_lock->release(0);
+			vm::range_lock_release(range_lock);
 			break;
 		}
 		}
@@ -3314,7 +3312,7 @@ bool spu_thread::do_list_transfer(spu_mfc_cmd& args)
 			}
 			else
 			{
-				range_lock->release(0);
+				vm::range_lock_release(range_lock);
 				rsx_lock.unlock();
 			}
 
@@ -3388,7 +3386,7 @@ bool spu_thread::do_list_transfer(spu_mfc_cmd& args)
 		}
 		else if (size)
 		{
-			range_lock->release(0);
+			vm::range_lock_release(range_lock);
 			rsx_lock.unlock();
 
 			spu_log.trace("LIST: item=0x%016x, lsa=0x%05x", std::bit_cast<be_t<u64>>(items[index]), arg_lsa | (addr & 0xf));
@@ -3413,7 +3411,7 @@ bool spu_thread::do_list_transfer(spu_mfc_cmd& args)
 
 		if (items[index].sb & 0x80) [[unlikely]]
 		{
-			range_lock->release(0);
+			vm::range_lock_release(range_lock);
 
 			ch_stall_mask |= std::rotl<u32>(1, args.tag);
 
@@ -3434,7 +3432,7 @@ bool spu_thread::do_list_transfer(spu_mfc_cmd& args)
 		index++;
 	}
 
-	range_lock->release(0);
+	vm::range_lock_release(range_lock);
 	return true;
 }
 
@@ -3531,7 +3529,7 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 			{
 				vm::range_lock<128>(range_lock, addr, 128);
 				const bool ok = cmp_rdata(rdata, super_data) && atomic_storage<u128>::compare_exchange(*cast_as(super_data, diff16_pos), *cast_as(rdata, diff16_pos), *cast_as_const(to_write, diff16_pos));
-				range_lock->release(0);
+				vm::range_lock_release(range_lock);
 				return ok;
 			}
 
@@ -5062,9 +5060,9 @@ bool spu_thread::reservation_check(u32 addr, const decltype(rdata)& data, u32 cu
 
 	// Ensure data is allocated (HACK: would raise LR event if not)
 	// Set range_lock first optimistically
-	range_lock->store(u64{128} << 32 | addr | vm::range_readable);
+	vm::range_lock_publish(range_lock, u64{128} << 32 | addr | vm::range_readable);
 
-	u64 lock_val = *std::prev(std::end(vm::g_range_lock_set));
+	u64 lock_val = vm::range_lock_main();
 	u64 old_lock = 0;
 
 	while (lock_val != old_lock)
@@ -5079,7 +5077,7 @@ bool spu_thread::reservation_check(u32 addr, const decltype(rdata)& data, u32 cu
 				if (!vm::check_addr(addr))
 				{
 					// Assume our memory is being (de)allocated
-					range_lock->release(0);
+					vm::range_lock_release(range_lock);
 					break;
 				}
 
@@ -5092,7 +5090,7 @@ bool spu_thread::reservation_check(u32 addr, const decltype(rdata)& data, u32 cu
 				if (test_addr == lock_addr)
 				{
 					// Our reservation is locked
-					range_lock->release(0);
+					vm::range_lock_release(range_lock);
 					break;
 				}
 
@@ -5109,31 +5107,31 @@ bool spu_thread::reservation_check(u32 addr, const decltype(rdata)& data, u32 cu
 			// We are outside locked range, so page flags are unaffected
 			if (!vm::check_addr(addr))
 			{
-				range_lock->release(0);
+				vm::range_lock_release(range_lock);
 				break;
 			}
 		}
 		else if (!(lock_val & vm::range_readable))
 		{
-			range_lock->release(0);
+			vm::range_lock_release(range_lock);
 			break;
 		}
 
-		old_lock = std::exchange(lock_val, *std::prev(std::end(vm::g_range_lock_set)));
+		old_lock = std::exchange(lock_val, vm::range_lock_main());
 	}
 
-	if (!range_lock->load()) [[unlikely]]
+	if (!vm::range_lock_value(range_lock)) [[unlikely]]
 	{
 		return true;
 	}
 
 	const bool res = cmp_rdata(data, vm::_ref<decltype(rdata)>(addr));
 
-	range_lock->release(0);
+	vm::range_lock_release(range_lock);
 	return !res;
 }
 
-bool spu_thread::reservation_check(u32 addr, u32 hash, atomic_t<u64, 128>* range_lock)
+bool spu_thread::reservation_check(u32 addr, u32 hash, vm::range_lock_t* range_lock)
 {
 	if ((addr >> 28) < 2 || (addr >> 28) == 0xd)
 	{
@@ -5143,9 +5141,9 @@ bool spu_thread::reservation_check(u32 addr, u32 hash, atomic_t<u64, 128>* range
 
 	// Ensure data is allocated (HACK: would raise LR event if not)
 	// Set range_lock first optimistically
-	range_lock->store(u64{128} << 32 | addr | vm::range_readable);
+	vm::range_lock_publish(range_lock, u64{128} << 32 | addr | vm::range_readable);
 
-	u64 lock_val = *std::prev(std::end(vm::g_range_lock_set));
+	u64 lock_val = vm::range_lock_main();
 	u64 old_lock = 0;
 
 	while (lock_val != old_lock)
@@ -5160,7 +5158,7 @@ bool spu_thread::reservation_check(u32 addr, u32 hash, atomic_t<u64, 128>* range
 				if (!vm::check_addr(addr))
 				{
 					// Assume our memory is being (de)allocated
-					range_lock->release(0);
+					vm::range_lock_release(range_lock);
 					break;
 				}
 
@@ -5173,7 +5171,7 @@ bool spu_thread::reservation_check(u32 addr, u32 hash, atomic_t<u64, 128>* range
 				if (test_addr == lock_addr)
 				{
 					// Our reservation is locked
-					range_lock->release(0);
+					vm::range_lock_release(range_lock);
 					break;
 				}
 
@@ -5190,27 +5188,27 @@ bool spu_thread::reservation_check(u32 addr, u32 hash, atomic_t<u64, 128>* range
 			// We are outside locked range, so page flags are unaffected
 			if (!vm::check_addr(addr))
 			{
-				range_lock->release(0);
+				vm::range_lock_release(range_lock);
 				break;
 			}
 		}
 		else if (!(lock_val & vm::range_readable))
 		{
-			range_lock->release(0);
+			vm::range_lock_release(range_lock);
 			break;
 		}
 
-		old_lock = std::exchange(lock_val, *std::prev(std::end(vm::g_range_lock_set)));
+		old_lock = std::exchange(lock_val, vm::range_lock_main());
 	}
 
-	if (!range_lock->load()) [[unlikely]]
+	if (!vm::range_lock_value(range_lock)) [[unlikely]]
 	{
 		return true;
 	}
 
 	const bool res = compute_rdata_hash32(*vm::get_super_ptr<decltype(rdata)>(addr)) == hash;
 
-	range_lock->release(0);
+	vm::range_lock_release(range_lock);
 	return !res;
 }
 

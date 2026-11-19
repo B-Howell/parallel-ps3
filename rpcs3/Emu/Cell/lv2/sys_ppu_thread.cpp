@@ -128,7 +128,7 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 		}
 
 		// Get writers mask (wait for all current writers to quit)
-		writer_mask = vm::g_range_lock_bits[1];
+		writer_mask = vm::range_lock_writers();
 
 		// Unqueue, and every edge put to it before it goes: none comes to it
 		// after (lv2_sched_settle waits for one being put, not for a turn)
@@ -164,7 +164,7 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 	// Need to wait until the current writers finish
 	if (ppu.state & cpu_flag::memory)
 	{
-		for (; writer_mask; writer_mask &= vm::g_range_lock_bits[1])
+		for (; writer_mask; writer_mask &= vm::range_lock_writers())
 		{
 			busy_wait(200);
 		}

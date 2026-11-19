@@ -73,15 +73,28 @@ namespace vm
 	std::array<atomic_t<cpu_thread*>, g_cfg.core.ppu_threads.max> g_locks{};
 
 	// Range lock slot allocation bits
-	atomic_t<u64, 128> g_range_lock_bits[2]{};
+	alignas(128) range_lock_t g_range_lock_bits[2]{};
 
-	auto& get_range_lock_bits(bool is_exclusive_range)
+	static retro_atomic_64_t* get_range_lock_bits(bool is_exclusive_range)
 	{
-		return g_range_lock_bits[+is_exclusive_range];
+		return &g_range_lock_bits[+is_exclusive_range].word;
+	}
+
+	static u64 load_range_lock_bits(bool is_exclusive_range)
+	{
+		return static_cast<u64>(retro_atomic_load_acquire_64(get_range_lock_bits(is_exclusive_range)));
 	}
 
 	// Memory range lock slots (sparse atomics)
-	atomic_t<u64, 128> g_range_lock_set[64]{};
+	alignas(128) range_lock_t g_range_lock_set[VM_RANGE_LOCKS]{};
+
+	static void clear_range_locks()
+	{
+		for (range_lock_t& lock : g_range_lock_set)
+			retro_atomic_store_relaxed_64(&lock.word, 0);
+		for (range_lock_t& lock : g_range_lock_bits)
+			retro_atomic_store_relaxed_64(&lock.word, 0);
+	}
 
 	// Memory pages
 	std::array<memory_page, 0x100000000 / 4096> g_pages;
@@ -141,74 +154,35 @@ namespace vm
 		}
 	}
 
-	atomic_t<u64, 128>* alloc_range_lock()
+	range_lock_t* alloc_range_lock()
 	{
-		const auto [bits, ok] = get_range_lock_bits(false).fetch_op([](u64& bits)
-		{
-			// MSB is reserved for locking with memory setting changes
-			if ((~(bits | (bits + 1))) << 1) [[likely]]
-			{
-				bits |= bits + 1;
-				return true;
-			}
+		// MSB is reserved for locking with memory setting changes
+		const int slot = vm_range_lock_alloc(get_range_lock_bits(false));
 
-			return false;
-		});
-
-		if (!ok) [[unlikely]]
+		if (slot < 0) [[unlikely]]
 		{
 			fmt::throw_exception("Out of range lock bits");
 		}
 
-		return &g_range_lock_set[std::countr_one(bits)];
+		return &g_range_lock_set[slot];
 	}
 
-	template <typename F>
-	static u64 for_all_range_locks(u64 input, F func);
-
-	void range_lock_internal(atomic_t<u64, 128>* range_lock, u32 begin, u32 size)
+	void range_lock_internal(range_lock_t* range_lock, u32 begin, u32 size)
 	{
 
 		cpu_thread* _cpu = nullptr;
 
-		if (u64 to_store = begin | (u64{size} << 32); *range_lock != to_store)
+		if (u64 to_store = begin | (u64{size} << 32); range_lock_value(range_lock) != to_store)
 		{
-			range_lock->store(to_store);
+			range_lock_publish(range_lock, to_store);
 		}
 
 		for (u64 i = 0;; i++)
 		{
 			const u64 is_share = shmem_of(begin >> 16);
 
-			const u64 busy = for_all_range_locks(get_range_lock_bits(true), [&](u64 addr_exec, u32 size_exec)
-			{
-				u64 addr = begin;
-
-				if ((size_exec & (range_full_mask >> 32)) == (range_locked >> 32)) [[likely]]
-				{
-					size_exec = 128;
-
-					if (is_share)
-					{
-						addr = static_cast<u16>(addr) | is_share;
-					}
-				}
-
-				size_exec = (size_exec << range_bits) >> range_bits;
-
-				// TODO (currently not possible): handle 2 64K pages (inverse range), or more pages
-				if (u64 is_shared = shmem_of(addr_exec >> 16)) [[unlikely]]
-				{
-					addr_exec = static_cast<u16>(addr_exec) | is_shared;
-				}
-
-				if (addr <= addr_exec + size_exec - 1 && addr_exec <= addr + size - 1) [[unlikely]]
-				{
-					return 1;
-				}
-
-				return 0;
-			});
+			// TODO (currently not possible): handle 2 64K pages (inverse range), or more pages
+			const u64 busy = vm_range_locks_busy_reader(load_range_lock_bits(true), g_range_lock_set, g_shmem, begin, size, is_share);
 
 			if (!busy) [[likely]]
 			{
@@ -230,7 +204,7 @@ namespace vm
 
 				if (test != umax)
 				{
-					range_lock->release(0);
+					range_lock_release(range_lock);
 
 					// Try triggering a page fault (write)
 					// TODO: Read memory if needed
@@ -240,7 +214,7 @@ namespace vm
 			}
 
 			// Wait a bit before accessing global lock
-			range_lock->release(0);
+			range_lock_release(range_lock);
 
 			busy_wait(200);
 
@@ -254,7 +228,7 @@ namespace vm
 				}
 			}
 
-			range_lock->store(begin | (u64{size} << 32));
+			range_lock_publish(range_lock, begin | (u64{size} << 32));
 		}
 
 		if (_cpu)
@@ -263,48 +237,18 @@ namespace vm
 		}
 	}
 
-	void free_range_lock(atomic_t<u64, 128>* range_lock) noexcept
+	void free_range_lock(range_lock_t* range_lock) noexcept
 	{
 		if (range_lock < g_range_lock_set || range_lock >= std::end(g_range_lock_set))
 		{
 			fmt::throw_exception("Invalid range lock");
 		}
 
-		range_lock->release(0);
-
 		// Use ptr difference to determine location
-		const auto diff = range_lock - g_range_lock_set;
-		g_range_lock_bits[0] &= ~(1ull << diff);
+		vm_range_lock_free(get_range_lock_bits(false), g_range_lock_set, static_cast<unsigned>(range_lock - g_range_lock_set));
 	}
 
-	template <typename F>
-	FORCE_INLINE static u64 for_all_range_locks(u64 input, F func)
-	{
-		u64 result = input;
-
-		for (u64 bits = input; bits; bits &= bits - 1)
-		{
-			const u32 id = std::countr_zero(bits);
-
-			const u64 lock_val = g_range_lock_set[id].load();
-
-			if (const u32 size = static_cast<u32>(lock_val >> 32)) [[unlikely]]
-			{
-				const u32 addr = static_cast<u32>(lock_val);
-
-				if (func(addr, size)) [[unlikely]]
-				{
-					continue;
-				}
-			}
-
-			result &= ~(1ull << id);
-		}
-
-		return result;
-	}
-
-	static atomic_t<u64, 128>* _lock_main_range_lock(u64 flags, u32 addr, u32 size)
+	static range_lock_t* _lock_main_range_lock(u64 flags, u32 addr, u32 size)
 	{
 		// Shouldn't really happen
 		if (size == 0)
@@ -321,27 +265,17 @@ namespace vm
 
 		// Block or signal new range locks
 		auto range_lock = &*std::prev(std::end(vm::g_range_lock_set));
-		*range_lock = addr | u64{size} << 32 | flags;
+		range_lock_publish(range_lock, addr | u64{size} << 32 | flags);
 
 		utils::prefetch_read(g_range_lock_set + 0);
 		utils::prefetch_read(g_range_lock_set + 2);
 		utils::prefetch_read(g_range_lock_set + 4);
 
-		const auto range = utils::address_range32::start_length(addr, size);
-
-		u64 to_clear = get_range_lock_bits(false).load();
+		u64 to_clear = load_range_lock_bits(false);
 
 		while (to_clear)
 		{
-			to_clear = for_all_range_locks(to_clear, [&](u32 addr2, u32 size2)
-			{
-				if (range.overlaps(utils::address_range32::start_length(addr2, size2))) [[unlikely]]
-				{
-					return 1;
-				}
-
-				return 0;
-			});
+			to_clear = vm_range_locks_busy_overlap(to_clear, g_range_lock_set, addr, size);
 
 			if (!to_clear) [[likely]]
 			{
@@ -364,7 +298,7 @@ namespace vm
 		{
 			_register_lock(&cpu);
 
-			if (!get_range_lock_bits(true))
+			if (!range_lock_writers())
 			{
 				return;
 			}
@@ -385,7 +319,7 @@ namespace vm
 					return;
 				}
 
-				if (!get_range_lock_bits(true)) [[likely]]
+				if (!range_lock_writers()) [[likely]]
 				{
 					return;
 				}
@@ -436,7 +370,7 @@ namespace vm
 	{
 	}
 
-	writer_lock::writer_lock(u32 const addr, atomic_t<u64, 128>* range_lock, u32 const size, u64 const flags) noexcept
+	writer_lock::writer_lock(u32 const addr, range_lock_t* range_lock, u32 const size, u64 const flags) noexcept
 		: range_lock(range_lock)
 	{
 		if (cpu_thread* cpu = cpu_thread::get_current(); cpu && cpu->get_class() == thread_class::ppu)
@@ -457,9 +391,9 @@ namespace vm
 
 		for (u64 i = 0;; i++)
 		{
-			auto& bits = get_range_lock_bits(true);
+			retro_atomic_64_t* const bits = get_range_lock_bits(true);
 
-			if (!!bits)
+			if (range_lock_writers())
 			{
 				if (i == 0 && g_cfg.core.ppu_reservation_priority_over_spu)
 				{
@@ -469,23 +403,25 @@ namespace vm
 
 			if (!range_lock)
 			{
-				if (!bits && bits.compare_and_swap_test(0, u64{umax}))
+				if (!range_lock_writers() && retro_atomic_cas_64(bits, 0, -1))
 				{
+					vm_range_lock_fence_after_rmw();
 					break;
 				}
 			}
 			else
 			{
-				range_lock->release(addr | u64{size} << 32 | flags);
+				range_lock_release(range_lock, addr | u64{size} << 32 | flags);
 
-				const auto diff = range_lock - g_range_lock_set;
+				const u64 bit = u64{1} << (range_lock - g_range_lock_set);
 
-				if (bits != umax && !bits.bit_test_set(static_cast<u32>(diff)))
+				if (range_lock_writers() != umax && !(static_cast<u64>(retro_atomic_fetch_or_64(bits, static_cast<s64>(bit))) & bit))
 				{
+					vm_range_lock_fence_after_rmw();
 					break;
 				}
 
-				range_lock->release(0);
+				range_lock_release(range_lock);
 			}
 
 			if (i < 100)
@@ -521,43 +457,14 @@ namespace vm
 			utils::prefetch_read(g_range_lock_set + 2);
 			utils::prefetch_read(g_range_lock_set + 4);
 
-			u64 to_clear = get_range_lock_bits(false);
+			u64 to_clear = load_range_lock_bits(false);
 
 			u64 point = addr1 / 128;
 
 			while (true)
 			{
-				to_clear = for_all_range_locks(to_clear & ~get_range_lock_bits(true), [&](u64 addr2, u32 size2)
-				{
-					constexpr u32 range_size_loc = vm::range_pos - 32;
-
-					if ((size2 >> range_size_loc) == (vm::range_readable >> vm::range_pos))
-					{
-						return 0;
-					}
-
-					// Split and check every 64K page separately
-					for (u64 hi = addr2 >> 16, max = (addr2 + size2 - 1) >> 16; hi <= max; hi++)
-					{
-						u64 addr3 = addr2;
-						u64 size3 = std::min<u64>(addr2 + size2, utils::align(addr2, 0x10000)) - addr2;
-
-						if (u64 is_shared = shmem_of(hi)) [[unlikely]]
-						{
-							addr3 = static_cast<u16>(addr2) | is_shared;
-						}
-
-						if (point - (addr3 / 128) <= (addr3 + size3 - 1) / 128 - (addr3 / 128)) [[unlikely]]
-						{
-							return 1;
-						}
-
-						addr2 += size3;
-						size2 -= static_cast<u32>(size3);
-					}
-
-					return 0;
-				});
+				// Split and check every 64K page separately
+				to_clear = vm_range_locks_busy_point(to_clear & ~range_lock_writers(), g_range_lock_set, g_shmem, point);
 
 				if (!to_clear) [[likely]]
 				{
@@ -853,7 +760,7 @@ namespace vm
 			}
 		}
 
-		range_lock->release(0);
+		range_lock_release(range_lock);
 	}
 
 	bool page_protect(u32 addr, u32 size, u8 flags_test, u8 flags_set, u8 flags_clear)
@@ -942,7 +849,7 @@ namespace vm
 						utils::memory_protect(g_base_addr + start * 4096, page_size, protection);
 					}
 
-					range_lock->release(0);
+					range_lock_release(range_lock);
 				}
 
 				start_value = new_val;
@@ -1062,7 +969,7 @@ namespace vm
 			}
 		}
 
-		range_lock->release(0);
+		range_lock_release(range_lock);
 		return size;
 	}
 
@@ -2222,9 +2129,9 @@ namespace vm
 
 		while (true)
 		{
-			range_lock->store(begin | (u64{size} << 32));
+			range_lock_publish(range_lock, begin | (u64{size} << 32));
 
-			const u64 lock_val = mem_lock->load();
+			const u64 lock_val = range_lock_value(mem_lock);
 			const u64 is_share = shmem_of(begin >> 16);
 
 			u64 lock_addr = static_cast<u32>(lock_val); // -> u64
@@ -2247,7 +2154,7 @@ namespace vm
 			{
 				if (vm::check_addr(begin, is_write ? page_writable : page_readable, size)) [[likely]]
 				{
-					const u64 new_lock_val = mem_lock->load();
+					const u64 new_lock_val = range_lock_value(mem_lock);
 
 					if (!new_lock_val || new_lock_val == lock_val) [[likely]]
 					{
@@ -2277,7 +2184,7 @@ namespace vm
 			}
 
 			// Wait a bit before accessing global lock
-			range_lock->release(0);
+			range_lock_release(range_lock);
 
 			busy_wait(200);
 		}
@@ -2323,8 +2230,7 @@ namespace vm
 			std::memset(g_reservations, 0, sizeof(g_reservations));
 			for (retro_atomic_64_t& shm : g_shmem)
 				retro_atomic_store_relaxed_64(&shm, 0);
-			std::memset(g_range_lock_set, 0, sizeof(g_range_lock_set));
-			std::memset(g_range_lock_bits, 0, sizeof(g_range_lock_bits));
+			clear_range_locks();
 
 #ifdef _WIN32
 			utils::memory_release(g_hook_addr, 0x800000000);
@@ -2360,8 +2266,7 @@ namespace vm
 		utils::memory_decommit(g_hook_addr, 0x800000000);
 #endif
 
-		std::memset(g_range_lock_set, 0, sizeof(g_range_lock_set));
-		std::memset(g_range_lock_bits, 0, sizeof(g_range_lock_bits));
+		clear_range_locks();
 	}
 
 	void save(utils::serial& ar)
