@@ -6,6 +6,8 @@
 #include "util/bit_set.hpp"
 #include "SPUThread.h"
 #include "SPUAnalyser.h"
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 #include <vector>
 #include <memory>
 #include <string>
@@ -83,23 +85,87 @@ public:
 	const spu_program data;
 
 	// Compiled function pointer
-	atomic_t<spu_function_t> compiled = nullptr;
+	mutable retro_atomic_ptr_t compiled{nullptr};
 
 	// Set, with a wake, once compiled is: a 32-bit word for a thread waiting
 	// on another's compile of the same block to wait on
-	atomic_t<u32> compiled_ready = 0;
+	retro_atomic_int_t compiled_ready{0};
+
+	// Ubertrampoline generated for this item when it was latest
+	mutable retro_atomic_ptr_t trampoline{nullptr};
+
+	// Written to the SPU cache, and logged (each taken once)
+	retro_atomic_int_t cached{0};
+	retro_atomic_int_t logged{0};
+
+	spu_function_t get_compiled() const
+	{
+		return reinterpret_cast<spu_function_t>(retro_atomic_load_acquire_ptr(&compiled));
+	}
+
+	// Installed unconditionally (replacing one from a faster compiler)
+	void set_compiled(spu_function_t fn)
+	{
+		retro_atomic_store_release_ptr(&compiled, reinterpret_cast<void*>(fn));
+	}
+
+	// Installed only if none is: whether it was
+	bool install_compiled(spu_function_t fn)
+	{
+		return !get_compiled() && retro_atomic_cas_ptr(&compiled, nullptr, reinterpret_cast<void*>(fn));
+	}
 
 	void notify_compiled()
 	{
-		compiled_ready.release(1);
-		compiled_ready.notify_all();
+		retro_atomic_store_release_int(&compiled_ready, 1);
+		retro_waitaddr_notify_all(&compiled_ready);
 	}
 
-	// Ubertrampoline generated for this item when it was latest
-	atomic_t<spu_function_t> trampoline = nullptr;
+	// Waits for another thread's compile of the same block: its function
+	spu_function_t wait_compiled()
+	{
+		while (!get_compiled())
+		{
+			atomic_wait::list<1> list{};
+			list.set_raw<0>(&compiled_ready, 0);
+			list.wait();
+		}
 
-	atomic_t<u8> cached = false;
-	atomic_t<u8> logged = false;
+		return get_compiled();
+	}
+
+	spu_function_t get_trampoline() const
+	{
+		return reinterpret_cast<spu_function_t>(retro_atomic_load_acquire_ptr(&trampoline));
+	}
+
+	// Installed only if none is: nullptr if it was, else the one there
+	spu_function_t install_trampoline(spu_function_t fn)
+	{
+		while (true)
+		{
+			if (const spu_function_t old = get_trampoline())
+			{
+				return old;
+			}
+
+			if (retro_atomic_cas_ptr(&trampoline, nullptr, reinterpret_cast<void*>(fn)))
+			{
+				return nullptr;
+			}
+		}
+	}
+
+	// Whether this call is the first to take it
+	static bool take_once(retro_atomic_int_t& flag)
+	{
+		return !retro_atomic_exchange_int(&flag, 1);
+	}
+
+	static void give_back(retro_atomic_int_t& flag)
+	{
+		retro_atomic_store_release_int(&flag, 0);
+	}
 
 	spu_item(spu_program&& data)
 		: data(std::move(data))
@@ -162,7 +228,12 @@ public:
 	spu_function_t make_branch_patchpoint(u16 data = 0) const;
 
 	// All dispatchers (array allocated in jit memory)
-	static std::array<atomic_t<spu_function_t>, (1 << 20)>* const g_dispatcher;
+	static std::array<retro_atomic_ptr_t, (1 << 20)>* const g_dispatcher;
+
+	static spu_function_t dispatcher_at(u32 index)
+	{
+		return reinterpret_cast<spu_function_t>(retro_atomic_load_acquire_ptr(&::at32(*g_dispatcher, index)));
+	}
 
 	// Recompiler entry point
 	static const spu_function_t g_gateway;

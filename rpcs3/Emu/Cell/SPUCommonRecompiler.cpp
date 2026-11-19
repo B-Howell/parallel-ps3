@@ -295,7 +295,7 @@ DECLARE(spu_runtime::g_dispatcher) = []
 
 	for (auto& x : *ptr)
 	{
-		x.raw() = tr_dispatch;
+		retro_atomic_store_relaxed_ptr(&x, reinterpret_cast<void*>(tr_dispatch));
 	}
 
 	return ptr;
@@ -871,7 +871,7 @@ void spu_cache::initialize(bool build_existing_cache)
 	{
 		for (auto& x : *spu_runtime::g_dispatcher)
 		{
-			x.raw() = spu_runtime::tr_interpreter;
+			retro_atomic_store_relaxed_ptr(&x, reinterpret_cast<void*>(spu_runtime::tr_interpreter));
 		}
 	}
 
@@ -905,8 +905,8 @@ void spu_cache::initialize(bool build_existing_cache)
 
 	// Read cache
 	auto func_list = cache.get();
-	atomic_t<usz> fnext{};
-	atomic_t<u8> fail_flag{0};
+	retro_atomic_size_t fnext{0};
+	retro_atomic_int_t fail_flag{0};
 
 	auto data_list = g_fxo->get<spu_cache>().precompile_funcs.pop_all();
 	g_fxo->get<spu_cache>().collect_funcs_to_precompile = false;
@@ -935,7 +935,7 @@ void spu_cache::initialize(bool build_existing_cache)
 		data_list = {};
 	}
 
-	atomic_t<usz> data_indexer = 0;
+	retro_atomic_size_t data_indexer{0};
 
 	if (g_cfg.core.spu_decoder == spu_decoder_type::dynamic || g_cfg.core.spu_decoder == spu_decoder_type::llvm)
 	{
@@ -1049,17 +1049,17 @@ void spu_cache::initialize(bool build_existing_cache)
 		// Fake LS
 		std::vector<be_t<u32>> ls(0x10000);
 
-		usz func_i = fnext++;
+		usz func_i = retro_atomic_fetch_add_size(&fnext, 1);
 
 		// Ensure some actions are performed on a single thread
 		const bool is_first_thread = func_i == 0;
 
 		// Build functions
-		for (; func_i < func_list.size(); func_i = fnext++, progr_add(retro_atomic_load_acquire_int(&showing_progress) ? g_progr_pdone : pending_progress, build_existing_cache ? 1 : 0))
+		for (; func_i < func_list.size(); func_i = retro_atomic_fetch_add_size(&fnext, 1), progr_add(retro_atomic_load_acquire_int(&showing_progress) ? g_progr_pdone : pending_progress, build_existing_cache ? 1 : 0))
 		{
 			const spu_program& func = std::as_const(func_list)[func_i];
 
-			if (Emu.IsStopped() || fail_flag)
+			if (Emu.IsStopped() || retro_atomic_load_acquire_int(&fail_flag))
 			{
 				continue;
 			}
@@ -1114,7 +1114,7 @@ void spu_cache::initialize(bool build_existing_cache)
 			else if (!compile_program(std::move(func2)))
 			{
 				// Likely, out of JIT memory. Signal to prevent further building.
-				fail_flag |= 1;
+				retro_atomic_store_release_int(&fail_flag, 1);
 				continue;
 			}
 
@@ -1142,7 +1142,7 @@ void spu_cache::initialize(bool build_existing_cache)
 
 		u32 last_sec_idx = umax;
 
-		for (func_i = data_indexer++;; func_i = data_indexer++, progr_add(retro_atomic_load_acquire_int(&showing_progress) ? g_progr_pdone : pending_progress, build_existing_cache ? 1 : 0))
+		for (func_i = retro_atomic_fetch_add_size(&data_indexer, 1);; func_i = retro_atomic_fetch_add_size(&data_indexer, 1), progr_add(retro_atomic_load_acquire_int(&showing_progress) ? g_progr_pdone : pending_progress, build_existing_cache ? 1 : 0))
 		{
 			usz passed_count = 0;
 			u32 func_addr = 0;
@@ -1174,7 +1174,7 @@ void spu_cache::initialize(bool build_existing_cache)
 				break;
 			}
 
-			if (Emu.IsStopped() || fail_flag)
+			if (Emu.IsStopped() || retro_atomic_load_acquire_int(&fail_flag))
 			{
 				continue;
 			}
@@ -1212,7 +1212,7 @@ void spu_cache::initialize(bool build_existing_cache)
 				if (!compile_program(std::move(func2)))
 				{
 					// Likely, out of JIT memory. Signal to prevent further building.
-					fail_flag |= 1;
+					retro_atomic_store_release_int(&fail_flag, 1);
 					break;
 				}
 
@@ -1344,7 +1344,7 @@ void spu_cache::initialize(bool build_existing_cache)
 		return;
 	}
 
-	if (fail_flag)
+	if (retro_atomic_load_acquire_int(&fail_flag))
 	{
 		spu_log.fatal("SPU Runtime: Cache building failed (out of memory).");
 		return;
@@ -1463,16 +1463,16 @@ spu_function_t spu_runtime::rebuild_ubertrampoline(u32 id_inst)
 	auto stuff_it = ::at32(m_stuff, id_inst >> 12).begin();
 	auto stuff_end = ::at32(m_stuff, id_inst >> 12).end();
 	{
-		if (stuff_it->trampoline)
+		if (const auto tr = stuff_it->get_trampoline())
 		{
-			return stuff_it->trampoline;
+			return tr;
 		}
 
 		m_flat_list.clear();
 
 		for (auto it = stuff_it; it != stuff_end; ++it)
 		{
-			if (const auto ptr = it->compiled.load())
+			if (const auto ptr = it->get_compiled())
 			{
 				std::span<const u32> range{it->data.data.data(), it->data.data.size()};
 				range = range.subspan((it->data.entry_point - it->data.lower_bound) / 4);
@@ -2002,7 +2002,7 @@ spu_function_t spu_runtime::rebuild_ubertrampoline(u32 id_inst)
 		jit_announce(wxptr, raw - wxptr, fname);
 	}
 
-	if (auto _old = stuff_it->trampoline.compare_and_swap(nullptr, result))
+	if (auto _old = stuff_it->install_trampoline(result))
 	{
 		return _old;
 	}
@@ -2010,10 +2010,10 @@ spu_function_t spu_runtime::rebuild_ubertrampoline(u32 id_inst)
 	// Install ubertrampoline
 	auto& insert_to = ::at32(*spu_runtime::g_dispatcher, id_inst >> 12);
 
-	auto _old = insert_to.load();
-
-	do
+	while (true)
 	{
+		const auto _old = reinterpret_cast<spu_function_t>(retro_atomic_load_acquire_ptr(&insert_to));
+
 		// Make sure we are replacing an older ubertrampoline but not newer one
 		if (_old != tr_dispatch)
 		{
@@ -2021,7 +2021,7 @@ spu_function_t spu_runtime::rebuild_ubertrampoline(u32 id_inst)
 
 			for (auto it = stuff_it; it != stuff_end; ++it)
 			{
-				if (it->trampoline == _old)
+				if (it->get_trampoline() == _old)
 				{
 					ok = true;
 					break;
@@ -2033,8 +2033,12 @@ spu_function_t spu_runtime::rebuild_ubertrampoline(u32 id_inst)
 				return result;
 			}
 		}
+
+		if (retro_atomic_cas_ptr(&insert_to, reinterpret_cast<void*>(_old), reinterpret_cast<void*>(result)))
+		{
+			break;
+		}
 	}
-	while (!insert_to.compare_exchange(_old, result));
 
 	return result;
 }
@@ -2044,7 +2048,7 @@ spu_function_t spu_runtime::find(const u32* ls, u32 addr) const
 	const u32 index = ls[addr / 4] >> 12;
 	for (const auto& item : ::at32(m_stuff, index))
 	{
-		if (const auto ptr = item.compiled.load())
+		if (const auto ptr = item.get_compiled())
 		{
 			std::span<const u32> range{item.data.data.data(), item.data.data.size()};
 			range = range.subspan((item.data.entry_point - item.data.lower_bound) / 4);
@@ -2218,7 +2222,7 @@ void spu_recompiler_base::dispatch(spu_thread& spu, void*, u8* rip)
 	}
 
 	// Second attempt (recover from the recursion after repeated unsuccessful trampoline call)
-	if (spu.block_counter != spu.block_recover && &dispatch != ::at32(*spu_runtime::g_dispatcher, spu._ref<nse_t<u32>>(spu.pc) >> 12))
+	if (spu.block_counter != spu.block_recover && &dispatch != spu_runtime::dispatcher_at(spu._ref<nse_t<u32>>(spu.pc) >> 12))
 	{
 		spu.block_recover = spu.block_counter;
 		return;
@@ -5083,12 +5087,12 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 		}
 	}
 
-	auto sort_breakig_reasons = [](const std::array<atomic_t<u64>, 128>& breaking_reason)
+	auto sort_breakig_reasons = [](std::array<retro_atomic_64_t, 128>& breaking_reason)
 	{
 		std::vector<std::pair<u32, u64>> map;
 		for (u32 i = 0; i < static_cast<u32>(breaking_reason.size()); i++)
 		{
-			if (u64 v = breaking_reason[i])
+			if (u64 v = static_cast<u64>(retro_atomic_load_relaxed_64(&breaking_reason[i])))
 			{
 				map.emplace_back(i, v);
 			}
@@ -5098,16 +5102,28 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 		return map;
 	};
 
+	// Counted by the compiler threads at once, for the log only
 	struct stats_t
 	{
-		atomic_t<u64> all = 0;
-		atomic_t<u64> single = 0;
-		std::array<atomic_t<u64>, 128> breaking_reason{};
+		retro_atomic_64_t all{0};
+		retro_atomic_64_t single{0};
+		std::array<retro_atomic_64_t, 128> breaking_reason{};
+	};
+
+	// The count after @v is added
+	auto stat_add = [](retro_atomic_64_t& count, u64 v = 1) -> u64
+	{
+		return static_cast<u64>(retro_atomic_fetch_add_64(&count, static_cast<s64>(v))) + v;
+	};
+
+	auto stat = [](retro_atomic_64_t& count) -> u64
+	{
+		return static_cast<u64>(retro_atomic_load_relaxed_64(&count));
 	};
 
 	struct putllc16_statistics_t : stats_t
 	{
-		atomic_t<u64> nowrite = 0;
+		retro_atomic_64_t nowrite{0};
 	};
 
 	struct rchcnt_statistics_t : stats_t
@@ -5116,7 +5132,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 
 	struct reduced_statistics_t : stats_t
 	{
-		atomic_t<u64> secret_compatible = 0;
+		retro_atomic_64_t secret_compatible{0};
 	};
 
 	// Pattern structures
@@ -5595,7 +5611,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 
 				cause = atomic16->break_cause;
 				getllar_starts[previous.lsa_pc] = true;
-				g_fxo->get<putllc16_statistics_t>().breaking_reason[cause]++;
+				stat_add(g_fxo->get<putllc16_statistics_t>().breaking_reason[cause]);
 
 				if (!spu_log.notice)
 				{
@@ -5652,7 +5668,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 					return;
 				}
 
-				g_fxo->get<rchcnt_statistics_t>().breaking_reason[cause]++;
+				stat_add(g_fxo->get<rchcnt_statistics_t>().breaking_reason[cause]);
 
 				if (!spu_log.notice)
 				{
@@ -5702,7 +5718,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 		{
 			if (previous.active && previous.loop_pc != SPU_LS_SIZE && reduced_loop_all.count(previous.loop_pc) == 0)
 			{
-				g_fxo->get<reduced_statistics_t>().breaking_reason[cause]++;
+				stat_add(g_fxo->get<reduced_statistics_t>().breaking_reason[cause]);
 
 				if (!spu_log.notice)
 				{
@@ -7486,7 +7502,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 							// Register loop entry
 							if (getllar_starts.emplace(atomic16->lsa_pc, false).second)
 							{
-								g_fxo->get<putllc16_statistics_t>().all++;
+								stat_add(g_fxo->get<putllc16_statistics_t>().all);
 								spu_log.notice("[0x%05x] GETLLAR pattern entry point", pos);
 							}
 						}
@@ -8816,7 +8832,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 		}
 
 		spu_log.success("PUTLLC16 Pattern Detected! (mem_count=%d, put_pc=0x%x, pc_rel=%d, offset=0x%x, const=%u, two_regs=%d, reg=%u, runtime=%d, 0x%x-%s, pattern-hash=%s) (putllc0=%d, putllc16+0=%d, all=%d)"
-			, pattern.mem_count, pattern.put_pc, value.type == v_relative, value.off18, value.type == v_const, value.type == v_reg2, value.reg, value.runtime16_select, entry_point, func_hash, pattern_hash, +stats.nowrite, ++stats.single, +stats.all);
+			, pattern.mem_count, pattern.put_pc, value.type == v_relative, value.off18, value.type == v_const, value.type == v_reg2, value.reg, value.runtime16_select, entry_point, func_hash, pattern_hash, stat(stats.nowrite), stat_add(stats.single), stat(stats.all));
 	}
 
 	for (const auto& [read_pc, pattern] : rchcnt_loop_all)
@@ -8844,7 +8860,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 	{
 		auto& stats = g_fxo->get<reduced_statistics_t>();
 
-		stats.all++;
+		stat_add(stats.all);
 
 		if (!pattern.active || pattern.loop_pc == SPU_LS_SIZE)
 		{
@@ -8853,7 +8869,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 
 		if (inst_attr attr = m_inst_attrs[(loop_pc - entry_point) / 4]; attr == inst_attr::none)
 		{
-			stats.single++;
+			stat_add(stats.single);
 
 			if (true)
 			{
@@ -8915,7 +8931,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 			spu_log.success("Reduced Loop Pattern Detected! (REGS: %s, DICT: r%d, ARG: %s, Incr: %s (%s), CMP/Size: %s/%u, loop_pc=0x%x, 0x%x-%s) [All=%u/%u, Secret=%s/%u]", regs, pattern.cond_val_register_idx
 				, pattern.cond_val_is_immediate ? fmt::format("0x%x", pattern.cond_val_min) : fmt::format("r%d", pattern.cond_val_register_argument_idx)
 				, pattern.cond_val_incr_is_immediate ? fmt::format("%d", static_cast<s32>(pattern.cond_val_incr)) : fmt::format("r%d", pattern.cond_val_incr), pattern.cond_val_incr_before_cond ? "BEFORE" : "AFTER"
-				, pattern.cond_val_compare, std::popcount(pattern.cond_val_mask), loop_pc, entry_point, func_hash, +stats.single, +stats.all, pattern.is_secret ? "true" : "false", stats.secret_compatible.add_fetch(pattern.is_secret ? 1 : 0));
+				, pattern.cond_val_compare, std::popcount(pattern.cond_val_mask), loop_pc, entry_point, func_hash, stat(stats.single), stat(stats.all), pattern.is_secret ? "true" : "false", stat_add(stats.secret_compatible, pattern.is_secret ? 1 : 0));
 		}
 	}
 
@@ -9218,7 +9234,8 @@ struct spu_llvm
 		// the host's time before, but every block waiting is handed to the
 		// workers as soon as it comes, so between a batch's arrival and its
 		// blocks' being handed out it had next to nothing to tell
-		std::unordered_map<u64, atomic_t<u64>, value_hash<u64>> samples;
+		// Only this thread touches it (idm::select runs here)
+		std::unordered_map<u64, u64, value_hash<u64>> samples;
 
 		u32 worker_count = 1;
 
@@ -9260,11 +9277,9 @@ struct spu_llvm
 
 					if (auto state = +spu.state; !::is_paused(state) && !::is_stopped(state) && cpu_flag::wait - state)
 					{
-						const auto found = std::as_const(samples).find(name);
-
-						if (found != std::as_const(samples).end())
+						if (const auto found = samples.find(name); found != samples.end())
 						{
-							const_cast<atomic_t<u64>&>(found->second)++;
+							found->second++;
 						}
 					}
 				});
@@ -9310,7 +9325,7 @@ struct spu_llvm
 			const spu_program& func = found_it->second->data;
 
 			// Old function pointer (pre-recompiled)
-			const spu_function_t _old = found_it->second->compiled;
+			const spu_function_t _old = found_it->second->get_compiled();
 
 			// Remove item from the queue
 			enqueued.erase(found_it);
@@ -9404,14 +9419,14 @@ struct spu_fast : public spu_recompiler_base
 			return nullptr;
 		}
 
-		if (add_loc->compiled)
+		if (const auto fn = add_loc->get_compiled())
 		{
-			return add_loc->compiled;
+			return fn;
 		}
 
 		const spu_program& func = add_loc->data;
 
-		if (g_cfg.core.spu_debug && !add_loc->logged.exchange(1))
+		if (g_cfg.core.spu_debug && spu_item::take_once(add_loc->logged))
 		{
 			std::string log;
 			this->dump(func, log);
@@ -9714,7 +9729,7 @@ struct spu_fast : public spu_recompiler_base
 		const auto fn = reinterpret_cast<spu_function_t>(result);
 
 		// Install pointer carefully
-		const bool added = !add_loc->compiled && add_loc->compiled.compare_and_swap_test(nullptr, fn);
+		const bool added = add_loc->install_compiled(fn);
 
 		// Check hash against allowed bounds
 		const bool inverse_bounds = g_cfg.core.spu_llvm_lower_bound > g_cfg.core.spu_llvm_upper_bound;

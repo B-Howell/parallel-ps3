@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The SPU recompiler's compiled blocks, dispatcher and counters are off `atomic_t`.** Not yet run on a game.
+  - **What changed:**
+    - **A compiled block (spu_item):** the function, the block's ubertrampoline, and the flags for written to the SPU cache and logged are `retro_atomic_ptr_t` and `retro_atomic_int_t`. `install_compiled()` puts a function in only where none is (a compare-and-swap), and `set_compiled()` replaces one from the fast compiler, as before. A thread that finds another compiling the same block waits in `wait_compiled()` on the ready word through the wait engine, and `notify_compiled()` wakes it. `install_trampoline()` gives back the trampoline already there, as `compare_and_swap` did. `take_once()` and `give_back()` handle the two flags.
+    - **The dispatcher:** the 2^20 entries the generated code jumps through are `retro_atomic_ptr_t`, 8 bytes each as before, so the generated code is unchanged. An ubertrampoline is put in with a compare-and-swap loop that keeps a newer one.
+    - **The cache build's counters** (next function, next precompile entry, failure) and the pattern statistics the compiler threads count for the log are `retro_atomic`.
+    - **The block sampler's counts** are plain integers: only the thread that picks the next block to compile reads and writes them (`idm::select` runs its callback there).
+  - **Tests:** `test_emu_waits` checks that a block's function goes in only where none is (and is replaced when asked), that a trampoline is the same, and that the cache flag is taken once. It also checks that a thread waiting on another's compile is woken once the function is in. It was shown to fail with the function put in over one already there, and to hang with the wake removed. A check fails if `atomic_t` comes back to the recompiler's blocks.
+
+
 - **The reservation waiter slots are off `atomic_t`.** Not yet run on a game.
   - **What changed:** an SPU waiting for a reservation's cache line to change counts itself into one of 1024 slots, chosen by address and time, and sleeps on the slot's wait flag until a store to the line notifies it, or until its bound (50-200 µs, as before). Each slot is one `retro_atomic_64_t` on a 128-byte line of its own: the flag in the low half and the count of waiters in the high half. `vm::reservation_waiter_op()` changes both with one compare-and-swap loop, as `atomic_op` and `fetch_op` did. `reservation_notifier_wait()` sleeps on the flag through the wait engine, so the thread stop checks and the SPU's one-time callback still apply. `reservation_notifier_wake()` wakes it, and a postponed notify hands lv2 the flag's address to wake later, as before.
   - **Tests:** `test_emu_waits` checks that a waiter makes the flag odd and is counted, that a notify makes the flag even once (a second finds nothing to wake), and that a thread asleep on the flag is woken by the notify long before its 3-second bound. It was shown to fail (the thread slept the whole 3 seconds) with the notify's wake removed. A check fails if `atomic_t` comes back to the slots.

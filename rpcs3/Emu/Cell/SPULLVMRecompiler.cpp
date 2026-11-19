@@ -1917,7 +1917,7 @@ public:
 			{
 				if (add_to_file)
 				{
-					add_loc->cached = 0;
+					spu_item::give_back(add_loc->cached);
 				}
 
 				return nullptr;
@@ -1934,7 +1934,7 @@ public:
 		retro_atomic_fetch_add_int(&g_spu_llvm_noted_loads, 1);
 
 		// Install unconditionally, possibly replacing existing one from spu_fast
-		add_loc->compiled = fn;
+		add_loc->set_compiled(fn);
 		add_loc->notify_compiled();
 
 		// Rebuild trampoline if necessary
@@ -1992,17 +1992,12 @@ public:
 		if (func.entry_point != start0)
 		{
 			// Wait for the duplicate
-			while (!add_loc->compiled)
-			{
-				add_loc->compiled_ready.wait(0);
-			}
-
-			return add_loc->compiled;
+			return add_loc->wait_compiled();
 		}
 
 		bool add_to_file = false;
 
-		if (auto& cache = g_fxo->get<spu_cache>(); cache && g_cfg.core.spu_cache && !add_loc->cached.exchange(1))
+		if (auto& cache = g_fxo->get<spu_cache>(); cache && g_cfg.core.spu_cache && spu_item::take_once(add_loc->cached))
 		{
 			add_to_file = true;
 
@@ -2060,7 +2055,7 @@ public:
 
 		bool to_log_func = false;
 
-		if (g_cfg.core.spu_debug && !add_loc->logged.exchange(1))
+		if (g_cfg.core.spu_debug && spu_item::take_once(add_loc->logged))
 		{
 			if (!fs::write_file(m_spurt->get_cache_path() + "spu.log", fs::write + fs::append, function_log))
 			{
@@ -4355,7 +4350,7 @@ public:
 				{
 					if (add_to_file)
 					{
-						add_loc->cached = 0;
+						spu_item::give_back(add_loc->cached);
 					}
 
 					return nullptr;
@@ -4408,7 +4403,7 @@ public:
 		const spu_function_t fn = reinterpret_cast<spu_function_t>(m_jit.get_engine().getPointerToFunction(main_func));
 
 		// Install unconditionally, possibly replacing existing one from spu_fast
-		add_loc->compiled = fn;
+		add_loc->set_compiled(fn);
 		add_loc->notify_compiled();
 
 		// Rebuild trampoline if necessary

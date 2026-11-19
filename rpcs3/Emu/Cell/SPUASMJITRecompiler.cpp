@@ -53,9 +53,9 @@ spu_function_t spu_recompiler::compile(spu_program&& _func)
 		return nullptr;
 	}
 
-	if (add_loc->compiled)
+	if (const auto fn = add_loc->get_compiled())
 	{
-		return add_loc->compiled;
+		return fn;
 	}
 
 	const spu_program& func = add_loc->data;
@@ -63,15 +63,10 @@ spu_function_t spu_recompiler::compile(spu_program&& _func)
 	if (func.entry_point != start0)
 	{
 		// Wait for the duplicate
-		while (!add_loc->compiled)
-		{
-			add_loc->compiled_ready.wait(0);
-		}
-
-		return add_loc->compiled;
+		return add_loc->wait_compiled();
 	}
 
-	if (auto& cache = g_fxo->get<spu_cache>(); cache && g_cfg.core.spu_cache && !add_loc->cached.exchange(1))
+	if (auto& cache = g_fxo->get<spu_cache>(); cache && g_cfg.core.spu_cache && spu_item::take_once(add_loc->cached))
 	{
 		cache.add(func);
 	}
@@ -103,7 +98,7 @@ spu_function_t spu_recompiler::compile(spu_program&& _func)
 	compiler.addEncodingOptions(EncodingOptions::kOptimizedAlign);
 	this->c = &compiler;
 
-	if (g_cfg.core.spu_debug && !add_loc->logged.exchange(1))
+	if (g_cfg.core.spu_debug && spu_item::take_once(add_loc->logged))
 	{
 		// Dump analyser data
 		this->dump(func, log);
@@ -901,7 +896,7 @@ spu_function_t spu_recompiler::compile(spu_program&& _func)
 	}
 
 	// Install compiled function pointer
-	const bool added = !add_loc->compiled && add_loc->compiled.compare_and_swap_test(nullptr, fn);
+	const bool added = add_loc->install_compiled(fn);
 
 	// Rebuild trampoline if necessary
 	if (!m_spurt->rebuild_ubertrampoline(func.data[0]))

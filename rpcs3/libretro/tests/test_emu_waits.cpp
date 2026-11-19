@@ -38,6 +38,7 @@
 #include "Emu/savestate_utils.hpp"
 #include "Emu/Memory/vm_locking.h"
 #include "Emu/Memory/vm_reservation.h"
+#include "Emu/Cell/SPURecompiler.h"
 
 #include <atomic>
 #include <chrono>
@@ -1515,6 +1516,42 @@ int main()
 		t.join();
 		CHECK(waited_ms >= 0 && waited_ms < 1000);
 		std::printf("test_emu_waits: a reservation waiter slot: counted, notified once, waiter woken in %lld ms\n", static_cast<long long>(waited_ms.load()));
+	}
+
+	// A compiled SPU block: its function installed only where none is (a
+	// trampoline the same), the cache and log flags taken once, and a
+	// thread waiting on another's compile woken when it is installed
+	{
+		spu_item item{spu_program{}};
+		const auto f1 = reinterpret_cast<spu_function_t>(0x1000);
+		const auto f2 = reinterpret_cast<spu_function_t>(0x2000);
+		CHECK(item.get_compiled() == nullptr);
+		CHECK(item.install_compiled(f1));
+		CHECK(!item.install_compiled(f2));
+		CHECK(item.get_compiled() == f1);
+		item.set_compiled(f2);
+		CHECK(item.get_compiled() == f2);
+		CHECK(item.install_trampoline(f1) == nullptr);
+		CHECK(item.install_trampoline(f2) == f1);
+		CHECK(spu_item::take_once(item.cached) && !spu_item::take_once(item.cached));
+		spu_item::give_back(item.cached);
+		CHECK(spu_item::take_once(item.cached));
+
+		spu_item waited{spu_program{}};
+		std::atomic<int> started{0};
+		spu_function_t got = nullptr;
+		std::thread t([&]
+		{
+			started = 1;
+			got = waited.wait_compiled();
+		});
+		while (!started) {}
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		waited.set_compiled(f1);
+		waited.notify_compiled();
+		t.join();
+		CHECK(got == f1);
+		std::printf("test_emu_waits: a compiled SPU block: installed once, its waiter woken\n");
 	}
 
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");
