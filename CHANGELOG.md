@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **stx::init_mutex's word is C89 (rpcs3/util/init_word.c) on `retro_atomic`.** Not yet run on a game.
+  - **What changed:**
+    - **The word:** `init_mutex` guards a resource that is set up, used, and taken down: game data, the keyboard and mouse handlers, the on-screen keyboard and message dialogs, the system cache. Its word holds an initialised bit and a count of holders, the one setting up or taking down among them. It is a `retro_atomic_int_t`.
+    - **Its changes are C89** in `init_word.c`, with the same compare-and-swap loops as before: taking the init lock (from nothing, or, forced, from initialised while keeping the users), setting it initialised, cancelling, taking and giving back access.
+    - **Waiting:** a waiter sleeps on the word with `retro_waitaddr` and every change wakes it, as before. The callbacks and the lock objects stay C++ in `init_mutex.hpp`.
+  - **Tests:** `test_init_word` (C89, and a ThreadSanitizer build) checks the init lock is taken from nothing and refused while held or initialised, that access is granted only while initialised and counted, and that a forced take keeps the users. It checks cancel and set-initialised, and that a thread waiting to take the resource down is woken when the last user leaves. It also runs four threads taking and giving back access 200000 times each, and checks the count ends where it began. It was shown to fail with giving back access adding instead of taking away. A check fails if `atomic_t` comes back to `init_mutex`.
+
+
 - **The video encoder's running flag (util/media_utils) is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the flag that keeps the recording encoder's thread taking frames (cleared on stop, and on a failure to open or finish the file) is a `retro_atomic_int_t`, read with `running()`. The encoder thread's sleep for the next frame waits on the sink's frame count, which is already a `retro_atomic_int_t`, by its address instead of through an `atomic_t` cast.
   - **Tests:** none at runtime: the encoder runs only while a recording is made, which needs the video and audio encoders set up for a game. A check fails if `atomic_t` comes back to media_utils.

@@ -1,17 +1,20 @@
 #pragma once
 
-#include "util/atomic.hpp"
+#include "util/types.hpp"
+#include "util/init_word.h"
+
+#include <functional>
+#include <type_traits>
+#include <utility>
 
 namespace stx
 {
 	// Mutex designed to support 3 categories of concurrent access to protected resource (initialization, finalization and normal use) while holding the "init" state bit
 	class init_mutex
 	{
-		// Set after initialization and removed before finalization
-		static constexpr u32 c_init_bit = 0x8000'0000;
-
-		// Contains "reader" count and init bit
-		atomic_t<u32> m_state = 0;
+		// Contains "reader" count and the init bit (INIT_WORD_INIT, set after
+		// initialization and removed before finalization): init_word.c
+		mutable retro_atomic_int_t m_state{0};
 
 	public:
 		constexpr init_mutex() noexcept = default;
@@ -35,25 +38,8 @@ namespace stx
 
 				while (true)
 				{
-					auto [val, ok] = _this->m_state.fetch_op([](u32& value)
-					{
-						if (value == 0)
-						{
-							value = 1;
-							return true;
-						}
-
-						if constexpr (Forced()())
-						{
-							if (value & c_init_bit)
-							{
-								value -= c_init_bit - 1;
-								return true;
-							}
-						}
-
-						return false;
-					});
+					u32 val = 0;
+					init_word_take(&_this->m_state, Forced()() ? 1 : 0, &val);
 
 					if (val == 0)
 					{
@@ -61,12 +47,12 @@ namespace stx
 						break;
 					}
 
-					if (val & c_init_bit)
+					if (val & INIT_WORD_INIT)
 					{
 						if constexpr (Forced()())
 						{
 							// Forced reset
-							val -= c_init_bit - 1;
+							val -= INIT_WORD_INIT - 1;
 
 							while (val != 1)
 							{
@@ -80,8 +66,8 @@ namespace stx
 								}
 
 								// Wait for other users to finish their work
-								_this->m_state.wait(val);
-								val = _this->m_state;
+								init_word_wait(&_this->m_state, val);
+								val = init_word_load(&_this->m_state);
 							}
 						}
 
@@ -99,7 +85,7 @@ namespace stx
 						}
 					}
 
-					_this->m_state.wait(val);
+					init_word_wait(&_this->m_state, val);
 				}
 
 				// Finalization of wait callback
@@ -126,8 +112,7 @@ namespace stx
 				if (_this)
 				{
 					// Set initialized state and remove "init lock"
-					_this->m_state += c_init_bit - 1;
-					_this->m_state.notify_all();
+					init_word_set_init(&_this->m_state);
 				}
 			}
 
@@ -148,8 +133,7 @@ namespace stx
 				if (_this)
 				{
 					// Abandon "init lock"
-					_this->m_state -= 1;
-					_this->m_state.notify_all();
+					init_word_cancel(&_this->m_state);
 					_this = nullptr;
 				}
 			}
@@ -217,8 +201,7 @@ namespace stx
 				if (_lock)
 				{
 					// Set initialized state (TODO?)
-					_lock.get_mutex()->m_state |= c_init_bit;
-					_lock.get_mutex()->m_state.notify_all();
+					init_word_or_init(&_lock.get_mutex()->m_state);
 				}
 			}
 		};
@@ -265,19 +248,8 @@ namespace stx
 			explicit access_lock(init_mutex& mtx) noexcept
 				: _this(&mtx)
 			{
-				auto [val, ok] = _this->m_state.fetch_op([](u32& value)
-				{
-					if (value & c_init_bit)
-					{
-						// Add "access lock"
-						value += 1;
-						return true;
-					}
-
-					return false;
-				});
-
-				if (!ok)
+				// Add "access lock", while initialized
+				if (!init_word_access(&_this->m_state))
 				{
 					_this = nullptr;
 					return;
@@ -293,10 +265,7 @@ namespace stx
 				if (_this)
 				{
 					// TODO: check condition
-					if (--_this->m_state <= 1)
-					{
-						_this->m_state.notify_all();
-					}
+					init_word_release_access(&_this->m_state);
 				}
 			}
 
@@ -317,20 +286,20 @@ namespace stx
 		// Simple state test. Hard to use, easy to misuse.
 		bool volatile_is_initialized() const noexcept
 		{
-			return (m_state & c_init_bit) != 0;
+			return (init_word_load(&m_state) & INIT_WORD_INIT) != 0;
 		}
 
 		// Wait for access()
 		void wait_for_initialized() const noexcept
 		{
-			const u32 state = m_state;
+			const u32 state = init_word_load(&m_state);
 
-			if (state & c_init_bit)
+			if (state & INIT_WORD_INIT)
 			{
 				return;
 			}
 
-			m_state.wait(state);
+			init_word_wait(&m_state, state);
 		}
 	};
 
