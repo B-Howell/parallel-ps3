@@ -22,6 +22,8 @@
 #include "Emu/IdManager.h"
 #include "Emu/system_progress.hpp"
 #include "Emu/Cell/Modules/cellOskDialog.h"
+#include "Emu/Cell/Modules/cellCamera.h"
+#include "Emu/savestate_utils.hpp"
 
 #include <atomic>
 #include <cstdio>
@@ -47,6 +49,64 @@ static bool reaches(const std::atomic<int>& looks, int n)
 
 int main()
 {
+	// The camera's savestates, off atomic_t: the same bytes its fields made
+	// as u8, bool, u32, u64 and s32, and read back. First, while the emulator
+	// is stopped, as a savestate is written
+	{
+		gem_camera_shared shared;
+		retro_atomic_store_release_64(&shared.frame_timestamp_us, 123456789);
+		retro_atomic_store_release_int(&shared.width, 320);
+		retro_atomic_store_release_int(&shared.height, 240);
+		retro_atomic_store_release_int(&shared.size, 76800);
+		retro_atomic_store_release_int(&shared.format, CELL_CAMERA_YUV422);
+		utils::serial saved;
+		shared.save(saved);
+		utils::serial expected;
+		expected(u64{123456789}, s32{320}, s32{240}, s32{76800}, CellCameraFormat{CELL_CAMERA_YUV422});
+		CHECK(saved.data == expected.data && saved.data.size() == 24);
+
+		CHECK(is_savestate_version_compatible({{14, 2}}, true));
+		utils::serial in;
+		in.set_reading_state(std::move(saved.data));
+		gem_camera_shared back(in);
+		CHECK(retro_atomic_load_acquire_64(&back.frame_timestamp_us) == 123456789);
+		CHECK(retro_atomic_load_acquire_int(&back.width) == 320 && retro_atomic_load_acquire_int(&back.height) == 240);
+		CHECK(retro_atomic_load_acquire_int(&back.size) == 76800 && retro_atomic_load_acquire_int(&back.format) == CELL_CAMERA_YUV422);
+
+		// Not initialised: one byte
+		auto cam = std::make_unique<camera_context>();
+		utils::serial none;
+		cam->save(none);
+		CHECK(none.data == std::vector<u8>{0});
+
+		// Initialised (closed, so a load opens no camera)
+		retro_atomic_store_release_int(&cam->init, 1);
+		retro_atomic_store_release_int(&cam->read_mode, CELL_CAMERA_READ_DIRECT);
+		retro_atomic_store_release_int(&cam->is_streaming, 1);
+		retro_atomic_store_release_int(&cam->is_attached, 1);
+		retro_atomic_store_release_int(&cam->frame_num, 77);
+		retro_atomic_store_release_int(&cam->is_attached_dirty, 1);
+		utils::serial state;
+		cam->save(state);
+		utils::serial want;
+		want(u8{1});
+		want(cam->notify_data_map, cam->start_timestamp_us, u8{CELL_CAMERA_READ_DIRECT}, true, true, false, cam->info, cam->attr, u32{77});
+		want(true);
+		CHECK(state.data == want.data);
+
+		utils::serial cam_in;
+		cam_in.set_reading_state(std::move(state.data));
+		auto cam_back = std::make_unique<camera_context>(cam_in);
+		CHECK(retro_atomic_load_acquire_int(&cam_back->init) == 1);
+		CHECK(retro_atomic_load_acquire_int(&cam_back->read_mode) == CELL_CAMERA_READ_DIRECT);
+		CHECK(retro_atomic_load_acquire_int(&cam_back->is_streaming) == 1 && retro_atomic_load_acquire_int(&cam_back->is_attached) == 1);
+		CHECK(retro_atomic_load_acquire_int(&cam_back->is_open) == 0 && retro_atomic_load_acquire_int(&cam_back->frame_num) == 77);
+		CHECK(retro_atomic_load_acquire_int(&cam_back->is_attached_dirty) == 1);
+
+		is_savestate_version_compatible({{0, 25}}, true); // no savestate's versions left behind
+		std::printf("test_emu_waits: camera savestates: the bytes atomic_t made, read back\n");
+	}
+
 	// A wait for the game, 16 ms a look in standalone: 60 looks a second
 	{
 		std::atomic<int> looks{0};

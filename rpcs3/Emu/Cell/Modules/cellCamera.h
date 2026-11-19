@@ -426,15 +426,17 @@ public:
 	owner_calls_t calls{};
 	u64 start_timestamp_us = 0;
 
-	atomic_t<u8> read_mode{CELL_CAMERA_READ_FUNCCALL};
-	atomic_t<bool> is_streaming{false};
-	atomic_t<bool> is_attached{false};
-	atomic_t<bool> is_attached_dirty{false};
-	atomic_t<bool> is_open{false};
+	// Read by the game's threads before their calls reach the camera thread:
+	// flags are 0 or 1
+	retro_atomic_int_t read_mode{CELL_CAMERA_READ_FUNCCALL};
+	retro_atomic_int_t is_streaming{0};
+	retro_atomic_int_t is_attached{0};
+	retro_atomic_int_t is_attached_dirty{0};
+	retro_atomic_int_t is_open{0};
 
 	CellCameraInfoEx info{};
-	atomic_t<u32> pbuf_write_index = 0;
-	std::array<atomic_t<bool>, 2> pbuf_locked = { false, false };
+	retro_atomic_int_t pbuf_write_index{0};
+	retro_atomic_int_t pbuf_locked[2]{};
 	u32 pbuf_next_index() const;
 
 	struct attr_t
@@ -445,12 +447,12 @@ public:
 	};
 
 	attr_t attr[500]{};
-	atomic_t<bool> has_new_frame = false;
-	atomic_t<u32> frame_num = 0;
-	atomic_t<u64> frame_timestamp_us = 0;
-	atomic_t<u32> bytes_read = 0;
+	retro_atomic_int_t has_new_frame{0};
+	retro_atomic_int_t frame_num{0};
+	retro_atomic_64_t frame_timestamp_us{0};
+	retro_atomic_int_t bytes_read{0};
 
-	atomic_t<u8> init = 0;
+	retro_atomic_int_t init{0};
 
 	SAVESTATE_INIT_POS(16);
 
@@ -492,9 +494,9 @@ struct gem_camera_shared
 
 	SAVESTATE_INIT_POS(7);
 
-	atomic_t<u64> frame_timestamp_us{}; // latest read timestamp from cellCamera (cellCameraRead(Ex))
-	atomic_t<s32> width{640};
-	atomic_t<s32> height{480};
-	atomic_t<s32> size{0};
-	atomic_t<CellCameraFormat> format{CELL_CAMERA_RAW8};
+	retro_atomic_64_t frame_timestamp_us{0}; // latest read timestamp from cellCamera (cellCameraRead(Ex))
+	retro_atomic_int_t width{640};
+	retro_atomic_int_t height{480};
+	retro_atomic_int_t size{0};
+	retro_atomic_int_t format{CELL_CAMERA_RAW8};
 };

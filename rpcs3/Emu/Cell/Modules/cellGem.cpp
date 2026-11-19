@@ -1554,15 +1554,15 @@ void gem_config_data::operator()()
 
 		const auto& shared_data = g_fxo->get<gem_camera_shared>();
 
-		if (gem::convert_image_format(shared_data.format, vc, video_data_in, shared_data.width, shared_data.height,
+		if (gem::convert_image_format(static_cast<CellCameraFormat>(retro_atomic_load_acquire_int(&shared_data.format)), vc, video_data_in, static_cast<s32>(retro_atomic_load_acquire_int(&shared_data.width)), static_cast<s32>(retro_atomic_load_acquire_int(&shared_data.height)),
 			vc.video_data_out ? vc.video_data_out.get_ptr() : nullptr, video_data_out_size,
 			vc.buffer_memory ? vc.buffer_memory.get_ptr() : nullptr, "cellGem"))
 		{
-			cellGem.trace("Converted video frame of format %s to %s", shared_data.format.load(), vc.output_format.get());
+			cellGem.trace("Converted video frame of format %s to %s", static_cast<CellCameraFormat>(retro_atomic_load_acquire_int(&shared_data.format)), vc.output_format.get());
 
 			if (g_cfg.io.paint_move_spheres)
 			{
-				paint_spheres(vc.output_format, shared_data.width, shared_data.height, vc.video_data_out ? vc.video_data_out.get_ptr() : nullptr, video_data_out_size);
+				paint_spheres(vc.output_format, static_cast<s32>(retro_atomic_load_acquire_int(&shared_data.width)), static_cast<s32>(retro_atomic_load_acquire_int(&shared_data.height)), vc.video_data_out ? vc.video_data_out.get_ptr() : nullptr, video_data_out_size);
 			}
 		}
 
@@ -1893,12 +1893,12 @@ static inline void pos_to_gem_image_state(u32 gem_num, gem_config::gem_controlle
 	if (y_pos <= 0) y_pos -= 0.1f; else if (y_pos >= 1.0f) y_pos += 0.1f;
 
 	// Image coordinates in pixels
-	const f32 image_x = x_pos * shared_data.width;
-	const f32 image_y = y_pos * shared_data.height;
+	const f32 image_x = x_pos * static_cast<s32>(retro_atomic_load_acquire_int(&shared_data.width));
+	const f32 image_y = y_pos * static_cast<s32>(retro_atomic_load_acquire_int(&shared_data.height));
 
 	// Centered image coordinates in pixels
-	const f32 centered_x = image_x - (shared_data.width / 2.f);
-	const f32 centered_y = (shared_data.height / 2.f) - image_y; // Image coordinates increase downwards, so we have to invert this
+	const f32 centered_x = image_x - (static_cast<s32>(retro_atomic_load_acquire_int(&shared_data.width)) / 2.f);
+	const f32 centered_y = (static_cast<s32>(retro_atomic_load_acquire_int(&shared_data.height)) / 2.f) - image_y; // Image coordinates increase downwards, so we have to invert this
 
 	// Camera coordinates in mm (centered, so it's the same as world coordinates)
 	const f32 mmPerPixel = controller.radius <= 0.0f ? 0.0f : (CELL_GEM_SPHERE_RADIUS_MM / controller.radius);
@@ -1940,12 +1940,12 @@ static inline void pos_to_gem_state(u32 gem_num, gem_config::gem_controller& con
 	if (y_pos <= 0.0f) y_pos -= 0.1f; else if (y_pos >= 1.0f) y_pos += 0.1f;
 
 	// Image coordinates in pixels
-	const f32 image_x = x_pos * shared_data.width;
-	const f32 image_y = y_pos * shared_data.height;
+	const f32 image_x = x_pos * static_cast<s32>(retro_atomic_load_acquire_int(&shared_data.width));
+	const f32 image_y = y_pos * static_cast<s32>(retro_atomic_load_acquire_int(&shared_data.height));
 
 	// Half of the camera image
-	const f32 half_width = shared_data.width / 2.f;
-	const f32 half_height = shared_data.height / 2.f;
+	const f32 half_width = static_cast<s32>(retro_atomic_load_acquire_int(&shared_data.width)) / 2.f;
+	const f32 half_height = static_cast<s32>(retro_atomic_load_acquire_int(&shared_data.height)) / 2.f;
 
 	// Centered image coordinates in pixels
 	const f32 centered_x = image_x - half_width;
@@ -2002,7 +2002,7 @@ static inline void pos_to_gem_state(u32 gem_num, gem_config::gem_controller& con
 	// Calculate velocity
 	if constexpr (!ps_move_data::use_imu_for_velocity)
 	{
-		move_data.update_velocity(shared_data.frame_timestamp_us, gem_state->pos);
+		move_data.update_velocity(static_cast<u64>(retro_atomic_load_acquire_64(&shared_data.frame_timestamp_us)), gem_state->pos);
 
 		for (u32 i = 0; i < 3; i++)
 		{
@@ -2849,7 +2849,7 @@ error_code cellGemConvertVideoStart(ppu_thread& ppu, vm::cptr<void> video_frame)
 	}
 
 	const auto& shared_data = g_fxo->get<gem_camera_shared>();
-	gem.video_data_in.resize(shared_data.size);
+	gem.video_data_in.resize(static_cast<s32>(retro_atomic_load_acquire_int(&shared_data.size)));
 	std::memcpy(gem.video_data_in.data(), video_frame.get_ptr(), gem.video_data_in.size());
 
 	gem.video_conversion_in_progress = true;
@@ -3224,7 +3224,7 @@ error_code cellGemGetImageState(u32 gem_num, vm::ptr<CellGemImageState> gem_imag
 		const auto& shared_data = g_fxo->get<gem_camera_shared>();
 		auto& controller = gs.controllers[gem_num];
 
-		gem_image_state->frame_timestamp = shared_data.frame_timestamp_us.load();
+		gem_image_state->frame_timestamp = static_cast<u64>(retro_atomic_load_acquire_64(&shared_data.frame_timestamp_us));
 		gem_image_state->timestamp = gem_image_state->frame_timestamp + 10;
 
 		switch (g_cfg.io.move)

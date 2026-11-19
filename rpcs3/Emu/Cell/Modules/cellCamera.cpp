@@ -142,31 +142,47 @@ camera_context::camera_context(utils::serial& ar)
 
 void camera_context::save(utils::serial& ar)
 {
-	ar(init);
+	// Through the types the fields were (u8, bool, u32), so the format is
+	// unchanged
+	u8 init_v = static_cast<u8>(retro_atomic_load_acquire_int(&init));
+	ar(init_v);
+	retro_atomic_store_release_int(&init, init_v);
 
-	if (!init)
+	if (!init_v)
 	{
 		return;
 	}
 
 	const s32 version = GET_OR_USE_SERIALIZATION_VERSION(ar.is_writing(), cellCamera);
 
-	ar(notify_data_map, start_timestamp_us, read_mode, is_streaming, is_attached, is_open, info, attr, frame_num);
+	u8 read_mode_v = static_cast<u8>(retro_atomic_load_acquire_int(&read_mode));
+	bool streaming_v = retro_atomic_load_acquire_int(&is_streaming) != 0;
+	bool attached_v = retro_atomic_load_acquire_int(&is_attached) != 0;
+	bool open_v = retro_atomic_load_acquire_int(&is_open) != 0;
+	u32 frame_num_v = static_cast<u32>(retro_atomic_load_acquire_int(&frame_num));
+	ar(notify_data_map, start_timestamp_us, read_mode_v, streaming_v, attached_v, open_v, info, attr, frame_num_v);
+	retro_atomic_store_release_int(&read_mode, read_mode_v);
+	retro_atomic_store_release_int(&is_streaming, streaming_v ? 1 : 0);
+	retro_atomic_store_release_int(&is_attached, attached_v ? 1 : 0);
+	retro_atomic_store_release_int(&is_open, open_v ? 1 : 0);
+	retro_atomic_store_release_int(&frame_num, static_cast<int>(frame_num_v));
 
 	if (ar.is_writing() || version >= 2)
 	{
-		ar(is_attached_dirty);
+		bool dirty_v = retro_atomic_load_acquire_int(&is_attached_dirty) != 0;
+		ar(dirty_v);
+		retro_atomic_store_release_int(&is_attached_dirty, dirty_v ? 1 : 0);
 	}
 
 	if (!ar.is_writing())
 	{
-		if (is_open)
+		if (open_v)
 		{
 			if (!open_camera())
 			{
 				cellCamera.error("Failed to open camera while loading savestate");
 			}
-			else if (is_streaming && !start_camera())
+			else if (streaming_v && !start_camera())
 			{
 				cellCamera.error("Failed to start camera while loading savestate");
 			}
@@ -185,7 +201,18 @@ void gem_camera_shared::save(utils::serial& ar)
 
 	if (ar.is_writing() || version >= 2)
 	{
-		ar(frame_timestamp_us, width, height, size, format);
+		// Through the types the fields were, so the format is unchanged
+		u64 timestamp_v = static_cast<u64>(retro_atomic_load_acquire_64(&frame_timestamp_us));
+		s32 width_v = retro_atomic_load_acquire_int(&width);
+		s32 height_v = retro_atomic_load_acquire_int(&height);
+		s32 size_v = retro_atomic_load_acquire_int(&size);
+		CellCameraFormat format_v = static_cast<CellCameraFormat>(retro_atomic_load_acquire_int(&format));
+		ar(timestamp_v, width_v, height_v, size_v, format_v);
+		retro_atomic_store_release_64(&frame_timestamp_us, static_cast<s64>(timestamp_v));
+		retro_atomic_store_release_int(&width, width_v);
+		retro_atomic_store_release_int(&height, height_v);
+		retro_atomic_store_release_int(&size, size_v);
+		retro_atomic_store_release_int(&format, static_cast<int>(format_v));
 	}
 }
 
@@ -390,11 +417,11 @@ error_code check_init_and_open(s32 dev_num)
 
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (!g_camera.init)
+	if (!static_cast<u8>(retro_atomic_load_acquire_int(&g_camera.init)))
 	{
 		return CELL_CAMERA_ERROR_NOT_INIT;
 	}
-	if (!g_camera.is_open)
+	if (!(retro_atomic_load_acquire_int(&g_camera.is_open) != 0))
 	{
 		return CELL_CAMERA_ERROR_NOT_OPEN;
 	}
@@ -440,14 +467,14 @@ error_code cellCameraInit()
 
 	return camera_call([&]() -> error_code
 	{
-		if (g_camera.init)
+		if (static_cast<u8>(retro_atomic_load_acquire_int(&g_camera.init)))
 		{
 			return CELL_CAMERA_ERROR_ALREADY_INIT;
 		}
 
 		if (g_cfg.io.camera == camera_handler::null)
 		{
-			g_camera.init = 1;
+			retro_atomic_store_release_int(&g_camera.init, static_cast<int>(1));
 			return CELL_OK;
 		}
 
@@ -504,8 +531,8 @@ error_code cellCameraInit()
 
 		// TODO: Some other default attributes? Need to check the actual behaviour on a real PS3.
 
-		g_camera.is_attached = g_cfg.io.camera != camera_handler::null;
-		g_camera.init = 1;
+		retro_atomic_store_release_int(&g_camera.is_attached, (g_cfg.io.camera != camera_handler::null) ? 1 : 0);
+		retro_atomic_store_release_int(&g_camera.init, static_cast<int>(1));
 		return CELL_OK;
 	});
 }
@@ -520,7 +547,7 @@ error_code cellCameraEnd(ppu_thread& ppu)
 
 	return camera_call([&]() -> error_code
 	{
-		if (!g_camera.init)
+		if (!static_cast<u8>(retro_atomic_load_acquire_int(&g_camera.init)))
 		{
 			return CELL_CAMERA_ERROR_NOT_INIT;
 		}
@@ -528,7 +555,7 @@ error_code cellCameraEnd(ppu_thread& ppu)
 		// TODO: call cellCameraClose(0), ignore errors
 
 		// TODO
-		g_camera.init = 0;
+		retro_atomic_store_release_int(&g_camera.init, static_cast<int>(0));
 		g_camera.reset_state();
 		return CELL_OK;
 	});
@@ -545,7 +572,7 @@ error_code cellCameraOpen(s32 dev_num, vm::ptr<CellCameraInfo> info)
 
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (!g_camera.init)
+	if (!static_cast<u8>(retro_atomic_load_acquire_int(&g_camera.init)))
 	{
 		return CELL_CAMERA_ERROR_NOT_INIT;
 	}
@@ -555,7 +582,7 @@ error_code cellCameraOpen(s32 dev_num, vm::ptr<CellCameraInfo> info)
 		return CELL_CAMERA_ERROR_PARAM;
 	}
 
-	if (g_camera.is_open)
+	if ((retro_atomic_load_acquire_int(&g_camera.is_open) != 0))
 	{
 		return CELL_CAMERA_ERROR_ALREADY_OPEN;
 	}
@@ -565,7 +592,7 @@ error_code cellCameraOpen(s32 dev_num, vm::ptr<CellCameraInfo> info)
 		return res;
 	}
 
-	if (!g_camera.is_attached)
+	if (!(retro_atomic_load_acquire_int(&g_camera.is_attached) != 0))
 	{
 		return CELL_CAMERA_ERROR_DEVICE_NOT_FOUND;
 	}
@@ -616,7 +643,7 @@ error_code cellCameraOpenEx(ppu_thread& ppu, s32 dev_num, vm::ptr<CellCameraInfo
 
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (g_camera.is_open)
+	if ((retro_atomic_load_acquire_int(&g_camera.is_open) != 0))
 	{
 		return CELL_CAMERA_ERROR_ALREADY_OPEN;
 	}
@@ -656,17 +683,17 @@ error_code cellCameraOpenEx(ppu_thread& ppu, s32 dev_num, vm::ptr<CellCameraInfo
 			return CELL_CAMERA_ERROR_DEVICE_NOT_FOUND;
 		}
 
-		g_camera.is_open = true;
+		retro_atomic_store_release_int(&g_camera.is_open, 1);
 		g_camera.info = *info;
 
 		cellCamera.notice("cellCameraOpen info: format=%s, resolution=%d, framerate=%d, bytesize=%d, width=%d, height=%d, dev_num=%d, guid=%d",
 			info->format, info->resolution, info->framerate, info->bytesize, info->width, info->height, info->dev_num, info->guid);
 
 		auto& shared_data = g_fxo->get<gem_camera_shared>();
-		shared_data.width = info->width > 0 ? +info->width : 640;
-		shared_data.height = info->height > 0 ? +info->height : 480;
-		shared_data.size = vbuf_size;
-		shared_data.format = info->format;
+		retro_atomic_store_release_int(&shared_data.width, static_cast<int>(info->width > 0 ? +info->width : 640));
+		retro_atomic_store_release_int(&shared_data.height, static_cast<int>(info->height > 0 ? +info->height : 480));
+		retro_atomic_store_release_int(&shared_data.size, static_cast<int>(vbuf_size));
+		retro_atomic_store_release_int(&shared_data.format, static_cast<int>(info->format));
 
 		return CELL_OK;
 	});
@@ -704,7 +731,7 @@ error_code cellCameraClose(ppu_thread& ppu, s32 dev_num)
 	auto& g_camera = g_fxo->get<camera_thread>();
 	return camera_call([&]() -> error_code
 	{
-		g_camera.is_streaming = false;
+		retro_atomic_store_release_int(&g_camera.is_streaming, 0);
 
 		if (g_camera.info.buffer)
 		{
@@ -725,7 +752,7 @@ error_code cellCameraClose(ppu_thread& ppu, s32 dev_num)
 		}
 
 		g_camera.close_camera();
-		g_camera.is_open = false;
+		retro_atomic_store_release_int(&g_camera.is_open, 0);
 
 		return CELL_OK;
 	});
@@ -749,7 +776,7 @@ error_code cellCameraGetDeviceGUID(s32 dev_num, vm::ptr<u32> guid)
 
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (!g_camera.init)
+	if (!static_cast<u8>(retro_atomic_load_acquire_int(&g_camera.init)))
 	{
 		return CELL_CAMERA_ERROR_NOT_INIT;
 	}
@@ -768,7 +795,7 @@ error_code cellCameraGetType(s32 dev_num, vm::ptr<s32> type)
 
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (!g_camera.init)
+	if (!static_cast<u8>(retro_atomic_load_acquire_int(&g_camera.init)))
 	{
 		return CELL_CAMERA_ERROR_NOT_INIT;
 	}
@@ -788,7 +815,7 @@ error_code cellCameraGetType(s32 dev_num, vm::ptr<s32> type)
 		return error;
 	}
 
-	if (!g_camera.is_attached)
+	if (!(retro_atomic_load_acquire_int(&g_camera.is_attached) != 0))
 	{
 		return CELL_CAMERA_ERROR_DEVICE_NOT_FOUND;
 	}
@@ -839,7 +866,7 @@ s32 cellCameraIsAttached(s32 dev_num)
 
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (!g_camera.init)
+	if (!static_cast<u8>(retro_atomic_load_acquire_int(&g_camera.init)))
 	{
 		return 0;
 	}
@@ -858,7 +885,7 @@ s32 cellCameraIsAttached(s32 dev_num)
 
 	return camera_call([&]() -> s32
 	{
-		bool is_attached = g_camera.is_attached;
+		bool is_attached = (retro_atomic_load_acquire_int(&g_camera.is_attached) != 0);
 
 		if (g_cfg.io.camera == camera_handler::fake)
 		{
@@ -866,8 +893,9 @@ s32 cellCameraIsAttached(s32 dev_num)
 			// normally should be attached immediately after event queue is registered, but just to be sure
 			if (!is_attached)
 			{
-				g_camera.is_attached = is_attached = true;
-				g_camera.is_attached_dirty = true;
+				is_attached = true;
+				retro_atomic_store_release_int(&g_camera.is_attached, 1);
+				retro_atomic_store_release_int(&g_camera.is_attached_dirty, 1);
 			}
 		}
 
@@ -886,7 +914,7 @@ s32 cellCameraIsOpen(s32 dev_num)
 
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (!g_camera.init)
+	if (!static_cast<u8>(retro_atomic_load_acquire_int(&g_camera.init)))
 	{
 		return false;
 	}
@@ -898,7 +926,7 @@ s32 cellCameraIsOpen(s32 dev_num)
 
 	return camera_call([&]() -> s32
 	{
-		return g_camera.is_open.load();
+		return (retro_atomic_load_acquire_int(&g_camera.is_open) != 0);
 	});
 }
 
@@ -913,7 +941,7 @@ s32 cellCameraIsStarted(s32 dev_num)
 
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (!g_camera.init)
+	if (!static_cast<u8>(retro_atomic_load_acquire_int(&g_camera.init)))
 	{
 		return false;
 	}
@@ -925,7 +953,7 @@ s32 cellCameraIsStarted(s32 dev_num)
 
 	return camera_call([&]() -> s32
 	{
-		return g_camera.is_streaming.load();
+		return (retro_atomic_load_acquire_int(&g_camera.is_streaming) != 0);
 	});
 }
 
@@ -936,7 +964,7 @@ error_code cellCameraGetAttribute(s32 dev_num, s32 attrib, vm::ptr<u32> arg1, vm
 
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (!g_camera.init)
+	if (!static_cast<u8>(retro_atomic_load_acquire_int(&g_camera.init)))
 	{
 		return CELL_CAMERA_ERROR_NOT_INIT;
 	}
@@ -952,7 +980,7 @@ error_code cellCameraGetAttribute(s32 dev_num, s32 attrib, vm::ptr<u32> arg1, vm
 	}
 
 	// actually compares <= 0x63 which is equivalent
-	if (attrib < CELL_CAMERA_FORMATCAP && !g_camera.is_open)
+	if (attrib < CELL_CAMERA_FORMATCAP && !(retro_atomic_load_acquire_int(&g_camera.is_open) != 0))
 	{
 		return CELL_CAMERA_ERROR_NOT_OPEN;
 	}
@@ -969,7 +997,7 @@ error_code cellCameraGetAttribute(s32 dev_num, s32 attrib, vm::ptr<u32> arg1, vm
 
 	return camera_call([&]() -> error_code
 	{
-		if (!g_camera.is_attached)
+		if (!(retro_atomic_load_acquire_int(&g_camera.is_attached) != 0))
 		{
 			return CELL_CAMERA_ERROR_DEVICE_NOT_FOUND;
 		}
@@ -1001,7 +1029,7 @@ error_code cellCameraSetAttribute(s32 dev_num, s32 attrib, u32 arg1, u32 arg2)
 
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (!g_camera.init)
+	if (!static_cast<u8>(retro_atomic_load_acquire_int(&g_camera.init)))
 	{
 		return CELL_CAMERA_ERROR_NOT_INIT;
 	}
@@ -1017,7 +1045,7 @@ error_code cellCameraSetAttribute(s32 dev_num, s32 attrib, u32 arg1, u32 arg2)
 	}
 
 	// actually compares <= 0x63 which is equivalent
-	if (attrib < CELL_CAMERA_FORMATCAP && !g_camera.is_open)
+	if (attrib < CELL_CAMERA_FORMATCAP && !(retro_atomic_load_acquire_int(&g_camera.is_open) != 0))
 	{
 		return CELL_CAMERA_ERROR_NOT_OPEN;
 	}
@@ -1049,7 +1077,7 @@ error_code cellCameraGetBufferSize(s32 dev_num, vm::ptr<CellCameraInfoEx> info)
 
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (!g_camera.init)
+	if (!static_cast<u8>(retro_atomic_load_acquire_int(&g_camera.init)))
 	{
 		return CELL_CAMERA_ERROR_NOT_INIT;
 	}
@@ -1064,7 +1092,7 @@ error_code cellCameraGetBufferSize(s32 dev_num, vm::ptr<CellCameraInfoEx> info)
 		return CELL_CAMERA_ERROR_PARAM;
 	}
 
-	if (g_camera.is_open)
+	if ((retro_atomic_load_acquire_int(&g_camera.is_open) != 0))
 	{
 		return CELL_CAMERA_ERROR_ALREADY_OPEN;
 	}
@@ -1110,7 +1138,7 @@ error_code check_get_camera_info(s32 dev_num, bool is_valid_info_struct)
 {
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (!g_camera.init)
+	if (!static_cast<u8>(retro_atomic_load_acquire_int(&g_camera.init)))
 	{
 		return CELL_CAMERA_ERROR_NOT_INIT;
 	}
@@ -1125,7 +1153,7 @@ error_code check_get_camera_info(s32 dev_num, bool is_valid_info_struct)
 		return not_an_error(CELL_CAMERA_ERROR_NOT_OPEN);
 	}
 
-	if (!g_camera.is_open)
+	if (!(retro_atomic_load_acquire_int(&g_camera.is_open) != 0))
 	{
 		return CELL_CAMERA_ERROR_NOT_OPEN;
 	}
@@ -1210,7 +1238,7 @@ error_code cellCameraPrepExtensionUnit(s32 dev_num, vm::ptr<u8> guidExtensionCod
 
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (!g_camera.is_attached)
+	if (!(retro_atomic_load_acquire_int(&g_camera.is_attached) != 0))
 	{
 		return CELL_CAMERA_ERROR_DEVICE_NOT_FOUND;
 	}
@@ -1229,7 +1257,7 @@ error_code cellCameraCtrlExtensionUnit(s32 dev_num, u8 request, u16 value, u16 l
 
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (!g_camera.is_open)
+	if (!(retro_atomic_load_acquire_int(&g_camera.is_open) != 0))
 	{
 		return CELL_CAMERA_ERROR_NOT_OPEN;
 	}
@@ -1239,7 +1267,7 @@ error_code cellCameraCtrlExtensionUnit(s32 dev_num, u8 request, u16 value, u16 l
 		return CELL_CAMERA_ERROR_PARAM;
 	}
 
-	if (!g_camera.is_attached)
+	if (!(retro_atomic_load_acquire_int(&g_camera.is_attached) != 0))
 	{
 		return CELL_CAMERA_ERROR_DEVICE_NOT_FOUND;
 	}
@@ -1285,7 +1313,7 @@ error_code cellCameraReset(s32 dev_num)
 
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (!g_camera.is_attached)
+	if (!(retro_atomic_load_acquire_int(&g_camera.is_attached) != 0))
 	{
 		return CELL_CAMERA_ERROR_DEVICE_NOT_FOUND;
 	}
@@ -1324,7 +1352,7 @@ error_code cellCameraStart(s32 dev_num)
 	auto& g_camera = g_fxo->get<camera_thread>();
 	return camera_call([&]() -> error_code
 	{
-		if (!g_camera.is_attached)
+		if (!(retro_atomic_load_acquire_int(&g_camera.is_attached) != 0))
 		{
 			return CELL_CAMERA_ERROR_DEVICE_NOT_FOUND;
 		}
@@ -1337,7 +1365,7 @@ error_code cellCameraStart(s32 dev_num)
 		// TODO: Yet another CELL_CAMERA_ERROR_TIMEOUT
 
 		g_camera.start_timestamp_us = get_guest_system_time();
-		g_camera.is_streaming = true;
+		retro_atomic_store_release_int(&g_camera.is_streaming, 1);
 
 		return CELL_OK;
 	});
@@ -1391,7 +1419,7 @@ error_code cellCameraReadEx(s32 dev_num, vm::ptr<CellCameraReadEx> read)
 
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (!g_camera.init)
+	if (!static_cast<u8>(retro_atomic_load_acquire_int(&g_camera.init)))
 	{
 		return CELL_CAMERA_ERROR_NOT_INIT;
 	}
@@ -1408,24 +1436,24 @@ error_code cellCameraReadEx(s32 dev_num, vm::ptr<CellCameraReadEx> read)
 
 	return camera_call([&]() -> error_code
 	{
-		if (!g_camera.is_open)
+		if (!(retro_atomic_load_acquire_int(&g_camera.is_open) != 0))
 		{
 			return CELL_CAMERA_ERROR_NOT_OPEN;
 		}
 
-		if (!g_camera.is_attached)
+		if (!(retro_atomic_load_acquire_int(&g_camera.is_attached) != 0))
 		{
 			return CELL_CAMERA_ERROR_DEVICE_NOT_FOUND;
 		}
 
-		if (!g_camera.is_streaming)
+		if (!(retro_atomic_load_acquire_int(&g_camera.is_streaming) != 0))
 		{
 			return CELL_CAMERA_ERROR_NOT_STARTED;
 		}
 
 		// can call cellCameraReset() and cellCameraStop() in some cases
 
-		const bool has_new_frame = g_camera.has_new_frame.exchange(false);
+		const bool has_new_frame = (retro_atomic_exchange_int(&g_camera.has_new_frame, 0) != 0);
 
 		if (g_camera.handler)
 		{
@@ -1441,7 +1469,7 @@ error_code cellCameraReadEx(s32 dev_num, vm::ptr<CellCameraReadEx> read)
 					return CELL_CAMERA_ERROR_DEVICE_NOT_FOUND;
 				}
 
-				g_camera.bytes_read = ::narrow<u32>(bytes_read);
+				retro_atomic_store_release_int(&g_camera.bytes_read, static_cast<int>(::narrow<u32>(bytes_read)));
 
 				cellCamera.trace("cellCameraRead: frame_number=%d, width=%d, height=%d. bytes_read=%d (passed to game: frame=%d, bytesread=%d)",
 					frame_number, width, height, bytes_read, read ? read->frame.get() : 0, read ? read->bytesread.get() : 0);
@@ -1449,23 +1477,23 @@ error_code cellCameraReadEx(s32 dev_num, vm::ptr<CellCameraReadEx> read)
 		}
 		else
 		{
-			g_camera.bytes_read = g_camera.is_streaming ? get_video_buffer_size(g_camera.info) : 0;
+			retro_atomic_store_release_int(&g_camera.bytes_read, static_cast<int>((retro_atomic_load_acquire_int(&g_camera.is_streaming) != 0) ? get_video_buffer_size(g_camera.info) : 0));
 		}
 
 		if (has_new_frame)
 		{
-			g_camera.frame_timestamp_us = get_guest_system_time() - g_camera.start_timestamp_us;
+			retro_atomic_store_release_64(&g_camera.frame_timestamp_us, static_cast<s64>(get_guest_system_time() - g_camera.start_timestamp_us));
 		}
 
 		if (read) // NULL returns CELL_OK
 		{
-			read->timestamp = g_camera.frame_timestamp_us;
-			read->frame = g_camera.frame_num;
-			read->bytesread = g_camera.bytes_read;
+			read->timestamp = static_cast<u64>(retro_atomic_load_acquire_64(&g_camera.frame_timestamp_us));
+			read->frame = static_cast<u32>(retro_atomic_load_acquire_int(&g_camera.frame_num));
+			read->bytesread = static_cast<u32>(retro_atomic_load_acquire_int(&g_camera.bytes_read));
 
 			auto& shared_data = g_fxo->get<gem_camera_shared>();
 
-			shared_data.frame_timestamp_us.store(read->timestamp);
+			retro_atomic_store_release_64(&shared_data.frame_timestamp_us, static_cast<s64>(read->timestamp));
 		}
 
 		return CELL_OK;
@@ -1481,7 +1509,7 @@ error_code cellCameraReadComplete(s32 dev_num, u32 bufnum, u32 arg2)
 		auto& g_camera = g_fxo->get<camera_thread>();
 		camera_call([&]()
 		{
-			g_camera.pbuf_locked[bufnum] = false;
+			retro_atomic_store_release_int(&g_camera.pbuf_locked[bufnum], 0);
 		});
 	}
 
@@ -1505,18 +1533,18 @@ error_code cellCameraStop(s32 dev_num)
 	auto& g_camera = g_fxo->get<camera_thread>();
 	return camera_call([&]() -> error_code
 	{
-		if (!g_camera.is_attached)
+		if (!(retro_atomic_load_acquire_int(&g_camera.is_attached) != 0))
 		{
 			return CELL_CAMERA_ERROR_DEVICE_NOT_FOUND;
 		}
 
-		if (!g_camera.is_streaming)
+		if (!(retro_atomic_load_acquire_int(&g_camera.is_streaming) != 0))
 		{
 			return CELL_CAMERA_ERROR_NOT_STARTED;
 		}
 
 		g_camera.stop_camera();
-		g_camera.is_streaming = false;
+		retro_atomic_store_release_int(&g_camera.is_streaming, 0);
 
 		return CELL_OK;
 	});
@@ -1540,7 +1568,7 @@ error_code cellCameraSetNotifyEventQueue(u64 key)
 
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (!g_camera.init)
+	if (!static_cast<u8>(retro_atomic_load_acquire_int(&g_camera.init)))
 	{
 		return CELL_CAMERA_ERROR_NOT_INIT;
 	}
@@ -1566,7 +1594,7 @@ error_code cellCameraRemoveNotifyEventQueue(u64 key)
 
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (!g_camera.init)
+	if (!static_cast<u8>(retro_atomic_load_acquire_int(&g_camera.init)))
 	{
 		return CELL_CAMERA_ERROR_NOT_INIT;
 	}
@@ -1592,7 +1620,7 @@ error_code cellCameraSetNotifyEventQueue2(u64 key, u64 source, u64 flag)
 
 	auto& g_camera = g_fxo->get<camera_thread>();
 
-	if (!g_camera.init)
+	if (!static_cast<u8>(retro_atomic_load_acquire_int(&g_camera.init)))
 	{
 		return CELL_CAMERA_ERROR_NOT_INIT;
 	}
@@ -1697,14 +1725,14 @@ void camera_context::operator()()
 		owner_calls_run(&calls);
 
 		// send ATTACH event
-		if (init && is_attached_dirty && !Emu.IsPausedOrReady())
+		if (static_cast<u8>(retro_atomic_load_acquire_int(&init)) && (retro_atomic_load_acquire_int(&is_attached_dirty) != 0) && !Emu.IsPausedOrReady())
 		{
-			send_attach_state(is_attached);
+			send_attach_state((retro_atomic_load_acquire_int(&is_attached) != 0));
 		}
 
 		const s32 fps = info.framerate;
 
-		if (!init || !fps || Emu.IsPausedOrReady() || g_cfg.io.camera == camera_handler::null)
+		if (!static_cast<u8>(retro_atomic_load_acquire_int(&init)) || !fps || Emu.IsPausedOrReady() || g_cfg.io.camera == camera_handler::null)
 		{
 			// Nothing to send: until a call or the guest's next frame
 			wait_guest(-1);
@@ -1715,15 +1743,16 @@ void camera_context::operator()()
 
 		// Get latest frame with CELL_CAMERA_READ_DIRECT.
 		// With CELL_CAMERA_READ_FUNCCALL the game fetches the buffer in cellCameraRead.
-		const u64 buffer_number = pbuf_write_index;
+		const u64 buffer_number = static_cast<u32>(retro_atomic_load_acquire_int(&pbuf_write_index));
 		bool send_frame_update_event = false;
 		bool frame_update_event_sent = false;
 
-		if (is_streaming)
+		if ((retro_atomic_load_acquire_int(&is_streaming) != 0))
 		{
-			if (read_mode.load() == CELL_CAMERA_READ_DIRECT)
+			if (static_cast<u8>(retro_atomic_load_acquire_int(&read_mode)) == CELL_CAMERA_READ_DIRECT)
 			{
-				send_frame_update_event = info.pbuf[pbuf_write_index] && !pbuf_locked[pbuf_write_index];
+				const u32 write_index = static_cast<u32>(retro_atomic_load_acquire_int(&pbuf_write_index));
+				send_frame_update_event = info.pbuf[write_index] && !retro_atomic_load_acquire_int(&pbuf_locked[write_index]);
 
 				if (handler && send_frame_update_event)
 				{
@@ -1732,11 +1761,11 @@ void camera_context::operator()()
 					u64 frame_number{};
 					u64 bytes_read{};
 
-					send_frame_update_event = get_camera_frame(info.pbuf[pbuf_write_index].get_ptr(), width, height, frame_number, bytes_read);
+					send_frame_update_event = get_camera_frame(info.pbuf[write_index].get_ptr(), width, height, frame_number, bytes_read);
 
 					if (send_frame_update_event)
 					{
-						pbuf_write_index = pbuf_next_index();
+						retro_atomic_store_release_int(&pbuf_write_index, static_cast<int>(pbuf_next_index()));
 					}
 				}
 			}
@@ -1757,7 +1786,7 @@ void camera_context::operator()()
 					u64 data2 = 0;
 					u64 data3 = 0;
 
-					if (read_mode.load() == CELL_CAMERA_READ_DIRECT)
+					if (static_cast<u8>(retro_atomic_load_acquire_int(&read_mode)) == CELL_CAMERA_READ_DIRECT)
 					{
 						const u64 image_data_size = static_cast<u64>(info.bytesize);
 
@@ -1780,12 +1809,12 @@ void camera_context::operator()()
 			}
 		}
 
-		++frame_num;
-		has_new_frame = true;
+		retro_atomic_fetch_add_int(&frame_num, 1);
+		retro_atomic_store_release_int(&has_new_frame, 1);
 
-		if (read_mode.load() == CELL_CAMERA_READ_DIRECT && frame_update_event_sent)
+		if (static_cast<u8>(retro_atomic_load_acquire_int(&read_mode)) == CELL_CAMERA_READ_DIRECT && frame_update_event_sent)
 		{
-			pbuf_locked[buffer_number] = true;
+			retro_atomic_store_release_int(&pbuf_locked[buffer_number], 1);
 		}
 
 		for (const u64 frame_target_time = 1000000u / fps; !Emu.IsStopped();)
@@ -1871,20 +1900,20 @@ void camera_context::close_camera()
 
 void camera_context::reset_state()
 {
-	read_mode = CELL_CAMERA_READ_FUNCCALL;
-	is_streaming = false;
-	is_attached = false;
-	is_attached_dirty = false;
-	is_open = false;
+	retro_atomic_store_release_int(&read_mode, static_cast<int>(CELL_CAMERA_READ_FUNCCALL));
+	retro_atomic_store_release_int(&is_streaming, 0);
+	retro_atomic_store_release_int(&is_attached, 0);
+	retro_atomic_store_release_int(&is_attached_dirty, 0);
+	retro_atomic_store_release_int(&is_open, 0);
 	info.framerate = 0;
 	std::memset(&attr, 0, sizeof(attr));
 	handler.reset();
-	pbuf_write_index = 0;
-	pbuf_locked[0] = false;
-	pbuf_locked[1] = false;
-	has_new_frame = false;
-	frame_timestamp_us = 0;
-	bytes_read = 0;
+	retro_atomic_store_release_int(&pbuf_write_index, static_cast<int>(0));
+	retro_atomic_store_release_int(&pbuf_locked[0], 0);
+	retro_atomic_store_release_int(&pbuf_locked[1], 0);
+	retro_atomic_store_release_int(&has_new_frame, 0);
+	retro_atomic_store_release_64(&frame_timestamp_us, static_cast<s64>(0));
+	retro_atomic_store_release_int(&bytes_read, 0);
 
 	if (info.buffer)
 	{
@@ -1926,8 +1955,8 @@ void camera_context::send_attach_state(bool attached)
 		}
 
 		// We're not expected to send any events for attaching/detaching
-		is_attached = attached;
-		is_attached_dirty = false;
+		retro_atomic_store_release_int(&is_attached, (attached) ? 1 : 0);
+		retro_atomic_store_release_int(&is_attached_dirty, 0);
 	});
 }
 
@@ -1942,7 +1971,7 @@ void camera_context::set_attr(s32 attrib, u32 arg1, u32 arg2)
 			cellCamera.warning("Unknown read mode set: %d", arg1);
 			arg1 = CELL_CAMERA_READ_FUNCCALL;
 		}
-		read_mode.exchange(arg1);
+		retro_atomic_store_release_int(&read_mode, static_cast<int>(arg1));
 		break;
 	}
 	case CELL_CAMERA_MIRRORFLAG:
@@ -1972,7 +2001,7 @@ void camera_context::add_queue(u64 key, u64 source, u64 flag)
 		});
 	}
 
-	is_attached_dirty = true;
+	retro_atomic_store_release_int(&is_attached_dirty, 1);
 }
 
 void camera_context::remove_queue(u64 key)
@@ -1986,7 +2015,7 @@ void camera_context::remove_queue(u64 key)
 u32 camera_context::pbuf_next_index() const
 {
 	// The read buffer index cannot be the same as the write index
-	return (pbuf_write_index + 1u) % 2;
+	return (static_cast<u32>(retro_atomic_load_acquire_int(&pbuf_write_index)) + 1u) % 2;
 }
 
 bool camera_context::on_handler_state(camera_handler_base::camera_handler_state state)
@@ -1995,14 +2024,14 @@ bool camera_context::on_handler_state(camera_handler_base::camera_handler_state 
 	{
 	case camera_handler_base::camera_handler_state::closed:
 	{
-		if (is_attached)
+		if ((retro_atomic_load_acquire_int(&is_attached) != 0))
 		{
-			is_attached = false;
-			is_attached_dirty = true;
+			retro_atomic_store_release_int(&is_attached, 0);
+			retro_atomic_store_release_int(&is_attached_dirty, 1);
 		}
 		if (handler)
 		{
-			if (is_streaming)
+			if ((retro_atomic_load_acquire_int(&is_streaming) != 0))
 			{
 				cellCamera.warning("Camera closed or disconnected (state=%d). Trying to start camera...", static_cast<int>(state));
 				Emu.BlockingCallFromMainThread([&]()
@@ -2011,7 +2040,7 @@ bool camera_context::on_handler_state(camera_handler_base::camera_handler_state 
 					handler->start_camera();
 				});
 			}
-			else if (is_open)
+			else if ((retro_atomic_load_acquire_int(&is_open) != 0))
 			{
 				cellCamera.warning("Camera closed or disconnected (state=%d). Trying to open camera...", static_cast<int>(state));
 				Emu.BlockingCallFromMainThread([&]()
@@ -2024,7 +2053,7 @@ bool camera_context::on_handler_state(camera_handler_base::camera_handler_state 
 	}
 	case camera_handler_base::camera_handler_state::open:
 	{
-		if (handler && is_streaming)
+		if (handler && (retro_atomic_load_acquire_int(&is_streaming) != 0))
 		{
 			cellCamera.warning("Camera handler not running (state=%d). Trying to start camera...", static_cast<int>(state));
 			Emu.BlockingCallFromMainThread([&]()
@@ -2036,11 +2065,11 @@ bool camera_context::on_handler_state(camera_handler_base::camera_handler_state 
 	}
 	case camera_handler_base::camera_handler_state::running:
 	{
-		if (!is_attached)
+		if (!(retro_atomic_load_acquire_int(&is_attached) != 0))
 		{
 			cellCamera.warning("Camera handler not attached (state=%d). Sending attach event...", static_cast<int>(state));
-			is_attached = true;
-			is_attached_dirty = true;
+			retro_atomic_store_release_int(&is_attached, 1);
+			retro_atomic_store_release_int(&is_attached_dirty, 1);
 		}
 		break;
 	}

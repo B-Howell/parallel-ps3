@@ -1177,6 +1177,8 @@ check: all
 	@if grep -nw "atomic_t" ../../Emu/Cell/Modules/cellOskDialog.h ../../Emu/Cell/Modules/cellOskDialog.cpp ../../Emu/RSX/Overlays/overlay_osk.h ../../Emu/RSX/Overlays/overlay_osk.cpp; then echo "the OSK uses atomic_t again"; exit 1; else echo "the OSK is retro_atomic"; fi
 	@# the Patch Manager's choices are written before any boot: the null and software renderers boot inside retro_load_game
 	@if awk '/^bool retro_load_game/{f=1} f&&/libretro_patches::write_config/{w=NR} f&&/do_boot_game\(game_path\)/&&!b{b=NR} f&&/^}/{exit} END{exit !(w && b && w < b)}' ../../libretro/libretro_core.cpp; [ $$? -ne 0 ]; then echo "the Patch Manager's choices are written after the game may have booted"; exit 1; else echo "the Patch Manager's choices are written before any boot"; fi
+	@# cellCamera is off atomic_t: it must not come back to the camera's state or what it shares with cellGem
+	@if grep -nw "atomic_t" ../../Emu/Cell/Modules/cellCamera.h ../../Emu/Cell/Modules/cellCamera.cpp; then echo "cellCamera uses atomic_t again"; exit 1; else echo "cellCamera is retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellCamera is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the camera thread's state that the game's threads read before their calls reach it (initialised, open, attached, streaming, the read mode, the frame count and the bytes read, the frame time, the buffer being written and the two buffers' locked flags) is `retro_atomic_int_t` and `retro_atomic_64_t`. So is what it shares with cellGem (the frame's time, width, height, size and format). The rest stays the camera thread's alone, as before.
+  - **Savestates:** written and read through the types the fields were (`u8`, `bool`, `u32`, `u64`, `s32` and the format), so the format is unchanged.
+  - **Tests:** `test_emu_waits` checks that both savestates are byte for byte what the `atomic_t` fields made, and read back. It was shown to fail with one flag saved as an `s32`. A check fails if `atomic_t` comes back to cellCamera.
+
+
 - **Demon's Souls: Reduce Audio Latency, in the Patch Manager.** Not yet run on a game.
   - **What it does:** the game's sound engine (MagicOrchestra2 v2.6.18) mixes into a ring of `PS3MixerBlockSize` blocks of 256 samples, 16 by default (85 ms at 48 kHz), and refills it every `PS3MixerUpdateFrewuency` blocks (sic), 4 by default (21 ms). With the option on, they are 8 and 2: a new sound waits on half as much of the ring before it plays. It is the counterpart of Bloodborne's FMOD buffer going from 4 blocks to 2 in parallel-ps4.
   - **Where the values are:** found in BLUS30443's EBOOT.BIN. The engine reads its setup from a text built into the executable: it hands the text to a memory stream with its length, 0x450. `PS3_GAME/USRDIR/sound/magicorchestra2.ini` on the disc is not that text, and its name is nowhere in the executable. The two keys are read with defaults of 16 and 4 and are in neither text. The block count goes to a counter that MultiStream's per-block callback ticks, and the engine mixes 256 samples a block.
