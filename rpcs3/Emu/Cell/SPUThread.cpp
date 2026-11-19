@@ -6142,7 +6142,7 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 					return false;
 				}
 
-				atomic_storage<u32>::release(ch_in_mbox.values.raw().value0, res);
+				ch_in_mbox.values_op([&](spu_channel_4_t::sync_var_t& data) { data.value0 = res; return 0; });
 				return true;
 			}
 			else if (code < 128)
@@ -6214,7 +6214,7 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 					return false;
 				}
 
-				atomic_storage<u32>::release(ch_in_mbox.values.raw().value0, res);
+				ch_in_mbox.values_op([&](spu_channel_4_t::sync_var_t& data) { data.value0 = res; return 0; });
 				return true;
 			}
 			else if (code == 192)
@@ -7429,7 +7429,7 @@ bool spu_channel::push_wait(cpu_thread& spu, u32 value, bool push)
 
 std::pair<u32, u32> spu_channel_4_t::pop_wait(cpu_thread& spu, bool pop_value)
 {
-	auto old = values.fetch_op([&](sync_var_t& data)
+	auto old = values_fetch_op([&](sync_var_t& data)
 	{
 		if (data.count != 0)
 		{
@@ -7443,12 +7443,12 @@ std::pair<u32, u32> spu_channel_4_t::pop_wait(cpu_thread& spu, bool pop_value)
 
 			data.value0 = data.value1;
 			data.value1 = data.value2;
-			data.value2 = this->value3;
+			data.value2 = this->get_value3();
 		}
 		else
 		{
 			data.waiting = (pop_value ? bit_occupy : 0) | bit_wait;
-			jostling_value.release(pop_value ? jostling_flag : 0);
+			retro_atomic_store_release_64(&jostling_value, static_cast<s64>(pop_value ? jostling_flag : 0));
 		}
 	});
 
@@ -7463,21 +7463,21 @@ std::pair<u32, u32> spu_channel_4_t::pop_wait(cpu_thread& spu, bool pop_value)
 	{
 		busy_wait();
 
-		if (!atomic_storage<u8>::load(values.raw().waiting))
+		if (!waiting())
 		{
-			return {1, static_cast<u32>(pop_value ? jostling_value.exchange(0) : 0)};
+			return {1, static_cast<u32>(pop_value ? take_jostling() : 0)};
 		}
 	}
 
 	while (true)
 	{
-		thread_ctrl::wait_on(utils::bless<atomic_t<u32>>(&values)[0], u32(u64(std::bit_cast<u128>(old))));
-		old = values;
+		thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&values, static_cast<u32>(to_u128(old).lo)); });
+		old = load_values();
 
 		if (~old.waiting & bit_wait)
 		{
 			// Count of 1 because a value has been inserted and popped in the same step.
-			return {1, static_cast<u32>(pop_value ? jostling_value.exchange(0) : 0)};
+			return {1, static_cast<u32>(pop_value ? take_jostling() : 0)};
 		}
 
 		if (spu.is_stopped())
@@ -7485,16 +7485,16 @@ std::pair<u32, u32> spu_channel_4_t::pop_wait(cpu_thread& spu, bool pop_value)
 			if (pop_value)
 			{
 				// Abort waiting and test if a value has been received
-				if (u64 v = jostling_value.exchange(0); !(v & jostling_flag))
+				if (u64 v = take_jostling(); !(v & jostling_flag))
 				{
 					return {1, static_cast<u32>(v)};
 				}
 			}
 
-			if (~atomic_storage<u8>::exchange(values.raw().waiting, 0) & bit_wait)
+			if (~take_waiting() & bit_wait)
 			{
 				// Count of 1 because a value has been inserted and popped in the same step.
-				return {1, static_cast<u32>(pop_value ? jostling_value.exchange(0) : 0)};
+				return {1, static_cast<u32>(pop_value ? take_jostling() : 0)};
 			}
 
 			return {};
@@ -7506,8 +7506,8 @@ spu_channel_op_state spu_channel_4_t::push(u32 value, bool postpone_notify)
 {
 	while (true)
 	{
-		value3.release(value);
-		const auto [old, pushed_to_data] = values.fetch_op([&](sync_var_t& data)
+		retro_atomic_store_release_int(&value3, static_cast<int>(value));
+		const auto [old, pushed_to_data] = values_fetch_op([&](sync_var_t& data)
 		{
 			if (data.waiting & bit_occupy)
 			{
@@ -7533,7 +7533,7 @@ spu_channel_op_state spu_channel_4_t::push(u32 value, bool postpone_notify)
 		if (!pushed_to_data)
 		{
 			// Insert the pending value in special storage for waiting SPUs, leave no time in which the channel has data
-			if (!jostling_value.compare_and_swap_test(jostling_flag, value))
+			if (!retro_atomic_cas_64(&jostling_value, static_cast<s64>(jostling_flag), static_cast<s64>(value)))
 			{
 				// Other thread has inserted a value through jostling_value, retry
 				continue;
@@ -7543,7 +7543,7 @@ spu_channel_op_state spu_channel_4_t::push(u32 value, bool postpone_notify)
 		if (old.waiting & bit_wait)
 		{
 			// Turn off waiting bit manually (must succeed because waiting bit can only be resetted by the thread pushing to jostling_value)
-			if (~atomic_storage<u8>::exchange(values.raw().waiting, 0) & bit_wait)
+			if (~take_waiting() & bit_wait)
 			{
 				// Could be fatal or at emulation stopping, to be checked by the caller
 				return { old.count, old.count, false, false };
@@ -7551,7 +7551,7 @@ spu_channel_op_state spu_channel_4_t::push(u32 value, bool postpone_notify)
 
 			if (!postpone_notify)
 			{
-				utils::bless<atomic_t<u32>>(&values)[0].notify_one();
+				retro_waitaddr_notify_one(&values);
 			}
 		}
 

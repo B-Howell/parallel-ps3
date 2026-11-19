@@ -1166,6 +1166,103 @@ int main()
 		std::printf("test_emu_waits: an SPU channel: pushed and popped, 20000 races with one winner each, 300 wakes\n");
 	}
 
+	// The SPU's inbound mailbox (spu_channel_4_t), one 16-byte retro_atomic
+	// word: four values in order, a fifth overwriting the last, set only
+	// when empty, pushes from two threads at once all counted (20000
+	// rounds), and a waiter woken by a push, 300 times
+	{
+		spu_channel_4_t mb{};
+		u32 v = 0;
+		CHECK(mb.get_count() == 0 && !mb.try_pop(v));
+		for (u32 i = 1; i <= 5; i++)
+			mb.push(i * 10);
+		CHECK(mb.get_count() == 4);
+		u32 vals[4]{};
+		CHECK(mb.try_read(vals) == 4 && vals[0] == 10 && vals[1] == 20 && vals[2] == 30 && vals[3] == 50);
+		for (u32 want : {10u, 20u, 30u, 50u})
+			CHECK(mb.try_pop(v) && v == want);
+		CHECK(mb.get_count() == 0);
+		CHECK(mb.try_set_if_empty(7) && !mb.try_set_if_empty(8));
+		CHECK(mb.try_pop(v) && v == 7);
+
+		constexpr int rounds = 20000;
+		std::vector<std::atomic<int>> arrived(rounds), done(rounds);
+		int miscounted = 0;
+		const auto pusher = [&](bool checks)
+		{
+#ifdef __linux__
+			// Each on a CPU of its own, so that the two pushes do overlap
+			cpu_set_t set;
+			CPU_ZERO(&set);
+			CPU_SET((checks ? 0 : 1) % std::max(1u, std::thread::hardware_concurrency()), &set);
+			pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+#endif
+			for (int i = 0; i < rounds; i++)
+			{
+				arrived[i]++;
+				while (arrived[i] < 2) {}
+				mb.push(checks ? 1 : 2);
+				done[i]++;
+				if (checks)
+				{
+					while (done[i] < 2) {}
+					miscounted += mb.get_count() != 2;
+					mb.clear();
+					done[i] = 3;
+				}
+				else
+				{
+					while (done[i] < 3) {}
+				}
+			}
+		};
+		{
+			std::thread a(pusher, true), b(pusher, false);
+			a.join();
+			b.join();
+		}
+		CHECK(miscounted == 0);
+
+		std::atomic<int> woken{0}, marked{0};
+		std::atomic<bool> waiting{false};
+		std::thread waiter([&]
+		{
+			for (int i = 0; i < 300; i++)
+			{
+				while (marked < i + 1) {}
+				const u32 seen = static_cast<u32>(retro_atomic_load_acquire_128_lo(&mb.values));
+				waiting = true;
+				while (static_cast<u32>(retro_atomic_load_acquire_128_lo(&mb.values)) == seen)
+				{
+					const retro_waitaddr_t w{&mb.values, seen};
+					retro_waitaddr_wait(&w, 1, -1);
+				}
+				woken++;
+			}
+		});
+		bool all = true;
+		for (int i = 0; i < 300 && all; i++)
+		{
+			// A waiter marked, as pop_wait marks it, then a push wakes it
+			mb.values_op([](spu_channel_4_t::sync_var_t& data) { data.waiting = spu_channel_4_t::bit_wait; return 0; });
+			marked++;
+			while (!waiting) {}
+			waiting = false;
+			for (int j = 0; j < 2000; j++)
+				std::this_thread::yield();
+			mb.push(static_cast<u32>(i));
+			all = reaches(woken, i + 1);
+			mb.clear();
+		}
+		if (!all)
+		{
+			std::fprintf(stderr, "%s:%d: check failed: an SPU inbound mailbox waiter not woken\n", __FILE__, __LINE__);
+			std::_Exit(1);
+		}
+		waiter.join();
+		std::printf("test_emu_waits: the SPU inbound mailbox: four values in order, 20000 races counted, 300 wakes\n");
+	}
+
 	// A game's callback and its argument in one retro_atomic word: installed
 	// only where none is, taken off whole, and of two threads installing at
 	// once, one wins

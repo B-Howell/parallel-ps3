@@ -421,9 +421,80 @@ struct spu_channel_4_t
 		u32 value2;
 	};
 
-	atomic_t<sync_var_t> values;
-	atomic_t<u64> jostling_value;
-	atomic_t<u32> value3;
+	// The recompilers read the first word at the channel's own address,
+	// and the whole of it with one 16-byte load
+	mutable retro_atomic_128_t values{};
+	retro_atomic_64_t jostling_value{0};
+	retro_atomic_int_t value3{0}; // u32
+
+	static sync_var_t from_u128(retro_u128_t v) { return std::bit_cast<sync_var_t>(v); }
+	static retro_u128_t to_u128(const sync_var_t& v) { return std::bit_cast<retro_u128_t>(v); }
+
+	sync_var_t load_values() const { return from_u128(retro_atomic_load_acquire_128(&values)); }
+	void store_values(const sync_var_t& v) { retro_atomic_store_release_128(&values, to_u128(v)); }
+
+	// The waiting byte (the low byte of the first word): read, or taken
+	// (set to 0, the one before given back)
+	u8 waiting() const { return static_cast<u8>(retro_atomic_load_acquire_128_lo(&values)); }
+
+	u32 get_value3() const { return static_cast<u32>(retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&value3))); }
+	u64 take_jostling() { return static_cast<u64>(retro_atomic_exchange_64(&jostling_value, 0)); }
+
+	// @f changes the values it is given, and gives back what it likes: the
+	// change made with a compare-and-swap, f run again if another came
+	// first. Gives back f's result, as atomic_op did
+	template <typename F>
+	auto values_op(F&& f)
+	{
+		for (;;)
+		{
+			const retro_u128_t old = retro_atomic_load_acquire_128(&values);
+			sync_var_t data = from_u128(old);
+			auto result = f(data);
+			const retro_u128_t now = to_u128(data);
+
+			if ((now.lo == old.lo && now.hi == old.hi) || retro_atomic_cas_128(&values, old, now))
+				return result;
+		}
+	}
+
+	u8 take_waiting()
+	{
+		return values_op([](sync_var_t& data)
+		{
+			return std::exchange(data.waiting, u8{0});
+		});
+	}
+
+	// As fetch_op did: the values before, and whether f changed them (a
+	// bool f returns false to change nothing); with a void f, just the
+	// values before
+	template <typename F>
+	auto values_fetch_op(F&& f)
+	{
+		for (;;)
+		{
+			const retro_u128_t old = retro_atomic_load_acquire_128(&values);
+			sync_var_t data = from_u128(old);
+
+			if constexpr (std::is_void_v<std::invoke_result_t<F&, sync_var_t&>>)
+			{
+				f(data);
+				const retro_u128_t now = to_u128(data);
+
+				if ((now.lo == old.lo && now.hi == old.hi) || retro_atomic_cas_128(&values, old, now))
+					return from_u128(old);
+			}
+			else
+			{
+				const bool done = f(data);
+				const retro_u128_t now = to_u128(data);
+
+				if (!done || (now.lo == old.lo && now.hi == old.hi) || retro_atomic_cas_128(&values, old, now))
+					return std::pair<sync_var_t, bool>{from_u128(old), done};
+			}
+		}
+	}
 
 	static constexpr u32 off_wait  = 0;
 	static constexpr u32 off_occupy = 7;
@@ -433,9 +504,9 @@ struct spu_channel_4_t
 
 	void clear()
 	{
-		values.release({});
-		jostling_value.release(0);
-		value3.release(0);
+		store_values({});
+		retro_atomic_store_release_64(&jostling_value, 0);
+		retro_atomic_store_release_int(&value3, 0);
 	}
 
 	// push unconditionally (overwriting latest value), returns true if needs signaling
@@ -444,13 +515,13 @@ struct spu_channel_4_t
 
 	void notify()
 	{
-		utils::bless<atomic_t<u32>>(&values)[0].notify_one();
+		retro_waitaddr_notify_one(&values);
 	}
 
 	// returns non-zero value on success: queue size before removal
 	uint try_pop(u32& out)
 	{
-		return values.atomic_op([&](sync_var_t& data)
+		return values_op([&](sync_var_t& data)
 		{
 			const uint result = data.count;
 
@@ -462,7 +533,7 @@ struct spu_channel_4_t
 
 				data.value0 = data.value1;
 				data.value1 = data.value2;
-				data.value2 = this->value3;
+				data.value2 = this->get_value3();
 			}
 
 			return result;
@@ -475,7 +546,7 @@ struct spu_channel_4_t
 	// returns current queue size without modification
 	uint try_read(u32 (&out)[4]) const
 	{
-		const sync_var_t data = values.load();
+		const sync_var_t data = load_values();
 		const uint result = data.count;
 
 		if (result != 0)
@@ -483,7 +554,7 @@ struct spu_channel_4_t
 			out[0] = data.value0;
 			out[1] = data.value1;
 			out[2] = data.value2;
-			out[3] = value3;
+			out[3] = get_value3();
 		}
 
 		return result;
@@ -491,14 +562,14 @@ struct spu_channel_4_t
 
 	u32 get_count() const
 	{
-		return atomic_storage<u8>::load(std::as_const(values).raw().count);
+		return static_cast<u8>(retro_atomic_load_acquire_128_lo(&values) >> 8);
 	}
 
 	// One value put in when the mailbox is empty (a reply the SPU reserves
 	// before its syscall's answer): false when it is not
 	bool try_set_if_empty(u32 value0)
 	{
-		return values.atomic_op([&](sync_var_t& data)
+		return values_op([&](sync_var_t& data)
 		{
 			if (data.count)
 			{
@@ -512,10 +583,12 @@ struct spu_channel_4_t
 
 	void set_values(u32 count, u32 value0, u32 value1 = 0, u32 value2 = 0, u32 value3 = 0)
 	{
-		this->values.raw() = { 0, static_cast<u8>(count), {}, value0, value1, value2 };
-		this->value3 = value3;
+		store_values({ 0, static_cast<u8>(count), {}, value0, value1, value2 });
+		retro_atomic_store_release_int(&this->value3, static_cast<int>(value3));
 	}
 };
+
+static_assert(sizeof(spu_channel_4_t::sync_var_t) == 16 && offsetof(spu_channel_4_t, values) == 0 && alignof(spu_channel_4_t) == 16);
 
 struct spu_int_ctrl_t
 {

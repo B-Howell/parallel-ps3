@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The SPU's inbound mailbox is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the mailbox's state (waiting byte, count, and its first three values) is one `retro_atomic_128_t`. It stays 16 bytes at the mailbox's own address, where the ASMJIT recompiler loads it whole and the LLVM recompiler reads its first word, held by static asserts. `values_op()` and `values_fetch_op()` change it with a 16-byte compare-and-swap, as `atomic_op` and `fetch_op` did. Taking the waiting byte, and setting the first value from a syscall's answer, were one-byte and four-byte stores into the 16-byte word; they are now compare-and-swaps on the whole word. The count is read from the low half alone. The fourth value is a `retro_atomic_int_t` and the pending value a `retro_atomic_64_t`. A waiting SPU waits on the first word, as before.
+  - **Savestates:** the mailbox is saved as its count and values, read through `try_read` and set with `set_values`, so the format is unchanged.
+  - **Tests:** `test_emu_waits` pushes five values and checks four in order, the fifth replacing the last. It checks that a value is set only when the mailbox is empty, and that two threads pushing at once (each on a CPU of its own) are both counted, 20000 times. It also checks that a marked waiter is woken by a push, 300 times. It was shown to fail with the 16-byte compare-and-swap made a plain store, and with the push's wake taken out. A check fails if `atomic_t` comes back to the mailbox.
+
+
 - **An SPU channel is off `atomic_t`.** Not yet run on a game.
   - **What changed:** a channel's word (value, wait, occupy and count bits) and its pending value are `retro_atomic_64_t`s. The word stays at offset 0 and 8 bytes, where the LLVM recompiler's code reads and writes it, held by a static assert. `fetch_data()` changes it with a compare-and-swap loop and gives back what `fetch_op` gave. The bit clears are `retro_atomic_fetch_and_64`. A waiting SPU waits on the word's upper half, through `set_raw` and `thread_ctrl::wait_on_custom` as before. Pushes wake it with `retro_waitaddr`.
   - **Savestates:** the eight channels saved (tag, stall and atomic status, both outbound mailboxes, both signal notifications, and the exit status) are written and read through the `u64`s they were, so the format is unchanged.
