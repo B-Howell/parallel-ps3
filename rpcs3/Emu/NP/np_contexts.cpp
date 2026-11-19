@@ -30,37 +30,37 @@ void generic_async_transaction_context::start(u32 id)
 
 bool generic_async_transaction_context::claim()
 {
-	return state.compare_and_swap_test(0, 1);
+	return retro_atomic_cas_int(&state, 0, 1) != 0;
 }
 
 void generic_async_transaction_context::finish(error_code err)
 {
 	result_value = err;
-	state.release(2);
-	state.notify_all();
+	retro_atomic_store_release_int(&state, 2);
+	retro_waitaddr_notify_all(&state);
 	np_transaction_finished(req_id);
 }
 
 void generic_async_transaction_context::complete_now(error_code err)
 {
 	result_value = err;
-	state.release(2);
-	state.notify_all();
+	retro_atomic_store_release_int(&state, 2);
+	retro_waitaddr_notify_all(&state);
 }
 
 void generic_async_transaction_context::reset()
 {
-	state.release(0);
+	retro_atomic_store_release_int(&state, 0);
 }
 
 std::optional<s32> generic_async_transaction_context::get_transaction_status()
 {
-	if (state.load() != 2 && get_system_time() >= deadline_us && claim())
+	if (retro_atomic_load_acquire_int(&state) != 2 && get_system_time() >= deadline_us && claim())
 	{
 		finish(SCE_NP_COMMUNITY_ERROR_TIMEOUT);
 	}
 
-	if (state.load() != 2)
+	if (retro_atomic_load_acquire_int(&state) != 2)
 	{
 		return std::nullopt;
 	}
@@ -79,7 +79,7 @@ void generic_async_transaction_context::abort_transaction()
 error_code generic_async_transaction_context::wait_for_completion()
 {
 	// Woken as it is finished, or at its deadline - no condition variable
-	for (u32 s = state.load(); s != 2; s = state.load())
+	for (int s = retro_atomic_load_acquire_int(&state); s != 2; s = retro_atomic_load_acquire_int(&state))
 	{
 		const u64 now = get_system_time();
 
@@ -89,16 +89,16 @@ error_code generic_async_transaction_context::wait_for_completion()
 			{
 				finish(SCE_NP_COMMUNITY_ERROR_TIMEOUT);
 			}
-			else if (state.load() == 1)
+			else if (retro_atomic_load_acquire_int(&state) == 1)
 			{
 				// Being finished: done in a moment, woken by it
-				state.wait(1);
+				thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&state, 1u); });
 			}
 
 			continue;
 		}
 
-		thread_ctrl::wait_on(state, s, deadline_us - now);
+		thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&state, static_cast<u32>(s)); }, deadline_us - now);
 	}
 
 	return not_an_error(result_value);

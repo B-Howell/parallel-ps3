@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The NP contexts are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** an NP transaction's state (pending, being finished, done), the score context's started flag, and the matching context's busy flag, QuickMatch wake flag and room list version are `retro_atomic_int_t`. A transaction's waiter and the QuickMatch timeout worker wait through `thread_ctrl::wait_on_custom`, so they wake on the word, on their deadline, or as their thread is told to end. The QuickMatch wait keeps the game's own timeout, a network timeout. Nothing is saved in savestates.
+  - **Tests:** `test_emu_waits` already raced claims on 20000 transactions and checked the reply and timeout paths. It now also checks that a reply wakes the waiter before its thread is joined, because the join woke it too and hid a missing wake. It was shown to fail with the wake taken out of `finish()`. The QuickMatch worker has no runtime test, because it needs an RPCN server. A check fails if `atomic_t` comes back to the NP contexts.
+
+
 - **The overlays are off `atomic_t`.** Not yet run on a game.
   - **What changed:** the done flag that the user list, message, send and receive message, friends list, home menu and trophy list dialogs wait on is a `retro_atomic_int_t`, set and woken through `retro_waitaddr`. The send message dialog's confirmation flags, the friends list's dirty flag and its current and last page, the trophy list's dirty flag and sync status, the trophy notification queue's two counters, the overlay manager's id counter and its input thread's abort and interrupt flags, the home menu's screenshot and recording requests, and the shader loading dialog's count of queued main thread calls are `retro_atomic` too. Nothing is saved in savestates.
   - **Tests:** `test_emu_waits` checks that the shader loading dialog's `close()` returns only after the main thread has run every call it queued. It was shown to fail with a wait that returned while one call was left. The dialogs' done flags and the other fields have no runtime test, because they need a running overlay and its input. A check fails if `atomic_t` comes back to the overlays.

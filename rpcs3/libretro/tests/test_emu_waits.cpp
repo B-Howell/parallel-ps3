@@ -456,6 +456,7 @@ int main()
 			CHECK(got == -1);
 			CHECK(t.claim());
 			t.finish(not_an_error(7));
+			CHECK(reaches(got, 7)); // woken by the reply, not by the join below
 			waiter();
 			CHECK(got == 7);
 			t.abort_transaction();

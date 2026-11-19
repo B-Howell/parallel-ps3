@@ -564,7 +564,7 @@ error_code sceNpMatching2ContextStart(SceNpMatching2ContextId ctxId)
 	if (!ctx)
 		return SCE_NP_MATCHING2_ERROR_CONTEXT_NOT_FOUND;
 
-	if (!ctx->started.compare_and_swap_test(0, 1))
+	if (!retro_atomic_cas_int(&ctx->started, 0, 1))
 		return SCE_NP_MATCHING2_ERROR_CONTEXT_ALREADY_STARTED;
 
 	if (ctx->context_callback)
@@ -1117,7 +1117,7 @@ error_code sceNpMatching2ContextStartAsync(SceNpMatching2ContextId ctxId, u32 ti
 	if (!ctx)
 		return SCE_NP_MATCHING2_ERROR_CONTEXT_NOT_FOUND;
 
-	if (!ctx->started.compare_and_swap_test(0, 1))
+	if (!retro_atomic_cas_int(&ctx->started, 0, 1))
 		return SCE_NP_MATCHING2_ERROR_CONTEXT_ALREADY_STARTED;
 
 	if (ctx->context_callback)
@@ -1749,7 +1749,7 @@ error_code sceNpMatching2ContextStop(SceNpMatching2ContextId ctxId)
 	if (!ctx)
 		return SCE_NP_MATCHING2_ERROR_CONTEXT_NOT_FOUND;
 
-	if (!ctx->started.compare_and_swap_test(1, 0))
+	if (!retro_atomic_cas_int(&ctx->started, 1, 0))
 		return SCE_NP_MATCHING2_ERROR_CONTEXT_NOT_STARTED;
 	
 	if (ctx->context_callback)

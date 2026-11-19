@@ -1,5 +1,7 @@
 #pragma once
 
+#include <retro_atomic.h>
+
 #include <optional>
 #include <variant>
 
@@ -33,11 +35,11 @@ struct generic_async_transaction_context
 	void finish(error_code err);     // after claim: the result, waiters woken
 	void complete_now(error_code err); // the requester, no request in flight
 	void reset();                    // the requester, before a request: pending
-	bool has_result() const { return state.load() == 2; }
+	bool has_result() const { return retro_atomic_load_acquire_int(&state) == 2; }
 	void start(u32 req_id);          // as the request is registered: its deadline
 
 	// 0 pending, 1 being finished, 2 done (result_value set)
-	atomic_t<u32> state{0};
+	mutable retro_atomic_int_t state{0};
 	s32 result_value = 0;
 	u64 deadline_us = 0;
 	u32 req_id = 0;
@@ -202,7 +204,7 @@ struct match2_ctx
 	static const u32 id_count = 255; // TODO: constant here?
 	SAVESTATE_INIT_POS(27);
 
-	atomic_t<u32> started = 0;
+	retro_atomic_int_t started{0};
 
 
 	SceNpCommunicationId communicationId{};
@@ -306,7 +308,7 @@ struct matching_ctx
 	vm::ptr<SceNpMatchingHandler> handler{};
 	vm::ptr<void> arg{};
 
-	atomic_t<u32> busy = 0;
+	retro_atomic_int_t busy{0};
 	u32 ctx_id = 0;
 	vm::ptr<SceNpMatchingGUIHandler> gui_handler{};
 	vm::ptr<void> gui_arg{};
@@ -314,10 +316,10 @@ struct matching_ctx
 	// Used by QuickMatchGUI
 	u64 timeout = 0;
 	std::unique_ptr<named_thread<std::function<void(SceNpRoomId)>>> thread;
-	atomic_t<u32> wakey = 0;
+	retro_atomic_int_t wakey{0}; // set as the QuickMatch notification comes
 
 	// To keep track of which callback to use for sceNpMatchingGetRoomListWithoutGUI / sceNpMatchingGetRoomListGUI / sceNpMatchingGetRoomListLimitGUI
-	atomic_t<bool> get_room_limit_version = false;
+	retro_atomic_int_t get_room_limit_version{0}; // 0 or 1
 };
 s32 create_matching_context(vm::ptr<SceNpId> npid, vm::ptr<SceNpMatchingHandler> handler, vm::ptr<void> arg);
 shared_ptr<matching_ctx> get_matching_context(u32 ctx_id);

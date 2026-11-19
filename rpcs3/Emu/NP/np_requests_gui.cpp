@@ -19,7 +19,7 @@ namespace np
 		if (!ctx)
 			return {SCE_NP_MATCHING_ERROR_CTX_NOT_FOUND, {}};
 
-		if (!ctx->busy.compare_and_swap_test(0, 1))
+		if (!retro_atomic_cas_int(&ctx->busy, 0, 1))
 			return {SCE_NP_MATCHING_ERROR_CTX_STILL_RUNNING, {}};
 
 		ctx->ctx_id = ctx_id;
@@ -33,7 +33,7 @@ namespace np
 
 	void gui_epilog(const shared_ptr<matching_ctx>& ctx)
 	{
-		ensure(ctx->busy.compare_and_swap_test(1, 0), "Matching context wasn't busy in gui_epilog");
+		ensure(retro_atomic_cas_int(&ctx->busy, 1, 0) != 0, "Matching context wasn't busy in gui_epilog");
 		ctx->queue_gui_callback(SCE_NP_MATCHING_GUI_EVENT_COMMON_UNLOAD, 0);
 	}
 
@@ -335,7 +335,7 @@ namespace np
 			extra_nps::print_SceNpMatchingAttr(cur_attr.get_ptr());
 		}
 
-		ctx->get_room_limit_version = limit;
+		retro_atomic_store_release_int(&ctx->get_room_limit_version, limit ? 1 : 0);
 
 		const u32 req_id = get_req_id(REQUEST_ID_HIGH::GUI);
 		add_gui_request(req_id, ctx_id);
@@ -364,7 +364,7 @@ namespace np
 
 		extra_nps::print_SceNpMatchingRoomList(room_list);
 
-		if (ctx->get_room_limit_version)
+		if (retro_atomic_load_acquire_int(&ctx->get_room_limit_version) != 0)
 		{
 			set_gui_result(SCE_NP_MATCHING_GUI_EVENT_GET_ROOM_LIST_LIMIT, std::move(edata));
 			ctx->queue_gui_callback(SCE_NP_MATCHING_GUI_EVENT_GET_ROOM_LIST_LIMIT, 0);
@@ -604,7 +604,7 @@ namespace np
 
 		SceNpRoomId room_id{};
 		ensure(!resp->id().empty() && resp->id().size() == sizeof(SceNpRoomId::opt));
-		ctx->wakey = 0;
+		retro_atomic_store_release_int(&ctx->wakey, 0);
 		std::memcpy(room_id.opt, resp->id().data(), sizeof(SceNpRoomId::opt));
 		{
 			on_np_thread([&]()
@@ -617,7 +617,9 @@ namespace np
 		// Now that the reply has been received, we start the wait for the notification
 		ctx->thread = std::make_unique<named_thread<std::function<void(SceNpRoomId)>>>("NP GUI Timeout Worker", [ctx, req_id, this](SceNpRoomId room_id)
 			{
-				ctx->wakey.wait(0, static_cast<atomic_wait_timeout>(ctx->timeout * 1'000'000'000));
+				// The game's QuickMatch timeout, in seconds; woken early by the
+				// notification or this thread told to end
+				thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&ctx->wakey, 0u); }, ctx->timeout * 1'000'000);
 
 				if (thread_ctrl::state() == thread_state::aborting)
 					return;
@@ -626,7 +628,7 @@ namespace np
 				if (!this->on_np_thread([&]() { return this->pending_quickmatching.erase(room_id) == 1; }))
 					return;
 
-				if (ctx->wakey == 0)
+				if (retro_atomic_load_acquire_int(&ctx->wakey) == 0)
 				{
 					// Verify that the context is still valid
 					if (!idm::check_unlocked<matching_ctx>(ctx->ctx_id))

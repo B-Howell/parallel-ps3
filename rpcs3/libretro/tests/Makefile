@@ -1193,6 +1193,8 @@ check: all
 	@if grep -nw "atomic_t" ../../Emu/RSX/Utils/rsx_utils.h ../../Emu/RSX/Utils/rsx_utils.cpp; then echo "rsx_utils uses atomic_t again"; exit 1; else echo "rsx_utils is retro_atomic"; fi
 	@# the overlays (dialogs, home menu, overlay manager, shader loading dialog) are off atomic_t
 	@if grep -rlw "atomic_t" ../../Emu/RSX/Overlays --include=*.cpp --include=*.h --include=*.hpp || grep -n "atomic_t<bool> g_user_asked_for" ../../Emu/RSX/RSXThread.cpp ../../Emu/RSX/GL/GLPresent.cpp ../../Emu/RSX/VK/VKPresent.cpp; then echo "atomic_t is back in the overlays"; exit 1; else echo "the overlays are retro_atomic"; fi
+	@# the NP contexts (transactions, score, matching) are off atomic_t
+	@if grep -nw "atomic_t" ../../Emu/NP/np_contexts.h ../../Emu/NP/np_contexts.cpp || grep -n "wakey.wait\|started.compare_and_swap\|busy.compare_and_swap" ../../Emu/NP/np_requests_gui.cpp ../../Emu/Cell/Modules/sceNp2.cpp; then echo "atomic_t is back in the NP contexts"; exit 1; else echo "the NP contexts are retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

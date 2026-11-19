@@ -996,7 +996,7 @@ namespace np
 
 		// A reply past the deadline: timed out, as it was when a thread
 		// waited for it (and the reply found nothing)
-		if (trans_ctx && trans_ctx->state.load() == 0 && get_system_time() >= trans_ctx->deadline_us)
+		if (trans_ctx && retro_atomic_load_acquire_int(&trans_ctx->state) == 0 && get_system_time() >= trans_ctx->deadline_us)
 		{
 			if (trans_ctx->claim())
 			{
@@ -1257,7 +1257,7 @@ namespace np
 		{
 			run_on_np_thread([trans_ctx = trans_ctx, totalSize, recvSize, score_data]()
 			{
-				if (trans_ctx->state.load() != 0)
+				if (retro_atomic_load_acquire_int(&trans_ctx->state) != 0)
 					return; // finished meanwhile
 
 				if (auto* const pending = std::get_if<tdata_get_score_data>(&trans_ctx->tdata))
@@ -1983,7 +1983,7 @@ namespace np
 		{
 			run_on_np_thread([trans_ctx = trans_ctx, recvSize, dataStatus, data]()
 			{
-				if (trans_ctx->state.load() != 0)
+				if (retro_atomic_load_acquire_int(&trans_ctx->state) != 0)
 					return; // finished meanwhile
 
 				if (auto* const pending = std::get_if<tdata_tus_get_data>(&trans_ctx->tdata))

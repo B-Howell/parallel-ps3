@@ -423,8 +423,8 @@ namespace np
 			ctx->queue_gui_callback(SCE_NP_MATCHING_GUI_EVENT_QUICK_MATCH, 0);
 			gui_epilog(ctx);
 
-			ctx->wakey = 1;
-			ctx->wakey.notify_one();
+			retro_atomic_store_release_int(&ctx->wakey, 1);
+			retro_waitaddr_notify_one(&ctx->wakey);
 		});
 	}
 } // namespace np
