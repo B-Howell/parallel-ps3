@@ -1253,6 +1253,8 @@ check: all
 	@if grep -n "atomic_t<u32> \(cmd_notify\|start_gate_caller\|start_gate_open\|entry_reached\|sched_watch\)" ../../Emu/Cell/PPUThread.h; then echo "atomic_t is back in a PPU thread's gate words"; exit 1; else echo "a PPU thread's gate words are retro_atomic"; fi
 	@# a PPU thread's joiner status is a retro_atomic word
 	@if grep -n "atomic_t<ppu_join_status>" ../../Emu/Cell/PPUThread.h; then echo "atomic_t is back in a PPU thread's joiner"; exit 1; else echo "a PPU thread's joiner is retro_atomic"; fi
+	@# the PPU and SPU threads' debugger mode is a retro_atomic word
+	@if grep -n "atomic_t<ppu_debugger_mode>\|atomic_t<spu_debugger_mode>" ../../Emu/Cell/PPUThread.h ../../Emu/Cell/SPUThread.h; then echo "atomic_t is back in the debugger mode"; exit 1; else echo "the debugger mode is retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

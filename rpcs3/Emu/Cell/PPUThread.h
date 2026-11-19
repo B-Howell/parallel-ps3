@@ -392,7 +392,7 @@ public:
 	u64 exec_bytes = 0; // Amount of "bytes" executed (4 for each instruction)
 
 	u32 dbg_step_pc = 0;
-	atomic_t<ppu_debugger_mode> debugger_mode{};
+	retro_atomic_int_t debugger_mode{0}; // a ppu_debugger_mode
 
 	struct call_history_t
 	{

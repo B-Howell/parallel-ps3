@@ -1510,7 +1510,7 @@ void ppu_thread::dump_regs(std::string& ret, std::any& custom_data) const
 {
 	const system_state emu_state = Emu.GetStatus(false);
 	const bool is_stopped_or_frozen = state & cpu_flag::exit || emu_state == system_state::frozen || emu_state <= system_state::stopping;
-	const ppu_debugger_mode mode = debugger_mode.load();
+	const ppu_debugger_mode mode = static_cast<ppu_debugger_mode>(retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&debugger_mode)));
 
 	const bool is_decimal = !is_stopped_or_frozen && mode == ppu_debugger_mode::is_decimal;
 

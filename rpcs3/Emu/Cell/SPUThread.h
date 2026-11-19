@@ -964,7 +964,7 @@ public:
 	retro_atomic_int_t lv2_first_sleep{}; // Still to call its first lv2 sleep (lv2_obj::set_future_sleep)
 	bool unsavable = false; // Flag indicating whether saving the spu thread state is currently unsafe
 
-	atomic_t<spu_debugger_mode> debugger_mode{};
+	retro_atomic_int_t debugger_mode{0}; // a spu_debugger_mode
 
 	// PC-based breakpoint list
 	std::array<atomic_t<u8>, SPU_LS_SIZE / 4 / 8> local_breakpoints{};

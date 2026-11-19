@@ -809,7 +809,7 @@ void spu_thread::dump_regs(std::string& ret, std::any& /*custom_data*/) const
 {
 	const system_state emu_state = Emu.GetStatus(false);
 	const bool is_stopped_or_frozen = state & cpu_flag::exit || emu_state == system_state::frozen || emu_state <= system_state::stopping;
-	const spu_debugger_mode mode = debugger_mode.load();
+	const spu_debugger_mode mode = static_cast<spu_debugger_mode>(retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&debugger_mode)));
 
 	const bool floats_only = !is_stopped_or_frozen && mode == spu_debugger_mode::is_float;
 	const bool is_decimal = !is_stopped_or_frozen && mode == spu_debugger_mode::is_decimal;

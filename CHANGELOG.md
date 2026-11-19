@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The PPU and SPU threads' debugger mode is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the mode that picks how a thread's registers are dumped is a `retro_atomic_int_t` on both threads. Nothing in the core sets it any more (the debugger is not in the core), so it stays at its default, as before.
+  - **Tests:** none: nothing changes at runtime. A check fails if `atomic_t` comes back to it.
+
+
 - **A PPU thread's joiner status is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the status is a `retro_atomic_int_t`. It holds joinable, detached, zombie or exited, or the id of the thread joining it. `get_joiner()` reads it. `joiner_op()` changes it with a compare-and-swap loop and gives back what `atomic_op` or `fetch_op` gave. sys_ppu_thread's exit, join and detach use them. An exiting thread that waits as a zombie for its joiner waits through `thread_ctrl::wait_on_custom`.
   - **Savestates:** the status is read through `ar.pop<ppu_join_status>()` and written as the `ppu_join_status` it was, so the format is unchanged.
