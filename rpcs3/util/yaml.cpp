@@ -2,9 +2,9 @@
 #include "util/types.hpp"
 #include "Utilities/StrFmt.h"
 
+#include "util/yaml_value.h"
+
 #include <charconv>
-#include <cmath>
-#include <cstdlib>
 #include <limits>
 #include <type_traits>
 
@@ -76,36 +76,19 @@ T get_yaml_node_value(const yaml_node& node, std::string& error_message)
 	}
 	else if constexpr (std::is_same_v<T, bool>)
 	{
-		// YAML's spellings: true/false, yes/no, on/off, in any case
-		std::string lower(s);
-		for (char& c : lower)
-			c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
-		if (lower == "true" || lower == "yes" || lower == "on" || lower == "y")
-			return true;
-		if (lower == "false" || lower == "no" || lower == "off" || lower == "n")
-			return false;
+		// YAML's spellings: true/false, yes/no, on/off, in any case (yaml_value.c)
+		int value = 0;
+		if (yaml_value_bool(s.data(), s.size(), &value))
+			return value != 0;
 		error_message = fmt::format("bad conversion: '%s' is not a boolean", s);
 		return false;
 	}
 	else if constexpr (std::is_integral_v<T>)
 	{
-		// Decimal or 0x hex, the sign where the type has one, all of it
-		std::string_view digits = s;
-		bool negative = false;
-		if (!digits.empty() && (digits[0] == '-' || digits[0] == '+'))
-		{
-			negative = digits[0] == '-';
-			digits.remove_prefix(1);
-		}
-		int base = 10;
-		if (digits.size() > 2 && digits[0] == '0' && (digits[1] == 'x' || digits[1] == 'X'))
-		{
-			base = 16;
-			digits.remove_prefix(2);
-		}
+		// Decimal or 0x hex, the sign where the type has one, all of it (yaml_value.c)
 		u64 magnitude = 0;
-		const auto [end, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), magnitude, base);
-		bool ok = !digits.empty() && ec == std::errc{} && end == digits.data() + digits.size();
+		int negative = 0;
+		bool ok = yaml_value_int(s.data(), s.size(), &magnitude, &negative) != 0;
 		T value{};
 		if (ok && negative)
 		{
@@ -134,17 +117,10 @@ T get_yaml_node_value(const yaml_node& node, std::string& error_message)
 	else
 	{
 		static_assert(std::is_floating_point_v<T>);
-		// YAML's spellings of infinity and NaN, then the number, all of it
-		if (s == ".inf" || s == ".Inf" || s == ".INF" || s == "+.inf" || s == "+.Inf" || s == "+.INF")
-			return std::numeric_limits<T>::infinity();
-		if (s == "-.inf" || s == "-.Inf" || s == "-.INF")
-			return -std::numeric_limits<T>::infinity();
-		if (s == ".nan" || s == ".NaN" || s == ".NAN")
-			return std::numeric_limits<T>::quiet_NaN();
-		const std::string str(s);
-		char* end = nullptr;
-		const double v = std::strtod(str.c_str(), &end);
-		if (str.empty() || end != str.c_str() + str.size())
+		// YAML's spellings of infinity and NaN, then the number, all of it,
+		// read where it lies (yaml_value.c)
+		double v = 0;
+		if (!yaml_value_f64(s.data(), s.size(), &v))
 		{
 			error_message = fmt::format("bad conversion: '%s' is not a number", s);
 			return {};

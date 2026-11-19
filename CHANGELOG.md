@@ -4,6 +4,16 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **YAML values are read in C89 (rpcs3/util/yaml_value.c), in place.** Not yet run on a game.
+  - **What changed:** a YAML scalar read as a boolean, an integer or a double (the settings, the patches, the music and player lists, the PRX validation files) is now read by C89 functions straight from the document's bytes:
+    - **Booleans:** they were copied into a lowercased `std::string` first;
+    - **Doubles:** they were copied into a `std::string` for `strtod`. The C89 code copies into a stack buffer, or to the heap only for a number longer than 63 bytes;
+    - **Integers:** decimal or 0x hex, with a sign, all of the scalar, up to 64 bits, as before. The decimal and hex loops are apart so each base is a constant: no division a digit.
+    Measured against the C++ they replace (gcc -O2, x86-64, 100000 values each): integers 7 ns against 9-10 ns, booleans 6-7.5 ns against 10 ns, doubles 58-62 ns against 60-62 ns. They give the same answers on all of them. What reads a node (`util/yaml.hpp`, a handle of a pointer and an index over libretro-common's ryaml) is unchanged.
+  - **Not moved:** writing a double with the fewest digits that read back the same stays C++'s `std::to_chars`. A C89 version built on `printf` and `strtod` measured 758 ns against 44 ns, and matching it would take a port of Ryu.
+  - **Tests:** `test_yaml_value` (C89) checks every boolean spelling in any case and the refusals, and integers: decimal and hex, the sign, both 64-bit ends, overflow, empty, a sign or 0x alone, other bytes and spaces. It checks doubles with YAML's three spellings each of infinity and NaN and no others, and a number longer than the stack copy, each reading only the bytes it is given. It was shown to fail with the decimal overflow check removed. A check fails if `util/yaml.cpp` goes back to reading values through string copies.
+
+
 - **lf_queue and lf_bunch (Utilities/lockless.h) are off `atomic_t`.** Not yet run on a game.
   - **What changed:**
     - **lf_queue** (the many-producer queue a consumer takes whole) keeps its head in one `retro_atomic_128_t`: the item in the low half, and in the high half the word a consumer sleeps on, 1 while the queue is not empty. A push changes both with one 16-byte compare-and-swap, as before.
