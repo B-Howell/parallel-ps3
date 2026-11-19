@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The game-window-focused flag is gone.** Not yet run on a game.
+  - **What changed:** `is_input_allowed()` read an `atomic_t<bool>` that nothing in the core ever set. In the core the frontend owns the window and its focus, so the flag was always false. The function now reads the background input setting alone, which is what it already came to. Behaviour is unchanged.
+  - **Tests:** none: nothing changes at runtime. A check fails if the flag comes back.
+
+
 - **The shader cache's loading workers are off `atomic_t`.** Not yet run on a game.
   - **What changed:** the count the workers take shaders by as they load and compile the on-disk cache is a `retro_atomic_int_t`, taken with `retro_atomic_fetch_add_int`. The thread updating the loading dialog waits on it with `set_raw`, woken as a worker finishes or once a frontend frame. Nothing is saved in savestates.
   - **Tests:** none at runtime: the workers need a renderer's pipeline storage. A check fails if `atomic_t` comes back to the shader cache.

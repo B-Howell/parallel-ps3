@@ -2,9 +2,10 @@
 #include "GSFrameBase.h"
 #include "Emu/system_config.h"
 
-atomic_t<bool> g_game_window_focused = false;
-
+// The frontend owns the window and its focus: nothing in the core ever
+// set the game-window-focused flag this read, so it was always false and
+// is gone. Unchanged: the setting alone decides
 bool is_input_allowed()
 {
-	return g_game_window_focused || g_cfg.io.background_input_enabled;
+	return g_cfg.io.background_input_enabled.get();
 }
