@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellSysutilNpEula is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the EULA status and the two callback-registered flags are `retro_atomic_int_t`. Nothing is saved in savestates.
+  - **Tests:** none at runtime: the flags are set and read only inside the game's EULA calls, and nothing waits on them. A check fails if `atomic_t` comes back to cellSysutilNpEula.
+
+
 - **cellGame's content permission is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the three flags a game's content check sets (whether it may create data, whether the data exists, and the check mode) are `retro_atomic_int_t`. Nothing is saved in savestates.
   - **Tests:** none at runtime: the flags are set and read only inside the game's cellGame calls, on its PPU threads, and nothing waits on them. A check fails if `atomic_t` comes back to cellGame.

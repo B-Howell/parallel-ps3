@@ -21,9 +21,9 @@ using SceNpEulaCheckEulaStatusCallback = void(SceNpEulaStatus status, u32 errorC
 
 struct sceNpEulaCallbacksRegistered
 {
-	atomic_t<SceNpEulaStatus> status = SCE_NP_EULA_UNKNOWN;
-	atomic_t<bool> sceNpEulaCheckEulaStatus_callback_registered = false;
-	atomic_t<bool> sceNpEulaShowCurrentEula_callback_registered = false;
+	retro_atomic_int_t status{static_cast<int>(SCE_NP_EULA_UNKNOWN)};
+	retro_atomic_int_t sceNpEulaCheckEulaStatus_callback_registered{0}; // 0 or 1
+	retro_atomic_int_t sceNpEulaShowCurrentEula_callback_registered{0}; // 0 or 1
 };
 
 error_code sceNpEulaCheckEulaStatus(vm::cptr<SceNpCommunicationId> communicationId, u32 arg2, u64 arg3, vm::ptr<SceNpEulaCheckEulaStatusCallback> cbFunc, vm::ptr<void> cbFuncArg)
@@ -37,19 +37,19 @@ error_code sceNpEulaCheckEulaStatus(vm::cptr<SceNpCommunicationId> communication
 
 	auto& cb_infos = g_fxo->get<sceNpEulaCallbacksRegistered>();
 
-	if (cb_infos.sceNpEulaCheckEulaStatus_callback_registered || cb_infos.sceNpEulaShowCurrentEula_callback_registered)
+	if ((retro_atomic_load_acquire_int(&cb_infos.sceNpEulaCheckEulaStatus_callback_registered) != 0) || (retro_atomic_load_acquire_int(&cb_infos.sceNpEulaShowCurrentEula_callback_registered) != 0))
 	{
 		return SCE_NP_EULA_ERROR_ALREADY_INITIALIZED;
 	}
 
-	cb_infos.sceNpEulaCheckEulaStatus_callback_registered = true;
-	cb_infos.status = SCE_NP_EULA_ALREADY_ACCEPTED;
+	retro_atomic_store_release_int(&cb_infos.sceNpEulaCheckEulaStatus_callback_registered, 1);
+	retro_atomic_store_release_int(&cb_infos.status, static_cast<int>(SCE_NP_EULA_ALREADY_ACCEPTED));
 
 	sysutil_register_cb([=](ppu_thread& cb_ppu) -> s32
 	{
 		auto& cb_infos = g_fxo->get<sceNpEulaCallbacksRegistered>();
-		cbFunc(cb_ppu, cb_infos.status, CELL_OK, 1, cbFuncArg);
-		cb_infos.sceNpEulaCheckEulaStatus_callback_registered = false;
+		cbFunc(cb_ppu, static_cast<SceNpEulaStatus>(retro_atomic_load_acquire_int(&cb_infos.status)), CELL_OK, 1, cbFuncArg);
+		retro_atomic_store_release_int(&cb_infos.sceNpEulaCheckEulaStatus_callback_registered, 0);
 		return 0;
 	});
 
@@ -62,13 +62,13 @@ error_code sceNpEulaAbort()
 
 	auto& cb_infos = g_fxo->get<sceNpEulaCallbacksRegistered>();
 
-	if (!cb_infos.sceNpEulaCheckEulaStatus_callback_registered && !cb_infos.sceNpEulaShowCurrentEula_callback_registered)
+	if (retro_atomic_load_acquire_int(&cb_infos.sceNpEulaCheckEulaStatus_callback_registered) == 0 && retro_atomic_load_acquire_int(&cb_infos.sceNpEulaShowCurrentEula_callback_registered) == 0)
 	{
 		return SCE_NP_EULA_ERROR_NOT_INITIALIZED;
 	}
 
 	// It would forcefully abort the dialog/process of getting the eula but since we don't show the dialog, just alter the status returned
-	cb_infos.status = SCE_NP_EULA_ABORTED;
+	retro_atomic_store_release_int(&cb_infos.status, static_cast<int>(SCE_NP_EULA_ABORTED));
 
 	return CELL_OK;
 }
@@ -85,7 +85,7 @@ error_code sceNpEulaShowCurrentEula(vm::cptr<SceNpCommunicationId> communication
 
 	auto& cb_infos = g_fxo->get<sceNpEulaCallbacksRegistered>();
 
-	if (cb_infos.sceNpEulaCheckEulaStatus_callback_registered || cb_infos.sceNpEulaShowCurrentEula_callback_registered)
+	if ((retro_atomic_load_acquire_int(&cb_infos.sceNpEulaCheckEulaStatus_callback_registered) != 0) || (retro_atomic_load_acquire_int(&cb_infos.sceNpEulaShowCurrentEula_callback_registered) != 0))
 	{
 		return SCE_NP_EULA_ERROR_ALREADY_INITIALIZED;
 	}
