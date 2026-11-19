@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **lf_queue and lf_bunch (Utilities/lockless.h) are off `atomic_t`.** Not yet run on a game.
+  - **What changed:**
+    - **lf_queue** (the many-producer queue a consumer takes whole) keeps its head in one `retro_atomic_128_t`: the item in the low half, and in the high half the word a consumer sleeps on, 1 while the queue is not empty. A push changes both with one 16-byte compare-and-swap, as before.
+    - **Cheaper checks:** whether the queue is empty is now one 8-byte load of the item half instead of a 16-byte load.
+    - **Sleeping and waking:** a consumer sleeps on the word through the wait engine, and a push into an empty queue wakes it with `retro_waitaddr`. `wait_word()` replaces `get_wait_atomic()`: waiter lists take it, and the SPU compiler's three waits for blocks to compile use it.
+    - **lf_bunch** (the list that only grows) keeps its head in a `retro_atomic_ptr_t`, pushed with compare-and-swap loops.
+  - **Tests:** `test_emu_waits` runs two producers, each on a CPU of its own, pushing 100000 items each while a consumer takes them. It checks none are lost and each producer's come in order, that a consumer asleep on the empty queue is woken by a push, and that two threads pushing to a bunch keep every item. It was shown to fail (it crashed, items lost and the list broken) with a push made a plain store. A check fails if `atomic_t` comes back to the queue or the bunch.
+
+
 - **Thread control (Utilities/Thread.h and Thread.cpp) is off `atomic_t`.** Not yet run on a game.
   - **What changed:**
     - **A thread's state word** (its state in the low bits and a notification bit) is a `retro_atomic_int_t`. `notify()` sets the bit and wakes the thread with `retro_waitaddr`, an abort marks it with a compare-and-swap loop and wakes it, and waits sleep on the word through the wait engine, as before. The thread's handle and cycle count are `retro_atomic_64_t`.

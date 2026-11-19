@@ -4,6 +4,7 @@
 #include "util/atomic.hpp"
 #include "util/bless.hpp"
 #include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 
 // Simple unshrinkable array base for concurrent access. Only growths automatically.
 // There is no way to know the current size. The smaller index is, the faster it's accessed.
@@ -407,24 +408,39 @@ template <typename T>
 class lf_queue final
 {
 private:
-	struct fat_ptr
-	{
-		u64 ptr{};
-		u32 is_non_null{};
-		u32 reserved{};
-	};
+	// The head in one 16-byte word: the item (low half) and, in the high
+	// half's low 32 bits, 1 while it is not null - the word a consumer
+	// sleeps on, changed in the same compare-and-swap as the item
+	mutable retro_atomic_128_t m_head{};
 
-	atomic_t<fat_ptr> m_head{fat_ptr{}};
-
-	lf_queue_item<T>* load(fat_ptr value) const noexcept
+	static retro_u128_t head_of(lf_queue_item<T>* item) noexcept
 	{
-		return reinterpret_cast<lf_queue_item<T>*>(value.ptr);
+		retro_u128_t v;
+		v.lo = reinterpret_cast<u64>(item);
+		v.hi = item != nullptr;
+		return v;
+	}
+
+	static lf_queue_item<T>* item_of(retro_u128_t v) noexcept
+	{
+		return reinterpret_cast<lf_queue_item<T>*>(v.lo);
+	}
+
+	// The item alone: one 8-byte load
+	lf_queue_item<T>* first() const noexcept
+	{
+		return reinterpret_cast<lf_queue_item<T>*>(retro_atomic_load_acquire_128_lo(&m_head));
+	}
+
+	lf_queue_item<T>* take_all() noexcept
+	{
+		return item_of(retro_atomic_exchange_128(&m_head, head_of(nullptr)));
 	}
 
 	// Extract all elements and reverse element order (FILO to FIFO)
 	lf_queue_item<T>* reverse() noexcept
 	{
-		if (auto* head = load(m_head) ? load(m_head.exchange(fat_ptr{})) : nullptr)
+		if (auto* head = first() ? take_all() : nullptr)
 		{
 			if (auto* prev = head->m_link)
 			{
@@ -450,7 +466,7 @@ public:
 
 	lf_queue(lf_queue&& other) noexcept
 	{
-		m_head.release(other.m_head.exchange(fat_ptr{}));
+		retro_atomic_store_release_128(&m_head, head_of(other.take_all()));
 	}
 
 	lf_queue& operator=(lf_queue&& other) noexcept
@@ -460,31 +476,34 @@ public:
 			return *this;
 		}
 
-		delete load(m_head.exchange(other.m_head.exchange(fat_ptr{})));
+		delete item_of(retro_atomic_exchange_128(&m_head, head_of(other.take_all())));
 		return *this;
 	}
 
 	~lf_queue()
 	{
-		delete load(m_head);
+		delete first();
 	}
 
 	void wait(std::nullptr_t /*null*/ = nullptr) noexcept
 	{
 		if (!operator bool())
 		{
-			get_wait_atomic().wait(0);
+			atomic_wait::list<1> list{};
+			list.template set_raw<0>(wait_word(), 0);
+			list.wait();
 		}
 	}
 
-	atomic_t<u32> &get_wait_atomic()
+	// The 32-bit word a consumer sleeps on (1 while not empty)
+	const void* wait_word() const noexcept
 	{
-		return *utils::bless<atomic_t<u32>>(&m_head.raw().is_non_null);
+		return reinterpret_cast<const char*>(&m_head) + 8;
 	}
 
 	const volatile void* observe() const noexcept
 	{
-		return load(m_head);
+		return first();
 	}
 
 	explicit operator bool() const noexcept
@@ -495,28 +514,28 @@ public:
 	template <bool Notify = true, typename... Args>
 	bool push(Args&&... args)
 	{
-		auto oldv = m_head.load();
-		auto item = new lf_queue_item<T>(load(oldv), std::forward<Args>(args)...);
+		retro_u128_t oldv = retro_atomic_load_acquire_128(&m_head);
+		auto item = new lf_queue_item<T>(item_of(oldv), std::forward<Args>(args)...);
 
-		while (!m_head.compare_exchange(oldv, fat_ptr{reinterpret_cast<u64>(item), item != nullptr, 0}))
+		while (!retro_atomic_cas_seen_128(&m_head, &oldv, head_of(item)))
 		{
-			item->m_link = load(oldv);
+			item->m_link = item_of(oldv);
 		}
 
-		if (!oldv.ptr && Notify)
+		if (!oldv.lo && Notify)
 		{
 			// Notify only if queue was empty
 			notify(true);
 		}
 
-		return !oldv.ptr;
+		return !oldv.lo;
 	}
 
 	void notify(bool force = false)
 	{
 		if (force || operator bool())
 		{
-			get_wait_atomic().notify_one();
+			retro_waitaddr_notify_one(wait_word());
 		}
 	}
 
@@ -532,7 +551,7 @@ public:
 	lf_queue_slice<T> pop_all_reversed()
 	{
 		lf_queue_slice<T> result;
-		result.m_head = load(m_head.exchange(fat_ptr{}));
+		result.m_head = take_all();
 		return result;
 	}
 
@@ -555,25 +574,31 @@ public:
 template <typename T>
 class lf_bunch final
 {
-	atomic_t<lf_queue_item<T>*> m_head{nullptr};
+	mutable retro_atomic_ptr_t m_head{nullptr};
+
+	lf_queue_item<T>* first() const noexcept
+	{
+		return static_cast<lf_queue_item<T>*>(retro_atomic_load_acquire_ptr(&m_head));
+	}
 
 public:
 	constexpr lf_bunch() noexcept = default;
 
 	~lf_bunch()
 	{
-		delete m_head.load();
+		delete first();
 	}
 
 	// Add unconditionally
 	template <typename... Args>
 	T* push(Args&&... args) noexcept
 	{
-		auto _old = m_head.load();
+		auto _old = first();
 		auto item = new lf_queue_item<T>(_old, std::forward<Args>(args)...);
 
-		while (!m_head.compare_exchange(_old, item))
+		while (!retro_atomic_cas_ptr(&m_head, _old, item))
 		{
+			_old = first();
 			item->m_link = _old;
 		}
 
@@ -584,13 +609,13 @@ public:
 	template <typename F, typename... Args>
 	T* push_if(F pred, Args&&... args) noexcept
 	{
-		auto _old = m_head.load();
+		auto _old = first();
 		auto _chk = _old;
 		auto item = new lf_queue_item<T>(_old, std::forward<Args>(args)...);
 
 		_chk = nullptr;
 
-		do
+		while (true)
 		{
 			item->m_link = _old;
 
@@ -607,8 +632,14 @@ public:
 
 			// Set to not check already checked items
 			_chk = _old;
+
+			if (retro_atomic_cas_ptr(&m_head, _old, item))
+			{
+				break;
+			}
+
+			_old = first();
 		}
-		while (!m_head.compare_exchange(_old, item));
 
 		return &item->m_data;
 	}
@@ -616,7 +647,7 @@ public:
 	lf_queue_iterator<T> begin() const
 	{
 		lf_queue_iterator<T> result;
-		result.m_ptr = m_head.load();
+		result.m_ptr = first();
 		return result;
 	}
 

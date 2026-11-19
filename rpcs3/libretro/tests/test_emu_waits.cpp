@@ -1798,6 +1798,87 @@ int main()
 		std::printf("test_emu_waits: thread control: notify and abort wake, a pushed task runs, every index once\n");
 	}
 
+	// A lock-free queue: two producers (each on a CPU of its own) pushing
+	// 100000 items each while a consumer sleeps until there are some and
+	// takes them all: none lost, each producer's items in order; a
+	// consumer asleep on the empty queue woken by a push; a bunch's items
+	// all kept
+	{
+		lf_queue<u32> q;
+		auto producer = [&](int cpu)
+		{
+#ifdef __linux__
+			cpu_set_t set;
+			CPU_ZERO(&set);
+			CPU_SET(cpu % std::max(1u, std::thread::hardware_concurrency()), &set);
+			pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+#endif
+			for (u32 n = 0; n < 100000; n++)
+			{
+				q.push(static_cast<u32>(cpu) << 24 | n);
+			}
+		};
+		std::atomic<int> done{0};
+		std::thread p1([&] { producer(0); done++; }), p2([&] { producer(1); done++; });
+		u32 next[2]{}, got = 0;
+		int disorder = 0;
+		while (true)
+		{
+			if (!q)
+			{
+				if (done == 2 && !q)
+				{
+					break;
+				}
+
+				std::this_thread::yield();
+				continue;
+			}
+
+			for (auto&& v : q.pop_all())
+			{
+				const u32 who = v >> 24, n = v & 0xffffff;
+				disorder += n != next[who];
+				next[who] = n + 1;
+				got++;
+			}
+		}
+		p1.join();
+		p2.join();
+		CHECK(!q && got == 200000 && disorder == 0 && next[0] == 100000 && next[1] == 100000);
+
+		// A consumer asleep on the empty queue, woken by a push
+		std::atomic<int> waiting{0};
+		u32 woken_with = 0;
+		std::thread sleeper([&]
+		{
+			waiting = 1;
+			q.wait();
+			for (auto&& v : q.pop_all())
+			{
+				woken_with = v;
+			}
+		});
+		while (!waiting) {}
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		q.push(77u);
+		sleeper.join();
+		CHECK(woken_with == 77);
+
+		lf_bunch<u32> bunch;
+		std::thread b1([&] { for (u32 n = 0; n < 10000; n++) bunch.push(n); }), b2([&] { for (u32 n = 0; n < 10000; n++) bunch.push(n + 10000); });
+		b1.join();
+		b2.join();
+		u64 sum = 0, count = 0;
+		for (auto& v : bunch)
+		{
+			sum += v;
+			count++;
+		}
+		CHECK(count == 20000 && sum == 19999ull * 20000 / 2);
+		std::printf("test_emu_waits: a lock-free queue: 200000 items from two producers, none lost, in order; a bunch keeps all\n");
+	}
+
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");
 	return failures ? 1 : 0;
 }

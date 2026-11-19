@@ -232,7 +232,7 @@ namespace atomic_wait
 			static_assert(Index < Max);
 			static_assert(sizeof(var) == sizeof(uptr) * 2);
 
-			m_info[Index].data = std::bit_cast<char*>(&var.get_wait_atomic().raw());
+			m_info[Index].data = var.wait_word();
 			m_info[Index].old = 0;
 		}
 
