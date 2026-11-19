@@ -343,13 +343,13 @@ public:
 	}
 	u32 hw_sleep_time = 0; // Very specific delay for hardware threads switching, see lv2_obj::awake_unlocked for more details
 
-	lf_fifo<atomic_t<cmd64>, 127> cmd_queue; // Command queue for asynchronous operations.
+	lf_fifo<retro_atomic_64_t, 127> cmd_queue; // Command queue for asynchronous operations (each a cmd64's word)
 
 	void cmd_push(cmd64);
 	void cmd_list(std::initializer_list<cmd64>);
 	void cmd_pop(u32 = 0);
 	cmd64 cmd_wait(); // Empty command means caller must return, like true from cpu_thread::check_status().
-	cmd64 cmd_get(u32 index) { return cmd_queue[cmd_queue.peek() + index].load(); }
+	cmd64 cmd_get(u32 index) { return cmd64{static_cast<u64>(retro_atomic_load_acquire_64(&cmd_queue[cmd_queue.peek() + index]))}; }
 	retro_atomic_int_t cmd_notify{0};
 
 	retro_atomic_int_t start_gate_caller{0}; // Caller of sys_ppu_thread_start waiting for this thread to reach its entry command, cleared by this thread

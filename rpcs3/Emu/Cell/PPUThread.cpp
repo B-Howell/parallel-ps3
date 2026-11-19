@@ -3352,7 +3352,7 @@ void ppu_thread::cmd_push(cmd64 cmd)
 	const u32 pos = cmd_queue.push_begin();
 
 	// Write single command
-	cmd_queue[pos] = cmd;
+	retro_atomic_store_release_64(&cmd_queue[pos], static_cast<s64>(cmd.m_data));
 }
 
 void ppu_thread::cmd_list(std::initializer_list<cmd64> list)
@@ -3363,11 +3363,11 @@ void ppu_thread::cmd_list(std::initializer_list<cmd64> list)
 	// Write command tail in relaxed manner
 	for (u32 i = 1; i < list.size(); i++)
 	{
-		cmd_queue[pos + i].raw() = list.begin()[i];
+		retro_atomic_store_relaxed_64(&cmd_queue[pos + i], static_cast<s64>(list.begin()[i].m_data));
 	}
 
 	// Write command head after all
-	cmd_queue[pos] = *list.begin();
+	retro_atomic_store_release_64(&cmd_queue[pos], static_cast<s64>(list.begin()->m_data));
 }
 
 void ppu_thread::cmd_pop(u32 count)
@@ -3378,7 +3378,7 @@ void ppu_thread::cmd_pop(u32 count)
 	// Clean command buffer for command tail
 	for (u32 i = 1; i <= count; i++)
 	{
-		cmd_queue[pos + i].raw() = cmd64{};
+		retro_atomic_store_relaxed_64(&cmd_queue[pos + i], 0);
 	}
 
 	// Free
@@ -3389,7 +3389,7 @@ cmd64 ppu_thread::cmd_wait()
 {
 	while (true)
 	{
-		if (cmd64 result = cmd_queue[cmd_queue.peek()].exchange(cmd64{}))
+		if (cmd64 result{static_cast<u64>(retro_atomic_exchange_64(&cmd_queue[cmd_queue.peek()], 0))})
 		{
 			return result;
 		}

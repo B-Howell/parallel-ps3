@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **A PPU thread's command queue is off `atomic_t`, the last of PPUThread.h.** Not yet run on a game.
+  - **What changed:** each of the queue's 127 slots is a `retro_atomic_64_t` holding a `cmd64`'s word. A command's tail is written relaxed and its head with a release store, as before. The thread takes the head with an exchange to zero and reads the tail with acquire loads. The queue's own counters (lf_fifo, in Utilities/lockless.h) are not changed here.
+  - **Tests:** none at runtime: commands are pushed to a game's PPU threads. A check fails if `atomic_t` comes back to PPUThread.h.
+
+
 - **The sysutil callback word's race test now races.** A test change only.
   - **What changed:** it made two new threads for each of 500 rounds. The first was mostly done before the second started, so an install that was a plain store instead of a compare-and-swap still passed. Two threads now stay for 20000 rounds and meet before each install, as the NP transaction test's threads do.
   - **Checked:** the test now fails with the install's compare-and-swap made a plain store. The NP transaction claim test was checked the same way, with the claim made a load and a store, and it already failed. The 0456 entry's note on the test's threads is corrected: they were not held to one CPU, they just did not overlap.

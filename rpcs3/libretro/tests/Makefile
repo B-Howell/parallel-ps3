@@ -1259,6 +1259,8 @@ check: all
 	@if grep -n "atomic_t<ppu_prio_t>\|atomic_t<typename spu_thread::spu_prio_t>\|struct priority_t" ../../Emu/Cell/PPUThread.h ../../Emu/Cell/lv2/sys_spu.h ../../Emu/Cell/SPUThread.h; then echo "atomic_t is back in the thread priorities"; exit 1; else echo "the thread priorities are retro_atomic"; fi
 	@# the sysutil callback word's race test keeps two threads that meet at each of 20000 rounds
 	@if grep -n "for (int round = 0; round < 500; round++)" test_emu_waits.cpp; then echo "the sysutil race test makes a thread per round again"; exit 1; else echo "the sysutil race test keeps its two threads"; fi
+	@# a PPU thread's command queue holds retro_atomic words, and PPUThread.h has no atomic_t left
+	@if grep -nw "atomic_t" ../../Emu/Cell/PPUThread.h; then echo "atomic_t is back in PPUThread.h"; exit 1; else echo "PPUThread.h has no atomic_t"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
