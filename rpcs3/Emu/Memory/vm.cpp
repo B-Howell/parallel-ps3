@@ -490,33 +490,33 @@ namespace vm
 		}
 	}
 
-	atomic_t<u32>* reservation_notifier_notify(u32 raddr, u64 rtime, bool postpone)
+	const void* reservation_notifier_notify(u32 raddr, u64 rtime, bool postpone)
 	{
 		const auto waiter = reservation_notifier(raddr, rtime);
 
-		if (waiter->load().wait_flag % 2 == 1)
+		if (static_cast<u32>(reservation_waiter_load(waiter)) % 2 == 1)
 		{
-			if (!waiter->fetch_op([](reservation_waiter_t& value)
+			if (!reservation_waiter_op(waiter, [](u32& wait_flag, u32&)
 			{
-				if (value.wait_flag % 2 == 1)
+				if (wait_flag % 2 == 1)
 				{
 					// Notify and make it even
-					value.wait_flag++;
+					wait_flag++;
 					return true;
 				}
 
 				return false;
-			}).second)
+			}))
 			{
 				return nullptr;
 			}
 
 			if (postpone)
 			{
-				return utils::bless<atomic_t<u32>>(&waiter->raw().wait_flag);
+				return reservation_waiter_flag(waiter);
 			}
 
-			utils::bless<atomic_t<u32>>(&waiter->raw().wait_flag)->notify_all();
+			reservation_notifier_wake(reservation_waiter_flag(waiter));
 		}
 
 		return nullptr;

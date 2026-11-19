@@ -7,6 +7,7 @@
 #include <rthreads/retro_waitaddr.h>
 #include "util/tsc.hpp"
 #include <functional>
+#include <bit>
 
 #ifdef _MSC_VER
 extern "C"
@@ -102,19 +103,57 @@ namespace vm
 	void reservation_update(u32 addr);
 	std::pair<bool, u64> try_reservation_update(u32 addr);
 
-	struct alignas(8) reservation_waiter_t
+	// A slot reservation waiters share (by address and time): the wait
+	// flag in the low half of its word (odd while someone is to be
+	// notified; waited on) and the count of waiters in the high half
+	struct alignas(128) reservation_waiter_t
 	{
-		u32 wait_flag = 0;
-		u32 waiters_count = 0;
+		retro_atomic_64_t word{0};
 	};
 
-	static inline atomic_t<reservation_waiter_t, 128>* reservation_notifier(u32 raddr, u64 rtime)
+	static_assert(std::endian::native == std::endian::little, "the wait flag is the word's low half");
+
+	inline u64 reservation_waiter_load(reservation_waiter_t* waiter)
+	{
+		return static_cast<u64>(retro_atomic_load_acquire_64(&waiter->word));
+	}
+
+	// The wait flag's 32 bits, as waited on and notified
+	inline const void* reservation_waiter_flag(reservation_waiter_t* waiter)
+	{
+		return &waiter->word;
+	}
+
+	// @f changes the flag and the count (f(flag, count)) and says whether
+	// to store them: whether they were (a compare-and-swap loop)
+	template <typename F>
+	inline bool reservation_waiter_op(reservation_waiter_t* waiter, F f)
+	{
+		while (true)
+		{
+			const u64 old = reservation_waiter_load(waiter);
+			u32 flag = static_cast<u32>(old);
+			u32 count = static_cast<u32>(old >> 32);
+
+			if (!f(flag, count))
+			{
+				return false;
+			}
+
+			if (retro_atomic_cas_64(&waiter->word, static_cast<s64>(old), static_cast<s64>(u64{count} << 32 | flag)))
+			{
+				return true;
+			}
+		}
+	}
+
+	static inline reservation_waiter_t* reservation_notifier(u32 raddr, u64 rtime)
 	{
 		constexpr u32 wait_vars_for_each = 32;
 		constexpr u32 unique_address_bit_mask = 0b1111;
 		constexpr u32 unique_rtime_bit_mask = 0b1;
 
-		extern std::array<atomic_t<reservation_waiter_t, 128>, wait_vars_for_each * (unique_address_bit_mask + 1) * (unique_rtime_bit_mask + 1)> g_resrv_waiters_count;
+		extern std::array<reservation_waiter_t, wait_vars_for_each * (unique_address_bit_mask + 1) * (unique_rtime_bit_mask + 1)> g_resrv_waiters_count;
 
 		// Storage efficient method to distinguish different nearby addresses (which are likely)
 		const usz index = std::min<usz>(std::popcount(raddr & -2048), 31) * (1 << 5) + ((rtime / 128) & unique_rtime_bit_mask) * (1 << 4) + ((raddr / 128) & unique_address_bit_mask);
@@ -124,40 +163,42 @@ namespace vm
 	// Returns waiter count
 	static inline u32 reservation_notifier_count(u32 raddr, u64 rtime)
 	{
-		reservation_waiter_t v = reservation_notifier(raddr, rtime)->load();
-		return v.wait_flag % 2 == 1 ? v.waiters_count : 0;
+		const u64 v = reservation_waiter_load(reservation_notifier(raddr, rtime));
+		return static_cast<u32>(v) % 2 == 1 ? static_cast<u32>(v >> 32) : 0;
 	}
 
-	static inline void reservation_notifier_end_wait(atomic_t<reservation_waiter_t, 128>& waiter)
+	static inline void reservation_notifier_end_wait(reservation_waiter_t& waiter)
 	{
-		waiter.atomic_op([](reservation_waiter_t& value)
+		reservation_waiter_op(&waiter, [](u32& wait_flag, u32& waiters_count)
 		{
-			if (value.waiters_count == 1 && value.wait_flag % 2 == 1)
+			if (waiters_count == 1 && wait_flag % 2 == 1)
 			{
 				// Make wait_flag even (disabling notification on last waiter)
-				value.wait_flag++;
+				wait_flag++;
 			}
 
-			value.waiters_count--;
+			waiters_count--;
+			return true;
 		});
 	}
 
-	static inline std::pair<atomic_t<reservation_waiter_t, 128>*, u32> reservation_notifier_begin_wait(u32 raddr, u64 rtime)
+	static inline std::pair<reservation_waiter_t*, u32> reservation_notifier_begin_wait(u32 raddr, u64 rtime)
 	{
-		atomic_t<reservation_waiter_t, 128>& waiter = *reservation_notifier(raddr, rtime);
+		reservation_waiter_t& waiter = *reservation_notifier(raddr, rtime);
 
-		u32 wait_flag = 0;
+		u32 seen_flag = 0;
 
-		waiter.atomic_op([&](reservation_waiter_t& value)
+		reservation_waiter_op(&waiter, [&](u32& wait_flag, u32& waiters_count)
 		{
-			if (value.wait_flag % 2 == 0)
+			if (wait_flag % 2 == 0)
 			{
 				// Make wait_flag odd (for notification deduplication detection)
-				value.wait_flag++;
+				wait_flag++;
 			}
 
-			wait_flag = value.wait_flag;
-			value.waiters_count++;
+			seen_flag = wait_flag;
+			waiters_count++;
+			return true;
 		});
 
 		if ((reservation_time(raddr) & -128) != rtime)
@@ -166,10 +207,28 @@ namespace vm
 			return {};
 		}
 
-		return { &waiter, wait_flag };
+		return { &waiter, seen_flag };
 	}
 
-	atomic_t<u32>* reservation_notifier_notify(u32 raddr, u64 rtime, bool postpone = false);
+	// Waits while the waiter's flag is still @flag_val, up to @timeout_ns,
+	// through the wait engine (its thread stop checks and one-time callback
+	// apply); may return early
+	inline void reservation_notifier_wait(reservation_waiter_t* waiter, u32 flag_val, u64 timeout_ns)
+	{
+		atomic_wait::list<1> list{};
+		list.set_raw<0>(reservation_waiter_flag(waiter), flag_val);
+		list.wait(atomic_wait_timeout{timeout_ns});
+	}
+
+	// Wakes the waiters on a flag reservation_notifier_notify() gave back
+	inline void reservation_notifier_wake(const void* flag)
+	{
+		retro_waitaddr_notify_all(flag);
+	}
+
+	// Ends a wait on the reservation (flag made even): with @postpone, the
+	// flag to wake later (reservation_notifier_wake), if there were waiters
+	const void* reservation_notifier_notify(u32 raddr, u64 rtime, bool postpone = false);
 
 	u64 reservation_lock_internal(u32, reservation_t*);
 

@@ -521,7 +521,7 @@ waitpkg_func static void __tpause(u32 cycles, u32 cstate)
 
 namespace vm
 {
-	std::array<atomic_t<reservation_waiter_t, 128>, 1024> g_resrv_waiters_count{};
+	std::array<reservation_waiter_t, 1024> g_resrv_waiters_count{};
 }
 
 // A 16-byte word of reservation memory (vm::reservation_wide or
@@ -4527,7 +4527,7 @@ bool spu_thread::process_mfc_cmd()
 						if (auto [wait_var, flag_val] = vm::reservation_notifier_begin_wait(addr, rtime); wait_var)
 						{
 							cache_line_waiter_index = register_cache_line_waiter(addr);
-							utils::bless<atomic_t<u32>>(&wait_var->raw().wait_flag)->wait(flag_val, atomic_wait_timeout{100'000});
+							vm::reservation_notifier_wait(wait_var, flag_val, 100'000);
 							vm::reservation_notifier_end_wait(*wait_var);
 						}
 
@@ -5933,7 +5933,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 							}
 							else if (check_cache_line_waiter())
 							{
-								utils::bless<atomic_t<u32>>(&wait_var->raw().wait_flag)->wait(flag_val, atomic_wait_timeout{200'000});
+								vm::reservation_notifier_wait(wait_var, flag_val, 200'000);
 							}
 
 							vm::reservation_notifier_end_wait(*wait_var);
@@ -5953,7 +5953,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 						}
 						else if (check_cache_line_waiter())
 						{
-							utils::bless<atomic_t<u32>>(&wait_var->raw().wait_flag)->wait(flag_val, atomic_wait_timeout{50'000});
+							vm::reservation_notifier_wait(wait_var, flag_val, 50'000);
 						}
 
 						vm::reservation_notifier_end_wait(*wait_var);
@@ -6034,7 +6034,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 						else if (check_cache_line_waiter())
 						{
 							atomic_wait_engine::set_one_time_use_wait_callback(wait_cb);
-							utils::bless<atomic_t<u32>>(&wait_var->raw().wait_flag)->wait(flag_val, atomic_wait_timeout{100'000});
+							vm::reservation_notifier_wait(wait_var, flag_val, 100'000);
 						}
 
 						vm::reservation_notifier_end_wait(*wait_var);

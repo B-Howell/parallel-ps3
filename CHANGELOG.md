@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The reservation waiter slots are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** an SPU waiting for a reservation's cache line to change counts itself into one of 1024 slots, chosen by address and time, and sleeps on the slot's wait flag until a store to the line notifies it, or until its bound (50-200 µs, as before). Each slot is one `retro_atomic_64_t` on a 128-byte line of its own: the flag in the low half and the count of waiters in the high half. `vm::reservation_waiter_op()` changes both with one compare-and-swap loop, as `atomic_op` and `fetch_op` did. `reservation_notifier_wait()` sleeps on the flag through the wait engine, so the thread stop checks and the SPU's one-time callback still apply. `reservation_notifier_wake()` wakes it, and a postponed notify hands lv2 the flag's address to wake later, as before.
+  - **Tests:** `test_emu_waits` checks that a waiter makes the flag odd and is counted, that a notify makes the flag even once (a second finds nothing to wake), and that a thread asleep on the flag is woken by the notify long before its 3-second bound. It was shown to fail (the thread slept the whole 3 seconds) with the notify's wake removed. A check fails if `atomic_t` comes back to the slots.
+
+
 - **The reservation word is off `atomic_t`.** Not yet run on a game.
   - **What changed:**
     - **The word:** each 128-byte cache line of guest memory has a reservation word: the time of its last update and its lock bits, used by the SPU and PPU atomics (GETLLAR/PUTLLC, lwarx/stwcx), cellSpurs and the RSX FIFO's reads. It is a `retro_atomic_64_t` in reservation memory, as before. `vm::reservation_acquire()` is gone. `vm::reservation_word()` gives the word, and `reservation_time()` reads it. `reservation_load()`, `reservation_cas()`, `reservation_add()` (the old value, as `fetch_add`/`fetch_sub` gave), `reservation_release()` and `reservation_fetch_op()` (a compare-and-swap loop, as `fetch_op` did) work on it.

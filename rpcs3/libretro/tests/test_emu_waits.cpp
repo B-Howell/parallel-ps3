@@ -40,6 +40,7 @@
 #include "Emu/Memory/vm_reservation.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -1472,6 +1473,48 @@ int main()
 		CHECK(vm::reservation_add(&word, 0 - vm::rsrv_unique_lock + 128) == (128 | vm::rsrv_unique_lock));
 		CHECK(vm::reservation_load(&word) == 256);
 		std::printf("test_emu_waits: a reservation's word: in place, and 400000 steps from two threads none lost\n");
+	}
+
+	// A reservation waiter slot: a waiter makes the flag odd and counts
+	// itself in, a notify makes it even once (a second finds none to
+	// wake), and a thread waiting on it is woken by the notify long
+	// before its 3 s bound
+	{
+		const u32 addr = 0x20080;
+		const u64 rtime = vm::reservation_time(addr) & -128;
+		auto [waiter, flag] = vm::reservation_notifier_begin_wait(addr, rtime);
+		CHECK(waiter != nullptr && flag % 2 == 1);
+		CHECK(vm::reservation_notifier_count(addr, rtime) == 1);
+		CHECK(vm::reservation_notifier_notify(addr, rtime, true) == vm::reservation_waiter_flag(waiter));
+		CHECK(vm::reservation_notifier_count(addr, rtime) == 0);
+		CHECK(vm::reservation_notifier_notify(addr, rtime, true) == nullptr);
+		vm::reservation_notifier_end_wait(*waiter);
+		CHECK(vm::reservation_waiter_load(waiter) >> 32 == 0);
+
+		std::atomic<int> waiting{0};
+		std::atomic<s64> waited_ms{-1};
+		std::thread t([&]
+		{
+			auto [w, f] = vm::reservation_notifier_begin_wait(addr, rtime);
+			waiting = 1;
+			const auto t0 = std::chrono::steady_clock::now();
+			if (w)
+			{
+				while (static_cast<u32>(vm::reservation_waiter_load(w)) == f && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3))
+				{
+					vm::reservation_notifier_wait(w, f, 3'000'000'000);
+				}
+				vm::reservation_notifier_end_wait(*w);
+			}
+			waited_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+		});
+		while (!waiting) {}
+		// Let it park, then notify
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		vm::reservation_notifier_notify(addr, rtime);
+		t.join();
+		CHECK(waited_ms >= 0 && waited_ms < 1000);
+		std::printf("test_emu_waits: a reservation waiter slot: counted, notified once, waiter woken in %lld ms\n", static_cast<long long>(waited_ms.load()));
 	}
 
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");

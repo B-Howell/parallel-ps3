@@ -3976,7 +3976,7 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 			if (auto waiter = vm::reservation_notifier_notify(notify, ppu.res_notify_time, true))
 			{
 				ppu.state += cpu_flag::wait;
-				waiter->notify_all();
+				vm::reservation_notifier_wake(waiter);
 			}
 
 			ppu.res_notify = 0;
@@ -4005,7 +4005,7 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 		if (auto waiter = vm::reservation_notifier_notify(notify, ppu.res_notify_time, true))
 		{
 			ppu.state += cpu_flag::wait;
-			waiter->notify_all();
+			vm::reservation_notifier_wake(waiter);
 			static_cast<void>(ppu.test_stopped());
 		}
 

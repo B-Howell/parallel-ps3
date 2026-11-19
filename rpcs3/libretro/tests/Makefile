@@ -1306,6 +1306,8 @@ check: all
 	@if grep -n "atomic_t<u64> m_id\|atomic_t<u64> s_id" ../../Emu/Memory/vm.h ../../Emu/Memory/vm.cpp; then echo "atomic_t is back in the memory block id"; exit 1; else echo "the memory block id is retro_atomic"; fi
 	@# a reservation's word is retro_atomic (vm::reservation_word and its helpers)
 	@if grep -rn "reservation_acquire\|atomic_t<u64>& res\|bless<atomic_t<u128>>(vm::g_reservations" ../../Emu --include=*.cpp --include=*.h; then echo "atomic_t is back in the reservation word"; exit 1; else echo "the reservation word is retro_atomic"; fi
+	@# the reservation waiter slots (vm::g_resrv_waiters_count) are retro_atomic
+	@if grep -rn "atomic_t<reservation_waiter_t\|raw().wait_flag" ../../Emu --include=*.cpp --include=*.h; then echo "atomic_t is back in the reservation waiter slots"; exit 1; else echo "the reservation waiter slots are retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
