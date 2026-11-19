@@ -3,6 +3,7 @@
 #include "util/types.hpp"
 #include "Utilities/address_range.h"
 #include "gcm_enums.h"
+#include <retro_atomic.h>
 
 
 template <typename T>
@@ -37,7 +38,7 @@ namespace rsx
 		// Into the ring for the offloader; done here when the ring is full
 		void enqueue(const transport_packet& job) const;
 
-		atomic_t<bool> m_mem_fault_flag = false;
+		retro_atomic_int_t m_mem_fault_flag{0}; // 0 or 1
 
 		struct offload_thread;
 		std::shared_ptr<named_thread<offload_thread>> m_thread;

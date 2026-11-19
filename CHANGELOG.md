@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The RSX DMA offloader is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** its enqueued and processed job counts are `retro_atomic_64_t`, and its memory fault flag is a `retro_atomic_int_t`. A sync off the renderer thread waited on the 64-bit processed count. It now waits on a 32-bit word that the offloader moves each time it has caught up and as it ends, through `retro_waitaddr`. The sync on the renderer thread is unchanged (`wait_attending`). Nothing is saved in savestates.
+  - **Tests:** none at runtime: the offloader's thread calls into the current renderer as it catches up, and the test machine runs none. A check fails if `atomic_t` comes back to the offloader.
+
+
 - **The rest of the Vulkan renderer is off `atomic_t`.** Not yet run on a game.
   - **What changed:** a fence's flushed flag (which `wait_flush` waits on, now with `retro_waitaddr`), the descriptor set's storage cache id, the unique resource id counter, the DMA pool's allocated size and the libretro image generation are `retro_atomic_int_t` and `retro_atomic_64_t`. No Vulkan file includes util/atomic.hpp any more. The texture cache's own flag is left for the texture cache work. Nothing is saved in savestates.
   - **Tests:** none at runtime: a fence and everything else here needs a Vulkan device. A check fails if `atomic_t` or util/atomic.hpp comes back to the Vulkan renderer outside the texture cache.

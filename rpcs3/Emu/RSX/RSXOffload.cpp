@@ -7,6 +7,7 @@
 #include "RSXThread.h"
 
 #include <retro_spsc.h>
+#include <rthreads/retro_waitaddr.h>
 #include "Common/rsx_wake.h"
 
 #include <thread>
@@ -23,8 +24,21 @@ namespace rsx
 		static constexpr usz ring_packets = 4096;
 
 		retro_spsc_t m_ring{};
-		atomic_t<u64> m_enqueued_count = 0;
-		atomic_t<u64> m_processed_count = 0;
+		retro_atomic_64_t m_enqueued_count{0};
+		retro_atomic_64_t m_processed_count{0}; // umax once the offloader has ended
+
+		// Moved after m_processed_count each time the offloader has caught
+		// up, and as it ends: the 32-bit word a sync off the renderer waits on
+		retro_atomic_int_t m_caught_up{0};
+
+		u64 enqueued() const { return static_cast<u64>(retro_atomic_load_acquire_64(&m_enqueued_count)); }
+		u64 processed() const { return static_cast<u64>(retro_atomic_load_acquire_64(&m_processed_count)); }
+
+		void signal_caught_up()
+		{
+			retro_atomic_fetch_add_int(&m_caught_up, 1);
+			retro_waitaddr_notify_all(&m_caught_up);
+		}
 
 		// Moved by every job handed over and by the end: what the
 		// offloader waits on while the ring is empty
@@ -76,12 +90,12 @@ namespace rsx
 				{
 					ensure(retro_spsc_read(&m_ring, &m_current_job, sizeof(transport_packet)) == sizeof(transport_packet));
 					run(m_current_job);
-					m_processed_count.release(m_processed_count + 1);
+					retro_atomic_fetch_add_64(&m_processed_count, 1);
 				}
 
-				if (m_enqueued_count.load() == m_processed_count.load())
+				if (enqueued() == processed())
 				{
-					m_processed_count.notify_all();
+					signal_caught_up();
 					rsx::get_current_renderer()->attend();
 				}
 
@@ -92,8 +106,8 @@ namespace rsx
 				}
 			}
 
-			m_processed_count = -1;
-			m_processed_count.notify_all();
+			retro_atomic_store_release_64(&m_processed_count, -1);
+			signal_caught_up();
 			rsx::get_current_renderer()->attend();
 		}
 
@@ -149,7 +163,7 @@ namespace rsx
 			return;
 		}
 
-		thr.m_enqueued_count++;
+		retro_atomic_fetch_add_64(&thr.m_enqueued_count, 1);
 		ensure(retro_spsc_write(&thr.m_ring, &job, sizeof(transport_packet)) == sizeof(transport_packet));
 		thr.wake();
 	}
@@ -212,7 +226,7 @@ namespace rsx
 	{
 		auto& _thr = *m_thread;
 
-		if (_thr.m_enqueued_count.load() <= _thr.m_processed_count.load()) [[likely]]
+		if (_thr.enqueued() <= _thr.processed()) [[likely]]
 		{
 			// Nothing to do
 			return true;
@@ -220,7 +234,7 @@ namespace rsx
 
 		if (auto rsxthr = get_current_renderer(); rsxthr->is_current_thread())
 		{
-			if (m_mem_fault_flag)
+			if (retro_atomic_load_acquire_int(&m_mem_fault_flag))
 			{
 				// Abort if offloader is in recovery mode
 				return false;
@@ -230,16 +244,25 @@ namespace rsx
 			// else the renderer has to answer meanwhile (attend), no spin
 			rsxthr->wait_attending([&]()
 			{
-				return _thr.m_enqueued_count.load() <= _thr.m_processed_count.load();
+				return _thr.enqueued() <= _thr.processed();
 			});
 		}
 		else
 		{
 			// Woken as the offloader catches up (it notifies once its queue
 			// is empty, or as it ends), no spin
-			for (u64 done = _thr.m_processed_count.load(); _thr.m_enqueued_count.load() > done && done != umax; done = _thr.m_processed_count.load())
+			for (;;)
 			{
-				_thr.m_processed_count.wait(done);
+				const u32 seen = static_cast<u32>(retro_atomic_load_acquire_int(&_thr.m_caught_up));
+				const u64 done = _thr.processed();
+
+				if (_thr.enqueued() <= done || done == umax)
+				{
+					break;
+				}
+
+				const retro_waitaddr_t w{&_thr.m_caught_up, seen};
+				retro_waitaddr_wait(&w, 1, -1);
 			}
 		}
 
@@ -255,13 +278,13 @@ namespace rsx
 	void dma_manager::set_mem_fault_flag()
 	{
 		ensure(is_current_thread()); // "Access denied"
-		m_mem_fault_flag.release(true);
+		retro_atomic_store_release_int(&m_mem_fault_flag, 1);
 	}
 
 	void dma_manager::clear_mem_fault_flag()
 	{
 		ensure(is_current_thread()); // "Access denied"
-		m_mem_fault_flag.release(false);
+		retro_atomic_store_release_int(&m_mem_fault_flag, 0);
 	}
 
 	// Fault recovery

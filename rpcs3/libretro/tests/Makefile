@@ -1223,6 +1223,8 @@ check: all
 	@if grep -nw "atomic_t" ../../Emu/RSX/VK/VKGSRender.h ../../Emu/RSX/VK/VKGSRenderTypes.hpp ../../Emu/RSX/VK/VKRenderPass.cpp ../../Emu/RSX/VK/VKPipelineCompiler.cpp; then echo "atomic_t is back in the Vulkan renderer"; exit 1; else echo "the Vulkan renderer's flags are retro_atomic"; fi
 	@# the rest of the Vulkan renderer (fence flush, descriptor cache id, resource ids, DMA pool size, libretro image generation) is off atomic_t, and no Vulkan file includes util/atomic.hpp
 	@if grep -rlnw "atomic_t" ../../Emu/RSX/VK --include=*.cpp --include=*.h --include=*.hpp | grep -v VKTextureCache || grep -rln "util/atomic.hpp" ../../Emu/RSX/VK --include=*.cpp --include=*.h --include=*.hpp; then echo "atomic_t is back in the Vulkan renderer"; exit 1; else echo "the Vulkan renderer is retro_atomic"; fi
+	@# the RSX DMA offloader's counters and fault flag are off atomic_t
+	@if grep -nw "atomic_t" ../../Emu/RSX/RSXOffload.cpp ../../Emu/RSX/RSXOffload.h; then echo "atomic_t is back in the RSX offloader"; exit 1; else echo "the RSX offloader is retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
