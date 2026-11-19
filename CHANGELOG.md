@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The file layer's Windows position and the directory size cancel flag are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** a Windows file's position (read and written by overlapped I/O, so two threads can share a file) is a `retro_atomic_64_t`, moved on with a fetch-and-add as before. `fs::get_dir_size()`'s optional cancel flag is a `retro_atomic_int_t` pointer; no caller passes one.
+  - **Tests:** none at runtime: the position is in the Windows file code, which the Linux test machine does not run. It is compile-checked with MinGW. A check fails if `atomic_t` comes back to the file layer.
+
+
 - **"Preferred SPU Threads": the instruction slot counts are C89 (Emu/Cell/spu_pc_table.c), and the SPU waits for a slot instead of sleeping in a loop.** Not yet run on a game.
   - **What changed:**
     - **The counts:** with Preferred SPU Threads set, an SPU about to run an MFC command counts itself in at its instruction's slot, and waits while that slot already has as many SPUs as the setting allows. The 65536 counts were an `std::array` of `atomic_t<u8>`. They are now C89, a byte each, four to a `retro_atomic_int_t` word, so the table is the same 64 KiB. Entering is one atomic add, and leaving is one atomic subtract when nobody waits.

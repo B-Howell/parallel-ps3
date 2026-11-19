@@ -564,7 +564,9 @@ namespace fs
 	{
 		HANDLE m_handle;
 		u64 m_raw_device_size; // Size of the raw device, 0 if it's not one: it never changes, so it's retrieved once when the file is opened
-		atomic_t<u64> m_pos {0};
+		retro_atomic_64_t m_pos{0};
+
+		u64 pos() { return static_cast<u64>(retro_atomic_load_acquire_64(&m_pos)); }
 
 	public:
 		windows_file(HANDLE handle, u64 raw_device_size = 0)
@@ -628,12 +630,12 @@ namespace fs
 
 				DWORD nread = 0;
 				OVERLAPPED ovl{};
-				const u64 pos = m_pos;
+				const u64 pos = this->pos();
 				ovl.Offset = DWORD(pos);
 				ovl.OffsetHigh = DWORD(pos >> 32);
 				ensure(ReadFile(m_handle, data, size, &nread, &ovl) || GetLastError() == ERROR_HANDLE_EOF); // "file::read"
 				nread_sum += nread;
-				m_pos += nread;
+				retro_atomic_fetch_add_64(&m_pos, static_cast<s64>(nread));
 
 				if (nread < size)
 				{
@@ -717,7 +719,7 @@ namespace fs
 
 				DWORD nwritten = 0;
 				OVERLAPPED ovl{};
-				const u64 pos = m_pos.fetch_add(size);
+				const u64 pos = static_cast<u64>(retro_atomic_fetch_add_64(&m_pos, static_cast<s64>(size)));
 				ovl.Offset = DWORD(pos);
 				ovl.OffsetHigh = DWORD(pos >> 32);
 				ensure(WriteFile(m_handle, data, size, &nwritten, &ovl)); // "file::write"
@@ -745,7 +747,7 @@ namespace fs
 
 			const s64 new_pos =
 				whence == fs::seek_set ? offset :
-				whence == fs::seek_cur ? offset + m_pos :
+				whence == fs::seek_cur ? offset + static_cast<s64>(pos()) :
 				whence == fs::seek_end ? offset + size() : -1;
 
 			if (new_pos < 0)
@@ -754,8 +756,8 @@ namespace fs
 				return -1;
 			}
 
-			m_pos = new_pos;
-			return m_pos;
+			retro_atomic_store_release_64(&m_pos, new_pos);
+			return static_cast<u64>(new_pos);
 		}
 
 		u64 size() override
@@ -2951,7 +2953,7 @@ bool fs::remove_all(const std::string& path, bool remove_root, bool is_no_dir_ok
 	return true;
 }
 
-u64 fs::get_dir_size(const std::string& path, u64 rounding_alignment, atomic_t<bool>* cancel_flag)
+u64 fs::get_dir_size(const std::string& path, u64 rounding_alignment, retro_atomic_int_t* cancel_flag)
 {
 	u64 result = 0;
 
@@ -2964,7 +2966,7 @@ u64 fs::get_dir_size(const std::string& path, u64 rounding_alignment, atomic_t<b
 
 	for (const auto& entry : root_dir)
 	{
-		if (cancel_flag && *cancel_flag)
+		if (cancel_flag && retro_atomic_load_acquire_int(cancel_flag))
 		{
 			return umax;
 		}
