@@ -1013,7 +1013,7 @@ struct ppu_far_jumps_t
 	retro_retire_t m_retire{};
 
 	// The range, as a hint read with no entry: (first << 32 | second)
-	atomic_t<u64> m_range{0};
+	retro_atomic_64_t m_range{0};
 
 	static void free_state(mpsc_stack_node_t* node)
 	{
@@ -1052,7 +1052,7 @@ struct ppu_far_jumps_t
 
 			if (retro_atomic_cas_ptr(&m_state, old, now))
 			{
-				m_range.release(u64{now->vals_range.first} << 32 | now->vals_range.second);
+				retro_atomic_store_release_64(&m_range, static_cast<s64>(u64{now->vals_range.first} << 32 | now->vals_range.second));
 				retro_retire(&m_retire, &old->node, free_state);
 				break;
 			}
@@ -1081,7 +1081,7 @@ struct ppu_far_jumps_t
 
 	bool in_range(u32 first, u32 last) const
 	{
-		const u64 range = m_range.load();
+		const u64 range = static_cast<u64>(retro_atomic_load_acquire_64(&m_range));
 		return !(static_cast<u32>(range >> 32) > last || static_cast<u32>(range) < first);
 	}
 
@@ -1346,12 +1346,12 @@ void ppu_remove_hle_instructions(u32 addr, u32 size)
 	});
 }
 
-atomic_t<bool> g_debugger_pause_all_threads_on_bp = false;
+retro_atomic_int_t g_debugger_pause_all_threads_on_bp{0}; // 0 or 1
 
 // Breakpoint entry point
 static void ppu_break(ppu_thread& ppu, ppu_opcode_t, be_t<u32>* this_op, ppu_intrp_func* next_fn)
 {
-	const bool pause_all = g_debugger_pause_all_threads_on_bp;
+	const bool pause_all = retro_atomic_load_acquire_int(&g_debugger_pause_all_threads_on_bp) != 0;
 
 	const u32 old_cia = vm::get_addr(this_op);
 	ppu.cia = old_cia;
@@ -3022,7 +3022,7 @@ ppu_thread::ppu_thread(const ppu_thread_params& param, std::string_view name, u3
 
 struct disable_precomp_t
 {
-	atomic_t<bool> disable = false;
+	retro_atomic_int_t disable{0}; // 0 or 1
 };
 
 void vdecEntry(ppu_thread& ppu, u32 vid);
@@ -3069,8 +3069,8 @@ void ppu_thread::serialize_common(utils::serial& ar)
 
 struct save_lv2_tag
 {
-	atomic_t<bool> saved = false;
-	atomic_t<bool> loaded = false;
+	retro_atomic_int_t saved{0}; // 0 or 1
+	retro_atomic_int_t loaded{0}; // 0 or 1
 };
 
 ppu_thread::ppu_thread(utils::serial& ar)
@@ -3086,14 +3086,14 @@ ppu_thread::ppu_thread(utils::serial& ar)
 	struct init_pushed
 	{
 		bool pushed = false;
-		atomic_t<u32> inited = false;
+		retro_atomic_int_t inited{0}; // 0 or 1
 	};
 
 	call_history.data.resize(g_cfg.core.ppu_call_history ? call_history_max_size : 1);
 	syscall_history.data.resize(g_cfg.core.ppu_call_history ? syscall_history_max_size : 1);
 	syscall_history.count_debug_arguments = static_cast<u32>(g_cfg.core.ppu_call_history ? std::size(syscall_history.data[0].args) : 0);
 
-	if (version >= 2 && !g_fxo->get<save_lv2_tag>().loaded.exchange(true))
+	if (version >= 2 && !retro_atomic_exchange_int(&g_fxo->get<save_lv2_tag>().loaded, 1))
 	{
 		retro_atomic_store_release_64(&lv2_obj::g_priority_order_tag, ar.pop<u64>());
 	}
@@ -3186,9 +3186,10 @@ ppu_thread::ppu_thread(utils::serial& ar)
 			({
 				{ppu_cmd::ptr_call, 0}, +[](ppu_thread&) -> bool
 				{
-					while (!Emu.IsStopped() && !g_fxo->get<init_pushed>().inited)
+					retro_atomic_int_t* const inited = &g_fxo->get<init_pushed>().inited;
+					while (!Emu.IsStopped() && !retro_atomic_load_acquire_int(inited))
 					{
-						thread_ctrl::wait_on(g_fxo->get<init_pushed>().inited, 0);
+						thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(inited, 0u); });
 					}
 					return false;
 				}
@@ -3197,16 +3198,16 @@ ppu_thread::ppu_thread(utils::serial& ar)
 		else
 		{
 			g_fxo->init<disable_precomp_t>();
-			g_fxo->get<disable_precomp_t>().disable = true;
+			retro_atomic_store_release_int(&g_fxo->get<disable_precomp_t>().disable, 1);
 
 			cmd_push({ppu_cmd::initialize, 0});
 			cmd_list
 			({
 				{ppu_cmd::ptr_call, 0}, +[](ppu_thread&) -> bool
 				{
-					auto& inited = g_fxo->get<init_pushed>().inited;
-					inited = 1;
-					inited.notify_all();
+					retro_atomic_int_t* const inited = &g_fxo->get<init_pushed>().inited;
+					retro_atomic_store_release_int(inited, 1);
+					retro_waitaddr_notify_all(inited);
 					return true;
 				}
 			});
@@ -3281,7 +3282,7 @@ void ppu_thread::save(utils::serial& ar)
 
 	const bool is_null = ar.m_file_handler && ar.m_file_handler->is_null();
 
-	if (!is_null && !g_fxo->get<save_lv2_tag>().saved.exchange(true))
+	if (!is_null && !retro_atomic_exchange_int(&g_fxo->get<save_lv2_tag>().saved, 1))
 	{
 		ar(static_cast<u64>(retro_atomic_load_acquire_64(&lv2_obj::g_priority_order_tag)));
 	}
@@ -4332,7 +4333,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 		return;
 	}
 
-	if (auto dis = g_fxo->try_get<disable_precomp_t>(); dis && dis->disable)
+	if (auto dis = g_fxo->try_get<disable_precomp_t>(); dis && retro_atomic_load_acquire_int(&dis->disable))
 	{
 		return;
 	}
@@ -4540,7 +4541,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 
 	*progress_dialog = get_localized_string(localized_string_id::PROGRESS_DIALOG_COMPILING_PPU_MODULES);
 
-	atomic_t<usz> fnext = 0;
+	retro_atomic_64_t fnext{0}; // usz
 
 	lf_queue<file_info> possible_exec_file_paths;
 
@@ -4550,7 +4551,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 	// The growth in memory requirements of LLVM is not linear with file size of course
 	// But these estimates should hopefully protect RPCS3 in the coming years
 	// Especially when thread count is on the rise with each CPU generation
-	atomic_t<u32> file_size_limit = static_cast<u32>(std::clamp<u64>(utils::aligned_div<u64>(utils::get_total_memory(), 2000), 65536, u32{umax}));
+	retro_atomic_int_t file_size_limit{static_cast<int>(static_cast<u32>(std::clamp<u64>(utils::aligned_div<u64>(utils::get_total_memory(), 2000), 65536, u32{umax})))}; // u32; 0 while no memory is left
 
 	const u32 software_thread_limit = std::min<u32>(g_cfg.core.llvm_threads ? g_cfg.core.llvm_threads : u32{umax}, ::size32(file_queue));
 	const u32 cpu_thread_limit = utils::get_thread_count() > 8u ? std::max<u32>(utils::get_thread_count(), 2) - 1 : utils::get_thread_count(); // One LLVM thread less
@@ -4610,7 +4611,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 		u32 inc_fdone = 1;
 		u32 restore_mem = 0;
 
-		for (usz func_i = fnext++; func_i < file_queue.size(); func_i = fnext++, progr_add(g_progr_fdone, std::exchange(inc_fdone, 1)))
+		for (usz func_i = static_cast<usz>(retro_atomic_fetch_add_64(&fnext, 1)); func_i < file_queue.size(); func_i = static_cast<usz>(retro_atomic_fetch_add_64(&fnext, 1)), progr_add(g_progr_fdone, std::exchange(inc_fdone, 1)))
 		{
 			if (Emu.IsStopped())
 			{
@@ -4619,9 +4620,9 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 
 			if (restore_mem)
 			{
-				if (!file_size_limit.fetch_add(restore_mem))
+				if (!retro_atomic_fetch_add_int(&file_size_limit, static_cast<int>(restore_mem)))
 				{
-					file_size_limit.notify_all();
+					retro_waitaddr_notify_all(&file_size_limit);
 				}
 
 				restore_mem = 0;
@@ -4698,24 +4699,34 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 			{
 				// Try not to process too many files at once because it seems to reduce performance and cause RAM shortages
 				// Concurrently compiling more OVL or huge PRX files does not have much theoretical benefit
-				while (!file_size_limit.fetch_op([&](u32& value)
+				// Allow at least one file, make 0 the "memory unavailable" sign value for atomic waiting efficiency
+				const auto take = [&]() -> bool
 				{
-					if (value)
+					for (;;)
 					{
-						// Allow at least one file, make 0 the "memory unavailable" sign value for atomic waiting efficiency
-						const u32 new_val = static_cast<u32>(utils::sub_saturate<u64>(value, file_size));
-						restore_mem = value - new_val;
-						value = new_val;
-						return true;
-					}
+						const u32 value = static_cast<u32>(retro_atomic_load_acquire_int(&file_size_limit));
 
-					// Resort to waiting
-					restore_mem = 0;
-					return false;
-				}).second)
+						if (!value)
+						{
+							// Resort to waiting
+							restore_mem = 0;
+							return false;
+						}
+
+						const u32 new_val = static_cast<u32>(utils::sub_saturate<u64>(value, file_size));
+
+						if (retro_atomic_cas_int(&file_size_limit, static_cast<int>(value), static_cast<int>(new_val)))
+						{
+							restore_mem = value - new_val;
+							return true;
+						}
+					}
+				};
+
+				while (!take())
 				{
-					// Wait until not 0
-					file_size_limit.wait(0);
+					// Wait until not 0, or this thread told to end
+					thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&file_size_limit, 0u); });
 				}
 
 				if (Emu.IsStopped())
@@ -4813,9 +4824,9 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 
 		if (restore_mem)
 		{
-			if (!file_size_limit.fetch_add(restore_mem))
+			if (!retro_atomic_fetch_add_int(&file_size_limit, static_cast<int>(restore_mem)))
 			{
-				file_size_limit.notify_all();
+				retro_waitaddr_notify_all(&file_size_limit);
 			}
 		}
 	});
@@ -5887,8 +5898,8 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 	if (!workload.empty())
 	{
 		// Sync variable to acquire workloads
-		atomic_t<u64> work_cv = 0;
-		atomic_t<u64> work_done = 0;
+		retro_atomic_64_t work_cv{0};
+		retro_atomic_64_t work_done{0};
 
 		// Update progress dialog
 		progr_add(g_progr_ptotal, ::size32(workload));
@@ -5899,13 +5910,13 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 
 		struct thread_index_allocator
 		{
-			atomic_t<u64> index = 0;
+			retro_atomic_64_t index{0};
 		};
 
 		struct thread_op
 		{
-			const std::add_pointer_t<atomic_t<u64>> work_cv;
-			const std::add_pointer_t<atomic_t<u64>> work_done;
+			retro_atomic_64_t* const work_cv;
+			retro_atomic_64_t* const work_done;
 			std::vector<std::pair<std::string, ppu_module<lv2_obj>>>& workload;
 			const ppu_module<lv2_obj>& main_module;
 			const std::string& cache_path;
@@ -5916,7 +5927,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 			jit_cores_t* cores;
 			bool holds = false;
 
-			thread_op(atomic_t<u64>* _work_cv, atomic_t<u64>* _work_done, std::vector<std::pair<std::string, ppu_module<lv2_obj>>>& workload
+			thread_op(retro_atomic_64_t* _work_cv, retro_atomic_64_t* _work_done, std::vector<std::pair<std::string, ppu_module<lv2_obj>>>& workload
 				, const cpu_thread* cpu, const ppu_module<lv2_obj>& main_module, const std::string& cache_path, jit_cores_t& _cores) noexcept
 
 				: work_cv(_work_cv)
@@ -5969,7 +5980,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 #ifdef __APPLE__
 				pthread_jit_write_protect_np(false);
 #endif
-				for (usz i = (*work_cv)++; i < workload.size(); i = (*work_cv)++, (*work_done)++, progr_add(g_progr_pdone, 1))
+				for (usz i = static_cast<usz>(retro_atomic_fetch_add_64(work_cv, 1)); i < workload.size(); i = static_cast<usz>(retro_atomic_fetch_add_64(work_cv, 1)), retro_atomic_fetch_add_64(work_done, 1), progr_add(g_progr_pdone, 1))
 				{
 					if (cpu ? cpu->state.all_of(cpu_flag::exit) : Emu.IsStopped())
 					{
@@ -5997,10 +6008,10 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 			}
 		};
 
-		const std::string worker_group_name = fmt::format("PPUW.%u.", ++g_fxo->get<thread_index_allocator>().index);
+		const std::string worker_group_name = fmt::format("PPUW.%u.", static_cast<u64>(retro_atomic_fetch_add_64(&g_fxo->get<thread_index_allocator>().index, 1)) + 1);
 		const auto try_lock_thread = [&](u32 thread_index, thread_op& op)
 		{
-			const bool to_lock = (thread_index + *op.work_done) < workload.size() && (cpu ? !cpu->state.all_of(cpu_flag::exit) : !Emu.IsStopped());
+			const bool to_lock = (thread_index + static_cast<u64>(retro_atomic_load_acquire_64(op.work_done))) < workload.size() && (cpu ? !cpu->state.all_of(cpu_flag::exit) : !Emu.IsStopped());
 
 			if (!to_lock)
 			{
@@ -6012,7 +6023,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 			op.holds = true;
 
 			// Second check before creating another thread
-			const bool to_unlock = !((thread_index + *op.work_done) < workload.size() && (cpu ? !cpu->state.all_of(cpu_flag::exit) : !Emu.IsStopped()));
+			const bool to_unlock = !((thread_index + static_cast<u64>(retro_atomic_load_acquire_64(op.work_done))) < workload.size() && (cpu ? !cpu->state.all_of(cpu_flag::exit) : !Emu.IsStopped()));
 
 			if (to_unlock)
 			{

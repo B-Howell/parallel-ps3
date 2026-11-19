@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **PPUThread.cpp's own atomics are off `atomic_t`.** Not yet run on a game. `ppu_thread`'s fields, in PPUThread.h, are next.
+  - **What changed:** the precompiler's file counter and its memory budget are `retro_atomic`. A file takes its share of the budget with a compare-and-swap loop, where `fetch_op` was, and a worker with none left waits through `thread_ctrl::wait_on_custom`. Also converted: the LLVM workers' job and done counters and thread index, the breakpoint table's address range, the pause-all-on-breakpoint flag, the precompile-disable flag, the savestate's saved and loaded tags, and the flag a PPU thread waits on until the first one is initialised. That last wait also goes through `thread_ctrl::wait_on_custom`. Nothing saved in savestates changes.
+  - **Tests:** none at runtime: these need a game's modules compiled or a PPU thread run. The existing tests that boot the core run through the precompiler's set-up. A check fails if `atomic_t` comes back to PPUThread.cpp.
+
+
 - **Logging is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the log file writer's buffer and written-byte counters are `retro_atomic_64_t`s, each on its own 128-byte line as before. A line takes its room with a compare-and-swap loop, where `fetch_op` was. The listener list's links are `retro_atomic_ptr_t`, and a new listener is added at the end with a compare-and-swap. The started flag is a `retro_atomic_int_t`. A channel's enabled level is a `retro_atomic_int_t`, read with a relaxed load as `observe()` did, so the check on every log line costs the same.
   - **Channels are 32 bytes:** a message finds its channel and its level from its own address (the address rounded down, and its low 3 bits). The level used to be one byte that filled a 16-byte channel exactly. The 4-byte word does not fit, so a channel is now 32 bytes, 32-aligned, with the seven messages at offsets 25 to 31. The lookup rounds to 32, and static asserts hold the layout.
