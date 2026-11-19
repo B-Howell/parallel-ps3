@@ -2,184 +2,84 @@
 
 #include <mutex>
 #include "util/types.hpp"
-#include "util/atomic.hpp"
+#include <retro_atomic.h>
+#include "rw_word.h"
 
-// Shared mutex with small size (u32).
+// Shared mutex with small size (u32): the word and its paths are C89
+// (rw_word.h/.c); a broken state (an underflow or overflow) is fatal
 class shared_mutex final
 {
-	enum : u32
-	{
-		c_one = 1u << 14, // Fixed-point 1.0 value (one writer, max_readers = c_one - 1)
-		c_sig = 1u << 30,
-		c_err = 1u << 31,
-	};
-
-	atomic_t<u32> m_value{};
-
-	void imp_lock_shared(u32 val);
-	void imp_unlock_shared(u32 old);
-	void imp_wait();
-	void imp_signal();
-	void imp_lock(u32 val);
-	void imp_unlock(u32 old);
-	void imp_lock_upgrade();
-	void imp_lock_unlock();
+	mutable retro_atomic_int_t m_value{0};
 
 public:
 	constexpr shared_mutex() = default;
 
-	const atomic_t<u32>& raw() const
-	{
-		return m_value;
-	}
-
 	bool try_lock_shared()
 	{
-		const u32 value = m_value.load();
-
-		// Conditional increment
-		return value < c_one - 1 && m_value.compare_and_swap_test(value, value + 1);
+		return rw_try_lock_shared(&m_value);
 	}
 
 	void lock_shared()
 	{
-		const u32 value = m_value.load();
-
-		if (value >= c_one - 1 || !m_value.compare_and_swap_test(value, value + 1)) [[unlikely]]
-		{
-			imp_lock_shared(value);
-		}
-	}
-
-	void lock_shared_hle()
-	{
-		const u32 value = m_value.load();
-
-		if (value < c_one - 1) [[likely]]
-		{
-			u32 old = value;
-			if (atomic_storage<u32>::compare_exchange_hle_acq(m_value.raw(), old, value + 1)) [[likely]]
-			{
-				return;
-			}
-		}
-
-		imp_lock_shared(value);
+		ensure(rw_lock_shared(&m_value)); // "shared_mutex underflow/overflow"
 	}
 
 	void unlock_shared()
 	{
-		// Unconditional decrement (can result in broken state)
-		const u32 value = m_value.fetch_sub(1);
-
-		if (value >= c_one) [[unlikely]]
-		{
-			imp_unlock_shared(value);
-		}
-	}
-
-	void unlock_shared_hle()
-	{
-		const u32 value = atomic_storage<u32>::fetch_add_hle_rel(m_value.raw(), -1);
-
-		if (value >= c_one) [[unlikely]]
-		{
-			imp_unlock_shared(value);
-		}
+		ensure(rw_unlock_shared(&m_value)); // "shared_mutex underflow"
 	}
 
 	bool try_lock()
 	{
-		return m_value.compare_and_swap_test(0, c_one);
+		return rw_try_lock(&m_value);
 	}
 
 	void lock()
 	{
-		const u32 value = m_value.compare_and_swap(0, c_one);
-
-		if (value) [[unlikely]]
-		{
-			imp_lock(value);
-		}
-	}
-
-	void lock_hle()
-	{
-		u32 value = 0;
-
-		if (!atomic_storage<u32>::compare_exchange_hle_acq(m_value.raw(), value, c_one)) [[unlikely]]
-		{
-			imp_lock(value);
-		}
+		ensure(rw_lock(&m_value)); // "shared_mutex underflow/overflow"
 	}
 
 	void unlock()
 	{
-		// Unconditional decrement (can result in broken state)
-		const u32 value = m_value.fetch_sub(c_one);
-
-		if (value != c_one) [[unlikely]]
-		{
-			imp_unlock(value);
-		}
-	}
-
-	void unlock_hle()
-	{
-		const u32 value = atomic_storage<u32>::fetch_add_hle_rel(m_value.raw(), ~c_one + 1);
-
-		if (value != c_one) [[unlikely]]
-		{
-			imp_unlock(value);
-		}
+		ensure(rw_unlock(&m_value)); // "shared_mutex underflow"
 	}
 
 	bool try_lock_upgrade()
 	{
-		const u32 value = m_value.load();
-
-		// Conditional increment, try to convert a single reader into a writer, ignoring other writers
-		return (value + c_one - 1) % c_one == 0 && m_value.compare_and_swap_test(value, value + c_one - 1);
+		return rw_try_lock_upgrade(&m_value);
 	}
 
 	void lock_upgrade()
 	{
-		if (!try_lock_upgrade()) [[unlikely]]
-		{
-			imp_lock_upgrade();
-		}
+		ensure(rw_lock_upgrade(&m_value)); // "shared_mutex overflow"
 	}
 
 	void lock_downgrade()
 	{
-		// Convert to reader lock (can result in broken state)
-		m_value -= c_one - 1;
+		rw_lock_downgrade(&m_value);
 	}
 
-	// Optimized wait for lockability without locking, relaxed
+	// Wait for lockability without locking
 	void lock_unlock()
 	{
-		if (m_value != 0) [[unlikely]]
-		{
-			imp_lock_unlock();
-		}
+		rw_lock_unlock(&m_value);
 	}
 
 	// Check whether can immediately obtain an exclusive (writer) lock
 	bool is_free() const
 	{
-		return m_value.load() == 0;
+		return rw_value(&m_value) == 0;
 	}
 
 	// Check whether can immediately obtain a shared (reader) lock
 	bool is_lockable() const
 	{
-		return m_value.load() < c_one - 1;
+		return rw_value(&m_value) < RW_ONE - 1;
 	}
 
 	bool has_waiters() const
 	{
-		return m_value.load() > c_one;
+		return rw_value(&m_value) > RW_ONE;
 	}
 };
 

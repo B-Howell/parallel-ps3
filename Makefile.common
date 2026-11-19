@@ -194,7 +194,6 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/Utilities/cheat_info.cpp \
 	$(CORE_DIR)/Utilities/cond.cpp \
 	$(CORE_DIR)/Utilities/date_time.cpp \
-	$(CORE_DIR)/Utilities/mutex.cpp \
 	$(CORE_DIR)/Utilities/rXml.cpp \
 	$(CORE_DIR)/Utilities/stack_trace.cpp \
 	$(CORE_DIR)/Utilities/stereo_config.cpp \
@@ -517,6 +516,7 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/rpcs3/Emu/Memory/vm_range_locks.c \
 	$(CORE_DIR)/rpcs3/Emu/Cell/spu_pc_table.c \
 	$(CORE_DIR)/Utilities/jit_bump.c \
+	$(CORE_DIR)/Utilities/rw_word.c \
 	$(CORE_DIR)/rpcs3/Emu/CPU/owner_calls.c \
 	$(CORE_DIR)/rpcs3/Emu/Cell/Modules/hle_service.c \
 	$(CORE_DIR)/rpcs3/Emu/Cell/Modules/osk_text.c \

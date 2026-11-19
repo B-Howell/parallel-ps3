@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **shared_mutex's word is C89 (Utilities/rw_word.c) on `retro_atomic`, and its slow paths no longer spin.** Not yet run on a game.
+  - **What changed:**
+    - **The word and its paths:** the word (the readers' count, a unit for each writer holding or queued, a hand-over bit and a broken-state bit) is a `retro_atomic_int_t`. Its fast paths (one compare-and-swap or one atomic add) are inline C89 in `rw_word.h`. Its slow paths are C89 in `rw_word.c`, and `mutex.cpp` is gone. A broken state (an underflow or overflow) is still fatal, through `ensure`.
+    - **No spinning:** the slow paths tried up to 10 times with `busy_wait` (30 for waiting until free) before sleeping. They now try once and sleep on the word with `retro_waitaddr` until an unlock hands the lock over. Waiting until free without taking the lock is now take-and-give-back, so it never returns while a writer holds the lock.
+    - **Removed:** the hardware lock elision variants (`lock_hle` and the rest), which nothing called.
+    - **Still a lock:** the four places that take one (the CPU threads' suspend lock, `sys_config` start and stop, the RSX IO map locks and the Vulkan submit lock) are unchanged here. Each needs its own lock-free redesign.
+  - **Tests:** `test_rw_word` (C89, and a ThreadSanitizer build) checks readers are counted, that a writer and readers refuse each other, a lone reader's upgrade and downgrade, and a broken word reported by the next lock. It also runs two writers and two readers 100000 rounds each: a reader never sees a writer's two steps half done, the count ends right and the word ends at 0. It was shown to fail with the wait returning without being handed the lock. A check fails if `mutex.cpp`, `atomic_t` or a spin comes back.
+
+
 - **The settings' values (Utilities/Config.h) are off `atomic_t`.** Not yet run on a game.
   - **What changed:** each setting's value can be changed by the frontend while the emulator threads read it, so it is atomic. A setting holds its value in a `retro_atomic_int_t` (on/off), a `retro_atomic_64_t` (a choice, a whole number of either sign, a decimal as its bits) or a `retro_atomic_128_t` (128-bit). Every read and write goes through the setting's own `get()` and `set()` as before, now a plain acquire load and a release store, so the code reading settings is unchanged and compiles to the same loads.
   - **Tests:** `test_emu_waits` checks that a setting of each kind keeps its default, takes a new value (the ends of its range among them), reads and writes its text, refuses text out of range and goes back to its default. It also checks that a 128-bit setting switched between two values by one thread is never seen half of each by another (200000 reads, each thread on a CPU of its own). It was shown to fail with the 128-bit value stored and read in two halves. A check fails if `atomic_t` comes back to the settings' values.
