@@ -5,6 +5,7 @@
 #include <vector>
 #include "util/types.hpp"
 #include "util/atomic.hpp"
+#include <retro_atomic.h>
 #include "util/auto_typemap.hpp"
 
 #include "util/to_endian.hpp"
@@ -155,7 +156,8 @@ namespace vm
 		// Common mapped region for special cases
 		std::shared_ptr<utils::shm> m_common;
 
-		atomic_t<u64> m_id = 0;
+		// Unique id, 0 once unmapped
+		mutable retro_atomic_64_t m_id{};
 
 		bool try_alloc(u32 addr, u64 bflags, u32 size, std::shared_ptr<utils::shm>&&) const;
 
@@ -197,7 +199,7 @@ namespace vm
 		// Returns 0 if invalid, none-zero unique id if valid
 		u64 is_valid() const
 		{
-			return m_id;
+			return static_cast<u64>(retro_atomic_load_acquire_64(&m_id));
 		}
 
 		// Serialization helper for shared memory

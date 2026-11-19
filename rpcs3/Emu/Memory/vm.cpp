@@ -1229,12 +1229,12 @@ namespace vm
 
 	static u64 init_block_id()
 	{
-		static atomic_t<u64> s_id = 1;
-		return s_id++;
+		static retro_atomic_64_t s_id{1};
+		return static_cast<u64>(retro_atomic_fetch_add_64(&s_id, 1));
 	}
 
 	block_t::block_t(u32 addr, u32 size, u64 flags)
-		: m_id(init_block_id())
+		: m_id(static_cast<s64>(init_block_id()))
 		, addr(addr)
 		, size(size)
 		, flags(process_block_flags(flags))
@@ -1270,7 +1270,7 @@ namespace vm
 	{
 		auto& m_map = (m.*block_map)();
 
-		if (m_id.exchange(0))
+		if (retro_atomic_exchange_64(&m_id, 0))
 		{
 			std::unordered_map<const utils::shm*, s64> mapping_refs;
 
@@ -1766,7 +1766,7 @@ namespace vm
 	}
 
 	block_t::block_t(utils::serial& ar, std::vector<std::shared_ptr<utils::shm>>& shared)
-		: m_id(init_block_id())
+		: m_id(static_cast<s64>(init_block_id()))
 		, addr(ar)
 		, size(ar)
 		, flags(process_block_flags(ar.pop<u64>(), true, addr))

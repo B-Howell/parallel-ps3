@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **A memory block's id (vm::block_t) is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** each memory block (a location such as main memory, or one a game maps) takes a unique id from a counter, and the id is cleared to 0 once, on unmapping, so only one unmap frees the block's memory. The id and the counter are `retro_atomic_64_t`. The id is taken with a fetch-and-add and cleared with an exchange, as before.
+  - **Tests:** none at runtime: blocks are made only with the memory manager set up for a game. A check fails if `atomic_t` comes back to the id.
+
+
 - **The passive lock slots (vm::g_locks) are off `atomic_t`.** Not yet run on a game.
   - **What changed:** each PPU thread holds one slot while it reads guest memory without the range locks. The slot holds the thread, or null. The slots and the thread's own slot pointer are `retro_atomic_ptr_t`. `vm::passive_lock_owner()` reads a slot, and `vm::passive_lock_drop()` gives it up, but only for the thread holding it, with a compare-and-swap as before. A thread taking a slot is followed by a full barrier before it reads the writers' bits (free on x86, where the compare-and-swap is one). A writer setting its bit has the same barrier before it reads the slots, so one of them always sees the other. The memory manager, the PPU thread and the CPU thread use them.
   - **Tests:** `test_emu_waits` checks that a slot's owner is read back and that only the thread holding the slot gives it up. It was shown to fail with the slot given up whoever asks. The barrier pairing is the one `test_vm_range_locks` already checks. A check fails if `atomic_t` comes back to the slots.
