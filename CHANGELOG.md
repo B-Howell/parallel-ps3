@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellSaveData's flags are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the flag the core sets to answer a save data confirmation with yes (libretro_core.cpp sets it), the overlay flag, and the last callback error shown in a dialog (swapped whole, so the same error is not shown twice) are `retro_atomic_int_t`. Nothing is saved in savestates.
+  - **Tests:** none at runtime: they are set and read inside the game's save data calls, and nothing waits on them. A check fails if `atomic_t` comes back to cellSaveData.
+
+
 - **cellSysutilNpEula is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the EULA status and the two callback-registered flags are `retro_atomic_int_t`. Nothing is saved in savestates.
   - **Tests:** none at runtime: the flags are set and read only inside the game's EULA calls, and nothing waits on them. A check fails if `atomic_t` comes back to cellSysutilNpEula.

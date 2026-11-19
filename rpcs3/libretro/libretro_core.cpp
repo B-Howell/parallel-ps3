@@ -1096,7 +1096,7 @@ static void libretro_apply_logging()
 // empty and the game allows one; loading it, or nothing when the list is
 // empty. Nothing is ever picked for deletion. The "save / load this data?"
 // confirmation that follows is answered yes (g_cellsavedata_auto_confirm).
-extern atomic_t<bool> g_cellsavedata_auto_confirm;
+extern retro_atomic_int_t g_cellsavedata_auto_confirm;
 
 namespace
 {
@@ -3705,7 +3705,7 @@ static void init_emu_callbacks()
     {
         return std::make_unique<libretro_save_dialog>();
     };
-    g_cellsavedata_auto_confirm = true;
+    retro_atomic_store_release_int(&g_cellsavedata_auto_confirm, 1);
 
     callbacks.get_trophy_notification_dialog = []() -> std::unique_ptr<TrophyNotificationBase>
     {

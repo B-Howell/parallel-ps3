@@ -90,7 +90,7 @@ using PFuncDone = vm::ptr<CellSaveDataDoneCallback>;
 // overwrite / load this data?" confirmations after a save data list or a fixed
 // operation are answered yes without a dialog. Deleting is never confirmed
 // this way - the libretro save dialog does not pick anything to delete.
-atomic_t<bool> g_cellsavedata_auto_confirm{false};
+retro_atomic_int_t g_cellsavedata_auto_confirm{0}; // 0 or 1
 
 enum : u32
 {
@@ -134,8 +134,8 @@ struct savedata_manager
 	// One save data call at a time: a second is told it is busy, it never
 	// waits - a word claimed with a compare-and-swap (savedata_claim)
 	retro_atomic_int_t busy{};
-	atomic_t<bool> enable_overlay{false};
-	atomic_t<s32> last_cbresult_error_dialog{0}; // CBRESULT errors are negative
+	retro_atomic_int_t enable_overlay{0}; // 0 or 1
+	retro_atomic_int_t last_cbresult_error_dialog{0}; // CBRESULT errors are negative
 };
 
 // The save data manager claimed for one call, and let go as it returns:
@@ -364,7 +364,7 @@ static error_code select_and_delete(ppu_thread& ppu)
 		// Display a blocking Save Data List asynchronously in the GUI thread.
 		if (auto save_dialog = g_emu_callbacks.get_save_dialog())
 		{
-			selected = save_dialog->ShowSaveDataList(base_dir, save_entries, focused, SAVEDATA_OP_LIST_DELETE, vm::null, g_fxo->get<savedata_manager>().enable_overlay);
+			selected = save_dialog->ShowSaveDataList(base_dir, save_entries, focused, SAVEDATA_OP_LIST_DELETE, vm::null, retro_atomic_load_acquire_int(&g_fxo->get<savedata_manager>().enable_overlay) != 0);
 		}
 
 		// Reschedule after a blocking dialog returns
@@ -474,7 +474,7 @@ static error_code display_callback_result_error_message(ppu_thread& ppu, const C
 	}
 
 	if (errDialog == CELL_SAVEDATA_ERRDIALOG_NONE ||
-		(errDialog == CELL_SAVEDATA_ERRDIALOG_NOREPEAT && result.result == g_fxo->get<savedata_manager>().last_cbresult_error_dialog.exchange(result.result)))
+		(errDialog == CELL_SAVEDATA_ERRDIALOG_NOREPEAT && result.result == retro_atomic_exchange_int(&g_fxo->get<savedata_manager>().last_cbresult_error_dialog, result.result)))
 	{
 		// TODO: Find out if the "last error" is always tracked or only when NOREPEAT is set
 		return CELL_SAVEDATA_ERROR_CBRESULT;
@@ -1280,7 +1280,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 			// Display a blocking Save Data List asynchronously in the GUI thread.
 			if (auto save_dialog = g_emu_callbacks.get_save_dialog())
 			{
-				selected = save_dialog->ShowSaveDataList(base_dir, save_entries, focused, operation, listSet, g_fxo->get<savedata_manager>().enable_overlay);
+				selected = save_dialog->ShowSaveDataList(base_dir, save_entries, focused, operation, listSet, retro_atomic_load_acquire_int(&g_fxo->get<savedata_manager>().enable_overlay) != 0);
 			}
 			else
 			{
@@ -1316,7 +1316,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 			s32 return_code = CELL_MSGDIALOG_BUTTON_NONE;
 
-			if (g_cellsavedata_auto_confirm && operation != SAVEDATA_OP_LIST_DELETE)
+			if (retro_atomic_load_acquire_int(&g_cellsavedata_auto_confirm) && operation != SAVEDATA_OP_LIST_DELETE)
 			{
 				cellSaveData.notice("savedata_op(): confirmed without a dialog: %s", message);
 				return_code = CELL_MSGDIALOG_BUTTON_YES;
@@ -1455,7 +1455,7 @@ static NEVER_INLINE error_code savedata_op(ppu_thread& ppu, u32 operation, u32 v
 
 				s32 return_code = CELL_MSGDIALOG_BUTTON_NONE;
 
-				if (g_cellsavedata_auto_confirm && operation != SAVEDATA_OP_FIXED_DELETE)
+				if (retro_atomic_load_acquire_int(&g_cellsavedata_auto_confirm) && operation != SAVEDATA_OP_FIXED_DELETE)
 				{
 					cellSaveData.notice("savedata_op(): confirmed without a dialog: %s", message);
 					return_code = CELL_MSGDIALOG_BUTTON_YES;
@@ -2628,7 +2628,7 @@ void cellSaveDataEnableOverlay(s32 enable)
 {
 	cellSaveData.notice("cellSaveDataEnableOverlay(enable=%d)", enable);
 	auto& manager = g_fxo->get<savedata_manager>();
-	manager.enable_overlay = enable != 0;
+	retro_atomic_store_release_int(&manager.enable_overlay, enable != 0 ? 1 : 0);
 }
 
 // Functions (Extensions)
