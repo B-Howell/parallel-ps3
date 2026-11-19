@@ -77,7 +77,6 @@ void jit_register_analyses(llvm::LoopAnalysisManager& lam, llvm::FunctionAnalysi
 #include <libkern/OSCacheControl.h>
 #endif
 
-extern atomic_t<u64> g_watchdog_hold_ctr;
 
 // Should be of the same type
 using spu_rdata_t = decltype(ppu_thread::rdata);
@@ -5998,9 +5997,6 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 			}
 		};
 
-		// Prevent watchdog thread from terminating
-		g_watchdog_hold_ctr++;
-
 		const std::string worker_group_name = fmt::format("PPUW.%u.", ++g_fxo->get<thread_index_allocator>().index);
 		const auto try_lock_thread = [&](u32 thread_index, thread_op& op)
 		{
@@ -6046,7 +6042,6 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 		threads.join();
 		
 		thread_ctrl::set_name(old_name);
-		g_watchdog_hold_ctr--;
 	}
 
 	// Initialize compiler instance

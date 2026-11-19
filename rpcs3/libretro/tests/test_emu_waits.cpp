@@ -14,6 +14,7 @@
 
 #include "stdafx.h"
 #include "Emu/System.h"
+#include "Emu/emu_callbacks.h"
 #include "Emu/NP/np_contexts.h"
 #include "Emu/Cell/timers.hpp"
 #include "Utilities/Thread.h"
@@ -571,6 +572,41 @@ int main()
 		libretro_event();
 		waiter.join();
 		std::printf("test_emu_waits: a wait on a retro_atomic word returns as it is set and on a retro_run\n");
+	}
+
+	// A blocking call from the main thread waits on its retro_atomic word: it
+	// returns once the call has run on the other thread, not before
+	{
+		extern emu_callbacks g_emu_callbacks;
+		const auto saved = g_emu_callbacks.call_from_main_thread;
+		std::thread main_thread;
+		std::atomic<bool> handed{false};
+		g_emu_callbacks.call_from_main_thread = [&](std::function<void()> func, retro_atomic_int_t* wake_up)
+		{
+			main_thread = std::thread([func = std::move(func), wake_up, &handed]
+			{
+				while (!handed)
+					std::this_thread::yield();
+				for (int i = 0; i < 200000; i++)
+					std::this_thread::yield();
+				func();
+				retro_atomic_store_release_int(wake_up, 1);
+				retro_waitaddr_notify_one(wake_up);
+			});
+		};
+
+		int ran = 0;
+		std::thread caller([&]
+		{
+			handed = true;
+			Emu.BlockingCallFromMainThread([&] { ran++; }, false);
+			CHECK(ran == 1); // returned only after the call ran
+		});
+		caller.join();
+		main_thread.join();
+		CHECK(ran == 1);
+		g_emu_callbacks.call_from_main_thread = saved;
+		std::printf("test_emu_waits: a blocking call from the main thread returns after it ran\n");
 	}
 
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");

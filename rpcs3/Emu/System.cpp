@@ -69,13 +69,12 @@ LOG_CHANNEL(sys_log, "SYS");
 // Preallocate 32 MiB
 stx::manual_typemap<void, 0x20'00000, 128> g_fixed_typemap;
 
-static constinit atomic_t<bool> s_emulator_available{false};
+static retro_atomic_int_t s_emulator_available{0};
 
 emu_callbacks g_emu_callbacks {};
 
 std::string g_cfg_defaults;
 
-atomic_t<u64> g_watchdog_hold_ctr{0};
 
 retro_atomic_int_t g_libretro_events{0};
 
@@ -118,17 +117,17 @@ Emulator::Emulator() noexcept
 	: m_supported_renderers({video_renderer::null})
 	, m_default_renderer(video_renderer::null)
 {
-	s_emulator_available = true;
+	retro_atomic_store_release_int(&s_emulator_available, 1);
 }
 
 Emulator::~Emulator() noexcept
 {
-	s_emulator_available = false;
+	retro_atomic_store_release_int(&s_emulator_available, 0);
 }
 
 bool Emulator::IsAvailable() noexcept
 {
-	return s_emulator_available.load();
+	return retro_atomic_load_acquire_int(&s_emulator_available) != 0;
 }
 
 template<>
@@ -181,7 +180,7 @@ void fmt_class_string<cfg_mode>::format(std::string& out, u64 arg)
 	});
 }
 
-void Emulator::CallFromMainThread(std::function<void()>&& func, atomic_t<u32>* wake_up, bool track_emu_state, u64 stop_ctr, std::source_location src_loc) const
+void Emulator::CallFromMainThread(std::function<void()>&& func, retro_atomic_int_t* wake_up, bool track_emu_state, u64 stop_ctr, std::source_location src_loc) const
 {
 	ensure(func);
 
@@ -203,7 +202,7 @@ void Emulator::CallFromMainThread(std::function<void()>&& func, atomic_t<u32>* w
 
 void Emulator::BlockingCallFromMainThread(std::function<void()>&& func, bool track_emu_state, std::source_location src_loc) const
 {
-	atomic_t<u32> wake_up = 0;
+	retro_atomic_int_t wake_up{0};
 
 	sys_log.trace("Blocking Callback from thread '%s' at [%s] is queued", thread_ctrl::get_name(), src_loc);
 
@@ -211,7 +210,7 @@ void Emulator::BlockingCallFromMainThread(std::function<void()>&& func, bool tra
 
 	bool logged = false;
 
-	while (!wake_up)
+	while (!retro_atomic_load_acquire_int(&wake_up))
 	{
 		if (!logged && !thread_ctrl::get_current())
 		{
@@ -219,7 +218,8 @@ void Emulator::BlockingCallFromMainThread(std::function<void()>&& func, bool tra
 			sys_log.error("Calling thread of BlockingCallFromMainThread is not of named_thread<>, calling from %s", src_loc);
 		}
 
-		wake_up.wait(0);
+		const retro_waitaddr_t w{&wake_up, 0};
+		retro_waitaddr_wait(&w, 1, -1);
 	}
 }
 
@@ -2978,7 +2978,7 @@ bool Emulator::Pause(bool freeze_emulation, bool show_resume_message)
 		g_fxo->get<thread_t>().m_thread = std::make_unique<named_thread<decltype(refresh_l)>>("Pause Message Thread"sv, std::move(refresh_l));
 	});
 
-	static atomic_t<u32> pause_mark = 0;
+	static retro_atomic_int_t pause_mark{0};
 
 	if (freeze_emulation)
 	{
@@ -2986,7 +2986,7 @@ bool Emulator::Pause(bool freeze_emulation, bool show_resume_message)
 	}
 	else
 	{
-		sys_log.success("Emulation is being paused... (mark=%u)", pause_mark++);
+		sys_log.success("Emulation is being paused... (mark=%u)", static_cast<u32>(retro_atomic_fetch_add_int(&pause_mark, 1)));
 	}
 
 	// Update pause start time

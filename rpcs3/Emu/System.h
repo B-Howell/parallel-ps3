@@ -233,7 +233,7 @@ public:
 	void SetGameDir(const std::string& game_dir) { m_game_dir = game_dir; }
 
 	// Call from the GUI thread
-	void CallFromMainThread(std::function<void()>&& func, atomic_t<u32>* wake_up = nullptr, bool track_emu_state = true, u64 stop_ctr = umax,
+	void CallFromMainThread(std::function<void()>&& func, retro_atomic_int_t* wake_up = nullptr, bool track_emu_state = true, u64 stop_ctr = umax,
 		std::source_location src_loc = std::source_location::current()) const;
 
 	// Blocking call from the GUI thread

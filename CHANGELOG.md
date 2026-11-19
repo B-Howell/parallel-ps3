@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The main thread's calls and System.cpp's last words are off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the word `BlockingCallFromMainThread` waits on is a `retro_atomic_int_t`, through `CallFromMainThread` and the frontend's `call_from_main_thread`, and the wait is on `retro_waitaddr`. The emulator-available flag and the pause mark are `retro_atomic_int_t` too. `System.cpp` has no `atomic_t` left.
+  - **Removed:** two frontend callbacks nothing called (`on_emulation_stop_no_response`, `on_save_state_progress`), and a watchdog hold counter the PPU compiler moved up and down but nothing read.
+  - **Tests:** `test_emu_waits` hands a blocking call to a stand-in main thread that runs it late, and checks that the call returns only after it ran. It was shown to fail with the wait taken out. A check fails if `atomic_t` comes back to `System.cpp` or `emu_callbacks.h`, or a removed callback or counter comes back.
+
+
 - **The RPCN client is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the connected, logged-in, wanted and stopping flags, the connection state, the counts of connections and logins tried that their waiters wait on, the reader's and writer's busy flags, the event count the reader moves, the two request counters and the signaling addresses and port are `retro_atomic_int_t` and `retro_atomic_64_t`, and their waits are on `retro_waitaddr`. `num_failures`, which nothing used, is gone.
   - **Waits kept:** the client is made once, the first time a thread asks for it. A second thread asking meanwhile waits until it is made, since making it starts its threads and its connection, and a second one made and thrown away would connect twice. The 10 seconds given to the server for the signaling address and port, and the TLS handshake's deadline, are network timeouts, which are kept exceptions.

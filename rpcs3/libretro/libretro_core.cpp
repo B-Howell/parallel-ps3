@@ -3538,15 +3538,15 @@ static void init_emu_callbacks()
 {
     emu_callbacks callbacks{};
 
-    callbacks.call_from_main_thread = [](std::function<void()> func, atomic_t<u32>* wake_up)
+    callbacks.call_from_main_thread = [](std::function<void()> func, retro_atomic_int_t* wake_up)
     {
         // In libretro context, we're single-threaded for the main loop
         // Just execute directly
         func();
         if (wake_up)
         {
-            *wake_up = true;
-            wake_up->notify_one();
+            retro_atomic_store_release_int(wake_up, 1);
+            retro_waitaddr_notify_one(wake_up);
         }
 
         // Emulator::Kill ends its "Emulation Join Thread" by handing the last
@@ -3717,9 +3717,6 @@ static void init_emu_callbacks()
     callbacks.on_resume = []() {};
     callbacks.on_stop = []() {};
     callbacks.on_ready = []() {};
-
-    callbacks.on_emulation_stop_no_response = [](std::shared_ptr<atomic_t<bool>>, int) {};
-    callbacks.on_save_state_progress = [](std::shared_ptr<atomic_t<bool>>, stx::shared_ptr<utils::serial>, stx::atomic_ptr<std::string>*, std::shared_ptr<void>) {};
 
     callbacks.enable_disc_eject = [](bool) {};
     callbacks.enable_disc_insert = [](bool) {};
