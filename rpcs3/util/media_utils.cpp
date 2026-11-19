@@ -481,7 +481,7 @@ namespace utils
 			{
 				// Woken as the encoder has flushed, or ended (it slept 1 us at
 				// a time before)
-				for (u32 seen = freed_seen(); retro_atomic_load_acquire_int(&m_flush) && m_running; seen = freed_seen())
+				for (u32 seen = freed_seen(); retro_atomic_load_acquire_int(&m_flush) && running(); seen = freed_seen())
 				{
 					wait_freed(seen);
 				}
@@ -501,7 +501,7 @@ namespace utils
 			if (flush)
 			{
 				// As in pause (it slept 1 ms at a time)
-				for (u32 seen = freed_seen(); retro_atomic_load_acquire_int(&m_flush) && m_running; seen = freed_seen())
+				for (u32 seen = freed_seen(); retro_atomic_load_acquire_int(&m_flush) && running(); seen = freed_seen())
 				{
 					wait_freed(seen);
 				}
@@ -515,7 +515,7 @@ namespace utils
 		retro_atomic_store_release_int(&has_error, 0);
 		retro_atomic_store_release_int(&m_flush, 0);
 		retro_atomic_store_release_int(&m_paused, 0);
-		m_running = false;
+		retro_atomic_store_release_int(&m_running, 0);
 	}
 
 	void video_encoder::resume()
@@ -528,7 +528,7 @@ namespace utils
 
 	void video_encoder::encode()
 	{
-		if (m_running)
+		if (running())
 		{
 			// Resume
 			resume();
@@ -556,7 +556,7 @@ namespace utils
 
 		m_thread = std::make_unique<named_thread<std::function<void()>>>("Video Encode Thread", [this, path = m_path]()
 		{
-			m_running = true;
+			retro_atomic_store_release_int(&m_running, 1);
 
 			me_params params{};
 			params.path = path.c_str();
@@ -583,7 +583,7 @@ namespace utils
 				media_log.error("video_encoder: Could not start '%s'", path);
 				set_error();
 				retro_atomic_store_release_int(&m_flush, 0);
-				m_running = false;
+				retro_atomic_store_release_int(&m_running, 0);
 				wake_producer();
 				return;
 			}
@@ -689,7 +689,7 @@ namespace utils
 					// (also as the thread is told to end)
 					thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list)
 					{
-						list.template set<0>(*utils::bless<atomic_t<u32>>(&m_filled), filled);
+						list.template set_raw<0>(&m_filled, filled);
 					});
 					continue;
 				}
@@ -701,7 +701,7 @@ namespace utils
 			}
 
 			retro_atomic_store_release_int(&m_flush, 0);
-			m_running = false;
+			retro_atomic_store_release_int(&m_running, 0);
 			wake_producer();
 		});
 	}

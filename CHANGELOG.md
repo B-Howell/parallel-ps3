@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The video encoder's running flag (util/media_utils) is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the flag that keeps the recording encoder's thread taking frames (cleared on stop, and on a failure to open or finish the file) is a `retro_atomic_int_t`, read with `running()`. The encoder thread's sleep for the next frame waits on the sink's frame count, which is already a `retro_atomic_int_t`, by its address instead of through an `atomic_t` cast.
+  - **Tests:** none at runtime: the encoder runs only while a recording is made, which needs the video and audio encoders set up for a game. A check fails if `atomic_t` comes back to media_utils.
+
+
 - **Dynamic imports and shared memory's own mapping (util/dyn_lib.hpp, util/vm.hpp) are off `atomic_t`.** Not yet run on a game.
   - **What changed:**
     - **A function looked up from a system library on first use** (`DYNAMIC_IMPORT`) keeps it in a `retro_atomic_64_t`: -1 before the lookup, 0 when there is none. It stays constant-initialised.

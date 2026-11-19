@@ -177,7 +177,9 @@ namespace utils
 
 		// Thread control
 		std::unique_ptr<named_thread<std::function<void()>>> m_thread;
-		atomic_t<bool> m_running = false;
+		retro_atomic_int_t m_running{0};
+
+		bool running() const { return retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&m_running)) != 0; }
 
 		// Video parameters
 		u32 m_video_bitrate_bps = 0;
