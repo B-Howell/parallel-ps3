@@ -24,6 +24,7 @@
 #include "Emu/system_progress.hpp"
 #include "Emu/Cell/Modules/cellOskDialog.h"
 #include "Emu/Cell/Modules/cellCamera.h"
+#include "Emu/Cell/Modules/cellSysutil.h"
 #include "Emu/savestate_utils.hpp"
 
 #include <atomic>
@@ -607,6 +608,37 @@ int main()
 		CHECK(ran == 1);
 		g_emu_callbacks.call_from_main_thread = saved;
 		std::printf("test_emu_waits: a blocking call from the main thread returns after it ran\n");
+	}
+
+	// A game's callback and its argument in one retro_atomic word: installed
+	// only where none is, taken off whole, and of two threads installing at
+	// once, one wins
+	{
+		sysutil_cb_word w;
+		CHECK(w.cb() == 0);
+		CHECK(w.install(0x10000, 0x20000));
+		CHECK(!w.install(0x30000, 0x40000));
+		CHECK(w.get() == std::make_pair(u32{0x10000}, u32{0x20000}));
+		CHECK(w.clear());
+		CHECK(!w.clear());
+		w.set(0xfffffff0, 0xdeadbeef);
+		CHECK(w.cb() == 0xfffffff0 && w.get().second == 0xdeadbeef);
+		CHECK(w.clear());
+
+		int doubled = 0;
+		for (int round = 0; round < 500; round++)
+		{
+			std::atomic<int> wins{0};
+			std::thread a([&] { wins += w.install(0x1000, 1); });
+			std::thread b([&] { wins += w.install(0x2000, 2); });
+			a.join();
+			b.join();
+			const auto [cb, arg] = w.get();
+			doubled += wins != 1 || !((cb == 0x1000 && arg == 1) || (cb == 0x2000 && arg == 2));
+			w.clear();
+		}
+		CHECK(doubled == 0);
+		std::printf("test_emu_waits: a sysutil callback word: installed only where none is, 500 races with one winner each\n");
 	}
 
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");

@@ -2833,7 +2833,7 @@ void Emulator::FinalizeRunRequest()
 
 	if (m_savestate_extension_flags1 & SaveStateExtentionFlags1::ShouldCloseMenu)
 	{
-		g_fxo->get<SysutilMenuOpenStatus>().active = true;
+		retro_atomic_store_release_int(&g_fxo->get<SysutilMenuOpenStatus>().active, 1);
 	}
 
 	idm::select<named_thread<spu_thread>>(spu_select);
@@ -3787,7 +3787,7 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 
 				bs_t<SaveStateExtentionFlags1> extension_flags{SaveStateExtentionFlags1::SupportsMenuOpenResume};
 
-				if (g_fxo->get<SysutilMenuOpenStatus>().active)
+				if (retro_atomic_load_acquire_int(&g_fxo->get<SysutilMenuOpenStatus>().active))
 				{
 					extension_flags += SaveStateExtentionFlags1::ShouldCloseMenu;
 				}

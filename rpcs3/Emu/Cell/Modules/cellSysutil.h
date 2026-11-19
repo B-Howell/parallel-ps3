@@ -1,31 +1,32 @@
 #pragma once
 
 #include "Emu/Memory/vm_ptr.h"
+#include <retro_atomic.h>
 
 // A game's callback and its argument as one word, read and changed whole
 // with no lock: the callback's address in the high half
 struct sysutil_cb_word
 {
-	atomic_t<u64> word{0};
+	mutable retro_atomic_64_t word{0};
 
-	u32 cb() const { return static_cast<u32>(word.load() >> 32); }
+	u64 load() const { return static_cast<u64>(retro_atomic_load_acquire_64(&word)); }
+
+	u32 cb() const { return static_cast<u32>(load() >> 32); }
 
 	std::pair<u32, u32> get() const
 	{
-		const u64 v = word.load();
+		const u64 v = load();
 		return {static_cast<u32>(v >> 32), static_cast<u32>(v)};
 	}
 
-	void set(u32 cb, u32 arg) { word.release((u64{cb} << 32) | arg); }
+	void set(u32 cb, u32 arg) { retro_atomic_store_release_64(&word, static_cast<s64>((u64{cb} << 32) | arg)); }
 
 	// Installed unless a callback is there
 	bool install(u32 cb, u32 arg)
 	{
-		u64 old = word.load();
-
-		while (!(old >> 32))
+		for (u64 old = load(); !(old >> 32); old = load())
 		{
-			if (word.compare_exchange(old, (u64{cb} << 32) | arg))
+			if (retro_atomic_cas_64(&word, static_cast<s64>(old), static_cast<s64>((u64{cb} << 32) | arg)))
 			{
 				return true;
 			}
@@ -35,7 +36,7 @@ struct sysutil_cb_word
 	}
 
 	// Taken off; whether a callback was there
-	bool clear() { return (word.exchange(0) >> 32) != 0; }
+	bool clear() { return (static_cast<u64>(retro_atomic_exchange_64(&word, 0)) >> 32) != 0; }
 };
 
 using CellSysutilUserId = u32;
@@ -356,16 +357,16 @@ struct CellSysCacheParam
 template <u32 BaseEvent>
 struct SysutilEventStatus
 {
-	atomic_t<bool> active = false;
+	retro_atomic_int_t active{0}; // 0 or 1
 };
 
-extern atomic_t<usz> g_sysutil_callback_id_assigner;
+extern retro_atomic_64_t g_sysutil_callback_id_assigner;
 
 extern void sysutil_register_cb_with_id_internal(std::function<s32(ppu_thread&)>&& cb, usz call_id);
 extern void sysutil_unregister_cb_with_id_internal(usz call_id);
 
 template <typename T>
-const usz g_sysutil_dispatcher_id = g_sysutil_callback_id_assigner++;
+const usz g_sysutil_dispatcher_id = static_cast<usz>(retro_atomic_fetch_add_64(&g_sysutil_callback_id_assigner, 1));
 
 template <typename T>
 void sysutil_register_cb_with_id(std::function<s32(ppu_thread&)>&& cb)

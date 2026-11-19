@@ -168,17 +168,14 @@ void fmt_class_string<CellBgmplaybackError>::format(std::string& out, u64 arg)
 	});
 }
 
-atomic_t<usz> g_sysutil_callback_id_assigner = 0;
+retro_atomic_64_t g_sysutil_callback_id_assigner{0};
 
 struct sysutil_cb_manager
 {
-	struct alignas(8) registered_dispatcher
-	{
-		u32 event_code = 0;
-		u32 func_addr = 0;
-	};
+	// Each the event code (high 32 bits) and the function (low): 0 is free
+	retro_atomic_64_t dispatchers[32]{};
 
-	std::array<atomic_t<registered_dispatcher>, 32> dispatchers{};
+	static s64 pack_dispatcher(u32 event_code, u32 func_addr) { return static_cast<s64>(u64{event_code} << 32 | func_addr); }
 
 	struct alignas(8) registered_cb
 	{
@@ -188,20 +185,43 @@ struct sysutil_cb_manager
 		vm::ptr<void> user_data;
 	};
 
-	atomic_t<registered_cb> callbacks[4]{};
+	// Each the callback's address (high 32 bits) and its argument's (low),
+	// set and read as one
+	retro_atomic_64_t callbacks[4]{};
+
+	static s64 pack_cb(const registered_cb& cb) { return static_cast<s64>(u64{cb.callback.addr()} << 32 | cb.user_data.addr()); }
+
+	static registered_cb unpack_cb(s64 word)
+	{
+		registered_cb cb;
+		cb.callback = vm::ptr<CellSysutilCallback>::make(static_cast<u32>(static_cast<u64>(word) >> 32));
+		cb.user_data = vm::ptr<void>::make(static_cast<u32>(word));
+		return cb;
+	}
+
+	// The four slots through the structs they were in the savestate
+	void serialize_callbacks(utils::serial& ar)
+	{
+		registered_cb saved[4];
+		for (usz i = 0; i < 4; i++)
+			saved[i] = unpack_cb(retro_atomic_load_acquire_64(&callbacks[i]));
+		ar(saved);
+		for (usz i = 0; i < 4; i++)
+			retro_atomic_store_release_64(&callbacks[i], pack_cb(saved[i]));
+	}
 
 	struct dispatcher_cb
 	{
 		std::function<s32(ppu_thread&)> func;
-		std::shared_ptr<atomic_t<bool>> call_active;
+		std::shared_ptr<retro_atomic_int_t> call_active; // 1 until unregistered
 	};
 
 	// One for every callback id handed out, made once: an array (the queues do not move)
-	const usz registered_callbacks_count = g_sysutil_callback_id_assigner;
-	const std::unique_ptr<lf_queue<std::shared_ptr<atomic_t<bool>>>[]> registered_callbacks_abort_handles =
-		std::make_unique<lf_queue<std::shared_ptr<atomic_t<bool>>>[]>(registered_callbacks_count);
+	const usz registered_callbacks_count = static_cast<usz>(retro_atomic_load_acquire_64(&g_sysutil_callback_id_assigner));
+	const std::unique_ptr<lf_queue<std::shared_ptr<retro_atomic_int_t>>[]> registered_callbacks_abort_handles =
+		std::make_unique<lf_queue<std::shared_ptr<retro_atomic_int_t>>[]>(registered_callbacks_count);
 
-	lf_queue<std::shared_ptr<atomic_t<bool>>>& abort_handles(usz call_id) const
+	lf_queue<std::shared_ptr<retro_atomic_int_t>>& abort_handles(usz call_id) const
 	{
 		ensure(call_id < registered_callbacks_count);
 		return registered_callbacks_abort_handles[call_id];
@@ -209,8 +229,8 @@ struct sysutil_cb_manager
 
 	lf_queue<dispatcher_cb> registered;
 
-	atomic_t<bool> draw_cb_started{};
-	atomic_t<u64> read_counter{0};
+	retro_atomic_int_t draw_cb_started{0};
+	retro_atomic_64_t read_counter{0};
 
 	SAVESTATE_INIT_POS(13);
 
@@ -218,13 +238,13 @@ struct sysutil_cb_manager
 
 	sysutil_cb_manager(utils::serial& ar)
 	{
-		ar(callbacks);
+		serialize_callbacks(ar);
 	}
 
 	void save(utils::serial& ar)
 	{
 		ensure(!registered);
-		ar(callbacks);
+		serialize_callbacks(ar);
 	}
 };
 
@@ -236,7 +256,7 @@ void sysutil_register_cb_with_id_internal(std::function<s32(ppu_thread&)>&& cb, 
 
 	if (call_id != umax)
 	{
-		info.call_active = std::make_shared<atomic_t<bool>>(true);
+		info.call_active = std::make_shared<retro_atomic_int_t>(1);
 		cbm.abort_handles(call_id).push(info.call_active);
 	}
 
@@ -255,7 +275,7 @@ extern void sysutil_unregister_cb_with_id_internal(usz call_id)
 	for (auto&& abort_handle : cbm->abort_handles(call_id).pop_all())
 	{
 		// Deactivate the existing event once
-		abort_handle->store(false);
+		retro_atomic_store_release_int(abort_handle.get(), 0);
 	}
 }
 
@@ -272,7 +292,7 @@ extern s32 sysutil_send_system_cmd(u64 status, u64 param)
 	{
 		if (status == CELL_SYSUTIL_DRAWING_BEGIN)
 		{
-			if (cbm->draw_cb_started.exchange(true))
+			if (retro_atomic_exchange_int(&cbm->draw_cb_started, 1))
 			{
 				cellSysutil.error("Tried to enqueue a second or more DRAWING_BEGIN callback!");
 				return CELL_SYSUTIL_ERROR_BUSY;
@@ -280,7 +300,7 @@ extern s32 sysutil_send_system_cmd(u64 status, u64 param)
 		}
 		else if (status == CELL_SYSUTIL_DRAWING_END)
 		{
-			if (!cbm->draw_cb_started.exchange(false))
+			if (!retro_atomic_exchange_int(&cbm->draw_cb_started, 0))
 			{
 				cellSysutil.error("Tried to enqueue a DRAWING_END callback without a BEGIN callback!");
 				return -1;
@@ -291,8 +311,10 @@ extern s32 sysutil_send_system_cmd(u64 status, u64 param)
 			abort_lv2_watchdog();
 		}
 
-		for (sysutil_cb_manager::registered_cb cb : cbm->callbacks)
+		for (retro_atomic_64_t& slot : cbm->callbacks)
 		{
+			const sysutil_cb_manager::registered_cb cb = sysutil_cb_manager::unpack_cb(retro_atomic_load_acquire_64(&slot));
+
 			if (cb.callback)
 			{
 				cbm->registered.push(sysutil_cb_manager::dispatcher_cb{[=](ppu_thread& ppu) -> s32
@@ -314,7 +336,7 @@ extern u64 get_sysutil_cb_manager_read_count()
 {
 	if (auto cbm = g_fxo->try_get<sysutil_cb_manager>())
 	{
-		return cbm->read_counter;
+		return static_cast<u64>(retro_atomic_load_acquire_64(&cbm->read_counter));
 	}
 
 	return 0;
@@ -324,7 +346,7 @@ extern bool send_open_home_menu_cmds()
 {
 	auto status = g_fxo->try_get<SysutilMenuOpenStatus>();
 
-	if (!status || status->active)
+	if (!status || retro_atomic_load_acquire_int(&status->active))
 	{
 		return false;
 	}
@@ -337,7 +359,7 @@ extern bool send_open_home_menu_cmds()
 		return false;
 	}
 
-	status->active = true;
+	retro_atomic_store_release_int(&status->active, 1);
 	return true;
 }
 
@@ -345,7 +367,7 @@ extern void send_close_home_menu_cmds()
 {
 	auto status = g_fxo->try_get<SysutilMenuOpenStatus>();
 
-	if (!status || !status->active)
+	if (!status || !retro_atomic_load_acquire_int(&status->active))
 	{
 		return;
 	}
@@ -355,7 +377,7 @@ extern void send_close_home_menu_cmds()
 	sysutil_send_system_cmd(CELL_SYSUTIL_SYSTEM_MENU_CLOSE, 0);
 	sysutil_send_system_cmd(CELL_SYSUTIL_DRAWING_END, 0);
 
-	status->active = false;
+	retro_atomic_store_release_int(&status->active, 0);
 }
 
 template <>
@@ -689,7 +711,7 @@ error_code cellSysutilCheckCallback(ppu_thread& ppu)
 
 	for (auto&& func : cbm.registered.pop_all())
 	{
-		if (func.call_active && !*func.call_active)
+		if (func.call_active && !retro_atomic_load_acquire_int(func.call_active.get()))
 		{
 			continue;
 		}
@@ -698,7 +720,7 @@ error_code cellSysutilCheckCallback(ppu_thread& ppu)
 		// We use this counter to check if the game reacts to a command during game termination and calls sys_process_exit.
 		// We would not realize that the game reacted in time and terminate it prematurely if we increased
 		// the counter after we called the callback and the callback did some time-consuming work.
-		cbm.read_counter++;
+		retro_atomic_fetch_add_64(&cbm.read_counter, 1);
 
 		if (s32 res = func.func(ppu))
 		{
@@ -726,7 +748,7 @@ error_code cellSysutilRegisterCallback(u32 slot, vm::ptr<CellSysutilCallback> fu
 
 	auto& cbm = g_fxo->get<sysutil_cb_manager>();
 
-	cbm.callbacks[slot].store({func, userdata});
+	retro_atomic_store_release_64(&cbm.callbacks[slot], sysutil_cb_manager::pack_cb({func, userdata}));
 
 	return CELL_OK;
 }
@@ -742,7 +764,7 @@ error_code cellSysutilUnregisterCallback(u32 slot)
 
 	auto& cbm = g_fxo->get<sysutil_cb_manager>();
 
-	cbm.callbacks[slot].store({});
+	retro_atomic_store_release_64(&cbm.callbacks[slot], 0);
 
 	return CELL_OK;
 }
@@ -915,20 +937,15 @@ error_code cellSysutilRegisterCallbackDispatcher(u32 event_code, u32 func_addr)
 
 	auto& cbm = g_fxo->get<sysutil_cb_manager>();
 
-	for (u32 i = 0; i < cbm.dispatchers.size(); i++)
+	// The first free slot taken, in one swap
+	for (retro_atomic_64_t& slot : cbm.dispatchers)
 	{
-		if (cbm.dispatchers[i].atomic_op([&](sysutil_cb_manager::registered_dispatcher& dispatcher)
+		for (s64 old = retro_atomic_load_acquire_64(&slot); static_cast<u32>(static_cast<u64>(old) >> 32) == 0; old = retro_atomic_load_acquire_64(&slot))
 		{
-			if (dispatcher.event_code == 0)
+			if (retro_atomic_cas_64(&slot, old, sysutil_cb_manager::pack_dispatcher(event_code, func_addr)))
 			{
-				dispatcher.event_code = event_code;
-				dispatcher.func_addr = func_addr;
-				return true;
+				return CELL_OK;
 			}
-			return false;
-		}))
-		{
-			return CELL_OK;
 		}
 	}
 
@@ -941,20 +958,15 @@ error_code cellSysutilUnregisterCallbackDispatcher(u32 event_code)
 
 	auto& cbm = g_fxo->get<sysutil_cb_manager>();
 
-	for (u32 i = 0; i < cbm.dispatchers.size(); i++)
+	// The first slot with this event code freed, in one swap
+	for (retro_atomic_64_t& slot : cbm.dispatchers)
 	{
-		if (cbm.dispatchers[i].atomic_op([&](sysutil_cb_manager::registered_dispatcher& dispatcher)
+		for (s64 old = retro_atomic_load_acquire_64(&slot); static_cast<u32>(static_cast<u64>(old) >> 32) == event_code; old = retro_atomic_load_acquire_64(&slot))
 		{
-			if (dispatcher.event_code == event_code)
+			if (retro_atomic_cas_64(&slot, old, 0))
 			{
-				dispatcher.event_code = 0;
-				dispatcher.func_addr = 0;
-				return true;
+				return CELL_OK;
 			}
-			return false;
-		}))
-		{
-			return CELL_OK;
 		}
 	}
 

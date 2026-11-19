@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellSysutil is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the four system callbacks and the 32 callback dispatchers are each one `retro_atomic_64_t` holding both halves of their pair (address and argument, or event code and function), set and read whole. A dispatcher is taken or freed with a compare-and-swap loop where it was an `atomic_op`. The drawing flag, the read counter, the callback id counter, the abort handles, the home menu's open flag and `sysutil_cb_word` (a callback and its argument in one word) are `retro_atomic` too.
+  - **Savestates:** the four callbacks are written and read through the structs they were, so the format is unchanged.
+  - **Tests:** `test_emu_waits` checks `sysutil_cb_word`: it installs only where no callback is, takes one off whole, and of two threads installing at once one wins, 500 times. It was shown to fail with an install that ignores a callback already there. A check fails if `atomic_t` comes back or the savestate stops writing the callbacks as structs.
+
+
 - **cellGem (PS Move) is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the init state, the video-conversion and updating flags, the gem thread's and the tracker's wake and done words, the tracker's frame number and busy flag, and each controller's packed x and y are `retro_atomic_int_t` and `retro_atomic_64_t`. The PPU's waits for the gem thread's and the tracker's result now also watch the PPU's own state, as cellVdec's wait does, so a stop wakes them directly. The gem and tracker threads wait through `wait_on_custom`, so a join still wakes them.
   - **Savestates:** the init state is written and read through the `u8` it was, and the two flags through bools, so the format is unchanged.
