@@ -152,9 +152,9 @@ struct content_permission final
 		disc_game
 	};
 
-	atomic_t<u32> can_create = 0;
-	atomic_t<bool> exists = false;
-	atomic_t<check_mode> mode = check_mode::not_set;
+	retro_atomic_int_t can_create{0}; // 0 or 1
+	retro_atomic_int_t exists{0}; // 0 or 1
+	retro_atomic_int_t mode{static_cast<int>(check_mode::not_set)};
 
 	content_permission() = default;
 
@@ -167,9 +167,9 @@ struct content_permission final
 		dir.clear();
 		sfo.clear();
 		temp.clear();
-		can_create = 0;
-		exists = false;
-		mode = check_mode::not_set;
+		retro_atomic_store_release_int(&can_create, 0);
+		retro_atomic_store_release_int(&exists, 0);
+		retro_atomic_store_release_int(&mode, static_cast<int>(check_mode::not_set));
 	}
 
 	~content_permission()
@@ -783,7 +783,7 @@ error_code cellGameBootCheck(vm::ptr<u32> type, vm::ptr<u32> attributes, vm::ptr
 
 	if (cat == "DG")
 	{
-		perm.mode = content_permission::check_mode::disc_game;
+		retro_atomic_store_release_int(&perm.mode, static_cast<int>(content_permission::check_mode::disc_game));
 
 		_type = CELL_GAME_GAMETYPE_DISC;
 		*attributes = 0; // TODO
@@ -793,7 +793,7 @@ error_code cellGameBootCheck(vm::ptr<u32> type, vm::ptr<u32> attributes, vm::ptr
 	}
 	else if (cat == "GD")
 	{
-		perm.mode = content_permission::check_mode::patch;
+		retro_atomic_store_release_int(&perm.mode, static_cast<int>(content_permission::check_mode::patch));
 
 		_type = CELL_GAME_GAMETYPE_DISC;
 		*attributes = CELL_GAME_ATTRIBUTE_PATCH; // TODO
@@ -802,7 +802,7 @@ error_code cellGameBootCheck(vm::ptr<u32> type, vm::ptr<u32> attributes, vm::ptr
 	}
 	else
 	{
-		perm.mode = content_permission::check_mode::hdd_game;
+		retro_atomic_store_release_int(&perm.mode, static_cast<int>(content_permission::check_mode::hdd_game));
 
 		_type = CELL_GAME_GAMETYPE_HDD;
 		*attributes = 0; // TODO
@@ -831,7 +831,7 @@ error_code cellGameBootCheck(vm::ptr<u32> type, vm::ptr<u32> attributes, vm::ptr
 
 	perm.dir = std::move(dir);
 	perm.sfo = std::move(sfo);
-	perm.exists = true;
+	retro_atomic_store_release_int(&perm.exists, 1);
 
 	return CELL_OK;
 }
@@ -868,10 +868,10 @@ error_code cellGamePatchCheck(vm::ptr<CellGameContentSize> size, vm::ptr<void> r
 		size->sysSizeKB = 0; // TODO
 	}
 
-	perm.mode = content_permission::check_mode::patch;
+	retro_atomic_store_release_int(&perm.mode, static_cast<int>(content_permission::check_mode::patch));
 	perm.dir = Emu.GetTitleID();
 	perm.sfo = std::move(sfo);
-	perm.exists = true;
+	retro_atomic_store_release_int(&perm.exists, 1);
 
 	return CELL_OK;
 }
@@ -941,8 +941,8 @@ error_code cellGameDataCheck(u32 type, vm::cptr<char> dirName, vm::ptr<CellGameC
 	}
 
 	perm.dir = std::move(name);
-	perm.can_create = type == CELL_GAME_GAMETYPE_GAMEDATA;
-	perm.mode = content_permission::check_mode::game_data;
+	retro_atomic_store_release_int(&perm.can_create, (type == CELL_GAME_GAMETYPE_GAMEDATA) ? 1 : 0);
+	retro_atomic_store_release_int(&perm.mode, static_cast<int>(content_permission::check_mode::game_data));
 
 	if (sfo.empty())
 	{
@@ -950,7 +950,7 @@ error_code cellGameDataCheck(u32 type, vm::cptr<char> dirName, vm::ptr<CellGameC
 		return not_an_error(CELL_GAME_RET_NONE);
 	}
 
-	perm.exists = true;
+	retro_atomic_store_release_int(&perm.exists, 1);
 	perm.sfo = std::move(sfo);
 	return CELL_OK;
 }
@@ -975,7 +975,7 @@ error_code cellGameContentPermit(ppu_thread& ppu, vm::ptr<char[CELL_GAME_PATH_MA
 
 	const std::string dir = perm.dir.empty() ? "/dev_bdvd/PS3_GAME"s : "/dev_hdd0/game/" + perm.dir;
 
-	if (perm.temp.empty() && !perm.exists)
+	if (perm.temp.empty() && retro_atomic_load_acquire_int(&perm.exists) == 0)
 	{
 		perm.reset();
 		strcpy_trunc(*contentInfoPath, "");
@@ -1043,7 +1043,7 @@ error_code cellGameContentPermit(ppu_thread& ppu, vm::ptr<char[CELL_GAME_PATH_MA
 		}
 		});
 	}
-	else if (perm.can_create)
+	else if (retro_atomic_load_acquire_int(&perm.can_create) != 0)
 	{
 		// Update PARAM.SFO
 		fs::pending_file temp(vfs::get(dir + "/PARAM.SFO"));
@@ -1052,7 +1052,7 @@ error_code cellGameContentPermit(ppu_thread& ppu, vm::ptr<char[CELL_GAME_PATH_MA
 	}
 
 	// This function is very slow by nature
-	lv2_sleep(utils::sub_saturate<u64>(!perm.temp.empty() || perm.can_create ? 200000 : 2000, get_guest_system_time() - start_sleep), &ppu);
+	lv2_sleep(utils::sub_saturate<u64>(!perm.temp.empty() || (retro_atomic_load_acquire_int(&perm.can_create) != 0) ? 200000 : 2000, get_guest_system_time() - start_sleep), &ppu);
 
 	// Cleanup
 	perm.reset();
@@ -1280,12 +1280,12 @@ error_code cellGameCreateGameData(vm::ptr<CellGameSetInitParams> init, vm::ptr<c
 		return CELL_GAME_ERROR_FAILURE;
 	}
 
-	if (!perm.can_create)
+	if (retro_atomic_load_acquire_int(&perm.can_create) == 0)
 	{
 		return CELL_GAME_ERROR_NOTSUPPORTED;
 	}
 
-	if (perm.exists)
+	if (retro_atomic_load_acquire_int(&perm.exists) != 0)
 	{
 		return CELL_GAME_ERROR_EXIST;
 	}
@@ -1392,7 +1392,7 @@ error_code cellGameDeleteGameData(vm::cptr<char> dirName)
 			{
 				// Cannot remove it when it is accessed by cellGameDataCheck
 				// If it is HG data then resort to remove_gd for ERROR_BROKEN
-				if (perm.dir == name && perm.can_create)
+				if (perm.dir == name && (retro_atomic_load_acquire_int(&perm.can_create) != 0))
 				{
 					return CELL_GAME_ERROR_NOTSUPPORTED;
 				}
@@ -1555,7 +1555,7 @@ error_code cellGameGetParamString(s32 id, vm::ptr<char> buf, u32 bufsize)
 
 	const auto init = acquire_access_lock(perm.init);
 
-	if (!init || perm.mode == content_permission::check_mode::not_set)
+	if (!init || static_cast<content_permission::check_mode>(retro_atomic_load_acquire_int(&perm.mode)) == content_permission::check_mode::not_set)
 	{
 		return CELL_GAME_ERROR_FAILURE;
 	}
@@ -1567,10 +1567,10 @@ error_code cellGameGetParamString(s32 id, vm::ptr<char> buf, u32 bufsize)
 		return CELL_GAME_ERROR_INVALID_ID;
 	}
 
-	if (!key.is_supported(false, perm.mode))
+	if (!key.is_supported(false, static_cast<content_permission::check_mode>(retro_atomic_load_acquire_int(&perm.mode))))
 	{
 		// TODO: this error is possibly only returned during debug mode
-		return { CELL_GAME_ERROR_NOTSUPPORTED, "id %d is not supported in the current check mode: %s", id, perm.mode.load() };
+		return { CELL_GAME_ERROR_NOTSUPPORTED, "id %d is not supported in the current check mode: %s", id, static_cast<content_permission::check_mode>(retro_atomic_load_acquire_int(&perm.mode)) };
 	}
 
 	const auto value = psf::get_string(perm.sfo, key.name);
@@ -1601,7 +1601,7 @@ error_code cellGameSetParamString(s32 id, vm::cptr<char> buf)
 
 	const auto init = acquire_access_lock(perm.init);
 
-	if (!init || perm.mode == content_permission::check_mode::not_set)
+	if (!init || static_cast<content_permission::check_mode>(retro_atomic_load_acquire_int(&perm.mode)) == content_permission::check_mode::not_set)
 	{
 		return CELL_GAME_ERROR_FAILURE;
 	}
@@ -1613,7 +1613,7 @@ error_code cellGameSetParamString(s32 id, vm::cptr<char> buf)
 		return CELL_GAME_ERROR_INVALID_ID;
 	}
 
-	if (!perm.can_create || !key.is_supported(true, perm.mode))
+	if (retro_atomic_load_acquire_int(&perm.can_create) == 0 || !key.is_supported(true, static_cast<content_permission::check_mode>(retro_atomic_load_acquire_int(&perm.mode))))
 	{
 		return CELL_GAME_ERROR_NOTSUPPORTED;
 	}

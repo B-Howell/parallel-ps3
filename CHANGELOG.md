@@ -4,6 +4,11 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellGame's content permission is off `atomic_t`.** Not yet run on a game.
+  - **What changed:** the three flags a game's content check sets (whether it may create data, whether the data exists, and the check mode) are `retro_atomic_int_t`. Nothing is saved in savestates.
+  - **Tests:** none at runtime: the flags are set and read only inside the game's cellGame calls, on its PPU threads, and nothing waits on them. A check fails if `atomic_t` comes back to cellGame.
+
+
 - **cellDmuxPamf's queue is off `atomic_t`.** Not yet run on a game.
   - **What changed:** the queue that stands in for the SPURS queue between the demuxer and its SPU side lives in the game's memory, and counts its entries in a word kept in a byte array. That word is now a `retro_atomic_int_t`, the same 4 bytes, so savestates (the game's memory) are unchanged. A waiter on an empty queue waits through `thread_ctrl::wait_on_custom`, so it wakes on an entry or as its thread is told to end.
   - **Tests:** `test_emu_waits` checks that the queue holds 4 entries at most and gives them back in order, and that a thread waiting on it wakes as each of 500 entries goes in. It was shown to fail with the wake taken out of `emplace`. A check fails if `atomic_t` comes back to cellDmuxPamf.
