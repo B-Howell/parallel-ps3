@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The JIT's disk-space budget on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The budget** (`jit_compiler::m_disk_space`, a quarter of the cache drive's free space at start) is a `retro_atomic_64_t`. Space given back is added with `retro_atomic_fetch_add_64`, as atomic_t's fetch_add did. Space taken is taken off only if that much is left, checked and changed in one compare-and-swap loop, as the fetch_op did.
+    - **The macOS JIT write guard's fences** are `retro_atomic_thread_fence_seq_cst` (the acq_rel one at the start is made seq_cst, which is no weaker). JIT.h includes retro_atomic.h in place of util/atomic.hpp.
+  - **Tests:** none. A jit_compiler needs LLVM set up and the cache drive; the full build and suites pass. A check fails if atomic_t, its fences or util/atomic.hpp come back to the JIT.
+
+
 - **Utilities/cond.h's cond_variable removed (an atomic_t user with no callers).** Not yet run on a game.
   - **What changed:**
     - **`cond_variable`** (a waiter count in an `atomic_t<u32>`, its waits timed) was used nowhere: sys_rsxaudio.h included its header and used nothing from it. Utilities/cond.h and cond.cpp are deleted, with their lines in Makefile.common and rpcs3/Emu/CMakeLists.txt and the include.

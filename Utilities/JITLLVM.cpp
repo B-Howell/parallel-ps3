@@ -993,20 +993,24 @@ bool jit_compiler::add_sub_disk_space(ssz space)
 {
 	if (space >= 0)
 	{
-		ensure(m_disk_space.fetch_add(space) < ~static_cast<usz>(space));
+		ensure(static_cast<u64>(retro_atomic_fetch_add_64(&m_disk_space, space)) < ~static_cast<u64>(space));
 		return true;
 	}
 
-	return m_disk_space.fetch_op([sub_size = static_cast<usz>(0 - space)](usz& val)
-	{
-		if (val >= sub_size)
-		{
-			val -= sub_size;
-			return true;
-		}
+	// Taken off only if that much is left: checked and changed in one
+	// compare-and-swap
+	const u64 sub_size = 0 - static_cast<u64>(space);
 
-		return false;
-	}).second;
+	for (;;)
+	{
+		const u64 val = static_cast<u64>(retro_atomic_load_acquire_64(&m_disk_space));
+
+		if (val < sub_size)
+			return false;
+
+		if (retro_atomic_cas_64(&m_disk_space, static_cast<s64>(val), static_cast<s64>(val - sub_size)))
+			return true;
+	}
 }
 
 jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, std::string_view _cpu, u32 flags, std::function<u64(const std::string&)> symbols_cement) noexcept
@@ -1140,7 +1144,7 @@ jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, st
 
 	if (fs::statfs(fs::get_cache_dir(), stats))
 	{
-		m_disk_space = stats.avail_free / 4;
+		retro_atomic_store_release_64(&m_disk_space, static_cast<s64>(stats.avail_free / 4));
 	}
 }
 

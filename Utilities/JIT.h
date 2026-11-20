@@ -1,7 +1,7 @@
 #pragma once
 
 #include "util/types.hpp"
-#include "util/atomic.hpp"
+#include <retro_atomic.h>
 
 // Include asmjit with warnings ignored
 #define ASMJIT_EMBED
@@ -443,13 +443,13 @@ struct jit_write_guard
 		pthread_jit_write_protect_np(false);
 
 		// Ensure stores are not reordered by the compiler
-		atomic_fence_acq_rel();
+		retro_atomic_thread_fence_seq_cst();
 	}
 
 	~jit_write_guard() noexcept
 	{
 		// Ensure stores are not reordered by the compiler
-		atomic_fence_seq_cst();
+		retro_atomic_thread_fence_seq_cst();
 
 		pthread_jit_write_protect_np(true);
 	}
@@ -544,8 +544,8 @@ class jit_compiler final
 	// Arch
 	std::string m_cpu{};
 
-	// Disk Space left
-	atomic_t<usz> m_disk_space = umax;
+	// Disk Space left, in bytes: changed by compare-and-swap from any compile thread
+	retro_atomic_64_t m_disk_space{-1};
 
 public:
 	jit_compiler(const std::unordered_map<std::string, u64>& _link, std::string_view _cpu, u32 flags = 0, std::function<u64(const std::string&)> symbols_cement = {}) noexcept;
