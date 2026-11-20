@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellSysutilAvc on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The request id counter** (`avc_settings::req_id_cnt`) is a `retro_atomic_int_t`; the four calls that hand out an id take it through `next_req_id()`, a fetch-and-add as before.
+  - **Tests:** none. The settings are local to cellSysutilAvc.cpp and the calls write the id to guest memory, which the tests do not map; the full build and suites pass. A check fails if atomic_t comes back to cellSysutilAvc.
+
+
 - **cellResc on retro_atomic, off atomic_t; one cellRescInit fills the config.** Not yet run on a game.
   - **What changed:**
     - **The initialized flag** (`cell_resc_manager::is_initialized`) is a `retro_atomic_int_t` with three states: 0, `starting` and 1. cellRescInit claims it with a compare-and-swap from 0 to `starting`, fills the config, then stores 1 with release. With atomic_t's check-then-store, two Inits at once could both write the config, and a call could see the flag set before the config was whole.

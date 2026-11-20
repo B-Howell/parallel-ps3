@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <retro_atomic.h>
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/Modules/cellSysutilAvc.h"
 #include "Emu/Cell/Modules/cellSysutil.h"
@@ -46,7 +47,10 @@ struct avc_settings
 	// The callback and its argument, one word
 	sysutil_cb_word avc_cb;
 
-	atomic_t<u32> req_id_cnt = 0;
+	// The next request's id, taken by any PPU thread
+	retro_atomic_int_t req_id_cnt{0};
+
+	CellSysutilAvcRequestId next_req_id() { return static_cast<u32>(retro_atomic_fetch_add_int(&req_id_cnt, 1)); }
 
 	static bool saveable(bool /*is_writing*/) noexcept
 	{
@@ -107,7 +111,7 @@ error_code cellSysutilAvcByeRequest(vm::ptr<CellSysutilAvcRequestId> request_id)
 		return CELL_AVC_ERROR_INVALID_ARGUMENT;
 
 	auto& settings = g_fxo->get<avc_settings>();
-	const CellSysutilAvcRequestId req_id = settings.req_id_cnt.fetch_add(1);
+	const CellSysutilAvcRequestId req_id = settings.next_req_id();
 	*request_id = req_id;
 	settings.register_cb_call(req_id, CELL_AVC_EVENT_BYE_SUCCEEDED, static_cast<CellSysUtilAvcEventParam>(0));
 
@@ -228,7 +232,7 @@ error_code cellSysutilAvcJoinRequest(u32 ctx_id, vm::cptr<SceNpRoomId> room_id, 
 		return CELL_AVC_ERROR_INVALID_ARGUMENT;
 
 	auto& settings = g_fxo->get<avc_settings>();
-	const CellSysutilAvcRequestId req_id = settings.req_id_cnt.fetch_add(1);
+	const CellSysutilAvcRequestId req_id = settings.next_req_id();
 	*request_id = req_id;
 	settings.register_cb_call(req_id, CELL_AVC_EVENT_JOIN_SUCCEEDED, static_cast<CellSysUtilAvcEventParam>(0));
 
@@ -268,7 +272,7 @@ error_code cellSysutilAvcLoadAsync(vm::ptr<CellSysutilAvcCallback> func, vm::ptr
 			return CELL_AVC_ERROR_ALREADY_INITIALIZED;
 	}
 
-	const CellSysutilAvcRequestId req_id = settings.req_id_cnt.fetch_add(1);
+	const CellSysutilAvcRequestId req_id = settings.next_req_id();
 	*request_id = req_id;
 	settings.register_cb_call(req_id, CELL_AVC_EVENT_LOAD_SUCCEEDED, static_cast<CellSysUtilAvcEventParam>(0));
 
@@ -331,7 +335,7 @@ error_code cellSysutilAvcUnloadAsync(vm::ptr<CellSysutilAvcRequestId> request_id
 		return CELL_AVC_ERROR_INVALID_ARGUMENT;
 
 	auto& settings = g_fxo->get<avc_settings>();
-	const CellSysutilAvcRequestId req_id = settings.req_id_cnt.fetch_add(1);
+	const CellSysutilAvcRequestId req_id = settings.next_req_id();
 	*request_id = req_id;
 	settings.register_cb_call(req_id, CELL_AVC_EVENT_UNLOAD_SUCCEEDED, static_cast<CellSysUtilAvcEventParam>(0));
 
