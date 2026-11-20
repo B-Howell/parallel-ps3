@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellSsl on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The initialized flag** (`ssl_manager::is_init`) is a `retro_atomic_int_t`, read through `initialized()`. cellSslInit takes it with a compare-and-swap from 0 to 1 and cellSslEnd ends it with one from 1 to 0, so of two at once one succeeds and the other gets ALREADY_INITIALIZED or NOT_INITIALIZED. atomic_t's check-then-store let both succeed.
+  - **Tests:** test_emu_waits runs two Inits at once, then two Ends at once, twice over: one of each succeeds and the flag follows. A mutant Init or End that stores without the compare-and-swap fails it. A check fails if atomic_t comes back to cellSsl.
+
+
 - **sceNpSns on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The initialized flag** (`sce_np_sns_manager::is_initialized`) is a `retro_atomic_int_t`, read through `initialized()`. sceNpSnsFbInit takes it with a compare-and-swap from 0 to 1 and sceNpSnsFbTerm ends it with one from 1 to 0, so of two at once one succeeds and the other gets ALREADY_INITIALIZED or NOT_INITIALIZED. atomic_t's check-then-store let both succeed.

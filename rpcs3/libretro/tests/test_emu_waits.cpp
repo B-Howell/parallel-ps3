@@ -31,6 +31,7 @@
 #include "Emu/Cell/Modules/cellMsgDialog.h"
 #include "Emu/Cell/Modules/sceNpTrophy.h"
 #include "Emu/Cell/Modules/sceNpSns.h"
+#include "Emu/Cell/Modules/cellSsl.h"
 #include "Emu/NP/net_http_thread.h"
 #include "Emu/Cell/Modules/cellAudio.h"
 #include "Emu/Cell/Modules/cellDmuxPamf.h"
@@ -105,6 +106,8 @@ struct cfg_values final : cfg::node
 
 error_code sceNpSnsFbInit(vm::cptr<SceNpSnsFbInitParams> params);
 error_code sceNpSnsFbTerm();
+error_code cellSslInit(vm::ptr<void> pool, u32 poolSize);
+error_code cellSslEnd();
 
 int main()
 {
@@ -2243,6 +2246,31 @@ int main()
 		}
 		g_fxo->clear();
 		std::printf("test_emu_waits: sceNpSns taken by one Init and ended by one Term\n");
+	}
+
+	// cellSsl's initialized flag: two Inits at once, one takes it; two Ends
+	// at once, one ends it (compare-and-swap of a retro_atomic word)
+	{
+		g_fxo->reset();
+		g_fxo->init<ssl_manager>();
+		for (int round = 0; round < 2; round++)
+		{
+			std::atomic<int> inits{0}, ends{0};
+			const auto init = [&] { if (cellSslInit(vm::null, 0) == CELL_OK) inits++; };
+			const auto end = [&] { if (cellSslEnd() == CELL_OK) ends++; };
+			std::thread i1(init), i2(init);
+			i1.join();
+			i2.join();
+			CHECK(inits == 1 && g_fxo->get<ssl_manager>().initialized());
+			CHECK(static_cast<s32>(cellSslInit(vm::null, 0)) == static_cast<s32>(CELL_SSL_ERROR_ALREADY_INITIALIZED));
+			std::thread e1(end), e2(end);
+			e1.join();
+			e2.join();
+			CHECK(ends == 1 && !g_fxo->get<ssl_manager>().initialized());
+			CHECK(static_cast<s32>(cellSslEnd()) == static_cast<s32>(CELL_SSL_ERROR_NOT_INITIALIZED));
+		}
+		g_fxo->clear();
+		std::printf("test_emu_waits: cellSsl taken by one Init and ended by one End\n");
 	}
 
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");

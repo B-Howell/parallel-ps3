@@ -1,5 +1,7 @@
 #pragma once
 
+#include <retro_atomic.h>
+
 enum CellSslError : u32
 {
 	CELL_SSL_ERROR_NOT_INITIALIZED       = 0x80740001,
@@ -199,9 +201,13 @@ enum SpecialCerts
 	GTECyberTrustGlobalCert = 23
 };
 
+// Whether cellSslInit has run: taken by one Init and given back by one End
+// (compare-and-swap), read by the other calls
 struct ssl_manager
 {
-	atomic_t<bool> is_init{ false };
+	retro_atomic_int_t is_init{0};
+
+	bool initialized() const { return retro_atomic_load_acquire_int(&is_init) != 0; }
 };
 
 b8 _cellSslIsInitd();
