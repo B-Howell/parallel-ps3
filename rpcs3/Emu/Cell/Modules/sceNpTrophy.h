@@ -6,6 +6,7 @@
 #include <vector>
 #include <string>
 #include "util/shared_ptr.hpp"
+#include <retro_atomic.h>
 
 // Error codes
 enum SceNpTrophyError : u32
@@ -175,3 +176,10 @@ struct current_trophy_name
 {
 	atomic_ptr<std::string> name;
 };
+
+// A context registration's status callbacks queued for the game, @queued of
+// them: one taken (its callback run) counts down and the last wakes the
+// registration, which waits for that before queueing the next (or sends it
+// after a few frames without; false at a stop)
+void sce_np_trophy_status_taken(retro_atomic_int_t& queued);
+bool sce_np_trophy_wait_taken(retro_atomic_int_t& queued);

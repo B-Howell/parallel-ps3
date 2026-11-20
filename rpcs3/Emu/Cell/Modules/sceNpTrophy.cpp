@@ -112,7 +112,7 @@ struct trophy_handle_t
 // contexts it checks stay while it does, with no lock
 struct sce_np_trophy_manager
 {
-	atomic_t<bool> is_initialized = false;
+	bool is_initialized = false;
 
 	// Get context + check handle given
 	static std::pair<trophy_context_t*, SceNpTrophyError> get_context_ex(u32 context, u32 handle, bool test_writeable = false)
@@ -168,6 +168,8 @@ struct sce_np_trophy_manager
 	SAVESTATE_INIT_POS(12);
 
 	sce_np_trophy_manager() = default;
+	sce_np_trophy_manager(const sce_np_trophy_manager&) = delete;
+	sce_np_trophy_manager& operator=(const sce_np_trophy_manager&) = delete;
 
 	sce_np_trophy_manager(utils::serial& ar)
 		: is_initialized(ar.pop<bool>())
@@ -286,6 +288,43 @@ static void show_trophy_notification(const trophy_context_t* ctxt, s32 trophyId)
 }
 
 // Functions
+
+void sce_np_trophy_status_taken(retro_atomic_int_t& queued)
+{
+	if (retro_atomic_fetch_sub_int(&queued, 1) == 1)
+	{
+		retro_waitaddr_notify_one(&queued);
+	}
+}
+
+bool sce_np_trophy_wait_taken(retro_atomic_int_t& queued)
+{
+	// The game takes it with cellSysutilCheckCallback; the rest are sent
+	// anyway once a few frames have gone by without it - no clock:
+	// retro_run's frames (g_libretro_events) pace it
+	for (u32 old_value = static_cast<u32>(retro_atomic_load_acquire_int(&queued)), frames = 0; old_value && frames < 6;
+		old_value = static_cast<u32>(retro_atomic_load_acquire_int(&queued)))
+	{
+		const u32 events = libretro_events_seen();
+
+		libretro_wait_on(queued, old_value);
+
+		if (libretro_events_seen() != events)
+		{
+			frames++;
+		}
+
+		// A stop's change of state wakes the wait; after it no frame comes
+		// (retro_run has stopped), so leave then, as the dialogs' waits do,
+		// or a close hangs here
+		if (thread_ctrl::state() == thread_state::aborting || Emu.IsStopped())
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
 
 error_code sceNpTrophyInit(vm::ptr<void> pool, u32 poolSize, u32 containerId, u64 options)
 {
@@ -817,50 +856,33 @@ error_code sceNpTrophyRegisterContext(ppu_thread& ppu, u32 context, u32 handle, 
 			};
 
 			// Create a counter which is destroyed after the function ends
-			const auto queued = std::make_shared<atomic_t<u32>>(0);
+			const auto queued = std::make_shared<retro_atomic_int_t>(0);
 
 			for (auto status : statuses)
 			{
 				for (s32 completed = 0; completed <= status.second; completed++)
 				{
 					// One status max per cellSysutilCheckCallback call
-					*queued += 1;
+					retro_atomic_fetch_add_int(queued.get(), 1);
 
 					sysutil_register_cb([statusCb, status, context, completed, arg, queued](ppu_thread& cb_ppu) -> s32
 					{
 						// TODO: it is possible that we need to check the return value here as well.
 						statusCb(cb_ppu, context, status.first, completed, status.second, arg);
 
-						if (queued && (*queued)-- == 1)
+						if (queued)
 						{
-							queued->notify_one();
+							sce_np_trophy_status_taken(*queued);
 						}
 
 						return 0;
 					});
 
-					// The next event once the game has taken this one
-					// (cellSysutilCheckCallback), or the rest sent anyway
-					// once a few frames have gone by without it - no clock:
-					// retro_run's frames (g_libretro_events) pace it
-					for (u32 old_value = *queued, frames = 0; old_value && frames < 6; old_value = *queued)
+					// The next event once the game has taken this one, or
+					// none at a stop
+					if (!sce_np_trophy_wait_taken(*queued))
 					{
-						const u32 events = libretro_events_seen();
-
-						libretro_wait_on(*queued, old_value);
-
-						if (libretro_events_seen() != events)
-						{
-							frames++;
-						}
-
-						// A stop's change of state wakes the wait; after it no
-						// frame comes (retro_run has stopped), so leave then,
-						// as the dialogs' waits do, or a close hangs here
-						if (thread_ctrl::state() == thread_state::aborting || Emu.IsStopped())
-						{
-							return {};
-						}
+						return {};
 					}
 				}
 			}

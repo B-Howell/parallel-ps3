@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **sceNpTrophy on retro_atomic, off atomic_t; libretro_wait_on for retro_atomic words only.** Not yet run on a game.
+  - **What changed:**
+    - **A context registration's status callbacks:** the count of those queued for the game is a `retro_atomic_int_t`. The callback the game takes counts it down, and the last one wakes the registration with a retro_waitaddr notify. The registration's wait (the next status once the game has taken this one, or after a few frames without; none at a stop) is unchanged, now in `sce_np_trophy_wait_taken`, with the count-down in `sce_np_trophy_status_taken`.
+    - **The manager's initialized flag** is a plain bool: every call reads and writes it on the HLE thread (`hle_call`), so it needs no atomic. Its copy is deleted, as the object map asks.
+    - **libretro_wait_on's atomic_t overload** (System.h) is gone, its last caller moved; the retro_atomic one stays.
+  - **Tests:** test_emu_waits checks the registration's wait on a named thread: it sleeps while two callbacks are queued, stays asleep after the first is taken, and is woken by the second with no frame. A mutant that drops the notify fails it, and so does one that never counts down. The test of libretro_wait_on's word and event wakes now uses a retro_atomic word. A check fails if atomic_t comes back to sceNpTrophy or System.h.
+
+
 - **cellMsgDialog on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The dialog's state** (`MsgDialogBase::state`, a `MsgDialogState`) is a retro_atomic word. Closing and aborting are a compare-and-swap from Open, then a retro_waitaddr notify for the blocking open asleep on it.

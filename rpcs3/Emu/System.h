@@ -119,22 +119,6 @@ inline void libretro_wait_on(retro_atomic_int_t& word, u32 old)
 	retro_waitaddr_wait(w, 2, -1);
 }
 
-template <typename T>
-inline void libretro_wait_on(atomic_t<T>& word, T old)
-{
-	const u32 events = libretro_events_seen();
-
-	if (word.load() != old)
-	{
-		return;
-	}
-
-	atomic_wait::list<2> list;
-	list.template set<0>(word, old);
-	list.template set_raw<1>(&g_libretro_events, events);
-	list.wait();
-}
-
 class Emulator final
 {
 	// The emulator's state (system_state). WaitReady waits on it; Run and

@@ -29,6 +29,7 @@
 #include "Emu/RSX/Core/RSXIOMap.hpp"
 #include "Emu/RSX/Overlays/Shaders/shader_loading_dialog.h"
 #include "Emu/Cell/Modules/cellMsgDialog.h"
+#include "Emu/Cell/Modules/sceNpTrophy.h"
 #include "Emu/NP/net_http_thread.h"
 #include "Emu/Cell/Modules/cellAudio.h"
 #include "Emu/Cell/Modules/cellDmuxPamf.h"
@@ -278,22 +279,22 @@ int main()
 	// A host thread waiting on a word (libretro_wait_on): woken by the word
 	// moved, and by the emulator's state changing - not otherwise
 	{
-		atomic_t<u32> word = 0;
+		retro_atomic_int_t word{0};
 		std::atomic<int> returns{0};
 		std::atomic<bool> stop{false};
 		std::thread waiter([&]
 		{
 			while (!stop)
 			{
-				libretro_wait_on(word, word.load());
+				libretro_wait_on(word, static_cast<u32>(retro_atomic_load_acquire_int(&word)));
 				returns++;
 			}
 		});
 
 		CHECK(!reaches(returns, 1)); // nothing happened: still waiting
 		const int idle = returns;
-		word++;
-		word.notify_all();
+		retro_atomic_fetch_add_int(&word, 1);
+		retro_waitaddr_notify_all(&word);
 		CHECK(reaches(returns, idle + 1)); // the word moved
 		const int moved = returns;
 		libretro_event();
@@ -2152,6 +2153,43 @@ int main()
 		opener.join();
 		CHECK(done == 1 && retro_atomic_load_acquire_int(&dlg.state) == static_cast<s32>(MsgDialogState::Abort));
 		std::printf("test_emu_waits: a message dialog's state: a blocking open asleep until it closes\n");
+	}
+
+	// A trophy registration's status callbacks: it sleeps (a named thread)
+	// while the game has one to take, and the last one taken wakes it - no
+	// frame needed
+	{
+		retro_atomic_int_t queued{0};
+		retro_atomic_fetch_add_int(&queued, 1);
+		retro_atomic_fetch_add_int(&queued, 1);
+		std::atomic<int> done{0}, sent{0};
+		const u32 events = libretro_events_seen();
+		named_thread registration("Trophy Registration", [&]
+		{
+			sent = sce_np_trophy_wait_taken(queued) ? 1 : 2;
+			done = 1;
+		});
+		for (int i = 0; i < 200000; i++)
+			std::this_thread::yield();
+		CHECK(done == 0);
+		sce_np_trophy_status_taken(queued);
+		for (int i = 0; i < 200000; i++)
+			std::this_thread::yield();
+		CHECK(done == 0 && retro_atomic_load_acquire_int(&queued) == 1);
+		sce_np_trophy_status_taken(queued);
+		for (int i = 0; i < 2000000 && !done; i++)
+			std::this_thread::yield();
+		CHECK(done == 1 && retro_atomic_load_acquire_int(&queued) == 0);
+		CHECK(libretro_events_seen() == events);
+		// Not woken: frames let it go, so the test ends
+		for (int i = 0; i < 1'000'000 && !done; i++)
+		{
+			libretro_event();
+			std::this_thread::yield();
+		}
+		registration();
+		CHECK(sent != 0);
+		std::printf("test_emu_waits: a trophy registration asleep until the game takes its status callbacks\n");
 	}
 
 	// A function looked up once, on first use (libc, loaded already), a
