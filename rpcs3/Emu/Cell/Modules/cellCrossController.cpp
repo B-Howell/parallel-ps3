@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <retro_atomic.h>
 #include "Emu/System.h"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/IdManager.h"
@@ -41,7 +42,9 @@ void finish_callback(ppu_thread& ppu, s32 button_type, vm::ptr<void> userdata); 
 
 struct cross_controller
 {
-	atomic_t<s32> status{0};
+	// Set on the PPU thread at Initialize and by the connection thread as it
+	// ends; read by the next Initialize
+	retro_atomic_int_t status{0};
 	std::unique_ptr<named_thread<std::function<void()>>> connection_thread;
 	vm::ptr<CellCrossControllerCallback> callback = vm::null;
 	vm::ptr<void> userdata = vm::null;
@@ -80,7 +83,7 @@ struct cross_controller
 			return CELL_OK;
 		});
 
-		status = CELL_CROSS_CONTROLLER_STATUS_INITIALIZED;
+		retro_atomic_store_release_int(&status, CELL_CROSS_CONTROLLER_STATUS_INITIALIZED);
 
 		connection_thread = std::make_unique<named_thread<std::function<void()>>>(fmt::format("Cross-Controller Thread"), [this]()
 		{
@@ -92,7 +95,7 @@ struct cross_controller
 				thread_ctrl::wait_on_custom<0>([](atomic_wait::list<2>&) {});
 			}
 
-			status = CELL_CROSS_CONTROLLER_STATUS_FINALIZED;
+			retro_atomic_store_release_int(&status, CELL_CROSS_CONTROLLER_STATUS_FINALIZED);
 		});
 	}
 
@@ -130,7 +133,7 @@ error_code cellCrossControllerInitialize(vm::cptr<CellCrossControllerParam> pPar
 
 	cross_controller& cc = g_fxo->get<cross_controller>();
 
-	if (cc.status == CELL_CROSS_CONTROLLER_STATUS_INITIALIZED) // TODO: confirm this logic
+	if (retro_atomic_load_acquire_int(&cc.status) == CELL_CROSS_CONTROLLER_STATUS_INITIALIZED) // TODO: confirm this logic
 	{
 		return CELL_CROSS_CONTROLLER_ERROR_INVALID_STATE;
 	}
