@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **libretro-common resynced from RetroArch master.** Not yet run on a game.
+  - **What changed:**
+    - **42 files** that had fallen behind RetroArch's are RetroArch's again, among them retro_atomic.h (with the new `retro_atomic_thread_fence_acq_rel`), file_stream, the VFS, net_http and the SSL socket, rjson, rmp4, rflac, the image and audio formats, crypto, rthreads and its eventcount, rtime, features_cpu and libretro.h. Six headers they now include come with them: retro_assert.h, retro_horizon.h, formats/rlpcm.h, formats/rmodtracker.h, formats/video_audio_track.h and gfx/shaders/spirv_words.h.
+    - **The core needed no change** to build against them.
+  - **Tests:** the full build and suites pass. A check fails if the copy's retro_atomic.h falls behind again (no acq_rel fence).
+
+
 - **test_emu_waits: the libretro_wait_on tests no longer race their own waiter.** Test only.
   - **What changed:**
     - **The two tests that check a retro_run wakes `libretro_wait_on`** fired one event as soon as the waiter's count moved, and failed now and then: the waiter takes the event count as it goes back into its wait, so an event fired before then is not one it saw, and it slept on. It showed in a full suite run after the libretro-common resync, whose eventcount changes move the timing. They now fire events until the waiter returns, with a bound.
