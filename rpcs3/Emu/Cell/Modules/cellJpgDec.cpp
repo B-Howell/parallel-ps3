@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <retro_atomic.h>
 #include "Emu/VFS.h"
 #include "Emu/IdManager.h"
 #include "Emu/Cell/PPUModule.h"
@@ -64,7 +65,7 @@ struct JpgDecHost
 struct jpg_dec_host_pool
 {
 	static constexpr usz size = 8;
-	atomic_t<JpgDecHost*> slots[size]{};
+	retro_atomic_ptr_t slots[size]{};
 
 	jpg_dec_host_pool() = default;
 	jpg_dec_host_pool(const jpg_dec_host_pool&) = delete;
@@ -73,14 +74,14 @@ struct jpg_dec_host_pool
 	~jpg_dec_host_pool()
 	{
 		for (auto& slot : slots)
-			delete slot.exchange(nullptr);
+			delete static_cast<JpgDecHost*>(retro_atomic_exchange_ptr(&slot, nullptr));
 	}
 
 	JpgDecHost* take()
 	{
 		for (auto& slot : slots)
 		{
-			if (JpgDecHost* host = slot.exchange(nullptr))
+			if (JpgDecHost* host = static_cast<JpgDecHost*>(retro_atomic_exchange_ptr(&slot, nullptr)))
 				return host;
 		}
 
@@ -100,7 +101,7 @@ struct jpg_dec_host_pool
 
 		for (auto& slot : slots)
 		{
-			if (slot.compare_and_swap_test(nullptr, host))
+			if (retro_atomic_cas_ptr(&slot, nullptr, host))
 				return;
 		}
 
