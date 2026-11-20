@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **stereo_config's live preview removed (its atomic_t flag with it).** Not yet run on a game.
+  - **What changed:**
+    - **The live preview** (`s_live_preview_enabled`, an `atomic_t<bool>`, and the `m_live_matrices` it chose) is standalone RPCS3's settings dialog's: nothing in the core set either, so `matrices()` never took that branch. The flag, the matrices, their setter and the branch are gone, and with them the only use of `m_in_emulation`, which goes too (the constructor keeps its argument for its callers). The header drops util/atomic.hpp and an unused `<mutex>`.
+  - **Tests:** none; the removed branch was never taken. The full build and suites pass. A check fails if the live preview or atomic_t comes back to stereo_config.
+
+
 - **The IPC manager's made-count on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The count** (`ipc_manager::m_made`, bumped as an object made for a key is published) is a `retro_atomic_int_t`. A caller that finds its key being made by another reads it first, then sleeps on it with `retro_waitaddr_wait`, untimed as before. The maker bumps it with a fetch-and-add and wakes them all with `retro_waitaddr_notify_all`. IPC.h no longer includes util/atomic.hpp.

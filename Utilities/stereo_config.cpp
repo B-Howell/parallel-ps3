@@ -11,8 +11,6 @@ stereo_config::stereo_matrices::stereo_matrices(const std::array<color3_base<f32
 	}
 }
 
-atomic_t<bool> stereo_config::s_live_preview_enabled = false;
-stereo_config::stereo_matrices stereo_config::m_live_matrices = {};
 
 const std::unordered_map<stereo_render_mode_options, stereo_config::stereo_matrices> stereo_config::m_matrices =
 {
@@ -103,11 +101,6 @@ void stereo_config::update_from_config(bool stereo_enabled)
 
 const stereo_config::stereo_matrices& stereo_config::matrices() const
 {
-	if (m_in_emulation && s_live_preview_enabled)
-	{
-		return m_live_matrices;
-	}
-
 	switch (m_stereo_mode)
 	{
 	case stereo_render_mode_options::disabled:
