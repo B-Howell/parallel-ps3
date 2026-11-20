@@ -47,7 +47,7 @@ error_code sys_lwmutex_create(ppu_thread& ppu, vm::ptr<sys_lwmutex_t> lwmutex, v
 		return res;
 	}
 
-	lwmutex->lock_var.store({ lwmutex_free, 0 });
+	lwmutex->set_lock(lwmutex_free, 0);
 	lwmutex->attribute = attr->recursive | attr->protocol;
 	lwmutex->recursive_count = 0;
 	lwmutex->sleep_queue = *out_id;
@@ -64,7 +64,7 @@ error_code sys_lwmutex_destroy(ppu_thread& ppu, vm::ptr<sys_lwmutex_t> lwmutex)
 	}
 
 	// check to prevent recursive locking in the next call
-	if (lwmutex->vars.owner.load() == ppu.id)
+	if (lwmutex->owner() == ppu.id)
 	{
 		return CELL_EBUSY;
 	}
@@ -85,7 +85,7 @@ error_code sys_lwmutex_destroy(ppu_thread& ppu, vm::ptr<sys_lwmutex_t> lwmutex)
 	}
 
 	// deleting succeeded
-	lwmutex->vars.owner.release(lwmutex_dead);
+	lwmutex->set_owner(lwmutex_dead);
 
 	return CELL_OK;
 }
@@ -111,7 +111,7 @@ error_code sys_lwmutex_lock(ppu_thread& ppu, vm::ptr<sys_lwmutex_t> lwmutex, u64
 	const be_t<u32> tid(ppu.id);
 
 	// try to lock lightweight mutex
-	const be_t<u32> old_owner = lwmutex->vars.owner.compare_and_swap(lwmutex_free, tid);
+	const be_t<u32> old_owner = lwmutex->cas_owner(lwmutex_free, tid);
 
 	if (old_owner == lwmutex_free)
 	{
@@ -152,9 +152,9 @@ error_code sys_lwmutex_lock(ppu_thread& ppu, vm::ptr<sys_lwmutex_t> lwmutex, u64
 	{
 		busy_wait();
 
-		if (lwmutex->vars.owner.load() == lwmutex_free)
+		if (lwmutex->owner() == lwmutex_free)
 		{
-			if (lwmutex->vars.owner.compare_and_swap_test(lwmutex_free, tid))
+			if (lwmutex->cas_owner_test(lwmutex_free, tid))
 			{
 				// locking succeeded
 				return CELL_OK;
@@ -165,13 +165,13 @@ error_code sys_lwmutex_lock(ppu_thread& ppu, vm::ptr<sys_lwmutex_t> lwmutex, u64
 	// atomically increment waiter value using 64 bit op
 	if (!aborted)
 	{
-		lwmutex->all_info++;
+		lwmutex->add_waiters(1);
 	}
 
-	if (lwmutex->vars.owner.compare_and_swap_test(lwmutex_free, tid))
+	if (lwmutex->cas_owner_test(lwmutex_free, tid))
 	{
 		// locking succeeded
-		--lwmutex->all_info;
+		lwmutex->add_waiters(-1);
 
 		return CELL_OK;
 	}
@@ -188,12 +188,12 @@ error_code sys_lwmutex_lock(ppu_thread& ppu, vm::ptr<sys_lwmutex_t> lwmutex, u64
 		return {};
 	}
 
-	lwmutex->all_info--;
+	lwmutex->add_waiters(-1);
 
 	if (res == CELL_OK)
 	{
 		// locking succeeded
-		auto old = lwmutex->vars.owner.exchange(tid);
+		auto old = lwmutex->swap_owner(tid);
 
 		if (old != lwmutex_reserved)
 		{
@@ -211,20 +211,20 @@ error_code sys_lwmutex_lock(ppu_thread& ppu, vm::ptr<sys_lwmutex_t> lwmutex, u64
 			{
 				busy_wait();
 
-				if (lwmutex->vars.owner.load() == lwmutex_free)
+				if (lwmutex->owner() == lwmutex_free)
 				{
-					if (lwmutex->vars.owner.compare_and_swap_test(lwmutex_free, tid))
+					if (lwmutex->cas_owner_test(lwmutex_free, tid))
 					{
 						return CELL_OK;
 					}
 				}
 			}
 
-			lwmutex->all_info++;
+			lwmutex->add_waiters(1);
 
-			if (lwmutex->vars.owner.compare_and_swap_test(lwmutex_free, tid))
+			if (lwmutex->cas_owner_test(lwmutex_free, tid))
 			{
-				lwmutex->all_info--;
+				lwmutex->add_waiters(-1);
 				return CELL_OK;
 			}
 
@@ -243,7 +243,7 @@ error_code sys_lwmutex_lock(ppu_thread& ppu, vm::ptr<sys_lwmutex_t> lwmutex, u64
 
 			if (res_ == CELL_OK)
 			{
-				lwmutex->vars.owner.release(tid);
+				lwmutex->set_owner(tid);
 			}
 			else if (timeout && res_ + 0u != CELL_ETIMEDOUT)
 			{
@@ -251,14 +251,14 @@ error_code sys_lwmutex_lock(ppu_thread& ppu, vm::ptr<sys_lwmutex_t> lwmutex, u64
 
 				if (timeout <= time_diff)
 				{
-					lwmutex->all_info--;
+					lwmutex->add_waiters(-1);
 					return not_an_error(CELL_ETIMEDOUT);
 				}
 
 				timeout -= time_diff;
 			}
 
-			lwmutex->all_info--;
+			lwmutex->add_waiters(-1);
 
 			if (res_ + 0u != CELL_EBUSY)
 			{
@@ -282,7 +282,7 @@ error_code sys_lwmutex_trylock(ppu_thread& ppu, vm::ptr<sys_lwmutex_t> lwmutex)
 	const be_t<u32> tid(ppu.id);
 
 	// try to lock lightweight mutex
-	const be_t<u32> old_owner = lwmutex->vars.owner.compare_and_swap(lwmutex_free, tid);
+	const be_t<u32> old_owner = lwmutex->cas_owner(lwmutex_free, tid);
 
 	if (old_owner == lwmutex_free)
 	{
@@ -327,7 +327,7 @@ error_code sys_lwmutex_trylock(ppu_thread& ppu, vm::ptr<sys_lwmutex_t> lwmutex)
 		if (res == CELL_OK)
 		{
 			// locking succeeded
-			auto old = lwmutex->vars.owner.exchange(tid);
+			auto old = lwmutex->swap_owner(tid);
 
 			if (old != lwmutex_reserved)
 			{
@@ -354,7 +354,7 @@ error_code sys_lwmutex_unlock(ppu_thread& ppu, vm::ptr<sys_lwmutex_t> lwmutex)
 	const be_t<u32> tid(ppu.id);
 
 	// check owner
-	if (lwmutex->vars.owner.load() != tid)
+	if (lwmutex->owner() != tid)
 	{
 		return CELL_EPERM;
 	}
@@ -368,7 +368,7 @@ error_code sys_lwmutex_unlock(ppu_thread& ppu, vm::ptr<sys_lwmutex_t> lwmutex)
 	}
 
 	// ensure that waiter is zero
-	if (lwmutex->lock_var.compare_and_swap_test({ tid, 0 }, { lwmutex_free, 0 }))
+	if (lwmutex->cas_lock_test(tid, 0, lwmutex_free, 0))
 	{
 		// unlocking succeeded
 		return CELL_OK;
@@ -376,7 +376,7 @@ error_code sys_lwmutex_unlock(ppu_thread& ppu, vm::ptr<sys_lwmutex_t> lwmutex)
 
 	if (lwmutex->attribute & SYS_SYNC_RETRY)
 	{
-		lwmutex->vars.owner.release(lwmutex_free);
+		lwmutex->set_owner(lwmutex_free);
 
 		// Call the alternative syscall
 		if (_sys_lwmutex_unlock2(ppu, lwmutex->sleep_queue) + 0u == CELL_ESRCH)
@@ -388,7 +388,7 @@ error_code sys_lwmutex_unlock(ppu_thread& ppu, vm::ptr<sys_lwmutex_t> lwmutex)
 	}
 
 	// set special value
-	lwmutex->vars.owner.release(lwmutex_reserved);
+	lwmutex->set_owner(lwmutex_reserved);
 
 	// call the syscall
 	if (_sys_lwmutex_unlock(ppu, lwmutex->sleep_queue) + 0u == CELL_ESRCH)

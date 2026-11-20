@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Emu/Memory/guest_atomic.h"
+
 #include "sys_sync.h"
 #include "lv2_lwq.h"
 
@@ -32,19 +34,81 @@ struct sys_lwmutex_t
 		be_t<u32> waiter;
 	};
 
+	// The owner (the first word) and the count of waiters, in the game's
+	// memory, which its own code changes too (lwarx/stwcx): changed from
+	// the host through guest_atomic.h, the pair as one 64-bit word
 	union
 	{
-		atomic_t<sync_var_t> lock_var;
+		sync_var_t vars;
 
-		struct
-		{
-			atomic_be_t<u32> owner;
-			atomic_be_t<u32> waiter;
-		}
-		vars;
-
-		atomic_be_t<u64> all_info;
+		be_t<u64> all_info;
 	};
+
+	u32 owner() noexcept
+	{
+		return guest_atomic_load_be32(&vars.owner);
+	}
+
+	void set_owner(u32 owner) noexcept
+	{
+		guest_atomic_store_be32(&vars.owner, owner);
+	}
+
+	// The owner before
+	u32 swap_owner(u32 owner) noexcept
+	{
+		return guest_atomic_exchange_be32(&vars.owner, owner);
+	}
+
+	// The owner before; @owner put in where it was @cmp
+	u32 cas_owner(u32 cmp, u32 owner) noexcept
+	{
+		while (true)
+		{
+			const u32 old = this->owner();
+
+			if (old != cmp || guest_atomic_cas_be32(&vars.owner, cmp, owner))
+			{
+				return old;
+			}
+		}
+	}
+
+	bool cas_owner_test(u32 cmp, u32 owner) noexcept
+	{
+		return guest_atomic_cas_be32(&vars.owner, cmp, owner);
+	}
+
+	// Waiters added (or taken, @n negative): the low word of the pair
+	void add_waiters(s64 n) noexcept
+	{
+		guest_atomic_fetch_add_be64(&all_info, static_cast<u64>(n));
+	}
+
+	void set_lock(u32 owner, u32 waiter) noexcept
+	{
+		guest_atomic_store_be64(&all_info, u64{owner} << 32 | waiter);
+	}
+
+	bool cas_lock_test(u32 cmp_owner, u32 cmp_waiter, u32 owner, u32 waiter) noexcept
+	{
+		return guest_atomic_cas_be64(&all_info, u64{cmp_owner} << 32 | cmp_waiter, u64{owner} << 32 | waiter);
+	}
+
+	// The owner set and the waiters moved by @waiters, as one
+	void set_owner_add_waiters(u32 owner, s32 waiters) noexcept
+	{
+		while (true)
+		{
+			const u64 old = guest_atomic_load_be64(&all_info);
+			const u64 next = u64{owner} << 32 | static_cast<u32>(static_cast<u32>(old) + static_cast<u32>(waiters));
+
+			if (guest_atomic_cas_be64(&all_info, old, next))
+			{
+				return;
+			}
+		}
+	}
 
 	be_t<u32> attribute;
 	be_t<u32> recursive_count;

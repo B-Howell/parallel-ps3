@@ -61,17 +61,17 @@ error_code sys_lwcond_signal(ppu_thread& ppu, vm::ptr<sys_lwcond_t> lwcond)
 		return _sys_lwcond_signal(ppu, lwcond->lwcond_queue, 0, u32{umax}, 2);
 	}
 
-	if (lwmutex->vars.owner.load() == ppu.id)
+	if (lwmutex->owner() == ppu.id)
 	{
 		// if owns the mutex
-		lwmutex->all_info++;
+		lwmutex->add_waiters(1);
 
 		// call the syscall
 		if (error_code res = _sys_lwcond_signal(ppu, lwcond->lwcond_queue, lwmutex->sleep_queue, u32{umax}, 1))
 		{
 			static_cast<void>(ppu.test_stopped());
 
-			lwmutex->all_info--;
+			lwmutex->add_waiters(-1);
 
 			if (res + 0u != CELL_EPERM)
 			{
@@ -96,22 +96,14 @@ error_code sys_lwcond_signal(ppu_thread& ppu, vm::ptr<sys_lwcond_t> lwcond)
 	}
 
 	// if locking succeeded
-	lwmutex->lock_var.atomic_op([](sys_lwmutex_t::sync_var_t& var)
-	{
-		var.waiter++;
-		var.owner = lwmutex_reserved;
-	});
+	lwmutex->set_owner_add_waiters(lwmutex_reserved, 1);
 
 	// call the syscall
 	if (error_code res = _sys_lwcond_signal(ppu, lwcond->lwcond_queue, lwmutex->sleep_queue, u32{umax}, 3))
 	{
 		static_cast<void>(ppu.test_stopped());
 
-		lwmutex->lock_var.atomic_op([&](sys_lwmutex_t::sync_var_t& var)
-		{
-			var.waiter--;
-			var.owner = ppu.id;
-		});
+		lwmutex->set_owner_add_waiters(ppu.id, -1);
 
 		// unlock the lightweight mutex
 		sys_lwmutex_unlock(ppu, lwmutex);
@@ -141,7 +133,7 @@ error_code sys_lwcond_signal_all(ppu_thread& ppu, vm::ptr<sys_lwcond_t> lwcond)
 		return _sys_lwcond_signal_all(ppu, lwcond->lwcond_queue, lwmutex->sleep_queue, 2);
 	}
 
-	if (lwmutex->vars.owner.load() == ppu.id)
+	if (lwmutex->owner() == ppu.id)
 	{
 		// if owns the mutex, call the syscall
 		const error_code res = _sys_lwcond_signal_all(ppu, lwcond->lwcond_queue, lwmutex->sleep_queue, 1);
@@ -154,7 +146,7 @@ error_code sys_lwcond_signal_all(ppu_thread& ppu, vm::ptr<sys_lwcond_t> lwcond)
 
 		static_cast<void>(ppu.test_stopped());
 
-		lwmutex->all_info += +res;
+		lwmutex->add_waiters(+res);
 		return CELL_OK;
 	}
 
@@ -178,7 +170,7 @@ error_code sys_lwcond_signal_all(ppu_thread& ppu, vm::ptr<sys_lwcond_t> lwcond)
 
 	if (res > 0)
 	{
-		lwmutex->all_info += +res;
+		lwmutex->add_waiters(+res);
 
 		res = CELL_OK;
 	}
@@ -210,17 +202,17 @@ error_code sys_lwcond_signal_to(ppu_thread& ppu, vm::ptr<sys_lwcond_t> lwcond, u
 		return _sys_lwcond_signal(ppu, lwcond->lwcond_queue, 0, ppu_thread_id, 2);
 	}
 
-	if (lwmutex->vars.owner.load() == ppu.id)
+	if (lwmutex->owner() == ppu.id)
 	{
 		// if owns the mutex
-		lwmutex->all_info++;
+		lwmutex->add_waiters(1);
 
 		// call the syscall
 		if (error_code res = _sys_lwcond_signal(ppu, lwcond->lwcond_queue, lwmutex->sleep_queue, ppu_thread_id, 1))
 		{
 			static_cast<void>(ppu.test_stopped());
 
-			lwmutex->all_info--;
+			lwmutex->add_waiters(-1);
 
 			return res;
 		}
@@ -242,22 +234,14 @@ error_code sys_lwcond_signal_to(ppu_thread& ppu, vm::ptr<sys_lwcond_t> lwcond, u
 	}
 
 	// if locking succeeded
-	lwmutex->lock_var.atomic_op([](sys_lwmutex_t::sync_var_t& var)
-	{
-		var.waiter++;
-		var.owner = lwmutex_reserved;
-	});
+	lwmutex->set_owner_add_waiters(lwmutex_reserved, 1);
 
 	// call the syscall
 	if (error_code res = _sys_lwcond_signal(ppu, lwcond->lwcond_queue, lwmutex->sleep_queue, ppu_thread_id, 3))
 	{
 		static_cast<void>(ppu.test_stopped());
 
-		lwmutex->lock_var.atomic_op([&](sys_lwmutex_t::sync_var_t& var)
-		{
-			var.waiter--;
-			var.owner = ppu.id;
-		});
+		lwmutex->set_owner_add_waiters(ppu.id, -1);
 
 		// unlock the lightweight mutex
 		sys_lwmutex_unlock(ppu, lwmutex);
@@ -284,7 +268,7 @@ error_code sys_lwcond_wait(ppu_thread& ppu, vm::ptr<sys_lwcond_t> lwcond, u64 ti
 
 	const vm::ptr<sys_lwmutex_t> lwmutex = lwcond->lwmutex;
 
-	if (lwmutex->vars.owner.load() != tid)
+	if (lwmutex->owner() != tid)
 	{
 		// if not owner of the mutex
 		return CELL_EPERM;
@@ -294,7 +278,7 @@ error_code sys_lwcond_wait(ppu_thread& ppu, vm::ptr<sys_lwcond_t> lwcond, u64 ti
 	const be_t<u32> recursive_value = !lwcond_ec ? lwmutex->recursive_count : sstate.operator be_t<u32>();
 
 	// set special value
-	lwmutex->vars.owner = lwmutex_reserved;
+	lwmutex->set_owner(lwmutex_reserved);
 	lwmutex->recursive_count = 0;
 
 	// call the syscall
@@ -313,11 +297,11 @@ error_code sys_lwcond_wait(ppu_thread& ppu, vm::ptr<sys_lwcond_t> lwcond, u64 ti
 	{
 		if (res == CELL_OK)
 		{
-			lwmutex->all_info--;
+			lwmutex->add_waiters(-1);
 		}
 
 		// restore owner and recursive value
-		const auto old = lwmutex->vars.owner.exchange(tid);
+		const auto old = lwmutex->swap_owner(tid);
 		lwmutex->recursive_count = recursive_value;
 
 		if (old == lwmutex_free || old == lwmutex_dead)
@@ -356,7 +340,7 @@ error_code sys_lwcond_wait(ppu_thread& ppu, vm::ptr<sys_lwcond_t> lwcond, u64 ti
 	if (res + 0u == CELL_EDEADLK)
 	{
 		// restore owner and recursive value
-		const auto old = lwmutex->vars.owner.exchange(tid);
+		const auto old = lwmutex->swap_owner(tid);
 		lwmutex->recursive_count = recursive_value;
 
 		if (old == lwmutex_free || old == lwmutex_dead)

@@ -118,6 +118,15 @@ static INLINE int guest_atomic_cas_be64(void *p, uint64_t expected, uint64_t des
          GUEST_VAL_(int64_t, guest_be64_(desired))) != 0;
 }
 
+/* The value before adding @v (wrapping; a subtraction adds the negation) */
+static INLINE uint64_t guest_atomic_fetch_add_be64(void *p, uint64_t v)
+{
+   uint64_t old = guest_atomic_load_be64(p);
+   while (!guest_atomic_cas_be64(p, old, old + v))
+      old = guest_atomic_load_be64(p);
+   return old;
+}
+
 #ifdef __cplusplus
 }
 #endif

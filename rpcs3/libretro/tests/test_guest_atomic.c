@@ -50,6 +50,11 @@ int main(void)
    TEST_CHECK(guest_atomic_exchange_be64(d, 7) == 0x0123456789abcdefull && s_mem.b[15] == 7);
    TEST_CHECK(!guest_atomic_cas_be64(d, 8, 9) && guest_atomic_cas_be64(d, 7, 0x100) && s_mem.b[14] == 1);
 
+   /* A 64-bit add that carries, and one that takes away */
+   guest_atomic_store_be64(d, 0xffffffffull);
+   TEST_CHECK(guest_atomic_fetch_add_be64(d, 1) == 0xffffffffull && s_mem.b[11] == 1 && s_mem.b[12] == 0);
+   TEST_CHECK(guest_atomic_fetch_add_be64(d, (uint64_t)0 - 2) == 0x100000000ull && guest_atomic_load_be64(d) == 0xfffffffeull);
+
    /* Two threads adding to one word: 600000 in all */
    guest_atomic_store_be64(d, 0);
    pthread_create(&t1, NULL, adder, NULL);

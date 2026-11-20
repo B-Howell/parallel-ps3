@@ -3,6 +3,7 @@
 #include "Emu/Cell/lv2/sys_mmapper.h"
 #include "Emu/savestate_utils.hpp"
 #include "sysPrxForUser.h"
+#include "Emu/Memory/guest_atomic.h"
 
 LOG_CHANNEL(sysPrxForUser);
 
@@ -39,9 +40,10 @@ error_code sys_mmapper_get_shared_memory_area(ppu_thread& ppu, u64 flags, vm::pt
 		return {};
 	}
 
-	auto& area = *vm::_ptr<atomic_be_t<u32>>(s_shared_memory_area.addr());
+	// The area's address, in the game's memory: 0 until one is published
+	u8* const area = vm::_ptr<u8>(s_shared_memory_area.addr());
 
-	if (const u32 made = area.load())
+	if (const u32 made = guest_atomic_load_be32(area))
 	{
 		*address = made;
 		return CELL_OK;
@@ -52,7 +54,7 @@ error_code sys_mmapper_get_shared_memory_area(ppu_thread& ppu, u64 flags, vm::pt
 	if (const auto ret = sys_mmapper_allocate_address(ppu, 0x10000000, 0x20f, 0x10000000, made))
 	{
 		// Another caller's may have taken the last area
-		if (const u32 theirs = area.load())
+		if (const u32 theirs = guest_atomic_load_be32(area))
 		{
 			*address = theirs;
 			return CELL_OK;
@@ -63,7 +65,8 @@ error_code sys_mmapper_get_shared_memory_area(ppu_thread& ppu, u64 flags, vm::pt
 
 	// Published, or another caller's was first: this one given back
 	const u32 mine = *made;
-	const u32 old = area.compare_and_swap(0, mine);
+	// It only ever goes from 0 to an address: one that was not 0 still is
+	const u32 old = guest_atomic_cas_be32(area, 0, mine) ? 0 : guest_atomic_load_be32(area);
 
 	if (old)
 	{

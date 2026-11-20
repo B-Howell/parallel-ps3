@@ -35,6 +35,7 @@
 #include "Emu/RSX/VK/VKCommandStream.h"
 #include "Emu/RSX/Common/bitfield.hpp"
 #include "Emu/Cell/lv2/sys_spu.h"
+#include "Emu/Cell/lv2/sys_lwmutex.h"
 #include "Emu/savestate_utils.hpp"
 #include "Emu/Memory/vm_locking.h"
 #include "Emu/Memory/vm_reservation.h"
@@ -1965,6 +1966,31 @@ int main()
 		}
 		CHECK(alive == 0);
 		std::printf("test_emu_waits: atomic_ptr: 100000 replacements under two readers, each object freed once; a waiter woken\n");
+	}
+
+	// A lightweight mutex's words in the game's memory, changed from the host
+	// through guest_atomic.h: big-endian, the owner first; an owner
+	// compare-and-swap that reports the owner it found; waiters counted in
+	// the low word by two threads at once, with the owner set beside them
+	{
+		alignas(8) sys_lwmutex_t m{};
+		m.set_lock(lwmutex_free, 0);
+		const u8* const b = reinterpret_cast<const u8*>(&m);
+		CHECK(b[0] == 0xff && b[3] == 0xff && b[4] == 0 && b[7] == 0);
+		CHECK(m.cas_owner(lwmutex_free, 0x1234) == lwmutex_free && m.owner() == 0x1234);
+		CHECK(m.cas_owner(lwmutex_free, 0x5678) == 0x1234 && m.owner() == 0x1234);
+		CHECK(!m.cas_owner_test(lwmutex_free, 1) && m.swap_owner(lwmutex_reserved) == 0x1234);
+		CHECK(b[3] == 0xfd);
+
+		std::thread t1([&] { for (int i = 0; i < 50000; i++) m.set_owner_add_waiters(lwmutex_reserved, 1); });
+		std::thread t2([&] { for (int i = 0; i < 50000; i++) m.add_waiters(1); });
+		t1.join();
+		t2.join();
+		CHECK(m.owner() == lwmutex_reserved && m.vars.waiter == 100000u);
+		m.set_owner_add_waiters(0x99, -100000);
+		CHECK(m.owner() == 0x99 && m.vars.waiter == 0u);
+		CHECK(!m.cas_lock_test(0x99, 1, lwmutex_free, 0) && m.cas_lock_test(0x99, 0, lwmutex_free, 0) && m.owner() == lwmutex_free);
+		std::printf("test_emu_waits: a lightweight mutex's words: big-endian, owner swaps, 100000 waiters counted from two threads\n");
 	}
 
 	// A function looked up once, on first use (libc, loaded already), a

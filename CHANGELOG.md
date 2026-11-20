@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Lightweight mutexes and sys_mmapper's shared area through guest_atomic.h, off atomic_be_t.** Not yet run on a game.
+  - **What changed:**
+    - **sys_lwmutex_t** (the owner and waiter count the game keeps in its own memory) is plain big-endian words again. sysPrxForUser's lwmutex and lwcond functions change them through small helpers that use guest_atomic.h: read, set, swap and compare-and-swap the owner, add to the waiters, and set the pair. Where atomic_t ran a lambda on the pair, setting the owner while moving the waiter count is now one 64-bit compare-and-swap loop. Unlocks and owner sets are release stores where atomic_t's were sequentially consistent.
+    - **guest_atomic.h** gains a 64-bit add (a subtraction adds the negation).
+    - **sys_mmapper**'s shared memory area address, published once from 0, is read and compare-and-swapped through guest_atomic.h. A failed compare-and-swap reads the address the other caller put there, as it can only go from 0 to an address.
+    - **Unchanged:** lwmutex locking still spins briefly (`busy_wait`) before going to the syscall, as the PS3 library does; `lwcond_waiters` on the host side is a separate atomic_t, left for its own patch.
+  - **Tests:** test_emu_waits checks a lightweight mutex's words in memory: big-endian bytes with the owner first, an owner compare-and-swap that reports the owner it found, and 100000 waiters counted from two threads, one of them setting the owner at the same time. It also checks the pair's compare-and-swap. `test_guest_atomic` checks the 64-bit add carrying and taking away. A mutant that sets the owner and waiters with a plain store, and one whose owner compare-and-swap reports the expected owner instead of the one it found, each fail it. A check fails if atomic_be_t or atomic_t come back to the lwmutex words or sys_mmapper.
+
 - **Guest words changed from the host through retro_atomic (Emu/Memory/guest_atomic.h); sys_spinlock first.** Not yet run on a game.
   - **What changed:**
     - **guest_atomic.h** (C89, header only) loads, stores, swaps, compare-and-swaps and adds to 4- and 8-byte words of guest memory through retro_atomic. The value is swapped to the PS3's big-endian order (one bswap) on a little-endian host. It is what the HLE modules will use instead of `atomic_be_t`, which is `atomic_t` on a big-endian value.
