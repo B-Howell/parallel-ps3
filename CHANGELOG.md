@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The SPU LLVM recompiler's accurate-RSX PUTLLC16 off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The 16-byte store** of `spu_putllc16_rsx_res` (used with accurate RSX reservation access) compared and swapped guest memory through an `atomic_t<nse_t<v128>>` view. It now takes the plain `nse_t<v128>` pointer and swaps with `vm::guest_cas`, which is `retro_atomic_cas_128` for 16 bytes: the same compare-and-swap of all 16 bytes at once.
+  - **Tests:** none of its own: the path needs an SPU thread and the RSX reservation lock. vm::guest_cas's 16-byte form is tested in test_emu_waits (two threads adding to both halves). The full build and suites pass. A check fails if atomic_t comes back to the recompiler.
+
+
 - **A savestate's HLE locks on retro_atomic, off atomic_t; a failed finalize wakes its waiters.** Not yet run on a game.
   - **What changed:**
     - **The word** (`hle_locks_t::lock_val`: the HLE calls in it while 0 or more, a finalize under evaluation at -1, finalized at -2) is a `retro_atomic_int_t`. `try_lock` takes it with a compare-and-swap while it is not negative, sleeps on it with `retro_waitaddr_wait` while a finalize is evaluated, and is refused once it is finalized. `unlock` is a fetch-and-subtract, and `try_finalize` moves it with compare-and-swap as before.

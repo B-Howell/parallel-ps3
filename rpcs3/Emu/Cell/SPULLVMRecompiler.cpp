@@ -1332,7 +1332,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 				const v128 to_write = _spu->_ref<const nse_t<v128>>(ls_dst);
 
 				const auto dest = raddr | (ls_dst & 127);
-				const auto _dest = vm::get_super_ptr<atomic_t<nse_t<v128>>>(dest);
+				nse_t<v128>* const _dest = vm::get_super_ptr<nse_t<v128>>(dest);
 
 				if (rdata == to_write || ((lsa ^ ls_dst) & (SPU_LS_SIZE - 128)))
 				{
@@ -1371,7 +1371,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 						return false;
 					}
 
-					if (!_dest->compare_and_swap_test(rdata, to_write))
+					if (!vm::guest_cas(*_dest, rdata, to_write))
 					{
 						vm::reservation_release(res, old_res);
 						return false;
