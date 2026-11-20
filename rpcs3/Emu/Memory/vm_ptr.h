@@ -177,7 +177,12 @@ namespace vm
 	template <typename T>
 	void guest_store(T& word, const std::type_identity_t<T>& value) noexcept
 	{
-		if constexpr (sizeof(T) == 8)
+		if constexpr (sizeof(T) == 16)
+		{
+			void* const p = &word;
+			retro_atomic_store_release_128(static_cast<retro_atomic_128_t*>(p), std::bit_cast<retro_u128_t>(value));
+		}
+		else if constexpr (sizeof(T) == 8)
 		{
 			guest_atomic_store_raw64(&word, std::bit_cast<u64>(value));
 		}

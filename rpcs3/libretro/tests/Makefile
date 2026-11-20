@@ -1480,6 +1480,8 @@ check: all
 	@if grep -rnE "atomic_be_t|atomic_le_t" ../../Emu ../../util ../../../Utilities --include=*.h --include=*.hpp --include=*.cpp; then echo "atomic_be_t is back"; exit 1; else echo "atomic_be_t and atomic_le_t are gone"; fi
 	@# the texture cache's counters and tags are retro_atomic, not atomic_t
 	@if grep -n "atomic_t<" ../../Emu/RSX/Common/texture_cache.h ../../Emu/RSX/Common/texture_cache_utils.h ../../Emu/RSX/Common/texture_cache_predictor.h; then echo "atomic_t is back in the texture cache"; exit 1; else echo "the texture cache is on retro_atomic"; fi
+	@# the RSX's writes to the game's memory (reports, notifies, semaphores, the flip label) and the semaphore wait go through vm::guest_* and retro_atomic, not atomic_t views
+	@if grep -n "atomic_t<" ../../Emu/RSX/rsx_methods.cpp ../../Emu/RSX/RSXZCULL.cpp ../../Emu/RSX/NV47/HW/nv47_sync.hpp ../../Emu/RSX/NV47/HW/nv4097.cpp ../../Emu/RSX/NV47/HW/nv406e.cpp ../../Emu/Cell/lv2/sys_rsx.cpp ../../util/asm.hpp; then echo "atomic_t views are back in the RSX's guest writes"; exit 1; else echo "the RSX's guest writes are on vm::guest_*"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

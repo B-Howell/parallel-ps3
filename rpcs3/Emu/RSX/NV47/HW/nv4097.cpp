@@ -606,7 +606,7 @@ namespace rsx
 			default:
 				rsx_log.error("NV4097_GET_REPORT: Bad type %d", type);
 
-				vm::_ptr<atomic_t<CellGcmReportData>>(address_ptr)->atomic_op([&](CellGcmReportData& data)
+				vm::guest_op(*vm::_ptr<CellGcmReportData>(address_ptr), [&](CellGcmReportData& data)
 				{
 					data.timer = RSX(ctx)->timestamp();
 					data.padding = 0;
@@ -723,7 +723,7 @@ namespace rsx
 			// Notify ticks are strongly ordered
 			RSX(ctx)->sync();
 
-			vm::_ptr<atomic_t<RsxNotify>>(addr)->store(
+			vm::guest_store(*vm::_ptr<RsxNotify>(addr), RsxNotify
 			{
 				RSX(ctx)->timestamp(),
 				0

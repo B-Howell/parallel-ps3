@@ -256,19 +256,37 @@ namespace utils
 	}
 #endif
 
-	template <typename T, usz Align>
+	// Waits for the 4- or 8-byte word @var (as it is in memory, read with an
+	// acquire load) to stop being @old_value, or a while (the cache line's
+	// next write wakes the wait where the processor can watch it)
+	template <typename T>
 #if defined(ARCH_X64) && !defined(_MSC_VER)
 	__attribute__((target("waitpkg,mwaitx")))
 #endif
-	inline void spin_on_cacheline_once(const atomic_t<T, Align>& var, T old_value, u64 timeout_us)
+	inline void spin_on_cacheline_once(const T& var, std::type_identity_t<T> old_value, u64 timeout_us)
 	{
-		const void* addr = &var.raw();
+		static_assert(sizeof(T) == 4 || sizeof(T) == 8, "Unsupported size for spin_on_cacheline_once");
+		const void* addr = &var;
+
+		const auto now_value = [addr]() -> T
+		{
+			void* const p = const_cast<void*>(addr);
+
+			if constexpr (sizeof(T) == 8)
+			{
+				return std::bit_cast<T>(static_cast<u64>(retro_atomic_load_acquire_64(static_cast<retro_atomic_64_t*>(p))));
+			}
+			else
+			{
+				return std::bit_cast<T>(static_cast<u32>(retro_atomic_load_acquire_int(static_cast<retro_atomic_int_t*>(p))));
+			}
+		};
 
 #if defined(ARCH_ARM64)
 		// WFE will wake from the periodic event stream, so the explicit timeout is ignored on ARM.
 		(void)timeout_us;
 
-		using wait_type = std::remove_cvref_t<decltype(var.raw())>;
+		using wait_type = T;
 		using raw_type = std::conditional_t<sizeof(wait_type) == 8, u64,
 			std::conditional_t<sizeof(wait_type) == 4, u32,
 			std::conditional_t<sizeof(wait_type) == 2, u16, u8>>>;
@@ -301,7 +319,7 @@ namespace utils
 		{
 			_umonitor(const_cast<void*>(addr));
 
-			if (var.load() != old_value)
+			if (now_value() != old_value)
 			{
 				return;
 			}
@@ -315,7 +333,7 @@ namespace utils
 		{
 			_mm_monitorx(const_cast<void*>(addr), 0, 0);
 
-			if (var.load() != old_value)
+			if (now_value() != old_value)
 			{
 				return;
 			}

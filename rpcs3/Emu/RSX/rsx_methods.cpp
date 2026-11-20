@@ -62,7 +62,7 @@ namespace rsx
 		RSX(ctx)->reset();
 		RSX(ctx)->on_frame_end(arg);
 		RSX(ctx)->request_emu_flip(arg);
-		vm::_ptr<atomic_t<u128>>(RSX(ctx)->label_addr + 0x10)->store(u128{});
+		retro_atomic_store_release_128(vm::_ptr<retro_atomic_128_t>(RSX(ctx)->label_addr + 0x10), retro_u128_t{0, 0});
 	}
 
 	void user_command(context* ctx, u32, u32 arg)

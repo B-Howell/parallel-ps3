@@ -37,6 +37,8 @@
 #include "Emu/Cell/lv2/sys_spu.h"
 #include "Emu/Cell/lv2/sys_lwmutex.h"
 #include "Emu/Cell/Modules/cellSync.h"
+#include "Emu/RSX/GCM.h"
+#include "util/asm.hpp"
 #include "Emu/savestate_utils.hpp"
 #include "Emu/Memory/vm_locking.h"
 #include "Emu/Memory/vm_reservation.h"
@@ -2080,6 +2082,41 @@ int main()
 		const v128 sum = vm::guest_load(pair);
 		CHECK(sum._u64[0] == 400000 && sum._u64[1] == 800000);
 		std::printf("test_emu_waits: SPURS's words: 1-byte counts kept apart, a fetch_op that says no, 16 bytes added to from two threads\n");
+	}
+
+	// The RSX's 16-byte writes to the game's memory (reports, notifies, the
+	// flip label) stored whole: a reader never sees halves of two; and the
+	// semaphore wait returns once the word changes
+	{
+		alignas(16) CellGcmReportData report{};
+		std::atomic<int> stop{0}, torn{0};
+		std::thread reader([&]
+		{
+			while (!stop)
+			{
+				const CellGcmReportData r = vm::guest_load(report);
+				if (static_cast<u64>(r.timer) != (u64{r.value} | u64{r.value} << 32))
+					torn++;
+			}
+		});
+		for (u32 i = 1; i < 300000; i++)
+			vm::guest_store(report, CellGcmReportData{u64{i} | u64{i} << 32, i, 0});
+		stop = 1;
+		reader.join();
+		CHECK(torn == 0);
+
+		alignas(4) be_t<u32> sema{1};
+		std::thread releaser([&] { std::this_thread::sleep_for(std::chrono::milliseconds(20)); vm::guest_store(sema, 2u); });
+		u32 looks = 0;
+		while (vm::guest_load(sema) == 1u && looks < 1'000'000)
+		{
+			utils::spin_on_cacheline_once(sema, 1u, 100);
+			looks++;
+		}
+		releaser.join();
+		CHECK(vm::guest_load(sema) == 2u && looks < 1'000'000);
+		utils::spin_on_cacheline_once(sema, 1u, 100); // differs already: back at once
+		std::printf("test_emu_waits: 16-byte reports stored whole under a reader; a semaphore wait woken\n");
 	}
 
 	// A function looked up once, on first use (libc, loaded already), a

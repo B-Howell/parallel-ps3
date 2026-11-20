@@ -33,12 +33,11 @@ namespace rsx
 			atomic_fence_seq_cst();
 
 			const auto& sema = vm::_ref<RsxSemaphore>(addr);
-			const auto& atomic_sema = vm::_ref<atomic_t<RsxSemaphore>>(addr);
 
 			RSX(ctx)->last_sema_cmd = RSX(ctx)->fifo_ctrl->get_pos() - 4;
 			RSX(ctx)->last_sema_addr = addr;
 
-			if (sema == arg)
+			if (vm::guest_load(sema) == arg)
 			{
 				// Flip semaphore doesnt need wake-up delay
 				if (addr != RSX(ctx)->label_addr + 0x10)
@@ -57,7 +56,7 @@ namespace rsx
 			u64 start = get_system_time();
 			u64 last_check_val = start;
 
-			while (sema != arg)
+			while (vm::guest_load(sema) != arg)
 			{
 				if (RSX(ctx)->test_stopped())
 				{
@@ -97,7 +96,7 @@ namespace rsx
 				RSX(ctx)->on_semaphore_acquire_wait();
 
 				// Wait until the value changes or until 100us pass.
-				utils::spin_on_cacheline_once(atomic_sema, sema, 100);
+				utils::spin_on_cacheline_once(sema, arg, 100);
 			}
 
 			RSX(ctx)->fifo_wake_delay();

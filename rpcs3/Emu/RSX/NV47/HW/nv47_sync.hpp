@@ -54,7 +54,8 @@ namespace rsx
 				}
 			}
 
-			vm::write<atomic_t<RsxSemaphore>>(address, data);
+			vm::guest_store(*vm::_ptr<RsxSemaphore>(address), data);
+			vm::write<void>(address, data);
 		}
 	}
 }

@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The RSX's writes to the game's memory through vm::guest_* and retro_atomic, off atomic_t views.** Not yet run on a game.
+  - **What changed:**
+    - **16 bytes at once:** a report (ZCULL and `GET_REPORT`), a notify and the 16 bytes after the flip label are stored with one 128-bit release store through `vm::guest_store`, which now stores 16-byte words that way, or changed with `vm::guest_op`.
+    - **Semaphores:** a semaphore release is a `vm::guest_store` of the word, then `vm::write<void>` for the memory breakpoint check, which the atomic_t write went through before.
+    - **The semaphore wait** (`nv406e` acquire) reads the word with `vm::guest_load`, and `utils::spin_on_cacheline_once` now takes the word itself (4 or 8 bytes) and reads it with retro_atomic's acquire loads. It still watches the cache line with UMWAIT, MWAITX or WFE where the processor has them.
+    - **Unchanged:** that wait still gives up after the driver recovery timeout, measured on the wall clock, as before.
+  - **Tests:** test_emu_waits stores 300000 reports while another thread reads them whole, never seeing halves of two, and wakes a semaphore wait by changing the word from another thread. A mutant that stores the 16 bytes as two 8-byte stores fails it. A check fails if atomic_t views come back to these files.
+
 - **The texture cache's counters on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:** the cache's update tag and section tag (`retro_atomic_64_t`), the per-frame statistics (flushes, misses, speculations, hard faults, uploads, elided copies, mispredictions), the storage's section counts, the unreleased-object count and the memory in use are retro_atomic words. They are read with acquire loads and counted with retro_atomic's adds and subtracts, where atomic_t's operators were sequentially consistent. The Vulkan and OpenGL caches read the unreleased count the same way.
   - **Tests:** none run the texture cache, which needs a renderer; the full build and suites pass. A check fails if atomic_t comes back to the texture cache headers.

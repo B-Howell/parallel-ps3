@@ -1142,7 +1142,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 
 		// seems gcmSysWaitLabel uses this offset, so lets set it to 0 every flip
 		// NOTE: Realhw resets 16 bytes of this semaphore for some reason
-		vm::_ptr<atomic_t<u128>>(render->label_addr + 0x10)->store(u128{});
+		retro_atomic_store_release_128(vm::_ptr<retro_atomic_128_t>(render->label_addr + 0x10), retro_u128_t{0, 0});
 
 		render->send_event(0, SYS_RSX_EVENT_FLIP_BASE << 1, 0);
 		break;

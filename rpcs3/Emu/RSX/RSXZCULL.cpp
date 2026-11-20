@@ -364,8 +364,8 @@ namespace rsx
 			}
 
 			rsx::reservation_lock<true> lock(sink, 16);
-			auto report = vm::get_super_ptr<atomic_t<CellGcmReportData>>(sink);
-			report->store({timestamp, value, 0});
+			// The 16 bytes whole
+			vm::guest_store(*vm::get_super_ptr<CellGcmReportData>(sink), CellGcmReportData{timestamp, value, 0});
 		}
 
 		void ZCULL_control::write(queued_report_write* writer, u64 timestamp, u32 value)
