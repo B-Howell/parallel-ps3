@@ -3,7 +3,6 @@
 #include "sys_sync.h"
 #include "sys_event.h"
 #include "libretro/libretro_audio_ring.h"
-#include "Utilities/cond.h"
 #include "Emu/system_config_types.h"
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/Cell/ErrorCodes.h"

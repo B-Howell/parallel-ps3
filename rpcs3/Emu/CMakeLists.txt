@@ -85,7 +85,6 @@ target_sources(rpcs3_emu PRIVATE
     ../util/serialization_ext.cpp
     ../../Utilities/bin_patch.cpp
     ../../Utilities/cheat_info.cpp
-    ../../Utilities/cond.cpp
     ../../Utilities/Config.cpp
     ../../Utilities/date_time.cpp
     ../../Utilities/File.cpp

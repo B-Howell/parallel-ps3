@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Utilities/cond.h's cond_variable removed (an atomic_t user with no callers).** Not yet run on a game.
+  - **What changed:**
+    - **`cond_variable`** (a waiter count in an `atomic_t<u32>`, its waits timed) was used nowhere: sys_rsxaudio.h included its header and used nothing from it. Utilities/cond.h and cond.cpp are deleted, with their lines in Makefile.common and rpcs3/Emu/CMakeLists.txt and the include.
+  - **Tests:** none; nothing used it. The full build and suites pass. A check fails if the files or cond_variable come back.
+
+
 - **stereo_config's live preview removed (its atomic_t flag with it).** Not yet run on a game.
   - **What changed:**
     - **The live preview** (`s_live_preview_enabled`, an `atomic_t<bool>`, and the `m_live_matrices` it chose) is standalone RPCS3's settings dialog's: nothing in the core set either, so `matrices()` never took that branch. The flag, the matrices, their setter and the branch are gone, and with them the only use of `m_in_emulation`, which goes too (the constructor keeps its argument for its callers). The header drops util/atomic.hpp and an unused `<mutex>`.
