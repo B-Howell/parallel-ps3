@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <retro_atomic.h>
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/IdManager.h"
 
@@ -15,7 +16,9 @@ LOG_CHANNEL(sceNpUtil);
 struct sce_np_util_manager
 {
 	// 0: no test; else the guest time it started at << 1 | aborted
-	atomic_t<u64> test = 0;
+	retro_atomic_64_t test{0};
+
+	u64 now() const { return static_cast<u64>(retro_atomic_load_acquire_64(&test)); }
 
 	static constexpr u64 test_us = 100'000;
 };
@@ -26,7 +29,7 @@ error_code sceNpUtilBandwidthTestInitStart([[maybe_unused]] ppu_thread& ppu, u32
 
 	auto& util_manager = g_fxo->get<sce_np_util_manager>();
 
-	if (!util_manager.test.compare_and_swap_test(0, std::max<u64>(get_guest_system_time(), 1) << 1))
+	if (!retro_atomic_cas_64(&util_manager.test, 0, static_cast<s64>(std::max<u64>(get_guest_system_time(), 1) << 1)))
 	{
 		return SCE_NP_ERROR_ALREADY_INITIALIZED;
 	}
@@ -38,7 +41,7 @@ error_code sceNpUtilBandwidthTestGetStatus()
 {
 	sceNpUtil.notice("sceNpUtilBandwidthTestGetStatus()");
 
-	const u64 test = g_fxo->get<sce_np_util_manager>().test.load();
+	const u64 test = g_fxo->get<sce_np_util_manager>().now();
 
 	if (!test)
 	{
@@ -53,7 +56,7 @@ error_code sceNpUtilBandwidthTestShutdown([[maybe_unused]] ppu_thread& ppu, vm::
 {
 	sceNpUtil.warning("sceNpUtilBandwidthTestShutdown(result=*0x%x)", result);
 
-	if (!g_fxo->get<sce_np_util_manager>().test.exchange(0))
+	if (!retro_atomic_exchange_64(&g_fxo->get<sce_np_util_manager>().test, 0))
 	{
 		return SCE_NP_ERROR_NOT_INITIALIZED;
 	}
@@ -78,14 +81,16 @@ error_code sceNpUtilBandwidthTestAbort()
 
 	// TODO: cellHttpTransactionAbortConnection();
 
-	for (u64 test = util_manager.test.load();; )
+	for (;;)
 	{
+		const u64 test = util_manager.now();
+
 		if (!test)
 		{
 			return SCE_NP_ERROR_NOT_INITIALIZED;
 		}
 
-		if (util_manager.test.compare_exchange(test, test | 1))
+		if (retro_atomic_cas_64(&util_manager.test, static_cast<s64>(test), static_cast<s64>(test | 1)))
 		{
 			return CELL_OK;
 		}
