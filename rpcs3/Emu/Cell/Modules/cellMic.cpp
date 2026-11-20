@@ -544,7 +544,7 @@ error_code cellMicInit()
 			return CELL_MICIN_ERROR_ALREADY_INIT;
 
 		mic_thr.load_config_and_init();
-		mic_thr.init = 1;
+		mic_thr.init = true;
 
 		return CELL_OK;
 	});
@@ -561,7 +561,7 @@ error_code cellMicEnd()
 			return CELL_MICIN_ERROR_NOT_INIT;
 
 		// TODO
-		mic_thr.init = 0;
+		mic_thr.init = false;
 		mic_thr.event_queue_key = 0;
 		mic_thr.event_queue_source = 0;
 

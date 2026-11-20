@@ -1502,6 +1502,8 @@ check: all
 	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/cellCrossController.cpp; then echo "atomic_t is back in cellCrossController"; exit 1; else echo "cellCrossController is on retro_atomic"; fi
 	@# cellNetCtlGetInfo's logged-once codes are bits in retro_atomic words (fetch-or), not 256 atomic_t bools
 	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/cellNetCtl.cpp; then echo "atomic_t is back in cellNetCtl"; exit 1; else echo "cellNetCtl is on retro_atomic"; fi
+	@# cellMic's initialized flag is the microphone thread's plain bool: every call that reads or writes it runs there (mic_call), so no atomic_t
+	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/cellMic.h ../../Emu/Cell/Modules/cellMic.cpp; then echo "atomic_t is back in cellMic"; exit 1; else echo "cellMic's flag is the microphone thread's"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

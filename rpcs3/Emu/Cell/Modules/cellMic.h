@@ -419,10 +419,11 @@ public:
 
 	std::array<microphone_device, CELL_MAX_MICS> mic_list{};
 
-	// The devices are the microphone thread's: every call that touches them
-	// runs there (mic_call), so nothing is locked
+	// The devices, and whether cellMicInit has run, are the microphone
+	// thread's: every call that touches them runs there (mic_call), so
+	// nothing is locked
 	owner_calls_t calls{};
-	atomic_t<u8> init = 0;
+	bool init = false;
 
 	mic_context() { owner_calls_init(&calls); }
 	mic_context& operator=(thread_state) { wake_up(); return *this; }

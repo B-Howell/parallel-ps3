@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellMic's initialized flag off atomic_t: the microphone thread's own.** Not yet run on a game.
+  - **What changed:**
+    - **The flag** (`mic_context::init`) is a plain bool. Every call that reads or writes it already runs on the microphone thread (`mic_call`), as the devices do, so it has one thread and needs no atomic.
+  - **Tests:** none. The flag is one thread's, and the calls need the microphone thread, which the tests do not run; the full build and suites pass. A check fails if atomic_t comes back to cellMic.
+
+
 - **cellNetCtl on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **cellNetCtlGetInfo's once-logged codes** were 256 `atomic_t<bool>`, one exchange each. They are now a bit per code in eight `retro_atomic_int_t` words: a fetch-or of the code's bit sets it and says whether it was set already. The table goes from 1 KB to 32 bytes.
