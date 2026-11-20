@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <retro_atomic.h>
 #include "Emu/System.h"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/IdManager.h"
@@ -220,12 +221,16 @@ error_code cellNetCtlGetInfo(s32 code, vm::ptr<CellNetCtlInfo> info)
 
 	if (log_it_once && vm::check_addr(info.addr()))
 	{
+		// A bit per code, set by the first call to log it
 		struct logged_t
 		{
-			std::array<atomic_t<bool>, 256> logged_code{};
+			retro_atomic_int_t logged_code[256 / 32]{};
 		};
 
-		if (g_fxo->get<logged_t>().logged_code[::narrow<u8>(code)].exchange(true))
+		const u32 bit = ::narrow<u8>(code);
+		const int mask = static_cast<int>(1u << (bit % 32));
+
+		if (retro_atomic_fetch_or_int(&g_fxo->get<logged_t>().logged_code[bit / 32], mask) & mask)
 		{
 			log_it = false;
 		}

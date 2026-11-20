@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellNetCtl on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **cellNetCtlGetInfo's once-logged codes** were 256 `atomic_t<bool>`, one exchange each. They are now a bit per code in eight `retro_atomic_int_t` words: a fetch-or of the code's bit sets it and says whether it was set already. The table goes from 1 KB to 32 bytes.
+  - **Tests:** none. The path needs guest memory for the info pointer, which the tests do not map; the full build and suites pass. A check fails if atomic_t comes back to cellNetCtl.
+
+
 - **cellCrossController on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The status** (`cross_controller::status`) is a `retro_atomic_int_t`: stored with release on the PPU thread at Initialize and by the connection thread as it ends, read with acquire by the next Initialize.
