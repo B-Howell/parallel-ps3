@@ -311,30 +311,66 @@ public:
 			return;
 		}
 
-		atomic_wait::list<Max + 2> list{};
-		list.template set_raw<Max>(&_this->m_sync, 0);
-		list.template set<Max + 1>(_this->m_taskq);
+		// The caller's words first, then the thread's own and its task queue
+		static_assert(Max + 2 <= RETRO_WAITADDR_MAX);
+		retro_waitaddr_t list[Max + 2]{};
+		list[Max] = {&_this->m_sync, 0};
+		list[Max + 1] = {_this->m_taskq.wait_word(), 0};
 		setter(list);
-		list.wait(atomic_wait_timeout{usec <= 0xffff'ffff'ffff'ffff / 1000 ? usec * 1000 : 0xffff'ffff'ffff'ffff});
+
+		if (usec != umax)
+		{
+			// Timed: once (it may end early)
+			retro_waitaddr_wait(list, Max + 2, static_cast<s64>(std::min<u64>(usec, u64{umax} >> 1)));
+			return;
+		}
+
+		// Untimed: until one of the words is not what it was
+		while (waitaddr_unchanged(list, Max + 2))
+		{
+			retro_waitaddr_wait(list, Max + 2, -1);
+		}
+	}
+
+	// A list entry for the 32-bit word @word (a retro_atomic_int_t, or a
+	// type whose first member is one) seen as @old
+	template <typename T, typename U>
+	static inline retro_waitaddr_t waitaddr(const T& word, const U& old)
+	{
+		static_assert(sizeof(T) == 4 && sizeof(U) == 4);
+		return {&word, std::bit_cast<u32>(old)};
+	}
+
+	static inline bool waitaddr_unchanged(const retro_waitaddr_t* list, uint count)
+	{
+		for (uint i = 0; i < count; i++)
+		{
+			if (static_cast<u32>(retro_atomic_load_acquire_int(static_cast<const retro_atomic_int_t*>(list[i].addr))) != list[i].old)
+			{
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	template <typename T, typename U>
 	static inline void wait_on(T& wait, U old, u64 usec = -1)
 	{
-		wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set<0>(wait, old); }, usec);
+		wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = thread_ctrl::waitaddr(wait, old); }, usec);
 	}
 
 	// Waits while the 32-bit word at @word (a retro_atomic_int_t) is @old,
 	// for a notify on it, the thread's own, or @usec
 	static inline void wait_on_word(const void* word, u32 old, u64 usec = -1)
 	{
-		wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(word, old); }, usec);
+		wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {word, static_cast<u32>(old)}; }, usec);
 	}
 
 	template <typename T>
 	static inline void wait_on(T& wait)
 	{
-		wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set<0>(wait); });
+		wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {wait.wait_word(), 0}; });
 	}
 
 	// Exit.

@@ -84,7 +84,7 @@ public:
 		// Woken by an entry, or this thread told to end
 		while (retro_atomic_load_acquire_int(_size) == 0 && thread_ctrl::state() != thread_state::aborting)
 		{
-			thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(_size, 0u); });
+			thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {_size, static_cast<u32>(0u)}; });
 		}
 	}
 };

@@ -1787,11 +1787,11 @@ error_code sys_uart_receive(ppu_thread &ppu, vm::ptr<void> buffer, u64 size, u32
 
 			// Woken by data put in the ring, the other receive done, or this
 			// thread stopped (a 5 ms timed wait before)
-			thread_ctrl::wait_on_custom<3>([&](atomic_wait::list<5>& list)
+			thread_ctrl::wait_on_custom<3>([&](retro_waitaddr_t* list)
 			{
-				list.template set<0>(ppu.state, old_state);
-				list.template set_raw<1>(&vuart_thread.rx_put_seq, seen);
-				list.template set_raw<2>(&vuart_thread.rx_claim, static_cast<u32>(read_result) == static_cast<u32>(CELL_EBUSY) ? 1u : 0u);
+				list[0] = thread_ctrl::waitaddr(ppu.state, old_state);
+				list[1] = {&vuart_thread.rx_put_seq, static_cast<u32>(seen)};
+				list[2] = {&vuart_thread.rx_claim, static_cast<u32>(static_cast<u32>(read_result) == static_cast<u32>(CELL_EBUSY) ? 1u : 0u)};
 			});
 		}
 
@@ -1892,10 +1892,10 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 				return {};
 			}
 
-			thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+			thread_ctrl::wait_on_custom<2>([&](retro_waitaddr_t* list)
 			{
-				list.template set<0>(ppu.state, old_state);
-				list.template set_raw<1>(&vuart_thread.tx_claim, 1u);
+				list[0] = thread_ctrl::waitaddr(ppu.state, old_state);
+				list[1] = {&vuart_thread.tx_claim, static_cast<u32>(1u)};
 			});
 		}
 
@@ -1917,10 +1917,10 @@ error_code sys_uart_send(ppu_thread &ppu, vm::cptr<void> buffer, u64 size, u32 m
 
 				if (vuart_thread.get_tx_bytes() >= PS3AV_TX_BUF_SIZE)
 				{
-					thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+					thread_ctrl::wait_on_custom<2>([&](retro_waitaddr_t* list)
 					{
-						list.template set<0>(ppu.state, old_state);
-						list.template set_raw<1>(&vuart_thread.tx_take_seq, seen);
+						list[0] = thread_ctrl::waitaddr(ppu.state, old_state);
+						list[1] = {&vuart_thread.tx_take_seq, static_cast<u32>(seen)};
 					});
 					continue;
 				}
@@ -2072,7 +2072,7 @@ void vuart_av_thread::operator()()
 
 		if (!uart_ring_used(tx_buf))
 		{
-			thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&tx_put_seq, seen); }, wait_time ? libretro_guest_wait_as_host(wait_time) : -1);
+			thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {&tx_put_seq, static_cast<u32>(seen)}; }, wait_time ? libretro_guest_wait_as_host(wait_time) : -1);
 		}
 
 		if (u32 read_size = read_tx_data(temp_tx_buf, PS3AV_TX_BUF_SIZE))

@@ -306,6 +306,6 @@ void ppu_interrupt_thread_entry(ppu_thread& ppu, ppu_opcode_t, be_t<u32>*, struc
 			return;
 		}
 
-		thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&ppu.cmd_notify, 0u); });
+		thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {&ppu.cmd_notify, static_cast<u32>(0u)}; });
 	}
 }

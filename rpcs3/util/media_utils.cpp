@@ -687,9 +687,9 @@ namespace utils
 					// pause, flush or stop asked - it slept 1 us (10 ms paused)
 					// at a time before
 					// (also as the thread is told to end)
-					thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list)
+					thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list)
 					{
-						list.template set_raw<0>(&m_filled, filled);
+						list[0] = {&m_filled, static_cast<u32>(filled)};
 					});
 					continue;
 				}

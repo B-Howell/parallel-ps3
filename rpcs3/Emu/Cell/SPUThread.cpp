@@ -7352,7 +7352,7 @@ s64 spu_channel::pop_wait(cpu_thread& spu, bool pop)
 
 	while (true)
 	{
-		thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(wait_word(), wait_word_of(old)); });
+		thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {wait_word(), static_cast<u32>(wait_word_of(old))}; });
 
 		old = load();
 
@@ -7437,7 +7437,7 @@ bool spu_channel::push_wait(cpu_thread& spu, u32 value, bool push)
 			return !(static_cast<u64>(retro_atomic_fetch_and_64(&data, static_cast<s64>(~bit_wait))) & bit_wait);
 		}
 
-		thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(wait_word(), wait_word_of(state)); });
+		thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {wait_word(), static_cast<u32>(wait_word_of(state))}; });
 		state = load();
 	}
 }
@@ -7486,7 +7486,7 @@ std::pair<u32, u32> spu_channel_4_t::pop_wait(cpu_thread& spu, bool pop_value)
 
 	while (true)
 	{
-		thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&values, static_cast<u32>(to_u128(old).lo)); });
+		thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {&values, static_cast<u32>(static_cast<u32>(to_u128(old).lo))}; });
 		old = load_values();
 
 		if (~old.waiting & bit_wait)

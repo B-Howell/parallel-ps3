@@ -1201,9 +1201,9 @@ namespace rsx
 					{
 						// Until retro_run asks for one, or the thread is told to
 						// stop: no timeout, no polling
-						thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list)
+						thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list)
 						{
-							list.template set_raw<0>(&g_libretro_vblank_requests, requested);
+							list[0] = {&g_libretro_vblank_requests, static_cast<u32>(requested)};
 						});
 					}
 					else if (Emu.IsPaused())

@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **thread_ctrl::wait_on_custom on retro_waitaddr, off atomic_wait::list.** Not yet run on a game.
+  - **What changed:**
+    - **The list** a named thread waits on (the caller's words, then the thread's own sync word and its task queue) is a `retro_waitaddr_t` array, waited on with `retro_waitaddr_wait`, where it was an `atomic_wait::list` going through atomic_t's wait engine to the same retro_waitaddr. A setter gets the array and fills its entries: `{address, old}` for a raw word, `thread_ctrl::waitaddr(word, old)` for a typed 32-bit one (a cpu state's flags, a queue's change count), `{x.wait_word(), 0}` for an atomic_ptr. 45 setters in 26 files are moved, as are `wait_on`, `wait_on_word` and the waits built on them.
+    - **The steps are the same:** an untimed wait sleeps until one of the words is not what it was, through spurious wakes; a timed one waits once. These waits no longer go through atomic_t's wait callback, which only counted wait time and failed attempts for the thread-exit log line by the CPU's timestamp counter, so those waits are no longer counted there.
+  - **Tests:** test_emu_waits' named-thread waits (a frame waiter joined at a close, raw word waiters) run through it, and the full build and suites pass. A mutant whose list leaves out the thread's own sync word fails it: a thread told to end is not woken and its join hangs, and the check after it fails. A mutant whose untimed wait waits once instead of until a word changes passed: spurious wakes are rare and the callers look again. A check fails if a setter takes an atomic_wait::list again.
+
+
 - **The SPU LLVM recompiler's accurate-RSX PUTLLC16 off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The 16-byte store** of `spu_putllc16_rsx_res` (used with accurate RSX reservation access) compared and swapped guest memory through an `atomic_t<nse_t<v128>>` view. It now takes the plain `nse_t<v128>` pointer and swaps with `vm::guest_cas`, which is `retro_atomic_cas_128` for 16 bytes: the same compare-and-swap of all 16 bytes at once.

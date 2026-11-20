@@ -109,7 +109,7 @@ namespace vk
 			}
 
 			// Woken by a completed event, or this thread told to end
-			thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&m_wake_event, wake_token); });
+			thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {&m_wake_event, static_cast<u32>(wake_token)}; });
 		}
 	}
 
@@ -152,7 +152,7 @@ namespace vk
 			retro_waitaddr_notify_one(&m_wake_event);
 
 			// Wait for worker thread.
-			thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&m_completed_signal, completion_token); });
+			thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {&m_completed_signal, static_cast<u32>(completion_token)}; });
 		}
 	}
 }

@@ -9095,7 +9095,7 @@ struct spu_llvm_worker
 				set_relax_flag = false;
 			}
 
-			thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(registered.wait_word(), 0); });
+			thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {registered.wait_word(), static_cast<u32>(0)}; });
 			slice = registered.pop_all();
 		}())
 		{
@@ -9217,7 +9217,7 @@ struct spu_llvm
 		while (!registered && thread_ctrl::state() != thread_state::aborting)
 		{
 			// Wait for the first SPU block before launching any thread
-			thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(registered.wait_word(), 0); });
+			thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {registered.wait_word(), static_cast<u32>(0)}; });
 		}
 
 		if (thread_ctrl::state() == thread_state::aborting)
@@ -9299,7 +9299,7 @@ struct spu_llvm
 					}
 				}
 
-				thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(registered.wait_word(), 0); });
+				thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {registered.wait_word(), static_cast<u32>(0)}; });
 				std::fill(notify_compile.begin(), notify_compile.end(), 0); // Reset notification flags
 				notify_compile_count = 0;
 				compile_pending = 0;

@@ -2265,10 +2265,10 @@ bool lv2_obj::wait_timeout(u64 usec, ppu_thread* cpu, bool scale, bool is_usleep
 
 	auto wait_for = [&](u64 timeout)
 	{
-		thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+		thread_ctrl::wait_on_custom<2>([&](retro_waitaddr_t* list)
 		{
-			list.template set<0>(state, old_state);
-			list.template set<1>(clock_word, clock_seen);
+			list[0] = thread_ctrl::waitaddr(state, old_state);
+			list[1] = thread_ctrl::waitaddr(clock_word, clock_seen);
 		}, timeout);
 	};
 

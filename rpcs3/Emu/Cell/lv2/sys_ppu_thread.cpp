@@ -150,7 +150,7 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 		}
 
 		// Wait for termination
-		thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&ppu.joiner, static_cast<u32>(ppu_join_status::zombie)); });
+		thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {&ppu.joiner, static_cast<u32>(static_cast<u32>(ppu_join_status::zombie))}; });
 	}
 
 	ppu_thread_exit(ppu, {}, nullptr, nullptr);
@@ -643,11 +643,11 @@ error_code sys_ppu_thread_start(ppu_thread& ppu, u32 thread_id)
 				return;
 			}
 
-			thread_ctrl::wait_on_custom<3>([&](atomic_wait::list<5>& list)
+			thread_ctrl::wait_on_custom<3>([&](retro_waitaddr_t* list)
 			{
-				list.template set<0>(ppu.state, old_state);
-				list.template set_raw<1>(&thread->sched_watch, seen_new);
-				list.template set_raw<2>(&ppu.sched_watch, seen_own);
+				list[0] = thread_ctrl::waitaddr(ppu.state, old_state);
+				list[1] = {&thread->sched_watch, static_cast<u32>(seen_new)};
+				list[2] = {&ppu.sched_watch, static_cast<u32>(seen_own)};
 			});
 		}
 	};

@@ -136,10 +136,10 @@ static void wait_get_put_taken(rsx::thread* render, cpu_thread* cpu, u32 seen)
 			return;
 		}
 
-		thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+		thread_ctrl::wait_on_custom<2>([&](retro_waitaddr_t* list)
 		{
-			list.template set<0>(cpu->state, old_state);
-			list.template set<1>(render->get_put_taken, seen);
+			list[0] = thread_ctrl::waitaddr(cpu->state, old_state);
+			list[1] = thread_ctrl::waitaddr(render->get_put_taken, seen);
 		});
 	}
 	else
@@ -248,10 +248,10 @@ bool rsx::thread::send_event(u64 data1, u64 event_flags, u64 data3)
 			{
 				const auto old_state = +cpu->state;
 
-				thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+				thread_ctrl::wait_on_custom<2>([&](retro_waitaddr_t* list)
 				{
-					list.template set<0>(cpu->state, old_state);
-					list.template set<1>(queue->q.changes, seen);
+					list[0] = thread_ctrl::waitaddr(cpu->state, old_state);
+					list[1] = thread_ctrl::waitaddr(queue->q.changes, seen);
 				});
 			}
 			else

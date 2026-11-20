@@ -310,9 +310,9 @@ public:
 	// On a named thread: until @word is not @old (a join wakes it too)
 	static void wait_named_on(retro_atomic_int_t* word, u32 old)
 	{
-		thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list)
+		thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list)
 		{
-			list.template set_raw<0>(word, old);
+			list[0] = {word, static_cast<u32>(old)};
 		});
 	}
 
@@ -1499,10 +1499,10 @@ void gem_config_data::operator()()
 				break;
 			}
 
-			thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+			thread_ctrl::wait_on_custom<2>([&](retro_waitaddr_t* list)
 			{
-				list.template set_raw<0>(&m_done, 2u);
-				list.template set_raw<1>(&g_libretro_events, frames_seen);
+				list[0] = {&m_done, static_cast<u32>(2u)};
+				list[1] = {&g_libretro_events, static_cast<u32>(frames_seen)};
 			});
 		}
 
@@ -1542,10 +1542,10 @@ void gem_config_data::operator()()
 		{
 			if (by_frame)
 			{
-				thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+				thread_ctrl::wait_on_custom<2>([&](retro_waitaddr_t* list)
 				{
-					list.template set_raw<0>(&m_wake_up, 0u);
-					list.template set_raw<1>(&g_libretro_events, frames_seen);
+					list[0] = {&m_wake_up, static_cast<u32>(0u)};
+					list[1] = {&g_libretro_events, static_cast<u32>(frames_seen)};
 				});
 			}
 			else

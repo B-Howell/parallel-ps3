@@ -2740,10 +2740,10 @@ void ppu_thread::cpu_task()
 						break;
 					}
 
-					thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+					thread_ctrl::wait_on_custom<2>([&](retro_waitaddr_t* list)
 					{
-						list.template set<0>(state, old_state);
-						list.template set_raw<1>(&start_gate_open, 0u);
+						list[0] = thread_ctrl::waitaddr(state, old_state);
+						list[1] = {&start_gate_open, static_cast<u32>(0u)};
 					});
 				}
 			}
@@ -3196,7 +3196,7 @@ ppu_thread::ppu_thread(utils::serial& ar)
 					retro_atomic_int_t* const inited = &g_fxo->get<init_pushed>().inited;
 					while (!Emu.IsStopped() && !retro_atomic_load_acquire_int(inited))
 					{
-						thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(inited, 0u); });
+						thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {inited, static_cast<u32>(0u)}; });
 					}
 					return false;
 				}
@@ -3399,7 +3399,7 @@ cmd64 ppu_thread::cmd_wait()
 			return {};
 		}
 
-		thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&cmd_notify, 0u); });
+		thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {&cmd_notify, static_cast<u32>(0u)}; });
 		retro_atomic_store_release_int(&cmd_notify, 0);
 	}
 }
@@ -4736,7 +4736,7 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 				while (!take())
 				{
 					// Wait until not 0, or this thread told to end
-					thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&file_size_limit, 0u); });
+					thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {&file_size_limit, static_cast<u32>(0u)}; });
 				}
 
 				if (Emu.IsStopped())

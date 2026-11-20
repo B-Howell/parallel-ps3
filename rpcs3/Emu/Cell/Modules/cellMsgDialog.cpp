@@ -133,10 +133,10 @@ struct msg_dlg_thread_info
 				if (static_cast<u64>(retro_atomic_load_acquire_64(&wait_until)) != new_value || get_guest_system_time() >= new_value)
 					break;
 
-				thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+				thread_ctrl::wait_on_custom<2>([&](retro_waitaddr_t* list)
 				{
-					list.template set_raw<0>(&wait_until, static_cast<u32>(new_value));
-					list.template set_raw<1>(&g_libretro_events, events);
+					list[0] = {&wait_until, static_cast<u32>(static_cast<u32>(new_value))};
+					list[1] = {&g_libretro_events, static_cast<u32>(events)};
 				});
 			}
 

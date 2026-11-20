@@ -1469,16 +1469,16 @@ namespace np
 			// state changing, or this thread told to end (a 200 ms poll before)
 			if (sleep)
 			{
-				thread_ctrl::wait_on_custom<3>([&](atomic_wait::list<5>& list)
+				thread_ctrl::wait_on_custom<3>([&](retro_waitaddr_t* list)
 				{
-					list.template set_raw<0>(&g_libretro_events, events);
+					list[0] = {&g_libretro_events, static_cast<u32>(events)};
 
 					if (watched)
-						list.template set<1>(watched->m_events, seen);
+						list[1] = thread_ctrl::waitaddr(watched->m_events, seen);
 					else
-						list.template set_raw<1>(&g_libretro_events, events);
+						list[1] = {&g_libretro_events, static_cast<u32>(events)};
 
-					list.template set<2>(*calls_word, calls_seen);
+					list[2] = thread_ctrl::waitaddr(*calls_word, calls_seen);
 				});
 				continue;
 			}

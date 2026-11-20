@@ -826,7 +826,7 @@ void rec_info::start_video_provider()
 				if (sink)
 					sink->wait_new(sink_seen);
 				else
-					thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&g_audio_periods, periods_seen); });
+					thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {&g_audio_periods, static_cast<u32>(periods_seen)}; });
 			}
 		}
 	});

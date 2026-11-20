@@ -94,10 +94,10 @@ void progress_dialog_server::operator()()
 					break;
 				}
 
-				thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+				thread_ctrl::wait_on_custom<2>([&](retro_waitaddr_t* list)
 				{
-					list.template set_raw<0>(&renderer->is_initialized, 0u);
-					list.template set_raw<1>(&g_libretro_events, events);
+					list[0] = {&renderer->is_initialized, static_cast<u32>(0u)};
+					list[1] = {&g_libretro_events, static_cast<u32>(events)};
 				});
 			}
 

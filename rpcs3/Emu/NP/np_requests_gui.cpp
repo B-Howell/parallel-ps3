@@ -619,7 +619,7 @@ namespace np
 			{
 				// The game's QuickMatch timeout, in seconds; woken early by the
 				// notification or this thread told to end
-				thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&ctx->wakey, 0u); }, ctx->timeout * 1'000'000);
+				thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {&ctx->wakey, static_cast<u32>(0u)}; }, ctx->timeout * 1'000'000);
 
 				if (thread_ctrl::state() == thread_state::aborting)
 					return;

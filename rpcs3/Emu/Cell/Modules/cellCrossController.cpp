@@ -92,7 +92,7 @@ struct cross_controller
 			// end - it looked every millisecond before
 			while (thread_ctrl::state() != thread_state::aborting)
 			{
-				thread_ctrl::wait_on_custom<0>([](atomic_wait::list<2>&) {});
+				thread_ctrl::wait_on_custom<0>([](retro_waitaddr_t*) {});
 			}
 
 			retro_atomic_store_release_int(&status, CELL_CROSS_CONTROLLER_STATUS_FINALIZED);

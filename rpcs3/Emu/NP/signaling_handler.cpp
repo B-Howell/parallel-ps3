@@ -443,7 +443,7 @@ void signaling_handler::operator()()
 		{
 			// Woken by a packet or a call, at the next resend, or as this
 			// thread is told to end
-			thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(&wakey, 0u); }, timeout_us);
+			thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {&wakey, static_cast<u32>(0u)}; }, timeout_us);
 		}
 
 		retro_atomic_store_release_int(&wakey, 0);

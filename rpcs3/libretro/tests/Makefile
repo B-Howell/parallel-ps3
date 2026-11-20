@@ -1550,6 +1550,8 @@ check: all
 	@if grep -n "atomic_t<" ../../Emu/savestate_utils.hpp ../../Emu/savestate_utils.cpp; then echo "atomic_t is back in the savestate's HLE locks"; exit 1; else echo "the savestate's HLE locks are on retro_atomic"; fi
 	@# The SPU LLVM recompiler's accurate-RSX PUTLLC16 writes its 16 bytes with vm::guest_cas (retro_atomic_cas_128), not an atomic_t view
 	@if grep -n "atomic_t<" ../../Emu/Cell/SPULLVMRecompiler.cpp; then echo "atomic_t is back in the SPU LLVM recompiler"; exit 1; else echo "the SPU LLVM recompiler has no atomic_t"; fi
+	@# thread_ctrl::wait_on_custom's setters fill a retro_waitaddr_t array (thread_ctrl::waitaddr for a typed word), not an atomic_wait::list
+	@if grep -rn "atomic_wait::list<[^>]*>&" --include=*.cpp --include=*.h --include=*.hpp ../../Emu ../../util ../../../Utilities ../*.cpp ../*.h; then echo "a wait_on_custom setter takes an atomic_wait::list again"; exit 1; else echo "wait_on_custom's setters fill retro_waitaddr lists"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

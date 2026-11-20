@@ -470,9 +470,9 @@ int main()
 			while (thread_ctrl::state() != thread_state::aborting)
 			{
 				const u32 seen = static_cast<u32>(retro_atomic_load_acquire_int(&word));
-				thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list)
+				thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list)
 				{
-					list.template set_raw<0>(&word, seen);
+					list[0] = {&word, static_cast<u32>(seen)};
 				});
 			}
 		});

@@ -831,9 +831,9 @@ struct vdec_context_reaper
 
 			if (mpsc_stack_empty(&contexts))
 			{
-				thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list)
+				thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list)
 				{
-					list.template set_raw<0>(&pushed, seen);
+					list[0] = {&pushed, static_cast<u32>(seen)};
 				});
 			}
 		}
@@ -1676,10 +1676,10 @@ error_code cellVdecClose(ppu_thread& ppu, u32 handle)
 			break;
 		}
 
-		thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+		thread_ctrl::wait_on_custom<2>([&](retro_waitaddr_t* list)
 		{
-			list.template set<0>(ppu.state, old_state);
-			list.template set_raw<1>(&vdec->ppu_tid, 0u);
+			list[0] = thread_ctrl::waitaddr(ppu.state, old_state);
+			list[1] = {&vdec->ppu_tid, static_cast<u32>(0u)};
 		});
 	}
 

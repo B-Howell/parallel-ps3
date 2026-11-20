@@ -2164,10 +2164,10 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
 					break;
 				}
 
-				thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
+				thread_ctrl::wait_on_custom<2>([&](retro_waitaddr_t* list)
 				{
-					list.template set<0>(cpu->state, old_state);
-					list.template set<1>(queue->q.changes, seen);
+					list[0] = thread_ctrl::waitaddr(cpu->state, old_state);
+					list[1] = thread_ctrl::waitaddr(queue->q.changes, seen);
 				});
 
 				seen = static_cast<unsigned>(retro_atomic_load_acquire_int(&queue->q.changes));
