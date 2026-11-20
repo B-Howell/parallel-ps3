@@ -107,11 +107,25 @@ int main()
 
 	// Not initialized, and not while a cellPadInit is under way
 	CHECK(code(cellPadClearBuf(0)) == static_cast<s32>(CELL_PAD_ERROR_UNINITIALIZED));
-	config.max_connect = pad_info::starting;
+	config.set_max_connect(pad_info::starting);
 	CHECK(config.initialized() == 0 && config.get_max_connect() == 0);
 	CHECK(code(cellPadClearBuf(0)) == static_cast<s32>(CELL_PAD_ERROR_UNINITIALIZED));
-	config.max_connect = CELL_PAD_MAX_PORT_NUM;
+	config.set_max_connect(CELL_PAD_MAX_PORT_NUM);
 	CHECK(config.initialized() == CELL_PAD_MAX_PORT_NUM);
+
+	// Two cellPadInit at once: one takes it (the compare-and-swap of
+	// max_connect from 0 to starting), the other is told it is taken
+	{
+		config.set_max_connect(0);
+		std::atomic<int> took{0};
+		const auto take = [&] { if (config.cas_max_connect(0, pad_info::starting)) took++; };
+		std::thread t1(take), t2(take);
+		t1.join();
+		t2.join();
+		CHECK(took == 1 && config.max_connect_now() == pad_info::starting && config.initialized() == 0);
+		CHECK(!config.cas_max_connect(0, 1));
+		CHECK(config.cas_max_connect(pad_info::starting, CELL_PAD_MAX_PORT_NUM) && config.initialized() == CELL_PAD_MAX_PORT_NUM);
+	}
 
 	// The game is told of the pad
 	CellPadData data{};

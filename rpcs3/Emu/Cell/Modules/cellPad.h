@@ -2,6 +2,8 @@
 
 #include "Emu/Io/pad_types.h"
 
+#include <retro_atomic.h>
+
 #include <array>
 
 enum CellPadError : u32
@@ -109,7 +111,14 @@ struct pad_info
 	// cellPadInit is under way: taken already for another cellPadInit, not
 	// initialized yet for every other call
 	static constexpr u32 starting = 0x80000000;
-	atomic_t<u32> max_connect = 0;
+	retro_atomic_int_t max_connect{0};
+
+	u32 max_connect_now() const { return static_cast<u32>(retro_atomic_load_acquire_int(&max_connect)); }
+	void set_max_connect(u32 value) { retro_atomic_store_release_int(&max_connect, static_cast<int>(value)); }
+	bool cas_max_connect(u32 from, u32 to)
+	{
+		return retro_atomic_cas_int(&max_connect, static_cast<int>(from), static_cast<int>(to)) != 0;
+	}
 
 	SAVESTATE_INIT_POS(11);
 
@@ -120,7 +129,7 @@ struct pad_info
 	// max_connect once, for a whole call: 0 when not initialized
 	u32 initialized() const
 	{
-		const u32 value = max_connect;
+		const u32 value = max_connect_now();
 		return value == starting ? 0 : value;
 	}
 

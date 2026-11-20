@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellPad on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **Whether cellPad is initialized** (`pad_info::max_connect`, with `starting` while a cellPadInit is under way) is a `retro_atomic_int_t`, read once per call through `max_connect_now`/`initialized`, set with `set_max_connect` and taken by cellPadInit and cellPadEnd with `cas_max_connect`, a compare-and-swap as before.
+    - **cellPadSetActDirect's log budgets** (the first calls of a session, then the notable ones) are retro_atomic counters counted down with fetch-and-subtract, as the post-decrement did.
+  - **Tests:** test_pad_guest has two threads take an uninitialized cellPad at once: one gets it, the other is refused, and a later take from 0 fails. A mutant compare-and-swap that always stores fails it. The log budgets are not tested. A check fails if atomic_t comes back to cellPad.
+
+
 - **sceNpTrophy on retro_atomic, off atomic_t; libretro_wait_on for retro_atomic words only.** Not yet run on a game.
   - **What changed:**
     - **A context registration's status callbacks:** the count of those queued for the game is a `retro_atomic_int_t`. The callback the game takes counts it down, and the last one wakes the registration with a retro_waitaddr notify. The registration's wait (the next status once the game has taken this one, or after a few frames without; none at a stop) is unchanged, now in `sce_np_trophy_wait_taken`, with the count-down in `sce_np_trophy_status_taken`.

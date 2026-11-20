@@ -1488,6 +1488,8 @@ check: all
 	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/cellMsgDialog.h ../../Emu/Cell/Modules/cellMsgDialog.cpp; then echo "atomic_t is back in cellMsgDialog"; exit 1; else echo "cellMsgDialog is on retro_atomic"; fi
 	@# sceNpTrophy's status-callback count is a retro_atomic word woken with retro_waitaddr, and libretro_wait_on takes only retro_atomic words: no atomic_t in either
 	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/sceNpTrophy.h ../../Emu/Cell/Modules/sceNpTrophy.cpp ../../Emu/System.h; then echo "atomic_t is back in sceNpTrophy or libretro_wait_on"; exit 1; else echo "sceNpTrophy and libretro_wait_on are on retro_atomic"; fi
+	@# cellPad's max_connect (cellPadInit/End's compare-and-swap) and cellPadSetActDirect's log budgets are retro_atomic words, not atomic_t
+	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/cellPad.h ../../Emu/Cell/Modules/cellPad.cpp; then echo "atomic_t is back in cellPad"; exit 1; else echo "cellPad is on retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

@@ -92,7 +92,7 @@ static port_device device_of(const Pad& pad, const pad_guest_state& state)
 // The savestate keeps the ports' settings and reported devices as the two
 // arrays pad_info used to hold
 pad_info::pad_info(utils::serial& ar)
-	: max_connect(ar.pop<u32>())
+	: max_connect(static_cast<int>(ar.pop<u32>()))
 {
 	const auto port_setting = ar.pop<std::array<u32, CELL_PAD_MAX_PORT_NUM>>();
 	const auto reported_info = ar.pop<std::array<pad_data_internal, CELL_PAD_MAX_PORT_NUM>>();
@@ -327,7 +327,7 @@ error_code cellPadInit(ppu_thread& ppu, u32 max_connect)
 
 	auto& config = g_fxo->get<pad_info>();
 
-	if (config.max_connect)
+	if (config.max_connect_now())
 		return CELL_PAD_ERROR_ALREADY_INITIALIZED;
 
 	if (max_connect == 0 || max_connect > CELL_MAX_PADS)
@@ -335,7 +335,7 @@ error_code cellPadInit(ppu_thread& ppu, u32 max_connect)
 
 	// Taken, for one of two threads at it; not initialized yet for the
 	// other calls until the ports are set up
-	if (!config.max_connect.compare_and_swap_test(0, pad_info::starting))
+	if (!config.cas_max_connect(0, pad_info::starting))
 		return CELL_PAD_ERROR_ALREADY_INITIALIZED;
 
 	sys_config_start(ppu);
@@ -355,7 +355,7 @@ error_code cellPadInit(ppu_thread& ppu, u32 max_connect)
 		while (!retro_cas_record_commit(&pads[i]->m_guest, &txn));
 	}
 
-	config.max_connect = max_connect;
+	config.set_max_connect(max_connect);
 
 	for (usz i = 0; i < config.get_max_connect(); ++i)
 	{
@@ -383,7 +383,7 @@ error_code cellPadEnd(ppu_thread& ppu)
 		if (!max_connect)
 			return CELL_PAD_ERROR_UNINITIALIZED;
 
-		if (config.max_connect.compare_and_swap_test(max_connect, 0))
+		if (config.cas_max_connect(max_connect, 0))
 			break;
 	}
 
@@ -1052,11 +1052,11 @@ static error_code cellPadSetActDirect_impl(u32 port_no, vm::ptr<CellPadActParam>
 // every port at boot, which would use up a plain budget).
 error_code cellPadSetActDirect(u32 port_no, vm::ptr<CellPadActParam> param)
 {
-	static atomic_t<s32> s_first_left = 8;
-	static atomic_t<s32> s_log_left = 48;
+	static retro_atomic_int_t s_first_left{8};
+	static retro_atomic_int_t s_log_left{48};
 	const error_code result = cellPadSetActDirect_impl(port_no, param);
 	const bool notable = !param || param->motor[0] || param->motor[1] || static_cast<s32>(result) != CELL_OK;
-	if ((s_first_left-- > 0 || notable) && s_log_left-- > 0)
+	if ((retro_atomic_fetch_sub_int(&s_first_left, 1) > 0 || notable) && retro_atomic_fetch_sub_int(&s_log_left, 1) > 0)
 	{
 		if (param)
 			cellPad.notice("cellPadSetActDirect(port_no=%d, motor=[%d, %d], reserved=[%d %d %d %d %d %d]) -> 0x%x", static_cast<s32>(port_no),
