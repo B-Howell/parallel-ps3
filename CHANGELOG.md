@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **A savestate's HLE locks on retro_atomic, off atomic_t; a failed finalize wakes its waiters.** Not yet run on a game.
+  - **What changed:**
+    - **The word** (`hle_locks_t::lock_val`: the HLE calls in it while 0 or more, a finalize under evaluation at -1, finalized at -2) is a `retro_atomic_int_t`. `try_lock` takes it with a compare-and-swap while it is not negative, sleeps on it with `retro_waitaddr_wait` while a finalize is evaluated, and is refused once it is finalized. `unlock` is a fetch-and-subtract, and `try_finalize` moves it with compare-and-swap as before.
+    - **A finalize whose second test fails** set the word back to 0 and woke no one, so a caller that came during the evaluation slept on until something else changed the word. It now wakes them with `retro_waitaddr_notify_all`, as the finalize that succeeds did.
+  - **Tests:** test_emu_waits has a caller come during a finalize's evaluation and checks that it sleeps. When the evaluation fails, the caller wakes and gets the lock; when it succeeds, the caller wakes and is refused. Dropping either notify fails it, the one on the failed path included, which is how the code was before. A check fails if atomic_t comes back to the HLE locks.
+
+
 - **The JIT's disk-space budget on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The budget** (`jit_compiler::m_disk_space`, a quarter of the cache drive's free space at start) is a `retro_atomic_64_t`. Space given back is added with `retro_atomic_fetch_add_64`, as atomic_t's fetch_add did. Space taken is taken off only if that much is left, checked and changed in one compare-and-swap loop, as the fetch_op did.

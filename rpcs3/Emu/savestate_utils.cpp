@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <rthreads/retro_waitaddr.h>
 #include "util/types.hpp"
 #include "util/logs.hpp"
 #include "util/v128.hpp"
@@ -638,20 +639,16 @@ bool hle_locks_t::try_lock()
 {
 	while (true)
 	{
-		auto [old, success] = lock_val.fetch_op([](s32& value)
+		const s32 old = retro_atomic_load_acquire_int(&lock_val);
+
+		if (old >= 0)
 		{
-			if (value >= 0)
+			if (retro_atomic_cas_int(&lock_val, old, old + 1))
 			{
-				value++;
 				return true;
 			}
 
-			return false;
-		});
-
-		if (success)
-		{
-			return true;
+			continue;
 		}
 
 		if (old == finalized)
@@ -659,7 +656,9 @@ bool hle_locks_t::try_lock()
 			break;
 		}
 
-		lock_val.wait(old);
+		// Being evaluated: woken as it is decided either way
+		const retro_waitaddr_t w{&lock_val, static_cast<u32>(old)};
+		retro_waitaddr_wait(&w, 1, -1);
 	}
 
 	return false;
@@ -667,7 +666,7 @@ bool hle_locks_t::try_lock()
 
 void hle_locks_t::unlock()
 {
-	lock_val--;
+	retro_atomic_fetch_sub_int(&lock_val, 1);
 }
 
 bool hle_locks_t::try_finalize(std::function<bool()> test)
@@ -677,23 +676,24 @@ bool hle_locks_t::try_finalize(std::function<bool()> test)
 		return false;
 	}
 
-	if (!lock_val.compare_and_swap_test(0, waiting_for_evaluation))
+	if (!retro_atomic_cas_int(&lock_val, 0, waiting_for_evaluation))
 	{
 		return false;
 	}
 
 	if (!test())
 	{
-		// Failed
-		ensure(lock_val.compare_and_swap_test(waiting_for_evaluation, 0));
+		// Failed: the callers that waited for it go on
+		ensure(retro_atomic_cas_int(&lock_val, waiting_for_evaluation, 0));
+		retro_waitaddr_notify_all(&lock_val);
 		return false;
 	}
 
-	ensure(lock_val.compare_and_swap_test(waiting_for_evaluation, finalized));
+	ensure(retro_atomic_cas_int(&lock_val, waiting_for_evaluation, finalized));
 
 	// Sanity check when debugging (the result is not expected to change after finalization)
 	//ensure(test());
 
-	lock_val.notify_all();
+	retro_waitaddr_notify_all(&lock_val);
 	return true;
 }

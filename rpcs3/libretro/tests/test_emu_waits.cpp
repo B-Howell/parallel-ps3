@@ -2354,6 +2354,59 @@ int main()
 		std::printf("test_emu_waits: cellGcmSys's reserved IO size kept within its limit by two threads\n");
 	}
 
+	// The HLE locks of a savestate: a caller that comes while a finalize is
+	// evaluated sleeps on the word, and goes on as the evaluation fails (it
+	// gets the lock) or succeeds (it is refused)
+	{
+		for (int round = 0; round < 2; round++)
+		{
+			const bool succeed = round == 1;
+			hle_locks_t locks;
+			std::atomic<int> evaluating{0}, release{0}, done{0}, got{-1};
+			std::thread caller;
+			int calls = 0;
+			const bool finalized = locks.try_finalize([&]
+			{
+				if (++calls == 1)
+					return true;
+				// Under evaluation: a caller comes and sleeps
+				caller = std::thread([&]
+				{
+					evaluating = 1;
+					got = locks.try_lock() ? 1 : 0;
+					done = 1;
+				});
+				while (!evaluating)
+					std::this_thread::yield();
+				for (int i = 0; i < 200000; i++)
+					std::this_thread::yield();
+				CHECK(done == 0);
+				return succeed;
+			});
+			CHECK(finalized == succeed);
+			for (int i = 0; i < 2000000 && !done; i++)
+				std::this_thread::yield();
+			CHECK(done == 1 && got == (succeed ? 0 : 1));
+			if (!done)
+			{
+				// Not woken: let it go so the test ends
+				retro_atomic_store_release_int(&locks.lock_val, hle_locks_t::finalized);
+				retro_waitaddr_notify_all(&locks.lock_val);
+			}
+			caller.join();
+			if (!succeed)
+			{
+				locks.unlock();
+				CHECK(retro_atomic_load_acquire_int(&locks.lock_val) == 0);
+			}
+			else
+			{
+				CHECK(!locks.try_lock());
+			}
+		}
+		std::printf("test_emu_waits: a savestate's HLE locks: a caller asleep through a finalize's evaluation, woken either way\n");
+	}
+
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");
 	return failures ? 1 : 0;
 }

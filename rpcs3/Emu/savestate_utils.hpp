@@ -2,6 +2,8 @@
 
 #include "util/serialization_ext.hpp"
 
+#include <retro_atomic.h>
+
 struct version_entry
 {
 	u16 type;
@@ -23,8 +25,9 @@ struct savestate_header
 
 struct hle_locks_t
 {
-	// A 32-bit word, waited on as one
-	atomic_t<s32> lock_val{0};
+	// A 32-bit word, waited on as one (retro_waitaddr): the HLE calls in it
+	// while 0 or more, a finalize being evaluated (-1) or done (-2)
+	retro_atomic_int_t lock_val{0};
 
 	enum states : s32
 	{
