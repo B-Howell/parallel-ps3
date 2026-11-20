@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellResc on retro_atomic, off atomic_t; one cellRescInit fills the config.** Not yet run on a game.
+  - **What changed:**
+    - **The initialized flag** (`cell_resc_manager::is_initialized`) is a `retro_atomic_int_t` with three states: 0, `starting` and 1. cellRescInit claims it with a compare-and-swap from 0 to `starting`, fills the config, then stores 1 with release. With atomic_t's check-then-store, two Inits at once could both write the config, and a call could see the flag set before the config was whole.
+    - **The other calls** look through `initialized()`, which is true only at 1, read with acquire, so the config is seen whole. cellRescExit ends it with a compare-and-swap from 1 to 0, and leaves an Init under way be.
+  - **Tests:** test_emu_waits has two threads claim at once (one gets it), checks the flag reads uninitialized until the config is published, that an exit during the fill does nothing, and that it can be claimed again after an exit. Three mutants fail it: a claim that stores, an exit that stores 0, and `initialized()` true while starting. A check fails if atomic_t comes back to cellResc.
+
+
 - **cellMic's initialized flag off atomic_t: the microphone thread's own.** Not yet run on a game.
   - **What changed:**
     - **The flag** (`mic_context::init`) is a plain bool. Every call that reads or writes it already runs on the microphone thread (`mic_call`), as the devices do, so it has one thread and needs no atomic.

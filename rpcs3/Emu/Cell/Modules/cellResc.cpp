@@ -36,7 +36,7 @@ error_code cellRescInit(vm::cptr<CellRescInitConfig> initConfig)
 
 	auto& resc_manager = g_fxo->get<cell_resc_manager>();
 
-	if (resc_manager.is_initialized)
+	if (retro_atomic_load_acquire_int(&resc_manager.is_initialized))
 	{
 		return CELL_RESC_ERROR_REINITIALIZED;
 	}
@@ -44,6 +44,12 @@ error_code cellRescInit(vm::cptr<CellRescInitConfig> initConfig)
 	if (!initConfig || initConfig->size > 28) // TODO: more checks
 	{
 		return CELL_RESC_ERROR_BAD_ARGUMENT;
+	}
+
+	// One of two at once fills the config
+	if (!resc_manager.claim())
+	{
+		return CELL_RESC_ERROR_REINITIALIZED;
 	}
 
 	resc_manager.config =
@@ -56,7 +62,7 @@ error_code cellRescInit(vm::cptr<CellRescInitConfig> initConfig)
 		initConfig->interlaceMode,
 		initConfig->flipMode
 	};
-	resc_manager.is_initialized = true;
+	resc_manager.ready();
 
 	return CELL_OK;
 }
@@ -66,7 +72,7 @@ void cellRescExit()
 	cellResc.todo("cellRescExit()");
 
 	auto& resc_manager = g_fxo->get<cell_resc_manager>();
-	resc_manager.is_initialized = false;
+	resc_manager.exit();
 }
 
 error_code cellRescVideoOutResolutionId2RescBufferMode(u32 resolutionId, vm::cptr<u32> bufferMode)
@@ -87,7 +93,7 @@ error_code cellRescSetDsts(u32 bufferMode, vm::cptr<CellRescDsts> dsts)
 
 	auto& resc_manager = g_fxo->get<cell_resc_manager>();
 
-	if (!resc_manager.is_initialized)
+	if (!resc_manager.initialized())
 	{
 		return CELL_RESC_ERROR_NOT_INITIALIZED;
 	}
@@ -106,7 +112,7 @@ error_code cellRescSetDisplayMode(u32 bufferMode)
 
 	auto& resc_manager = g_fxo->get<cell_resc_manager>();
 
-	if (!resc_manager.is_initialized)
+	if (!resc_manager.initialized())
 	{
 		return CELL_RESC_ERROR_NOT_INITIALIZED;
 	}
@@ -150,7 +156,7 @@ error_code cellRescAdjustAspectRatio(f32 horizontal, f32 vertical)
 
 	auto& resc_manager = g_fxo->get<cell_resc_manager>();
 
-	if (!resc_manager.is_initialized)
+	if (!resc_manager.initialized())
 	{
 		return CELL_RESC_ERROR_NOT_INITIALIZED;
 	}
@@ -169,7 +175,7 @@ error_code cellRescSetPalInterpolateDropFlexRatio(f32 ratio)
 
 	auto& resc_manager = g_fxo->get<cell_resc_manager>();
 
-	if (!resc_manager.is_initialized)
+	if (!resc_manager.initialized())
 	{
 		return CELL_RESC_ERROR_NOT_INITIALIZED;
 	}
@@ -188,7 +194,7 @@ error_code cellRescGetBufferSize(vm::ptr<s32> colorBuffers, vm::ptr<s32> vertexA
 
 	auto& resc_manager = g_fxo->get<cell_resc_manager>();
 
-	if (!resc_manager.is_initialized)
+	if (!resc_manager.initialized())
 	{
 		return CELL_RESC_ERROR_NOT_INITIALIZED;
 	}
@@ -260,7 +266,7 @@ error_code cellRescSetSrc(s32 idx, vm::cptr<CellRescSrc> src)
 
 	auto& resc_manager = g_fxo->get<cell_resc_manager>();
 
-	if (!resc_manager.is_initialized)
+	if (!resc_manager.initialized())
 	{
 		return CELL_RESC_ERROR_NOT_INITIALIZED;
 	}
@@ -279,7 +285,7 @@ error_code cellRescSetConvertAndFlip(vm::ptr<CellGcmContextData> con, s32 idx)
 
 	auto& resc_manager = g_fxo->get<cell_resc_manager>();
 
-	if (!resc_manager.is_initialized)
+	if (!resc_manager.initialized())
 	{
 		return CELL_RESC_ERROR_NOT_INITIALIZED;
 	}
@@ -305,7 +311,7 @@ error_code cellRescSetBufferAddress(vm::cptr<u32> colorBuffers, vm::cptr<u32> ve
 
 	auto& resc_manager = g_fxo->get<cell_resc_manager>();
 
-	if (!resc_manager.is_initialized)
+	if (!resc_manager.initialized())
 	{
 		return CELL_RESC_ERROR_NOT_INITIALIZED;
 	}

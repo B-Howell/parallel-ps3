@@ -32,6 +32,7 @@
 #include "Emu/Cell/Modules/sceNpTrophy.h"
 #include "Emu/Cell/Modules/sceNpSns.h"
 #include "Emu/Cell/Modules/cellSsl.h"
+#include "Emu/Cell/Modules/cellResc.h"
 #include "Emu/NP/net_http_thread.h"
 #include "Emu/Cell/Modules/cellAudio.h"
 #include "Emu/Cell/Modules/cellDmuxPamf.h"
@@ -2271,6 +2272,26 @@ int main()
 		}
 		g_fxo->clear();
 		std::printf("test_emu_waits: cellSsl taken by one Init and ended by one End\n");
+	}
+
+	// cellResc's initialized word: of two cellRescInit at once one claims
+	// it, and the calls see it initialized only once its config is filled;
+	// an exit while it is filled leaves it be
+	{
+		cell_resc_manager resc;
+		std::atomic<int> claimed{0};
+		const auto claim = [&] { if (resc.claim()) claimed++; };
+		std::thread c1(claim), c2(claim);
+		c1.join();
+		c2.join();
+		CHECK(claimed == 1 && !resc.initialized() && !resc.claim());
+		resc.exit();
+		CHECK(!resc.initialized() && retro_atomic_load_acquire_int(&resc.is_initialized) == cell_resc_manager::starting);
+		resc.ready();
+		CHECK(resc.initialized() && !resc.claim());
+		resc.exit();
+		CHECK(!resc.initialized() && resc.claim());
+		std::printf("test_emu_waits: cellResc claimed by one Init, initialized once its config is filled\n");
 	}
 
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");

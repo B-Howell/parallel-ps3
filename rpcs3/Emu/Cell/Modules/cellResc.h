@@ -1,5 +1,7 @@
 #pragma once
 
+#include <retro_atomic.h>
+
 enum CellRescError : u32
 {
 	CELL_RESC_ERROR_NOT_INITIALIZED   = 0x80210301,
@@ -107,7 +109,16 @@ struct CellRescSrc
 
 struct cell_resc_manager
 {
-	atomic_t<bool> is_initialized = false;
+	// 0 not initialized, `starting` while a cellRescInit fills the config
+	// (taken by it alone), 1 initialized: the config is seen whole by every
+	// call that finds 1
+	static constexpr int starting = 2;
+	retro_atomic_int_t is_initialized{0};
+
+	bool initialized() const { return retro_atomic_load_acquire_int(&is_initialized) == 1; }
+	bool claim() { return retro_atomic_cas_int(&is_initialized, 0, starting) != 0; }
+	void ready() { retro_atomic_store_release_int(&is_initialized, 1); }
+	void exit() { retro_atomic_cas_int(&is_initialized, 1, 0); }
 
 	u32 buffer_mode{};
 
