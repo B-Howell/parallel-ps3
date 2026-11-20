@@ -1571,7 +1571,7 @@ namespace vk
 	{
 		trim_sections();
 
-		if (m_storage.m_unreleased_texture_objects >= m_max_zombie_objects)
+		if (static_cast<u32>(retro_atomic_load_acquire_int(&m_storage.m_unreleased_texture_objects)) >= m_max_zombie_objects)
 		{
 			purge_unreleased_sections();
 		}

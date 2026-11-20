@@ -4,6 +4,10 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The texture cache's counters on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:** the cache's update tag and section tag (`retro_atomic_64_t`), the per-frame statistics (flushes, misses, speculations, hard faults, uploads, elided copies, mispredictions), the storage's section counts, the unreleased-object count and the memory in use are retro_atomic words. They are read with acquire loads and counted with retro_atomic's adds and subtracts, where atomic_t's operators were sequentially consistent. The Vulkan and OpenGL caches read the unreleased count the same way.
+  - **Tests:** none run the texture cache, which needs a renderer; the full build and suites pass. A check fails if atomic_t comes back to the texture cache headers.
+
 - **SPURS's words through vm::guest_* (guest_atomic.h); atomic_be_t and atomic_le_t are gone.** Not yet run on a game.
   - **What changed:**
     - **cellSpurs.h:** the counts, signals, states, events, flags and masks SPURS shares with the game and its SPU programs (`wklReadyCount`, `wklSignal`, `wklState`, `wklEvent`, `wklEnabled`, `sysSrvMessage`, the handler flags, the exception handler, the event flag's control word, the taskset bitsets, the job guard and job chain words and others) are plain fields laid out as the game has them. They are aligned as atomic_t aligned them, and the sizes the module checks are unchanged.

@@ -333,7 +333,7 @@ namespace rsx
 
 	public:
 		// Per-frame statistics
-		atomic_t<u32> m_mispredictions_this_frame = {0};
+		retro_atomic_int_t m_mispredictions_this_frame{0};
 
 		// Constructors
 		texture_cache_predictor(texture_cache_type* tex_cache)
@@ -363,12 +363,12 @@ namespace rsx
 		// Callbacks
 		void on_frame_end()
 		{
-			m_mispredictions_this_frame = 0;
+			retro_atomic_store_release_int(&m_mispredictions_this_frame, 0);
 		}
 
 		void on_misprediction()
 		{
-			m_mispredictions_this_frame++;
+			retro_atomic_fetch_add_int(&m_mispredictions_this_frame, 1);
 		}
 
 		// Returns true if the next operation is likely to be a read

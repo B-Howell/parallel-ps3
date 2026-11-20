@@ -671,7 +671,7 @@ namespace rsx
 		std::vector<image_view_type> m_uncached_subresources;
 		predictor_type m_predictor;
 
-		atomic_t<u64> m_cache_update_tag = {0};
+		retro_atomic_64_t m_cache_update_tag{0};
 
 		address_range32 read_only_range;
 		address_range32 no_access_range;
@@ -690,13 +690,13 @@ namespace rsx
 		const u32 m_max_zombie_objects = 64; //Limit on how many texture objects to keep around for reuse after they are invalidated
 
 		//Other statistics
-		atomic_t<u32> m_flushes_this_frame = { 0 };
-		atomic_t<u32> m_misses_this_frame  = { 0 };
-		atomic_t<u32> m_speculations_this_frame = { 0 };
-		atomic_t<u32> m_unavoidable_hard_faults_this_frame = { 0 };
-		atomic_t<u32> m_texture_upload_calls_this_frame = { 0 };
-		atomic_t<u32> m_texture_upload_misses_this_frame = { 0 };
-		atomic_t<u32> m_texture_copies_ellided_this_frame = { 0 };
+		retro_atomic_int_t m_flushes_this_frame{0};
+		retro_atomic_int_t m_misses_this_frame{0};
+		retro_atomic_int_t m_speculations_this_frame{0};
+		retro_atomic_int_t m_unavoidable_hard_faults_this_frame{0};
+		retro_atomic_int_t m_texture_upload_calls_this_frame{0};
+		retro_atomic_int_t m_texture_upload_misses_this_frame{0};
+		retro_atomic_int_t m_texture_copies_ellided_this_frame{0};
 		static const u32 m_predict_max_flushes_per_frame = 50; // Above this number the predictions are disabled
 
 		// Invalidation
@@ -740,7 +740,7 @@ namespace rsx
 		 */
 		inline void update_cache_tag()
 		{
-			m_cache_update_tag = rsx::get_shared_tag();
+			retro_atomic_store_release_64(&m_cache_update_tag, static_cast<s64>(rsx::get_shared_tag()));
 		}
 
 		template <typename CharT, usz N, typename... Args>
@@ -1050,12 +1050,12 @@ namespace rsx
 		}
 
 		// Return a set containing all sections that should be flushed/unprotected/reprotected
-		atomic_t<u64> m_last_section_cache_tag = 0;
+		retro_atomic_64_t m_last_section_cache_tag{0};
 		intersecting_set get_intersecting_set(const address_range32 &fault_range)
 		{
 			AUDIT(fault_range.is_page_range());
 
-			const u64 cache_tag = ++m_last_section_cache_tag;
+			const u64 cache_tag = static_cast<u64>(retro_atomic_fetch_add_64(&m_last_section_cache_tag, 1)) + 1;
 
 			intersecting_set result = {};
 			address_range32 &invalidate_range = result.invalidate_range;
@@ -1345,7 +1345,7 @@ namespace rsx
 			{
 				// There is something to flush, but we've been asked to defer it
 				result.num_flushable = static_cast<int>(result.sections_to_flush.size());
-				result.cache_tag = m_cache_update_tag.load();
+				result.cache_tag = static_cast<u64>(retro_atomic_load_acquire_64(&m_cache_update_tag));
 				return result;
 			}
 			else if (has_flushables || has_unprotectables)
@@ -1426,7 +1426,7 @@ namespace rsx
 			region.reprotect(utils::protection::no, { 0, rsx_range.length() });
 
 			region.set_dirty(false);
-			region.touch(m_cache_update_tag);
+			region.touch(static_cast<u64>(retro_atomic_load_acquire_64(&m_cache_update_tag)));
 
 			if (is_active_surface)
 			{
@@ -2279,7 +2279,7 @@ namespace rsx
 			AUDIT(data.cause.deferred_flush());
 			AUDIT(!data.flushed);
 
-			if (m_cache_update_tag.load() == data.cache_tag)
+			if (static_cast<u64>(retro_atomic_load_acquire_64(&m_cache_update_tag)) == data.cache_tag)
 			{
 				//1. Write memory to cpu side
 				flush_set(cmd, data, on_data_transfer_completed, std::forward<Args>(extras)...);
@@ -2301,7 +2301,7 @@ namespace rsx
 		{
 			sync_guest_writes(cmd, extras...);
 
-			u32 cur_flushes_this_frame = (m_flushes_this_frame + m_speculations_this_frame);
+			u32 cur_flushes_this_frame = (static_cast<u32>(retro_atomic_load_acquire_int(&m_flushes_this_frame)) + static_cast<u32>(retro_atomic_load_acquire_int(&m_speculations_this_frame)));
 
 			if (cur_flushes_this_frame > m_predict_max_flushes_per_frame)
 				return false;
@@ -2348,7 +2348,7 @@ namespace rsx
 
 		virtual bool handle_memory_pressure(problem_severity severity)
 		{
-			if (m_storage.m_unreleased_texture_objects)
+			if (static_cast<u32>(retro_atomic_load_acquire_int(&m_storage.m_unreleased_texture_objects)))
 			{
 				m_storage.purge_unreleased_sections();
 				return true;
@@ -3180,7 +3180,7 @@ namespace rsx
 		template <typename RsxTextureType, typename surface_store_type, typename ...Args>
 		sampled_image_descriptor upload_texture(commandbuffer_type& cmd, const RsxTextureType& tex, surface_store_type& m_rtts, Args&&... extras)
 		{
-			m_texture_upload_calls_this_frame++;
+			retro_atomic_fetch_add_int(&m_texture_upload_calls_this_frame, 1);
 
 			sync_guest_writes(cmd, extras...);
 
@@ -3305,7 +3305,7 @@ namespace rsx
 				}
 				else if (result.texcoord_xform.clamp)
 				{
-					m_texture_copies_ellided_this_frame++;
+					retro_atomic_fetch_add_int(&m_texture_copies_ellided_this_frame, 1);
 				}
 
 				if (!result.ref_address)
@@ -3426,7 +3426,7 @@ namespace rsx
 			}
 
 			// Do direct upload from CPU as the last resort
-			m_texture_upload_misses_this_frame++;
+			retro_atomic_fetch_add_int(&m_texture_upload_misses_this_frame, 1);
 
 			const auto subresources_layout = get_subresources_layout(tex);
 			const auto format_class = classify_format(attributes.gcm_format);
@@ -3783,7 +3783,7 @@ namespace rsx
 				ensure((mem_offset + dst_payload_length) <= cached_dest->get_section_size());
 
 				cached_dest->reprotect(utils::protection::no, { mem_offset, dst_payload_length });
-				cached_dest->touch(m_cache_update_tag);
+				cached_dest->touch(static_cast<u64>(retro_atomic_load_acquire_64(&m_cache_update_tag)));
 				update_cache_tag();
 
 				// Set swizzle flag
@@ -3818,7 +3818,7 @@ namespace rsx
 
 					if (section.matches(test_range))
 					{
-						section.touch(m_cache_update_tag);
+						section.touch(static_cast<u64>(retro_atomic_load_acquire_64(&m_cache_update_tag)));
 						update_cache_tag();
 
 						ensure(!dest_section, "More than one section matches our surface!");
@@ -3949,7 +3949,7 @@ namespace rsx
 				return;
 			}
 
-			if (m_cache_update_tag.load() == m_flush_always_update_timestamp)
+			if (static_cast<u64>(retro_atomic_load_acquire_64(&m_cache_update_tag)) == m_flush_always_update_timestamp)
 			{
 				return;
 			}
@@ -3978,7 +3978,7 @@ namespace rsx
 				update_cache_tag();
 			}
 
-			m_flush_always_update_timestamp = m_cache_update_tag.load();
+			m_flush_always_update_timestamp = static_cast<u64>(retro_atomic_load_acquire_64(&m_cache_update_tag));
 
 #ifdef TEXTURE_CACHE_DEBUG
 			// Check that the cache has the correct protections
@@ -4030,23 +4030,23 @@ namespace rsx
 		 */
 		void reset_frame_statistics()
 		{
-			m_flushes_this_frame.store(0u);
-			m_misses_this_frame.store(0u);
-			m_speculations_this_frame.store(0u);
-			m_unavoidable_hard_faults_this_frame.store(0u);
-			m_texture_upload_calls_this_frame.store(0u);
-			m_texture_upload_misses_this_frame.store(0u);
-			m_texture_copies_ellided_this_frame.store(0u);
+			retro_atomic_store_release_int(&m_flushes_this_frame, 0);
+			retro_atomic_store_release_int(&m_misses_this_frame, 0);
+			retro_atomic_store_release_int(&m_speculations_this_frame, 0);
+			retro_atomic_store_release_int(&m_unavoidable_hard_faults_this_frame, 0);
+			retro_atomic_store_release_int(&m_texture_upload_calls_this_frame, 0);
+			retro_atomic_store_release_int(&m_texture_upload_misses_this_frame, 0);
+			retro_atomic_store_release_int(&m_texture_copies_ellided_this_frame, 0);
 		}
 
 		void on_flush()
 		{
-			m_flushes_this_frame++;
+			retro_atomic_fetch_add_int(&m_flushes_this_frame, 1);
 		}
 
 		void on_speculative_flush()
 		{
-			m_speculations_this_frame++;
+			retro_atomic_fetch_add_int(&m_speculations_this_frame, 1);
 		}
 
 		void on_misprediction()
@@ -4056,73 +4056,73 @@ namespace rsx
 
 		void on_miss(const section_storage_type& section)
 		{
-			m_misses_this_frame++;
+			retro_atomic_fetch_add_int(&m_misses_this_frame, 1);
 
 			if (section.get_memory_read_flags() == memory_read_flags::flush_always)
 			{
-				m_unavoidable_hard_faults_this_frame++;
+				retro_atomic_fetch_add_int(&m_unavoidable_hard_faults_this_frame, 1);
 			}
 		}
 
 		virtual u32 get_unreleased_textures_count() const
 		{
-			return m_storage.m_unreleased_texture_objects;
+			return static_cast<u32>(retro_atomic_load_acquire_int(&m_storage.m_unreleased_texture_objects));
 		}
 
 		u64 get_texture_memory_in_use() const
 		{
-			return m_storage.m_texture_memory_in_use;
+			return static_cast<u64>(retro_atomic_load_acquire_64(&m_storage.m_texture_memory_in_use));
 		}
 
 		u32 get_num_flush_requests() const
 		{
-			return m_flushes_this_frame;
+			return static_cast<u32>(retro_atomic_load_acquire_int(&m_flushes_this_frame));
 		}
 
 		u32 get_num_cache_mispredictions() const
 		{
-			return m_predictor.m_mispredictions_this_frame;
+			return static_cast<u32>(retro_atomic_load_acquire_int(&m_predictor.m_mispredictions_this_frame));
 		}
 
 		u32 get_num_cache_speculative_writes() const
 		{
-			return m_speculations_this_frame;
+			return static_cast<u32>(retro_atomic_load_acquire_int(&m_speculations_this_frame));
 		}
 
 		u32 get_num_cache_misses() const
 		{
-			return m_misses_this_frame;
+			return static_cast<u32>(retro_atomic_load_acquire_int(&m_misses_this_frame));
 		}
 
 		u32 get_num_unavoidable_hard_faults() const
 		{
-			return m_unavoidable_hard_faults_this_frame;
+			return static_cast<u32>(retro_atomic_load_acquire_int(&m_unavoidable_hard_faults_this_frame));
 		}
 
 		f32 get_cache_miss_ratio() const
 		{
-			const auto num_flushes = m_flushes_this_frame.load();
-			return (num_flushes == 0u) ? 0.f : static_cast<f32>(m_misses_this_frame.load()) / num_flushes;
+			const auto num_flushes = static_cast<u32>(retro_atomic_load_acquire_int(&m_flushes_this_frame));
+			return (num_flushes == 0u) ? 0.f : static_cast<f32>(static_cast<u32>(retro_atomic_load_acquire_int(&m_misses_this_frame))) / num_flushes;
 		}
 
 		u32 get_texture_upload_calls_this_frame() const
 		{
-			return m_texture_upload_calls_this_frame;
+			return static_cast<u32>(retro_atomic_load_acquire_int(&m_texture_upload_calls_this_frame));
 		}
 
 		u32 get_texture_upload_misses_this_frame() const
 		{
-			return m_texture_upload_misses_this_frame;
+			return static_cast<u32>(retro_atomic_load_acquire_int(&m_texture_upload_misses_this_frame));
 		}
 
 		u32 get_texture_upload_miss_percentage() const
 		{
-			return (m_texture_upload_calls_this_frame)? (m_texture_upload_misses_this_frame * 100 / m_texture_upload_calls_this_frame) : 0;
+			return (static_cast<u32>(retro_atomic_load_acquire_int(&m_texture_upload_calls_this_frame)))? (static_cast<u32>(retro_atomic_load_acquire_int(&m_texture_upload_misses_this_frame)) * 100 / static_cast<u32>(retro_atomic_load_acquire_int(&m_texture_upload_calls_this_frame))) : 0;
 		}
 
 		u32 get_texture_copies_ellided_this_frame() const
 		{
-			return m_texture_copies_ellided_this_frame;
+			return static_cast<u32>(retro_atomic_load_acquire_int(&m_texture_copies_ellided_this_frame));
 		}
 	};
 }

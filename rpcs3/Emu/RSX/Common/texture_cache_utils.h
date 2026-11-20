@@ -235,9 +235,9 @@ namespace rsx
 		address_range32 range = {};
 		block_container_type sections = {};
 		unowned_container_type unowned; // pointers to sections from other blocks that overlap this block
-		atomic_t<u32> exists_count = 0;
-		atomic_t<u32> locked_count = 0;
-		atomic_t<u32> unreleased_count = 0;
+		retro_atomic_int_t exists_count{0};
+		retro_atomic_int_t locked_count{0};
+		retro_atomic_int_t unreleased_count{0};
 		ranged_storage_type *m_storage = nullptr;
 
 		inline void add_owned_section_overlaps(section_storage_type &section)
@@ -283,9 +283,9 @@ namespace rsx
 		inline const_iterator end() const noexcept { return sections.end(); }
 		inline bool empty() const { return sections.empty(); }
 		inline size_type size() const { return sections.size(); }
-		inline u32 get_exists_count() const { return exists_count; }
-		inline u32 get_locked_count() const { return locked_count; }
-		inline u32 get_unreleased_count() const { return unreleased_count; }
+		inline u32 get_exists_count() const { return static_cast<u32>(retro_atomic_load_acquire_int(&exists_count)); }
+		inline u32 get_locked_count() const { return static_cast<u32>(retro_atomic_load_acquire_int(&locked_count)); }
+		inline u32 get_unreleased_count() const { return static_cast<u32>(retro_atomic_load_acquire_int(&unreleased_count)); }
 
 		/**
 		 * Utilities
@@ -317,9 +317,9 @@ namespace rsx
 				section.destroy();
 			}
 
-			AUDIT(exists_count == 0);
-			AUDIT(unreleased_count == 0);
-			AUDIT(locked_count == 0);
+			AUDIT(retro_atomic_load_acquire_int(&exists_count) == 0);
+			AUDIT(retro_atomic_load_acquire_int(&unreleased_count) == 0);
+			AUDIT(retro_atomic_load_acquire_int(&locked_count) == 0);
 			sections.clear();
 		}
 
@@ -360,14 +360,14 @@ namespace rsx
 		{
 			(void)section; // silence unused warning without _AUDIT
 			AUDIT(section.is_locked());
-			locked_count++;
+			retro_atomic_fetch_add_int(&locked_count, 1);
 		}
 
 		inline void on_section_unprotected(const section_storage_type &section)
 		{
 			(void)section; // silence unused warning without _AUDIT
 			AUDIT(!section.is_locked());
-			u32 prev_locked = locked_count--;
+			u32 prev_locked = static_cast<u32>(retro_atomic_fetch_sub_int(&locked_count, 1));
 			ensure(prev_locked > 0);
 		}
 
@@ -390,7 +390,7 @@ namespace rsx
 			(void)section; // silence unused warning without _AUDIT
 			AUDIT(section.exists());
 
-			u32 prev_exists = exists_count++;
+			u32 prev_exists = static_cast<u32>(retro_atomic_fetch_add_int(&exists_count, 1));
 
 			if (prev_exists == 0)
 			{
@@ -403,7 +403,7 @@ namespace rsx
 			(void)section; // silence unused warning without _AUDIT
 			AUDIT(!section.exists());
 
-			u32 prev_exists = exists_count--;
+			u32 prev_exists = static_cast<u32>(retro_atomic_fetch_sub_int(&exists_count, 1));
 			ensure(prev_exists > 0);
 
 			if (prev_exists == 1)
@@ -414,13 +414,13 @@ namespace rsx
 
 		void on_section_released(const section_storage_type &/*section*/)
 		{
-			u32 prev_unreleased = unreleased_count--;
+			u32 prev_unreleased = static_cast<u32>(retro_atomic_fetch_sub_int(&unreleased_count, 1));
 			ensure(prev_unreleased > 0);
 		}
 
 		void on_section_unreleased(const section_storage_type &/*section*/)
 		{
-			unreleased_count++;
+			retro_atomic_fetch_add_int(&unreleased_count, 1);
 		}
 
 
@@ -475,8 +475,8 @@ namespace rsx
 		std::unordered_set<block_type*> m_in_use;
 
 	public:
-		atomic_t<u32> m_unreleased_texture_objects = { 0 }; //Number of invalidated objects not yet freed from memory
-		atomic_t<u64> m_texture_memory_in_use = { 0 };
+		retro_atomic_int_t m_unreleased_texture_objects{0}; //Number of invalidated objects not yet freed from memory
+		retro_atomic_64_t m_texture_memory_in_use{0};
 
 		// Constructor
 		ranged_storage(texture_cache_type *tex_cache) :
@@ -548,8 +548,8 @@ namespace rsx
 
 			m_in_use.clear();
 
-			AUDIT(m_unreleased_texture_objects == 0);
-			AUDIT(m_texture_memory_in_use == 0);
+			AUDIT(retro_atomic_load_acquire_int(&m_unreleased_texture_objects) == 0);
+			AUDIT(retro_atomic_load_acquire_64(&m_texture_memory_in_use) == 0);
 		}
 
 		void purge_unreleased_sections()
@@ -578,7 +578,7 @@ namespace rsx
 				tex->destroy();
 			}
 
-			AUDIT(m_unreleased_texture_objects == 0);
+			AUDIT(retro_atomic_load_acquire_int(&m_unreleased_texture_objects) == 0);
 		}
 
 		bool purge_unlocked_sections()
@@ -638,24 +638,24 @@ namespace rsx
 		 */
 		void on_section_released(const section_storage_type &/*section*/)
 		{
-			u32 prev_unreleased = m_unreleased_texture_objects--;
+			u32 prev_unreleased = static_cast<u32>(retro_atomic_fetch_sub_int(&m_unreleased_texture_objects, 1));
 			ensure(prev_unreleased > 0);
 		}
 
 		void on_section_unreleased(const section_storage_type &/*section*/)
 		{
-			m_unreleased_texture_objects++;
+			retro_atomic_fetch_add_int(&m_unreleased_texture_objects, 1);
 		}
 
 		void on_section_resources_created(const section_storage_type &section)
 		{
-			m_texture_memory_in_use += section.get_section_size();
+			retro_atomic_fetch_add_64(&m_texture_memory_in_use, section.get_section_size());
 		}
 
 		void on_section_resources_destroyed(const section_storage_type &section)
 		{
 			u64 size = section.get_section_size();
-			u64 prev_size = m_texture_memory_in_use.fetch_sub(size);
+			u64 prev_size = static_cast<u64>(retro_atomic_fetch_sub_64(&m_texture_memory_in_use, size));
 			ensure(prev_size >= size);
 		}
 
