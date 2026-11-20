@@ -1559,7 +1559,7 @@ void spu_thread::cpu_task()
 			if (group->name.ends_with("CellSpursKernelGroup"sv) && vm::check_addr(arg))
 			{
 				spurs_addr = arg;
-				group->spurs_running++;
+				retro_atomic_fetch_add_int(&group->spurs_running, 1);
 			}
 			else
 			{
@@ -1618,9 +1618,9 @@ void spu_thread::cpu_task()
 
 	if (spurs_addr != invalid_spurs)
 	{
-		if (group->spurs_running.exchange(0))
+		if (retro_atomic_exchange_int(&group->spurs_running, 0))
 		{
-			group->spurs_running.notify_all();
+			retro_waitaddr_notify_all(&group->spurs_running);
 		}
 	}
 }
@@ -4689,17 +4689,18 @@ bool spu_thread::process_mfc_cmd()
 			// Wait for other threads to complete their tasks (temporarily)
 			u32 max_run = group->max_run;
 
-			auto [prev_running, ok] = spurs_entered_wait ? std::make_pair(+group->spurs_running, false) :
-				group->spurs_running.fetch_op([max_run, num = group->max_num](u32& x)
-			{
-				if (x >= max_run && max_run < num)
-				{
-					x--;
-					return true;
-				}
+			// One running fewer, where as many as allowed run and more may
+			u32 prev_running = static_cast<u32>(retro_atomic_load_acquire_int(&group->spurs_running));
+			bool ok = false;
 
-				return false;
-			});
+			for (const u32 num = group->max_num; !spurs_entered_wait && prev_running >= max_run && max_run < num; prev_running = static_cast<u32>(retro_atomic_load_acquire_int(&group->spurs_running)))
+			{
+				if (retro_atomic_cas_int(&group->spurs_running, static_cast<s32>(prev_running), static_cast<s32>(prev_running - 1)))
+				{
+					ok = true;
+					break;
+				}
+			}
 
 			if (ok || spurs_entered_wait)
 			{
@@ -4709,15 +4710,15 @@ bool spu_thread::process_mfc_cmd()
 				{
 					if (prev_running == max_run)
 					{
-						group->spurs_running.notify_one();
+						retro_waitaddr_notify_one(&group->spurs_running);
 
-						if (group->spurs_running == max_run - 1)
+						if (static_cast<u32>(retro_atomic_load_acquire_int(&group->spurs_running)) == max_run - 1)
 						{
 							// Try to let another thread slip in and take over execution
 							thread_ctrl::wait_for(300);
 
 							// Update value
-							prev_running = group->spurs_running + 1;
+							prev_running = static_cast<u32>(retro_atomic_load_acquire_int(&group->spurs_running)) + 1;
 						}
 					}
 
@@ -4749,27 +4750,25 @@ bool spu_thread::process_mfc_cmd()
 					if (is_stopped() || current - before >= spurs_wait_time)
 					{
 						// Timed-out
-						group->spurs_running++;
+						retro_atomic_fetch_add_int(&group->spurs_running, 1);
 						break;
 					}
 
 					if (prev_running >= max_run)
 					{
-						thread_ctrl::wait_on(group->spurs_running, prev_running, spurs_wait_time - (current - before));
+						thread_ctrl::wait_on_word(&group->spurs_running, prev_running, spurs_wait_time - (current - before));
 					}
 
 					max_run = group->max_run;
 
-					prev_running = group->spurs_running.fetch_op([max_run](u32& x)
+					// One running more, where fewer than allowed run
+					for (prev_running = static_cast<u32>(retro_atomic_load_acquire_int(&group->spurs_running)); prev_running < max_run; prev_running = static_cast<u32>(retro_atomic_load_acquire_int(&group->spurs_running)))
 					{
-						if (x < max_run)
+						if (retro_atomic_cas_int(&group->spurs_running, static_cast<s32>(prev_running), static_cast<s32>(prev_running + 1)))
 						{
-							x++;
-							return true;
+							break;
 						}
-
-						return false;
-					}).first;
+					}
 
 					if (prev_running < max_run)
 					{
@@ -4795,16 +4794,13 @@ bool spu_thread::process_mfc_cmd()
 
 				if (!was_idle && is_idle)
 				{
-					const u32 prev_running = group->spurs_running.fetch_op([](u32& x)
-					{
-						if (x)
-						{
-							x--;
-							return true;
-						}
+					// One running fewer, where any run
+					u32 prev_running = static_cast<u32>(retro_atomic_load_acquire_int(&group->spurs_running));
 
-						return false;
-					}).first;
+					while (prev_running && !retro_atomic_cas_int(&group->spurs_running, static_cast<s32>(prev_running), static_cast<s32>(prev_running - 1)))
+					{
+						prev_running = static_cast<u32>(retro_atomic_load_acquire_int(&group->spurs_running));
+					}
 
 					if (prev_running)
 					{
@@ -4813,7 +4809,7 @@ bool spu_thread::process_mfc_cmd()
 
 					if (prev_running == group->max_run && prev_running < group->max_num)
 					{
-						group->spurs_running.notify_one();
+						retro_waitaddr_notify_one(&group->spurs_running);
 					}
 				}
 				else if (was_idle && !is_idle)
@@ -5866,9 +5862,9 @@ s64 spu_thread::get_ch_value(u32 ch)
 						{
 							spu_log.success("HACK: '%s' (0x%x) limited to %u threads.", group->name, group->id, max_threads);
 						}
-						else if (u32 running = group->spurs_running; old < max_threads && running >= old && running < max_threads)
+						else if (u32 running = static_cast<u32>(retro_atomic_load_acquire_int(&group->spurs_running)); old < max_threads && running >= old && running < max_threads)
 						{
-							group->spurs_running.notify_all();
+							retro_waitaddr_notify_all(&group->spurs_running);
 						}
 					}
 				}

@@ -324,6 +324,13 @@ public:
 		wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set<0>(wait, old); }, usec);
 	}
 
+	// Waits while the 32-bit word at @word (a retro_atomic_int_t) is @old,
+	// for a notify on it, the thread's own, or @usec
+	static inline void wait_on_word(const void* word, u32 old, u64 usec = -1)
+	{
+		wait_on_custom<1>([&](atomic_wait::list<3>& list) { list.template set_raw<0>(word, old); }, usec);
+	}
+
 	template <typename T>
 	static inline void wait_on(T& wait)
 	{

@@ -318,7 +318,7 @@ struct lv2_spu_group
 	retro_atomic_int_t exit_status; // SPU Thread Group Exit Status
 	retro_atomic_int_t join_state; // flags used to detect exit cause and signal (a u32)
 	retro_atomic_int_t running{}; // Number of running threads
-	atomic_t<u32> spurs_running = 0;
+	retro_atomic_int_t spurs_running{0}; // a u32
 	retro_atomic_int_t stop_count{}; // a u32, waited on with retro_waitaddr
 	retro_atomic_int_t wait_term_count{};
 	u32 waiter_spu_index = -1; // Index of SPU executing a waiting syscall

@@ -2655,7 +2655,7 @@ error_code sys_spu_thread_group_log(ppu_thread& ppu, s32 command, vm::ptr<s32> s
 
 	struct spu_group_log_state_t
 	{
-		atomic_t<s32> state = SYS_SPU_THREAD_GROUP_LOG_ON;
+		retro_atomic_int_t state{SYS_SPU_THREAD_GROUP_LOG_ON};
 	};
 
 	auto& state = g_fxo->get<spu_group_log_state_t>();
@@ -2670,13 +2670,13 @@ error_code sys_spu_thread_group_log(ppu_thread& ppu, s32 command, vm::ptr<s32> s
 		}
 
 		ppu.check_state();
-		*stat = state.state;
+		*stat = retro_atomic_load_acquire_int(&state.state);
 		break;
 	}
 	case SYS_SPU_THREAD_GROUP_LOG_ON:
 	case SYS_SPU_THREAD_GROUP_LOG_OFF:
 	{
-		state.state.release(command);
+		retro_atomic_store_release_int(&state.state, command);
 		break;
 	}
 	default: return CELL_EINVAL;

@@ -53,24 +53,31 @@ s32 lv2_lwmutex::try_own(ppu_thread* cpu)
 		return static_cast<s32>(signal);
 	}
 
-	const bool notify = lwcond_waiters.fetch_op([](s32& val)
+	bool notify = false;
+
+	for (s32 val = retro_atomic_load_acquire_int(&lwcond_waiters);;)
 	{
 		if (val + 0u <= 1u << 31)
 		{
 			// Value was either positive or INT32_MIN
-			return false;
+			break;
 		}
 
 		// lwmutex was set to be destroyed, but there are lwcond waiters
 		// Turn off the "lwcond_waiters notification" bit as we are adding an lwmutex waiter
-		val &= 0x7fff'ffff;
-		return true;
-	}).second;
+		if (retro_atomic_cas_int(&lwcond_waiters, val, val & 0x7fff'ffff))
+		{
+			notify = true;
+			break;
+		}
+
+		val = retro_atomic_load_acquire_int(&lwcond_waiters);
+	}
 
 	if (notify)
 	{
 		// Notify lwmutex destroyer (may cause EBUSY to be returned for it)
-		lwcond_waiters.notify_all();
+		retro_waitaddr_notify_all(&lwcond_waiters);
 	}
 
 	return 0;
@@ -154,7 +161,7 @@ error_code _sys_lwmutex_destroy(ppu_thread& ppu, u32 lwmutex_id)
 				return CELL_EBUSY;
 			}
 
-			old_val = mutex.lwcond_waiters.or_fetch(smin);
+			old_val = retro_atomic_fetch_or_int(&mutex.lwcond_waiters, s32{smin}) | s32{smin};
 
 			if (old_val != smin)
 			{
@@ -188,7 +195,7 @@ error_code _sys_lwmutex_destroy(ppu_thread& ppu, u32 lwmutex_id)
 		// Wait for all lwcond waiters to quit
 		while (old_val + 0u > 1u << 31)
 		{
-			thread_ctrl::wait_on(_mutex->lwcond_waiters, old_val);
+			thread_ctrl::wait_on_word(&_mutex->lwcond_waiters, old_val);
 
 			if (ppu.is_stopped())
 			{
@@ -196,7 +203,7 @@ error_code _sys_lwmutex_destroy(ppu_thread& ppu, u32 lwmutex_id)
 				return {};
 			}
 
-			old_val = _mutex->lwcond_waiters;
+			old_val = retro_atomic_load_acquire_int(&_mutex->lwcond_waiters);
 		}
 
 		// Wake up from sleep

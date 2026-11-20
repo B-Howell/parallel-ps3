@@ -417,12 +417,12 @@ int main()
 		std::printf("test_emu_waits: a close joins the progress dialog's server (%zu thread) with no retro_run\n", threads);
 	}
 
-	// A thread's wait list holding a retro_atomic word (atomic_wait::list's
-	// set_raw): woken by retro_waitaddr_notify_one on that word, and by the
+	// A thread's wait on a retro_atomic word (thread_ctrl::wait_on_word, the
+	// wait list's set_raw): asleep while it holds, woken by retro_waitaddr_notify_one on that word, and by the
 	// thread being told to end
 	{
 		static retro_atomic_int_t word{0};
-		std::atomic<int> woken{0};
+		std::atomic<int> woken{0}, passes{0};
 		auto* waiter = new named_thread("Raw Word Waiter"sv, [&]
 		{
 			while (thread_ctrl::state() != thread_state::aborting)
@@ -433,15 +433,14 @@ int main()
 					woken = static_cast<int>(seen);
 					break;
 				}
-				thread_ctrl::wait_on_custom<1>([&](atomic_wait::list<3>& list)
-				{
-					list.template set_raw<0>(&word, seen);
-				});
+				passes++;
+				thread_ctrl::wait_on_word(&word, seen);
 			}
 		});
 		for (int i = 0; i < 200000; i++)
 			std::this_thread::yield();
 		CHECK(woken == 0); // nothing changed: still waiting
+		CHECK(passes <= 2); // asleep, not looping
 		for (int k = 0; k < 3; k++)
 		{
 			retro_atomic_fetch_add_int(&word, 1);

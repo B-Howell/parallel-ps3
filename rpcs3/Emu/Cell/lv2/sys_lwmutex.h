@@ -130,7 +130,7 @@ struct lv2_lwmutex final : lv2_obj
 	// lock, no turn. Each sleeper's thread in its slot, for an unlock to wake
 	lv2_lwq_t q;
 	retro_atomic_ptr_t thread[LV2_LWQ_SLOTS]{};
-	atomic_t<s32> lwcond_waiters{0};
+	retro_atomic_int_t lwcond_waiters{0};
 
 	lv2_lwmutex(u32 protocol, vm::ptr<sys_lwmutex_t> control, u64 name) noexcept
 		: protocol{static_cast<u8>(protocol)}

@@ -234,7 +234,7 @@ error_code _sys_lwcond_destroy(ppu_thread& ppu, u32 lwcond_id)
 				return CELL_EBUSY;
 			}
 
-			old_val = cond.lwmutex_waiters.or_fetch(smin);
+			old_val = retro_atomic_fetch_or_int(&cond.lwmutex_waiters, s32{smin}) | s32{smin};
 
 			if (old_val != smin)
 			{
@@ -269,7 +269,7 @@ error_code _sys_lwcond_destroy(ppu_thread& ppu, u32 lwcond_id)
 		// Wait for all lwcond waiters to quit
 		while (old_val + 0u > 1u << 31)
 		{
-			thread_ctrl::wait_on(_cond->lwmutex_waiters, old_val);
+			thread_ctrl::wait_on_word(&_cond->lwmutex_waiters, old_val);
 
 			if (ppu.is_stopped())
 			{
@@ -277,7 +277,7 @@ error_code _sys_lwcond_destroy(ppu_thread& ppu, u32 lwcond_id)
 				return {};
 			}
 
-			old_val = _cond->lwmutex_waiters;
+			old_val = retro_atomic_load_acquire_int(&_cond->lwmutex_waiters);
 		}
 
 		// Wake up from sleep
@@ -613,7 +613,7 @@ error_code _sys_lwcond_queue_wait(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 		}
 
 		// Increment lwmutex's lwcond's waiters count
-		mutex->lwcond_waiters++;
+		retro_atomic_fetch_add_int(&mutex->lwcond_waiters, 1);
 
 		lv2_obj::prepare_for_sleep(ppu);
 
@@ -624,14 +624,14 @@ error_code _sys_lwcond_queue_wait(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 		// sleep: that sleep is then cancelled (lv2_obj::sleep gives false)
 		ppu.cancel_sleep = 1;
 
-		cond.lwmutex_waiters++;
+		retro_atomic_fetch_add_int(&cond.lwmutex_waiters, 1);
 
 		// The lwmutex's next owner to wake: none to be saved again, or the
 		// wait is done again after
 		if (!ppu.loaded_from_savestate && mutex->resaving())
 		{
-			cond.lwmutex_waiters--;
-			mutex->lwcond_waiters--;
+			retro_atomic_fetch_add_int(&cond.lwmutex_waiters, -1);
+			retro_atomic_fetch_add_int(&mutex->lwcond_waiters, -1);
 			ppu.cancel_sleep = 0;
 			ppu.state += cpu_flag::again;
 			return;
@@ -759,16 +759,16 @@ error_code _sys_lwcond_queue_wait(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 		ppu.gpr[3] = CELL_EBUSY;
 	}
 
-	if (--mutex->lwcond_waiters == smin)
+	if (retro_atomic_fetch_add_int(&mutex->lwcond_waiters, -1) - 1 == smin)
 	{
 		// Notify the thread destroying lwmutex on last waiter
-		mutex->lwcond_waiters.notify_all();
+		retro_waitaddr_notify_all(&mutex->lwcond_waiters);
 	}
 
-	if (--cond->lwmutex_waiters == smin)
+	if (retro_atomic_fetch_add_int(&cond->lwmutex_waiters, -1) - 1 == smin)
 	{
 		// Notify the thread destroying lwcond on last waiter
-		cond->lwmutex_waiters.notify_all();
+		retro_waitaddr_notify_all(&cond->lwmutex_waiters);
 	}
 
 	// Return cause

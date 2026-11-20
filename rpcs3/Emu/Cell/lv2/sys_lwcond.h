@@ -41,7 +41,7 @@ struct lv2_lwcond final : lv2_obj
 	retro_atomic_int_t verdict[LV2_WAITSET_SLOTS]{};
 	retro_atomic_int_t timed_out[LV2_WAITSET_SLOTS]{};
 
-	atomic_t<s32> lwmutex_waiters = 0;
+	retro_atomic_int_t lwmutex_waiters{0};
 
 	lv2_lwcond(u64 name, u32 lwid, u32 protocol, vm::ptr<sys_lwcond_t> control) noexcept
 		: name(std::bit_cast<be_t<u64>>(name))

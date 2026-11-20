@@ -812,9 +812,10 @@ error_code _sys_prx_unload_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sy
 
 	// A thread still loading or unloading its exports done first: woken as
 	// the last leaves
-	for (u32 busy = prx->exports_busy.load(); busy; busy = prx->exports_busy.load())
+	for (u32 busy = static_cast<u32>(retro_atomic_load_acquire_int(&prx->exports_busy)); busy; busy = static_cast<u32>(retro_atomic_load_acquire_int(&prx->exports_busy)))
 	{
-		prx->exports_busy.wait(busy);
+		const retro_waitaddr_t w{&prx->exports_busy, busy};
+		retro_waitaddr_wait(&w, 1, -1);
 	}
 
 	if (prx->hle_data)

@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **lv2's waiter counts on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The counts:** `lwcond_waiters` and `lwmutex_waiters` (the counts a destroy waits on, with the sign bit as its flag), a PRX's `exports_busy` and an SPU group's `spurs_running` are retro_atomic words. They are counted with adds, ors and compare-and-swap loops where atomic_t ran a lambda, and woken with retro_waitaddr on the same address. The SPU group log state is one too.
+    - **Waiting:** `thread_ctrl::wait_on_word(word, old, usec)` waits on such a word through the wait list's `set_raw`, with the thread's own wake-ups, as `wait_on` did for an atomic_t. `sys_prx` waits for the exports to be free with retro_waitaddr.
+    - **Unchanged:** the SPURS thread throttle (`spurs_running`) still waits for at most the length of one and a half tasks, measured on the wall clock, and still sleeps 300 µs to let another thread take over. Both are RPCS3's and left as they were.
+  - **Tests:** test_emu_waits's named thread now waits through `wait_on_word`. It checks that the thread is asleep while the word holds (at most two passes in 200000 yields), is woken by a notify, and is woken by its end. A mutant that waits for the wrong old value loops instead and fails it. The counts themselves are inside syscalls that need the emulator; the full build and suites pass. A check fails if atomic_t comes back to these lv2 files.
+
 - **The RSX's writes to the game's memory through vm::guest_* and retro_atomic, off atomic_t views.** Not yet run on a game.
   - **What changed:**
     - **16 bytes at once:** a report (ZCULL and `GET_REPORT`), a notify and the 16 bytes after the flip label are stored with one 128-bit release store through `vm::guest_store`, which now stores 16-byte words that way, or changed with `vm::guest_op`.

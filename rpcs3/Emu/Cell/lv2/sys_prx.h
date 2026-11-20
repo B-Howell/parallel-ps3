@@ -194,13 +194,13 @@ struct lv2_prx final : ppu_module<lv2_obj>
 	// Threads loading or unloading the exports (each has the state that
 	// lets it, won by compare-and-swap); unloading the module waits for
 	// them to be done - no lock
-	atomic_t<u32> exports_busy{0};
+	retro_atomic_int_t exports_busy{0};
 
-	void exports_enter() { exports_busy++; }
+	void exports_enter() { retro_atomic_fetch_add_int(&exports_busy, 1); }
 	void exports_leave()
 	{
-		if (--exports_busy == 0)
-			exports_busy.notify_all();
+		if (retro_atomic_fetch_add_int(&exports_busy, -1) == 1)
+			retro_waitaddr_notify_all(&exports_busy);
 	}
 	u32 hle_data = 0;
 
