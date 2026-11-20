@@ -36,6 +36,7 @@
 #include "Emu/RSX/Common/bitfield.hpp"
 #include "Emu/Cell/lv2/sys_spu.h"
 #include "Emu/Cell/lv2/sys_lwmutex.h"
+#include "Emu/Cell/Modules/cellSync.h"
 #include "Emu/savestate_utils.hpp"
 #include "Emu/Memory/vm_locking.h"
 #include "Emu/Memory/vm_reservation.h"
@@ -1991,6 +1992,53 @@ int main()
 		CHECK(m.owner() == 0x99 && m.vars.waiter == 0u);
 		CHECK(!m.cas_lock_test(0x99, 1, lwmutex_free, 0) && m.cas_lock_test(0x99, 0, lwmutex_free, 0) && m.owner() == lwmutex_free);
 		std::printf("test_emu_waits: a lightweight mutex's words: big-endian, owner swaps, 100000 waiters counted from two threads\n");
+	}
+
+	// cellSync's control words in the game's memory, changed whole through
+	// vm::guest_op and the like: a mutex's ticket taken by two threads 30000
+	// times each, every ticket once; two 2-byte words sharing a 4-byte one,
+	// each counted up by its own thread, neither losing the other's; an
+	// 8-byte queue word swapped and compared whole, big-endian
+	{
+		alignas(4) CellSyncMutex m{};
+		vm::guest_exchange(m.ctrl, {0, 0});
+		std::atomic<u32> seen_twice{0};
+		std::vector<std::atomic<u8>> taken(65536);
+		auto taker = [&]
+		{
+			for (int i = 0; i < 30000; i++)
+			{
+				const u16 order = vm::guest_op(m.ctrl, [](CellSyncMutex::Counter& c) { return c.lock_begin(); });
+				if (taken[order].exchange(1))
+					seen_twice++;
+			}
+		};
+		std::thread t1(taker), t2(taker);
+		t1.join();
+		t2.join();
+		CHECK(seen_twice == 0 && vm::guest_load(m.ctrl).acq == 60000);
+
+		struct alignas(4) halves
+		{
+			CellSyncLFQueue::push2_t a;
+			CellSyncLFQueue::pop2_t b;
+		} h{};
+		std::thread ha([&] { for (int i = 0; i < 30000; i++) vm::guest_op(h.a, [](CellSyncLFQueue::push2_t& v) { v.pack = v.pack + 1; }); });
+		std::thread hb([&] { for (int i = 0; i < 30000; i++) vm::guest_op(h.b, [](CellSyncLFQueue::pop2_t& v) { v.pack = v.pack + 2; }); });
+		ha.join();
+		hb.join();
+		CHECK(vm::guest_load(h.a).pack == 30000 && vm::guest_load(h.b).pack == 60000);
+		CHECK(vm::guest_cas(h.a, {30000}, {7}) && !vm::guest_cas(h.a, {30000}, {8}) && h.a.pack == 7 && h.b.pack == 60000);
+
+		alignas(32) CellSyncQueue q{};
+		CellSyncQueue::ctrl_t c{};
+		c.x0 = 0x01020304;
+		c.x4 = 0x05060708;
+		vm::guest_store(q.ctrl, c);
+		const u8* const qb = reinterpret_cast<const u8*>(&q);
+		CHECK(qb[0] == 1 && qb[3] == 4 && qb[4] == 5 && qb[7] == 8);
+		CHECK(vm::guest_exchange(q.ctrl, {}).x4 == 0x05060708u && vm::guest_load(q.ctrl).x0 == 0u);
+		std::printf("test_emu_waits: cellSync's words: 60000 tickets once each, 2-byte halves kept apart, 8 bytes whole\n");
 	}
 
 	// A function looked up once, on first use (libc, loaded already), a

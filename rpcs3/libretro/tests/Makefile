@@ -1470,6 +1470,8 @@ check: all
 	@if grep -n "atomic_be_t" ../../Emu/Cell/Modules/sys_spinlock.cpp; then echo "atomic_be_t is back in sys_spinlock"; exit 1; else echo "sys_spinlock is on guest_atomic.h"; fi
 	@# lightweight mutexes and sys_mmapper's shared area change their guest words through guest_atomic.h, not atomic_be_t or atomic_t
 	@if grep -nE "atomic_be_t|atomic_t<" ../../Emu/Cell/lv2/sys_lwmutex.h ../../Emu/Cell/Modules/sys_mmapper_.cpp | grep -v lwcond_waiters; then echo "atomic_be_t is back in the lwmutex words or sys_mmapper"; exit 1; else echo "lwmutex and sys_mmapper are on guest_atomic.h"; fi
+	@# cellSync's control words are plain structures in the game's memory, changed through vm::guest_op and guest_atomic.h, not atomic_t
+	@if grep -nE "atomic_t<|atomic_be_t" ../../Emu/Cell/Modules/cellSync.h; then echo "atomic_t is back in cellSync's words"; exit 1; else echo "cellSync is on vm::guest_op"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

@@ -57,6 +57,54 @@ static INLINE uint64_t guest_be64_(uint64_t v)
 #endif
 }
 
+/* ---- the bytes as they lie ----------------------------------------------
+ * A word's bytes in the host's order, unswapped: for a structure of
+ * big-endian fields copied whole */
+
+static INLINE uint32_t guest_atomic_load_raw32(void *p)
+{
+   const int raw = retro_atomic_load_acquire_int(GUEST_W32_(p));
+   return GUEST_VAL_(uint32_t, raw);
+}
+
+static INLINE void guest_atomic_store_raw32(void *p, uint32_t v)
+{
+   retro_atomic_store_release_int(GUEST_W32_(p), GUEST_VAL_(int, v));
+}
+
+static INLINE uint32_t guest_atomic_exchange_raw32(void *p, uint32_t v)
+{
+   const int raw = retro_atomic_exchange_int(GUEST_W32_(p), GUEST_VAL_(int, v));
+   return GUEST_VAL_(uint32_t, raw);
+}
+
+static INLINE int guest_atomic_cas_raw32(void *p, uint32_t expected, uint32_t desired)
+{
+   return retro_atomic_cas_int(GUEST_W32_(p), GUEST_VAL_(int, expected), GUEST_VAL_(int, desired)) != 0;
+}
+
+static INLINE uint64_t guest_atomic_load_raw64(void *p)
+{
+   const int64_t raw = retro_atomic_load_acquire_64(GUEST_W64_(p));
+   return GUEST_VAL_(uint64_t, raw);
+}
+
+static INLINE void guest_atomic_store_raw64(void *p, uint64_t v)
+{
+   retro_atomic_store_release_64(GUEST_W64_(p), GUEST_VAL_(int64_t, v));
+}
+
+static INLINE uint64_t guest_atomic_exchange_raw64(void *p, uint64_t v)
+{
+   const int64_t raw = retro_atomic_exchange_64(GUEST_W64_(p), GUEST_VAL_(int64_t, v));
+   return GUEST_VAL_(uint64_t, raw);
+}
+
+static INLINE int guest_atomic_cas_raw64(void *p, uint64_t expected, uint64_t desired)
+{
+   return retro_atomic_cas_64(GUEST_W64_(p), GUEST_VAL_(int64_t, expected), GUEST_VAL_(int64_t, desired)) != 0;
+}
+
 /* ---- 32-bit ---------------------------------------------------------- */
 
 static INLINE uint32_t guest_atomic_load_be32(void *p)

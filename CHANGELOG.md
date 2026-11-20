@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellSync's words through vm::guest_op (guest_atomic.h), off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The control words** of cellSync's mutex, barrier, reader-writer mutex, queue and lock-free queue are plain structures again, laid out as the game has them. They are aligned as atomic_t aligned them, and the sizes the module checks are unchanged.
+    - **vm_ptr.h** gains `vm::guest_load`, `guest_store`, `guest_exchange`, `guest_cas` and `guest_op`. These are function templates that copy a 2-, 4- or 8-byte structure whole through guest_atomic.h's unswapped 32- and 64-bit operations (new there). `guest_op` runs the change on a copy until a compare-and-swap takes it, and writes nothing where nothing changed. A 2-byte word (the lock-free queue's packed fields) is changed through the aligned 4-byte word it lies in, the other half kept, retrying if that half moved.
+    - **Smaller:** the module's functions are 21524 bytes instead of 23033 (x86-64, -O3). Most got smaller, the queue's lock-free clear and push completion grew.
+    - **Unchanged:** the waits (`cellSyncMutexLock`, the barrier, the blocking queue calls) still spin on the game's words, which SPU programs change with their own atomics and nothing on the host is told about.
+  - **Tests:** test_emu_waits takes 60000 tickets of a cellSync mutex from two threads, every ticket once. It counts two 2-byte words that share one 4-byte word from a thread each, neither losing the other's. It also swaps and compares an 8-byte queue word whole, checking its big-endian bytes. A mutant that writes the 4-byte word around a 2-byte one without a compare-and-swap, and one whose `guest_op` stores without one, each fail it. A check fails if atomic_t comes back to cellSync.h.
+
 - **Lightweight mutexes and sys_mmapper's shared area through guest_atomic.h, off atomic_be_t.** Not yet run on a game.
   - **What changed:**
     - **sys_lwmutex_t** (the owner and waiter count the game keeps in its own memory) is plain big-endian words again. sysPrxForUser's lwmutex and lwcond functions change them through small helpers that use guest_atomic.h: read, set, swap and compare-and-swap the owner, add to the waiters, and set the pair. Where atomic_t ran a lambda on the pair, setting the owner while moving the waiter count is now one 64-bit compare-and-swap loop. Unlocks and owner sets are release stores where atomic_t's were sequentially consistent.

@@ -38,7 +38,7 @@ enum CellSyncError1 : u32
 
 struct CellSyncMutex
 {
-	struct Counter
+	struct alignas(4) Counter
 	{
 		be_t<u16> rel;
 		be_t<u16> acq;
@@ -65,7 +65,8 @@ struct CellSyncMutex
 		}
 	};
 
-	atomic_t<Counter> ctrl;
+	// In the game's memory: changed whole through vm::guest_op and the like
+	Counter ctrl;
 };
 
 CHECK_SIZE_ALIGN(CellSyncMutex, 4, 4);
@@ -78,7 +79,7 @@ struct CellSyncBarrier
 		be_t<u16> count;
 	};
 
-	atomic_t<ctrl_t> ctrl;
+	ctrl_t ctrl; // vm::guest_op and the like
 
 	static inline bool try_notify(ctrl_t& ctrl)
 	{
@@ -121,7 +122,7 @@ struct alignas(16) CellSyncRwm
 		be_t<u16> writers;
 	};
 
-	atomic_t<ctrl_t> ctrl;
+	ctrl_t ctrl; // vm::guest_op and the like
 
 	be_t<u32> size;
 	vm::bptr<void, u64> buffer;
@@ -164,7 +165,7 @@ CHECK_SIZE_ALIGN(CellSyncRwm, 16, 16);
 
 struct alignas(32) CellSyncQueue
 {
-	struct ctrl_t
+	struct alignas(8) ctrl_t
 	{
 		union
 		{
@@ -183,7 +184,7 @@ struct alignas(32) CellSyncQueue
 		};
 	};
 
-	atomic_t<ctrl_t> ctrl;
+	ctrl_t ctrl; // vm::guest_op and the like
 
 	be_t<u32> size;
 	be_t<u32> depth;
@@ -192,7 +193,7 @@ struct alignas(32) CellSyncQueue
 
 	u32 check_depth() const
 	{
-		const auto data = ctrl.load();
+		const auto data = vm::guest_load(ctrl);
 
 		if (data.next > depth || data.count > depth)
 		{
@@ -292,7 +293,7 @@ enum CellSyncQueueDirection : u32 // CellSyncLFQueueDirection
 
 struct alignas(128) CellSyncLFQueue
 {
-	struct pop1_t
+	struct alignas(8) pop1_t
 	{
 		be_t<u16> m_h1;
 		be_t<u16> m_h2;
@@ -305,13 +306,13 @@ struct alignas(128) CellSyncLFQueue
 		be_t<u16> pack;
 	};
 
-	struct pop3_t
+	struct alignas(4) pop3_t
 	{
 		be_t<u16> m_h1;
 		be_t<u16> m_h2;
 	};
 
-	struct push1_t
+	struct alignas(8) push1_t
 	{
 		be_t<u16> m_h5;
 		be_t<u16> m_h6;
@@ -324,7 +325,7 @@ struct alignas(128) CellSyncLFQueue
 		be_t<u16> pack;
 	};
 
-	struct push3_t
+	struct alignas(4) push3_t
 	{
 		be_t<u16> m_h5;
 		be_t<u16> m_h6;
@@ -332,14 +333,14 @@ struct alignas(128) CellSyncLFQueue
 
 	union // 0x0
 	{
-		atomic_t<pop1_t> pop1;
-		atomic_t<pop3_t> pop3;
+		pop1_t pop1; // in the game's memory: vm::guest_op and the like
+		pop3_t pop3;
 	};
 
 	union // 0x8
 	{
-		atomic_t<push1_t> push1;
-		atomic_t<push3_t> push3;
+		push1_t push1;
+		push3_t push3;
 	};
 
 	be_t<u32> m_size;              // 0x10
@@ -348,10 +349,10 @@ struct alignas(128) CellSyncLFQueue
 	u8 m_bs[4];                    // 0x20
 	be_t<u32> m_direction;         // 0x24 CellSyncQueueDirection
 	be_t<u32> m_v1;                // 0x28
-	atomic_be_t<s32> init;         // 0x2C
-	atomic_t<push2_t> push2;       // 0x30
+	be_t<s32> init;                // 0x2C
+	push2_t push2;                 // 0x30
 	be_t<u16> m_hs1[15];           // 0x32
-	atomic_t<pop2_t> pop2;         // 0x50
+	pop2_t pop2;                   // 0x50
 	be_t<u16> m_hs2[15];           // 0x52
 	vm::bptr<void, u64> m_eaSignal; // 0x70
 	be_t<u32> m_v2;                // 0x78

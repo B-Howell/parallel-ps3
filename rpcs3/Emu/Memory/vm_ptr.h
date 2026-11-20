@@ -4,12 +4,165 @@
 #include "util/to_endian.hpp"
 #include "Utilities/StrFmt.h"
 #include "vm.h"
+#include "guest_atomic.h"
+
+#include <bit>
+#include <cstring>
+#include <functional>
 
 class ppu_thread;
 struct ppu_func_opd_t;
 
 namespace vm
 {
+	// A word of the game's memory, read and changed whole from the host: a
+	// structure of 2, 4 or 8 bytes laid out as the game has it (big-endian
+	// fields), copied whole through guest_atomic.h. A 2-byte one goes
+	// through the aligned 4-byte word it is in, the other half kept.
+	namespace guest_detail
+	{
+		template <typename T>
+		u8* half_word(const T& word, usz& offset) noexcept
+		{
+			const uptr addr = reinterpret_cast<uptr>(&word);
+			offset = addr & 3;
+			return reinterpret_cast<u8*>(addr - offset);
+		}
+	}
+
+	template <typename T>
+	T guest_load(const T& word) noexcept
+	{
+		static_assert(sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8);
+		void* const p = const_cast<T*>(&word);
+
+		if constexpr (sizeof(T) == 8)
+		{
+			return std::bit_cast<T>(guest_atomic_load_raw64(p));
+		}
+		else if constexpr (sizeof(T) == 4)
+		{
+			return std::bit_cast<T>(guest_atomic_load_raw32(p));
+		}
+		else
+		{
+			usz offset = 0;
+			const u32 raw = guest_atomic_load_raw32(guest_detail::half_word(word, offset));
+			T v;
+			std::memcpy(&v, reinterpret_cast<const u8*>(&raw) + offset, 2);
+			return v;
+		}
+	}
+
+	// Whether it was @expected and is @desired now
+	template <typename T>
+	bool guest_cas(T& word, const std::type_identity_t<T>& expected, const std::type_identity_t<T>& desired) noexcept
+	{
+		static_assert(sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8);
+
+		if constexpr (sizeof(T) == 8)
+		{
+			return guest_atomic_cas_raw64(&word, std::bit_cast<u64>(expected), std::bit_cast<u64>(desired)) != 0;
+		}
+		else if constexpr (sizeof(T) == 4)
+		{
+			return guest_atomic_cas_raw32(&word, std::bit_cast<u32>(expected), std::bit_cast<u32>(desired)) != 0;
+		}
+		else
+		{
+			usz offset = 0;
+			u8* const w = guest_detail::half_word(word, offset);
+
+			while (true)
+			{
+				const u32 raw = guest_atomic_load_raw32(w);
+
+				if (std::memcmp(reinterpret_cast<const u8*>(&raw) + offset, &expected, 2) != 0)
+				{
+					return false;
+				}
+
+				u32 next = raw;
+				std::memcpy(reinterpret_cast<u8*>(&next) + offset, &desired, 2);
+
+				// The other half may have changed meanwhile: then again
+				if (guest_atomic_cas_raw32(w, raw, next))
+				{
+					return true;
+				}
+			}
+		}
+	}
+
+	// Changes it as @op (a function of T&, or a member of T) says, until it
+	// sticks, and returns what op returned; no write where nothing changed
+	template <typename T, typename F>
+	auto guest_op(T& word, F&& op) noexcept
+	{
+		T old = guest_load(word);
+
+		while (true)
+		{
+			T next = old;
+
+			if constexpr (std::is_void_v<std::invoke_result_t<F&, T&>>)
+			{
+				std::invoke(op, next);
+
+				if (std::memcmp(&next, &old, sizeof(T)) == 0 || guest_cas(word, old, next))
+				{
+					return;
+				}
+			}
+			else
+			{
+				auto result = std::invoke(op, next);
+
+				if (std::memcmp(&next, &old, sizeof(T)) == 0 || guest_cas(word, old, next))
+				{
+					return result;
+				}
+			}
+
+			old = guest_load(word);
+		}
+	}
+
+	template <typename T>
+	void guest_store(T& word, const std::type_identity_t<T>& value) noexcept
+	{
+		if constexpr (sizeof(T) == 8)
+		{
+			guest_atomic_store_raw64(&word, std::bit_cast<u64>(value));
+		}
+		else if constexpr (sizeof(T) == 4)
+		{
+			guest_atomic_store_raw32(&word, std::bit_cast<u32>(value));
+		}
+		else
+		{
+			guest_op(word, [&](T& v) { v = value; });
+		}
+	}
+
+	// The value before
+	template <typename T>
+	T guest_exchange(T& word, const std::type_identity_t<T>& value) noexcept
+	{
+		if constexpr (sizeof(T) == 8)
+		{
+			return std::bit_cast<T>(guest_atomic_exchange_raw64(&word, std::bit_cast<u64>(value)));
+		}
+		else if constexpr (sizeof(T) == 4)
+		{
+			return std::bit_cast<T>(guest_atomic_exchange_raw32(&word, std::bit_cast<u32>(value)));
+		}
+		else
+		{
+			return guest_op(word, [&](T& v) { const T old = v; v = value; return old; });
+		}
+	}
+
 	// Enables comparison between comparable types of pointers
 	template<typename T1, typename T2>
 	concept PtrComparable = requires (T1* t1, T2* t2) { t1 == t2; };
