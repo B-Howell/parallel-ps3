@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <retro_atomic.h>
 #include "Emu/VFS.h"
 #include "Emu/IdManager.h"
 #include "Emu/Cell/PPUModule.h"
@@ -966,7 +967,8 @@ s32 cellFsAioFinish(vm::cptr<char> mount_point)
 	return CELL_OK;
 }
 
-atomic_t<s32> g_fs_aio_id;
+// The last async request's id, taken by any PPU thread
+retro_atomic_int_t g_fs_aio_id{0};
 
 s32 cellFsAioRead(vm::ptr<CellFsAio> aio, vm::ptr<s32> id, fs_aio_cb_t func)
 {
@@ -981,7 +983,7 @@ s32 cellFsAioRead(vm::ptr<CellFsAio> aio, vm::ptr<s32> id, fs_aio_cb_t func)
 		return CELL_ENXIO;
 	}
 
-	const s32 xid = (*id = ++g_fs_aio_id);
+	const s32 xid = (*id = retro_atomic_fetch_add_int(&g_fs_aio_id, 1) + 1);
 
 	m.thread->cmd_list
 	({
@@ -1005,7 +1007,7 @@ s32 cellFsAioWrite(vm::ptr<CellFsAio> aio, vm::ptr<s32> id, fs_aio_cb_t func)
 		return CELL_ENXIO;
 	}
 
-	const s32 xid = (*id = ++g_fs_aio_id);
+	const s32 xid = (*id = retro_atomic_fetch_add_int(&g_fs_aio_id, 1) + 1);
 
 	m.thread->cmd_list
 	({

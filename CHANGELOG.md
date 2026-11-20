@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellFs's async request ids on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The id counter** (`g_fs_aio_id`) is a `retro_atomic_int_t`. cellFsAioRead and cellFsAioWrite take the next id with a fetch-and-add plus one, the same value atomic_t's pre-increment gave.
+  - **Tests:** none. Both calls write the id to guest memory, which the tests do not map; the full build and suites pass. A check fails if atomic_t comes back to cellFs.
+
+
 - **cellGameExec on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The exit parameter** (`game_exec_data::execdata`) is a `retro_atomic_int_t`, stored with release by cellGameSetExitParam and read with acquire by cellGameGetBootGameInfo, from any PPU thread.
