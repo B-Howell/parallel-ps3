@@ -210,11 +210,6 @@ using be_t = se_t<T, std::endian::little == std::endian::native, Align>;
 template <typename T, usz Align = alignof(T)>
 using le_t = se_t<T, std::endian::big == std::endian::native, Align>;
 
-template <typename T, usz Align = alignof(T)>
-using atomic_be_t = atomic_t<be_t<T>, Align>;
-template <typename T, usz Align = alignof(T)>
-using atomic_le_t = atomic_t<le_t<T>, Align>;
-
 // Removes be_t<> wrapper from type be_<T> with nop fallback for unwrapped T
 template<typename T>
 struct remove_be { using type = T; };

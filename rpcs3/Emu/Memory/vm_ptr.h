@@ -16,9 +16,10 @@ struct ppu_func_opd_t;
 namespace vm
 {
 	// A word of the game's memory, read and changed whole from the host: a
-	// structure of 2, 4 or 8 bytes laid out as the game has it (big-endian
-	// fields), copied whole through guest_atomic.h. A 2-byte one goes
-	// through the aligned 4-byte word it is in, the other half kept.
+	// structure of 1, 2, 4, 8 or 16 bytes laid out as the game has it
+	// (big-endian fields), copied whole through guest_atomic.h, and the
+	// 16-byte one through retro_atomic's 128-bit word. A 1- or 2-byte one
+	// goes through the aligned 4-byte word it is in, the rest of it kept.
 	namespace guest_detail
 	{
 		template <typename T>
@@ -33,10 +34,15 @@ namespace vm
 	template <typename T>
 	T guest_load(const T& word) noexcept
 	{
-		static_assert(sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8);
+		static_assert(sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8 || sizeof(T) == 16);
 		void* const p = const_cast<T*>(&word);
 
-		if constexpr (sizeof(T) == 8)
+		if constexpr (sizeof(T) == 16)
+		{
+			const retro_u128_t v = retro_atomic_load_acquire_128(static_cast<retro_atomic_128_t*>(p));
+			return std::bit_cast<T>(v);
+		}
+		else if constexpr (sizeof(T) == 8)
 		{
 			return std::bit_cast<T>(guest_atomic_load_raw64(p));
 		}
@@ -49,7 +55,7 @@ namespace vm
 			usz offset = 0;
 			const u32 raw = guest_atomic_load_raw32(guest_detail::half_word(word, offset));
 			T v;
-			std::memcpy(&v, reinterpret_cast<const u8*>(&raw) + offset, 2);
+			std::memcpy(&v, reinterpret_cast<const u8*>(&raw) + offset, sizeof(T));
 			return v;
 		}
 	}
@@ -58,9 +64,14 @@ namespace vm
 	template <typename T>
 	bool guest_cas(T& word, const std::type_identity_t<T>& expected, const std::type_identity_t<T>& desired) noexcept
 	{
-		static_assert(sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8);
+		static_assert(sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8 || sizeof(T) == 16);
 
-		if constexpr (sizeof(T) == 8)
+		if constexpr (sizeof(T) == 16)
+		{
+			void* const p = &word;
+			return retro_atomic_cas_128(static_cast<retro_atomic_128_t*>(p), std::bit_cast<retro_u128_t>(expected), std::bit_cast<retro_u128_t>(desired)) != 0;
+		}
+		else if constexpr (sizeof(T) == 8)
 		{
 			return guest_atomic_cas_raw64(&word, std::bit_cast<u64>(expected), std::bit_cast<u64>(desired)) != 0;
 		}
@@ -77,13 +88,13 @@ namespace vm
 			{
 				const u32 raw = guest_atomic_load_raw32(w);
 
-				if (std::memcmp(reinterpret_cast<const u8*>(&raw) + offset, &expected, 2) != 0)
+				if (std::memcmp(reinterpret_cast<const u8*>(&raw) + offset, &expected, sizeof(T)) != 0)
 				{
 					return false;
 				}
 
 				u32 next = raw;
-				std::memcpy(reinterpret_cast<u8*>(&next) + offset, &desired, 2);
+				std::memcpy(reinterpret_cast<u8*>(&next) + offset, &desired, sizeof(T));
 
 				// The other half may have changed meanwhile: then again
 				if (guest_atomic_cas_raw32(w, raw, next))
@@ -121,6 +132,41 @@ namespace vm
 				if (std::memcmp(&next, &old, sizeof(T)) == 0 || guest_cas(word, old, next))
 				{
 					return result;
+				}
+			}
+
+			old = guest_load(word);
+		}
+	}
+
+	// As atomic_t's fetch_op: @op on a copy; one returning bool stores only
+	// where it says true and returns {old value, its answer}, one returning
+	// nothing always stores and returns the old value
+	template <typename T, typename F>
+	auto guest_fetch_op(T& word, F&& op) noexcept
+	{
+		T old = guest_load(word);
+
+		while (true)
+		{
+			T next = old;
+
+			if constexpr (std::is_void_v<std::invoke_result_t<F&, T&>>)
+			{
+				std::invoke(op, next);
+
+				if (std::memcmp(&next, &old, sizeof(T)) == 0 || guest_cas(word, old, next))
+				{
+					return old;
+				}
+			}
+			else
+			{
+				auto result = std::invoke(op, next);
+
+				if (!result || std::memcmp(&next, &old, sizeof(T)) == 0 || guest_cas(word, old, next))
+				{
+					return std::make_pair(old, result);
 				}
 			}
 

@@ -2,6 +2,7 @@
 
 #include "vm.h"
 #include "vm_locking.h"
+#include "vm_ptr.h"
 #include "util/atomic.hpp"
 #include <retro_atomic.h>
 #include <rthreads/retro_waitaddr.h>
@@ -437,7 +438,7 @@ namespace vm
 	{
 		return light_op<Ack, T>(data, [&](T& data)
 		{
-			return data.atomic_op(op);
+			return vm::guest_op(data, op);
 		});
 	}
 
@@ -446,7 +447,7 @@ namespace vm
 	{
 		return light_op<Ack, T>(data, [&](T& data)
 		{
-			return data.fetch_op(op);
+			return vm::guest_fetch_op(data, op);
 		});
 	}
 } // namespace vm

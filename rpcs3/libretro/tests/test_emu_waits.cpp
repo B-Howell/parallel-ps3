@@ -2041,6 +2041,47 @@ int main()
 		std::printf("test_emu_waits: cellSync's words: 60000 tickets once each, 2-byte halves kept apart, 8 bytes whole\n");
 	}
 
+	// SPURS's words in the game's memory, through vm::guest_*: two 1-byte
+	// counts in one 4-byte word counted up by a thread each, neither losing
+	// the other's; a fetch_op that says no stores nothing; a 16-byte word
+	// both of whose halves two threads add to, nothing lost
+	{
+		alignas(4) u8 counts[4]{};
+		std::thread c1([&] { for (int i = 0; i < 40000; i++) vm::guest_op(counts[1], [](u8& v) { v++; }); });
+		std::thread c2([&] { for (int i = 0; i < 40000; i++) vm::guest_op(counts[2], [](u8& v) { v += 3; }); });
+		c1.join();
+		c2.join();
+		CHECK(vm::guest_load(counts[1]) == static_cast<u8>(40000) && vm::guest_load(counts[2]) == static_cast<u8>(120000) && counts[0] == 0 && counts[3] == 0);
+
+		alignas(4) be_t<u32> word{5};
+		const auto [old, said] = vm::guest_fetch_op(word, [](be_t<u32>& v) { v = 9; return false; });
+		CHECK(old == 5u && !said && word == 5u);
+		CHECK(vm::guest_fetch_op(word, [](be_t<u32>& v) { v = 7; }) == 5u && word == 7u);
+
+		// 16 bytes: two threads adding to both halves, 200000 times each
+		alignas(16) be_t<v128> pair{};
+		auto adder = [&]
+		{
+			for (int n = 0; n < 200000; n++)
+			{
+				vm::guest_fetch_op(pair, [](be_t<v128>& value)
+				{
+					v128 v = value;
+					v._u64[0] += 1;
+					v._u64[1] += 2;
+					value = v;
+					return true;
+				});
+			}
+		};
+		std::thread a1(adder), a2(adder);
+		a1.join();
+		a2.join();
+		const v128 sum = vm::guest_load(pair);
+		CHECK(sum._u64[0] == 400000 && sum._u64[1] == 800000);
+		std::printf("test_emu_waits: SPURS's words: 1-byte counts kept apart, a fetch_op that says no, 16 bytes added to from two threads\n");
+	}
+
 	// A function looked up once, on first use (libc, loaded already), a
 	// missing one false; shared memory mapped into its own storage once
 	// though two threads ask at once, and unmapped
