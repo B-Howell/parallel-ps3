@@ -1494,6 +1494,8 @@ check: all
 	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/sceNpSns.h ../../Emu/Cell/Modules/sceNpSns.cpp; then echo "atomic_t is back in sceNpSns"; exit 1; else echo "sceNpSns is on retro_atomic"; fi
 	@# cellSsl's initialized flag is a retro_atomic word taken by one Init and ended by one End (compare-and-swap), not atomic_t
 	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/cellSsl.h ../../Emu/Cell/Modules/cellSsl.cpp; then echo "atomic_t is back in cellSsl"; exit 1; else echo "cellSsl is on retro_atomic"; fi
+	@# cellVoice's initialized flag is the HLE thread's plain bool: every call that reads or writes it runs there (hle_call), so no atomic_t
+	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/cellVoice.h ../../Emu/Cell/Modules/cellVoice.cpp; then echo "atomic_t is back in cellVoice"; exit 1; else echo "cellVoice's flag is the HLE thread's"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

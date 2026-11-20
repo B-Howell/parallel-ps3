@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellVoice's initialized flag off atomic_t: the HLE thread's own.** Not yet run on a game.
+  - **What changed:**
+    - **The flag** (`voice_manager::is_init`) is a plain bool. Every call that touched it already ran on the HLE thread (`hle_call`) except cellVoiceDebugTopology, which read it from the PPU thread; that call now looks in `hle_call` too. So the flag has one thread and needs no atomic.
+  - **Tests:** none. The flag is one thread's now, and the one call moved needs the HLE thread, which the tests do not run; the full build and suites pass. A check fails if atomic_t comes back to cellVoice.
+
+
 - **cellSsl on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The initialized flag** (`ssl_manager::is_init`) is a `retro_atomic_int_t`, read through `initialized()`. cellSslInit takes it with a compare-and-swap from 0 to 1 and cellSslEnd ends it with one from 1 to 0, so of two at once one succeeds and the other gets ALREADY_INITIALIZED or NOT_INITIALIZED. atomic_t's check-then-store let both succeed.

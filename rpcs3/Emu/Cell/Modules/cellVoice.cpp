@@ -1009,10 +1009,16 @@ error_code cellVoiceDebugTopology()
 {
 	UNIMPLEMENTED_FUNC(cellVoice);
 
-	if (!g_fxo->get<voice_manager>().is_init)
-		return CELL_VOICE_ERROR_LIBVOICE_NOT_INIT;
+	auto& manager = g_fxo->get<voice_manager>();
 
-	return CELL_VOICE_ERROR_NOT_IMPLEMENTED;
+	// The flag is the HLE thread's (hle_call), as every other call's look
+	return hle_call([&]() -> error_code
+	{
+		if (!manager.is_init)
+			return CELL_VOICE_ERROR_LIBVOICE_NOT_INIT;
+
+		return CELL_VOICE_ERROR_NOT_IMPLEMENTED;
+	});
 }
 
 DECLARE(ppu_module_manager::cellVoice)("cellVoice", []()
