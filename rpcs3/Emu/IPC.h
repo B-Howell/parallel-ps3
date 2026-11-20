@@ -6,7 +6,7 @@
 #include <retro_atomic.h>
 #include <queues/retro_retire.h>
 
-#include "util/atomic.hpp"
+#include <rthreads/retro_waitaddr.h>
 #include "util/shared_ptr.hpp"
 #include "Emu/Cell/Modules/hle_service.h"
 
@@ -32,7 +32,7 @@ class ipc_manager final
 
 	retro_atomic_ptr_t m_table{}; // table*, never null
 	retro_retire_t m_retire{};
-	atomic_t<u32> m_made{0}; // bumped, and its waiters woken, as an object made is published
+	retro_atomic_int_t m_made{0}; // bumped, and its waiters woken, as an object made is published
 
 	static void free_table(mpsc_stack_node_t* node)
 	{
@@ -99,7 +99,7 @@ public:
 		for (;;)
 		{
 			// Read before looking: an object made after it moves it
-			const u32 made_before = m_made.load();
+			const u32 made_before = static_cast<u32>(retro_atomic_load_acquire_int(&m_made));
 
 			shared_ptr<T> existing;
 			const found_t found = hle_call([&]() -> found_t
@@ -135,9 +135,11 @@ public:
 				if (flagged)
 					cpu->state += cpu_flag::wait;
 
-				while (m_made == made_before)
+				const retro_waitaddr_t made{&m_made, made_before};
+
+				while (static_cast<u32>(retro_atomic_load_acquire_int(&m_made)) == made_before)
 				{
-					m_made.wait(made_before);
+					retro_waitaddr_wait(&made, 1, -1);
 				}
 
 				if (flagged)
@@ -159,8 +161,8 @@ public:
 				});
 			});
 
-			m_made++;
-			m_made.notify_all();
+			retro_atomic_fetch_add_int(&m_made, 1);
+			retro_waitaddr_notify_all(&m_made);
 
 			const bool added = static_cast<bool>(made);
 			return {added, added ? std::move(made) : null_ptr};

@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The IPC manager's made-count on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The count** (`ipc_manager::m_made`, bumped as an object made for a key is published) is a `retro_atomic_int_t`. A caller that finds its key being made by another reads it first, then sleeps on it with `retro_waitaddr_wait`, untimed as before. The maker bumps it with a fetch-and-add and wakes them all with `retro_waitaddr_notify_all`. IPC.h no longer includes util/atomic.hpp.
+  - **Tests:** test_held_queues' shared-objects test has four threads ask for the same 64 keys while each is slow to make, so the others wait on the count: every key is made once and all see the same object. With the notify dropped, the waiters never wake and the test hangs until it is killed (timeout after two minutes), rather than failing. A check fails if atomic_t or util/atomic.hpp comes back to IPC.h.
+
+
 - **cellGcmSys's reserved IO size on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The size** (`gcm_config::reserved_size`, the main memory cellGcmReserveIoMapSize keeps back) is a `retro_atomic_int_t`. `reserve(size, limit)` and `unreserve(size)` check and change it in one compare-and-swap loop each, as atomic_t's fetch_op did: a reserve that would pass the main memory size is refused, and so is giving back more than is kept. `reserved_now()` reads it for cellGcmGetMaxIoMapSize and the unmap walk.
