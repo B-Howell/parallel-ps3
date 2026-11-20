@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellMusic's wake-up flag on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The flag** (`music_state::m_wake_up_thread`) is a `retro_atomic_int_t`. The end of a song and the state's end set it and wake the state thread with a retro_waitaddr notify, through `wake_up_thread()`. The state thread sleeps on it with `thread_ctrl::wait_on_word`, untimed as before, then takes it back to 0 and plays the next track.
+  - **Tests:** none. The state needs a music handler and its thread; the full build and suites pass. A check fails if atomic_t comes back to cellMusic.
+
+
 - **cellFs's async request ids on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The id counter** (`g_fs_aio_id`) is a `retro_atomic_int_t`. cellFsAioRead and cellFsAioWrite take the next id with a fetch-and-add plus one, the same value atomic_t's pre-increment gave.

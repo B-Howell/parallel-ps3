@@ -1,4 +1,6 @@
 #include "stdafx.h"
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/lv2/sys_lwmutex.h"
 #include "Emu/Cell/lv2/sys_lwcond.h"
@@ -104,8 +106,7 @@ public:
 				// Let's just play the next song for now if we are in list mode.
 				// Due to potential main thread recursion this may cause a deadlock with the internal mutex of the handler.
 				// Let's just call it from another thread instead.
-				m_wake_up_thread = 1;
-				m_wake_up_thread.notify_one();
+				wake_up_thread();
 				break;
 			default:
 				return;
@@ -116,11 +117,11 @@ public:
 		{
 			while (thread_ctrl::state() != thread_state::aborting)
 			{
-				while (thread_ctrl::state() != thread_state::aborting && !m_wake_up_thread)
+				while (thread_ctrl::state() != thread_state::aborting && !retro_atomic_load_acquire_int(&m_wake_up_thread))
 				{
-					thread_ctrl::wait_on(m_wake_up_thread, 0);
+					thread_ctrl::wait_on_word(&m_wake_up_thread, 0);
 				}
-				m_wake_up_thread = 0;
+				retro_atomic_store_release_int(&m_wake_up_thread, 0);
 
 				if (thread_ctrl::state() == thread_state::aborting)
 				{
@@ -148,8 +149,7 @@ public:
 		{
 			auto& thread = *m_thread;
 			thread = thread_state::aborting;
-			m_wake_up_thread = 1;
-			m_wake_up_thread.notify_one();
+			wake_up_thread();
 			thread();
 			m_thread.reset();
 		}
@@ -271,7 +271,15 @@ public:
 
 private:
 	std::unique_ptr<named_thread<std::function<void()>>> m_thread;
-	atomic_t<u32> m_wake_up_thread{0};
+	// Set by the end of a song (or the state's end), taken by the state
+	// thread asleep on it
+	retro_atomic_int_t m_wake_up_thread{0};
+
+	void wake_up_thread()
+	{
+		retro_atomic_store_release_int(&m_wake_up_thread, 1);
+		retro_waitaddr_notify_one(&m_wake_up_thread);
+	}
 };
 
 error_code cell_music_select_contents()
