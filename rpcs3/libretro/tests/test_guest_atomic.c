@@ -15,6 +15,26 @@ static union
    unsigned char b[16];
 } s_mem;
 
+/* Each clears and sets bits of its own half of one word, again and again,
+ * and checks its bit is still set: the other's changes must keep it */
+static unsigned s_lost;
+
+static void *orer(void *arg)
+{
+   const unsigned first = *(const unsigned*)arg;
+   unsigned i, lost = 0;
+   for (i = 0; i < 2000000; i++)
+   {
+      const uint32_t bit = 1u << (first + i % 16);
+      guest_atomic_fetch_and_be32(s_mem.b + 4, ~bit);
+      guest_atomic_fetch_or_be32(s_mem.b + 4, bit);
+      if (!(guest_atomic_load_be32(s_mem.b + 4) & bit))
+         lost++;
+   }
+   guest_atomic_fetch_add_be32(&s_lost, lost);
+   return NULL;
+}
+
 static void *adder(void *arg)
 {
    unsigned i;
@@ -49,6 +69,21 @@ int main(void)
    TEST_CHECK(guest_atomic_load_be64(d) == 0x0123456789abcdefull);
    TEST_CHECK(guest_atomic_exchange_be64(d, 7) == 0x0123456789abcdefull && s_mem.b[15] == 7);
    TEST_CHECK(!guest_atomic_cas_be64(d, 8, 9) && guest_atomic_cas_be64(d, 7, 0x100) && s_mem.b[14] == 1);
+
+   /* And and or, the old value back; two threads clearing and setting
+    * their own bits of one word, neither losing the other's */
+   guest_atomic_store_be32(w, 0xf0f0f0f3u);
+   TEST_CHECK(guest_atomic_fetch_and_be32(w, ~3u) == 0xf0f0f0f3u && guest_atomic_load_be32(w) == 0xf0f0f0f0u);
+   TEST_CHECK(guest_atomic_fetch_or_be32(w, 0x80000001u) == 0xf0f0f0f0u && s_mem.b[3] == 0xf1);
+   {
+      static const unsigned low = 0, high = 16;
+      guest_atomic_store_be32(s_mem.b + 4, 0);
+      pthread_create(&t1, NULL, orer, (void*)&low);
+      pthread_create(&t2, NULL, orer, (void*)&high);
+      pthread_join(t1, NULL);
+      pthread_join(t2, NULL);
+      TEST_CHECK(s_lost == 0);
+   }
 
    /* A 64-bit add that carries, and one that takes away */
    guest_atomic_store_be64(d, 0xffffffffull);

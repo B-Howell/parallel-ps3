@@ -830,7 +830,7 @@ namespace rsx
 			}
 			else
 			{
-				restore_fifo_position = vm::_ptr<RsxDmaControl>(dma_address)->get;
+				restore_fifo_position = guest_atomic_load_be32(&vm::_ptr<RsxDmaControl>(dma_address)->get);
 			}
 		}
 	}
@@ -1080,7 +1080,7 @@ namespace rsx
 		g_tls_log_prefix = []
 		{
 			const auto rsx = get_current_renderer();
-			return fmt::format("RSX [0x%07x]", rsx->ctrl ? +rsx->ctrl->get : 0);
+			return fmt::format("RSX [0x%07x]", rsx->ctrl ? guest_atomic_load_be32(&rsx->ctrl->get) : 0);
 		};
 
 		if (!serialized) method_registers.init();
@@ -1160,7 +1160,7 @@ namespace rsx
 		performance_counters.state = FIFO::state::running;
 
 		fifo_ctrl = std::make_unique<::rsx::FIFO::FIFO_control>(this);
-		fifo_ctrl->set_get(ctrl->get);
+		fifo_ctrl->set_get(guest_atomic_load_be32(&ctrl->get));
 
 		resolution_scaling_config =
 		{
@@ -1259,7 +1259,7 @@ namespace rsx
 			// Note a possible rollback address
 			if ((retro_atomic_load_acquire_int(&sync_point_request) != 0) && !in_begin_end)
 			{
-				restore_point = ctrl->get;
+				restore_point = guest_atomic_load_be32(&ctrl->get);
 				saved_fifo_ret = fifo_ret_addr;
 				retro_atomic_store_release_int(&sync_point_request, 0);
 			}
@@ -1352,7 +1352,8 @@ namespace rsx
 				if (const u64 get_put = static_cast<u64>(retro_atomic_exchange_64(&new_get_put, -1));
 					get_put != umax)
 				{
-					vm::_ptr<atomic_be_t<u64>>(dma_address + ::offset32(&RsxDmaControl::put))->release(get_put);
+					// put and get together
+					guest_atomic_store_be64(vm::_ptr<u8>(dma_address + ::offset32(&RsxDmaControl::put)), get_put);
 					fifo_ctrl->set_get(static_cast<u32>(get_put));
 					fifo_ctrl->abort();
 					fifo_ret_addr = RSX_CALL_STACK_EMPTY;
@@ -2763,7 +2764,12 @@ namespace rsx
 		}
 
 		rsx::reservation_lock<true> lock(sink, 16);
-		vm::_ptr<atomic_t<CellGcmReportData>>(sink)->store({timestamp(), value, 0});
+		// The 16 bytes whole: a reader never sees the time of one report with
+		// the value of another
+		const CellGcmReportData report{timestamp(), value, 0};
+		retro_u128_t bytes;
+		std::memcpy(&bytes, &report, sizeof(bytes));
+		retro_atomic_store_release_128(vm::_ptr<retro_atomic_128_t>(sink), bytes);
 	}
 
 	u32 thread::copy_zcull_stats(u32 memory_range_start, u32 memory_range, u32 destination)
@@ -2838,7 +2844,7 @@ namespace rsx
 
 	bool thread::is_fifo_idle() const
 	{
-		return ctrl == nullptr || ctrl->get == (ctrl->put & ~3);
+		return ctrl == nullptr || guest_atomic_load_be32(&ctrl->get) == (guest_atomic_load_be32(&ctrl->put) & ~3);
 	}
 
 	void thread::flush_fifo()
@@ -2859,7 +2865,7 @@ namespace rsx
 			return {0, get};
 		}
 
-		u32 true_get = ctrl->get;
+		u32 true_get = guest_atomic_load_be32(&ctrl->get);
 		u32 start = last_known_code_start;
 
 		RSXDisAsm disasm(cpu_disasm_mode::survey_cmd_size, vm::g_sudo_addr, 0, this);
@@ -3042,7 +3048,7 @@ namespace rsx
 	{
 		if (ctrl && fifo_ctrl)
 		{
-			fmt::append(result, "FIFO: EXEC=0x%x, GET=0x%07x, PUT=0x%07x, REF=0x%08x\n", fifo_ctrl->get_pos(), +ctrl->get, +ctrl->put, +ctrl->ref);
+			fmt::append(result, "FIFO: EXEC=0x%x, GET=0x%07x, PUT=0x%07x, REF=0x%08x\n", fifo_ctrl->get_pos(), guest_atomic_load_be32(&ctrl->get), guest_atomic_load_be32(&ctrl->put), guest_atomic_load_be32(&ctrl->ref));
 			fmt::append(result, "FIFO: RET-ADDR=0x%x, Code=0x%x, Jump=0x%x\n", fifo_ret_addr, last_known_code_start, last_code_jump);
 			fmt::append(result, "FIFO: Semaphore Acquire: pos=0x%x, address=0x%x\n", last_sema_cmd, last_sema_addr);
 		}

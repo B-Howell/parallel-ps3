@@ -25,22 +25,22 @@ struct RsxDriverInfo
 	struct Head
 	{
 		be_t<u64> lastFlipTime;    // 0x0 last flip time
-		atomic_be_t<u32> flipFlags; // 0x8 flags to handle flip/queue
+		be_t<u32> flipFlags; // 0x8 flags to handle flip/queue (guest_atomic.h)
 		be_t<u32> offset;          // 0xC
 		be_t<u32> flipBufferId;    // 0x10
 		be_t<u32> lastQueuedBufferId; // 0x14 todo: this is definately not this variable but its 'unused' so im using it for queueId to pass to flip handler
 		be_t<u32> unk3;            // 0x18
 		be_t<u32> lastVTimeLow;    // 0x1C last time for first vhandler freq (low 32-bits)
-		atomic_be_t<u64> lastSecondVTime; // 0x20 last time for second vhandler freq
+		be_t<u64> lastSecondVTime; // 0x20 last time for second vhandler freq (vm::guest_op)
 		be_t<u64> unk4;            // 0x28
-		atomic_be_t<u64> vBlankCount; // 0x30
+		be_t<u64> vBlankCount; // 0x30 (guest_atomic.h)
 		be_t<u32> unk;             // 0x38 possible u32, 'flip field', top/bottom for interlaced
 		be_t<u32> lastVTimeHigh;   // 0x3C last time for first vhandler freq (high 32-bits)
 	} head[8]; // size = 0x40, 0x200
 
 	be_t<u32> unk7;          // 0x12B8
 	be_t<u32> unk8;          // 0x12BC
-	atomic_be_t<u32> handlers; // 0x12C0 -- flags showing which handlers are set
+	be_t<u32> handlers; // 0x12C0 -- flags showing which handlers are set (guest_atomic.h)
 	be_t<u32> unk9;          // 0x12C4
 	be_t<u32> unk10;         // 0x12C8
 	be_t<u32> userCmdParam;  // 0x12CC
@@ -80,9 +80,9 @@ enum : u64
 struct RsxDmaControl
 {
 	u8 resv[0x40];
-	atomic_be_t<u32> put;
-	atomic_be_t<u32> get;
-	atomic_be_t<u32> ref;
+	be_t<u32> put; // these three through guest_atomic.h
+	be_t<u32> get;
+	be_t<u32> ref;
 	be_t<u32> unk[2];
 	be_t<u32> unk1;
 };

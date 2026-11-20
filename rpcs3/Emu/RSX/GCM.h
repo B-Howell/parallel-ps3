@@ -2,11 +2,13 @@
 
 #include "Emu/Memory/vm_ptr.h"
 
+// In the game's memory, read and written by the game and the RSX at once:
+// through guest_atomic.h
 struct CellGcmControl
 {
-	atomic_be_t<u32> put;
-	atomic_be_t<u32> get;
-	atomic_be_t<u32> ref;
+	be_t<u32> put;
+	be_t<u32> get;
+	be_t<u32> ref;
 };
 
 struct CellGcmConfig

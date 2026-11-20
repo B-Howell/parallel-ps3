@@ -606,7 +606,7 @@ ret_type gcmSetPrepareFlip(ppu_thread& ppu, vm::ptr<CellGcmContextData> ctxt, u3
 
 	if (!old_api && ctxt.addr() == gcm_cfg.gcm_info.context_addr)
 	{
-		vm::_ptr<CellGcmControl>(gcm_cfg.gcm_info.control_addr)->put += cmd_size;
+		guest_atomic_fetch_add_be32(&vm::_ptr<CellGcmControl>(gcm_cfg.gcm_info.control_addr)->put, cmd_size);
 	}
 
 	return static_cast<ret_type>(not_an_error(id));
@@ -1379,8 +1379,9 @@ error_code cellGcmSetDefaultCommandBufferAndSegmentWordSize(u32 bufferSize, u32 
 
 	auto& gcm_cfg = g_fxo->get<gcm_config>();
 
-	const auto& put = vm::_ref<CellGcmControl>(gcm_cfg.gcm_info.control_addr).put;
-	const auto& get = vm::_ref<CellGcmControl>(gcm_cfg.gcm_info.control_addr).get;
+	CellGcmControl& control = *vm::_ptr<CellGcmControl>(gcm_cfg.gcm_info.control_addr);
+	const u32 put = guest_atomic_load_be32(&control.put);
+	const u32 get = guest_atomic_load_be32(&control.get);
 
 	if (put != 0x1000 || get != 0x1000 || bufferSize < segmentSize * 2 || segmentSize >= 0x80000000)
 	{
@@ -1570,7 +1571,7 @@ s32 cellGcmCallback(ppu_thread& ppu, vm::ptr<CellGcmContextData> context, u32 co
 	auto& ctrl = *vm::_ptr<CellGcmControl>(gcm_cfg.gcm_info.control_addr);
 
 	// Flush command buffer (ie allow RSX to read up to context->current)
-	ctrl.put.exchange(getOffsetFromAddress(context->current.addr()));
+	guest_atomic_exchange_be32(&ctrl.put, getOffsetFromAddress(context->current.addr()));
 
 	std::pair<u32, u32> newCommandBuffer = getNextCommandBufferBeginEnd(context->current.addr());
 	u32 offset = getOffsetFromAddress(newCommandBuffer.first);
@@ -1591,7 +1592,7 @@ s32 cellGcmCallback(ppu_thread& ppu, vm::ptr<CellGcmContextData> context, u32 co
 	while (true)
 	{
 		const u32 events = libretro_events_seen();
-		const be_t<u32> seen = ctrl.get.load();
+		const u32 seen = guest_atomic_load_be32(&ctrl.get);
 		const u32 getPos = seen;
 		if (isInCommandBufferExcept(getPos, newCommandBuffer.first, newCommandBuffer.second))
 			break;
@@ -1610,7 +1611,7 @@ s32 cellGcmCallback(ppu_thread& ppu, vm::ptr<CellGcmContextData> context, u32 co
 		if (::is_stopped(old_state))
 			continue;
 		atomic_wait::list<3> list;
-		list.template set<0>(ctrl.get, seen);
+		list.template set_raw<0>(&ctrl.get, std::bit_cast<u32>(be_t<u32>{seen}));
 		list.template set<1>(ppu.state, old_state);
 		list.template set_raw<2>(&g_libretro_events, events);
 		list.wait();

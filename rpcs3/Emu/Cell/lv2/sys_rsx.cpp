@@ -215,7 +215,7 @@ bool rsx::thread::send_event(u64 data1, u64 event_flags, u64 data3)
 {
 	// Filter event bits, send them only if they are masked by gcm
 	// Except the upper 32-bits, they are reserved for unmapped io events and execute unconditionally
-	event_flags &= vm::_ref<RsxDriverInfo>(driver_info).handlers | 0xffff'ffffull << 32;
+	event_flags &= guest_atomic_load_be32(&vm::_ptr<RsxDriverInfo>(driver_info)->handlers) | 0xffff'ffffull << 32;
 
 	if (!event_flags)
 	{
@@ -298,10 +298,10 @@ bool rsx::thread::send_event(u64 data1, u64 event_flags, u64 data3)
 
 void _sys_rsx_drain_event_queue(rsx::thread* rsxthr, u64 event_flags = umax, u64 wait_timeout_ms = 1000ull)
 {
-	const auto& driverInfo = *vm::_ptr<RsxDriverInfo>(rsxthr->driver_info);
+	auto& driverInfo = *vm::_ptr<RsxDriverInfo>(rsxthr->driver_info);
 	const u32 rsx_queue_id = driverInfo.handler_queue;
 
-	if (const auto enabled_events = static_cast<u64>(driverInfo.handlers) | (0xffff'ffffull << 32);
+	if (const auto enabled_events = static_cast<u64>(guest_atomic_load_be32(&driverInfo.handlers)) | (0xffff'ffffull << 32);
 		!(enabled_events & event_flags))
 	{
 		// sys_rsx.trace("Event flag not set.");
@@ -543,9 +543,9 @@ error_code sys_rsx_context_allocate(cpu_thread& cpu, vm::ptr<u32> context_id, vm
 	render->driver_info = vm::cast(*lpar_driver_info);
 
 	auto &dmaControl = *vm::_ptr<RsxDmaControl>(vm::cast(*lpar_dma_control));
-	dmaControl.get = 0;
-	dmaControl.put = 0;
-	dmaControl.ref = 0; // Set later to -1 by cellGcmSys
+	guest_atomic_store_be32(&dmaControl.get, 0);
+	guest_atomic_store_be32(&dmaControl.put, 0);
+	guest_atomic_store_be32(&dmaControl.ref, 0); // Set later to -1 by cellGcmSys
 
 	if ((false/*system_mode & something*/ || g_cfg.video.decr_memory_layout)
 		&& g_cfg.core.debug_console_mode)
@@ -828,7 +828,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 
 			// sanity check, the head should have a 'queued' buffer on it, and it should have been previously 'queued'
 			const u32 sanity_check = 0x40000000 & (1 << flip_idx);
-			if ((driverInfo.head[a3].flipFlags & sanity_check) != sanity_check)
+			if ((guest_atomic_load_be32(&driverInfo.head[a3].flipFlags) & sanity_check) != sanity_check)
 				rsx_log.error("Display Flip Queued: Flipping non previously queued buffer 0x%llx", a4);
 		}
 		else
@@ -866,7 +866,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		ensure(a3 < 2);
 
 		driverInfo.head[a3].lastQueuedBufferId = static_cast<u32>(a4);
-		driverInfo.head[a3].flipFlags |= 0x40000000 | (1 << a4);
+		guest_atomic_fetch_or_be32(&driverInfo.head[a3].flipFlags, 0x40000000 | (1 << a4));
 
 		render->on_frame_end(static_cast<u32>(a4));
 		if (!render->send_event(0, SYS_RSX_EVENT_QUEUE_BASE << a3, 0))
@@ -935,7 +935,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		// NOTE: There currently seem to only be 2 active heads on PS3
 		ensure(a3 < 2);
 
-		driverInfo.head[a3].flipFlags.atomic_op([&](be_t<u32>& flipStatus)
+		vm::guest_op(driverInfo.head[a3].flipFlags, [&](be_t<u32>& flipStatus)
 		{
 			flipStatus = (flipStatus & static_cast<u32>(a4)) | static_cast<u32>(a5);
 		});
@@ -1136,7 +1136,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 	case 0xFEC: // hack: flip event notification
 	{
 		// we only ever use head 1 for now
-		driverInfo.head[1].flipFlags |= 0x80000000;
+		guest_atomic_fetch_or_be32(&driverInfo.head[1].flipFlags, 0x80000000);
 		driverInfo.head[1].lastFlipTime = rsx_timeStamp(); // should rsxthread set this?
 		driverInfo.head[1].flipBufferId = static_cast<u32>(a3);
 
@@ -1159,7 +1159,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		ensure(a3 < 2);
 
 		// todo: this is wrong and should be 'second' vblank handler and freq, but since currently everything is reported as being 59.94, this should be fine
-		driverInfo.head[a3].lastSecondVTime.atomic_op([&](be_t<u64>& time)
+		vm::guest_op(driverInfo.head[a3].lastSecondVTime, [&](be_t<u64>& time)
 		{
 			a4 = std::max<u64>(a4, time + 1);
 			time = a4;
@@ -1173,7 +1173,7 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		driverInfo.head[a3].lastVTimeLow = static_cast<u32>(current_time);
 		driverInfo.head[a3].lastVTimeHigh = static_cast<u32>(current_time >> 32);
 
-		driverInfo.head[a3].vBlankCount++;
+		guest_atomic_fetch_add_be64(&driverInfo.head[a3].vBlankCount, 1);
 
 		u64 event_flags = SYS_RSX_EVENT_VBLANK;
 

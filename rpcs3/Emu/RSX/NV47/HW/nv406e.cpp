@@ -18,7 +18,7 @@ namespace rsx
 			// Write ref+get (get will be written again with the same value at command end)
 			auto& dma = *vm::_ptr<RsxDmaControl>(RSX(ctx)->dma_address);
 			//dma.get.store(RSX(ctx)->fifo_ctrl->get_pos() + 4);
-			dma.ref.store(arg);
+			guest_atomic_exchange_be32(&dma.ref, arg); // sequentially consistent, as before
 		}
 
 		void semaphore_acquire(context* ctx, u32 /*reg*/, u32 arg)

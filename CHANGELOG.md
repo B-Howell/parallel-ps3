@@ -4,6 +4,16 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The RSX control words and the driver info through guest_atomic.h, off atomic_be_t.** Not yet run on a game.
+  - **What changed:**
+    - **put, get and ref** (`RsxDmaControl`, and `CellGcmControl`, the game's view of the same words) are plain big-endian words in the game's memory again. The FIFO, the RSX thread, the NV methods, cellGcmSys and sys_rsx read and change them through guest_atomic.h: loads, release stores, exchange where atomic_t's store was relied on to be sequentially consistent (setting the reference), an add for the flip command, and an and for the flag bits of put. The put/get pair is still written as one 64-bit store when a DMA control interrupt moves both.
+    - **cellGcmSys** waits for get to leave its command buffer on the raw word through the wait list's `set_raw`, and the FIFO wakes it with retro_waitaddr on the same address. No spin, as before.
+    - **The driver info's** flip flags, vblank count, last second-vblank time and handler mask are plain words too: or and loads for the flags, a 64-bit add for the count, `vm::guest_op` where a lambda changed them.
+    - **A report** (`CellGcmReportData`, 16 bytes) is written with one 128-bit release store instead of atomic_t's, so a reader never sees the time of one report with the value of another.
+    - **guest_atomic.h** gains a 32-bit and and or.
+    - **Unchanged:** the PPU's lwarx/stwcx emulation (PPUThread.cpp) still views the reservation's 64 bits as atomic_be_t, left for its own patch.
+  - **Tests:** `test_guest_atomic` checks and and or with the old value back, and two threads clearing and setting their own bits of one word 2 million times each, neither losing the other's. A mutant that ors with a load and a store fails it in 3 of 5 runs on this 2-CPU machine (the window between the two is a few instructions). No test runs the RSX itself; the full build and suites pass. A check fails if atomic_be_t comes back to GCM.h or sys_rsx.h.
+
 - **cellSync's words through vm::guest_op (guest_atomic.h), off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The control words** of cellSync's mutex, barrier, reader-writer mutex, queue and lock-free queue are plain structures again, laid out as the game has them. They are aligned as atomic_t aligned them, and the sizes the module checks are unchanged.

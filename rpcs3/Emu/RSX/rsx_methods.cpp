@@ -693,7 +693,7 @@ namespace rsx
 			if (auto rsx = Emu.IsStopped() ? nullptr : get_current_renderer(); rsx && rsx->ctrl)
 			{
 				// FIXME: Multi-context unaware
-				rsx->ctrl->ref = u32{ umax };
+				guest_atomic_store_be32(&rsx->ctrl->ref, u32{ umax });
 			}
 		}
 

@@ -141,6 +141,23 @@ static INLINE uint32_t guest_atomic_fetch_add_be32(void *p, uint32_t v)
    return old;
 }
 
+/* The value before and-ing / or-ing in @v */
+static INLINE uint32_t guest_atomic_fetch_and_be32(void *p, uint32_t v)
+{
+   uint32_t old = guest_atomic_load_be32(p);
+   while (!guest_atomic_cas_be32(p, old, old & v))
+      old = guest_atomic_load_be32(p);
+   return old;
+}
+
+static INLINE uint32_t guest_atomic_fetch_or_be32(void *p, uint32_t v)
+{
+   uint32_t old = guest_atomic_load_be32(p);
+   while (!guest_atomic_cas_be32(p, old, old | v))
+      old = guest_atomic_load_be32(p);
+   return old;
+}
+
 /* ---- 64-bit ---------------------------------------------------------- */
 
 static INLINE uint64_t guest_atomic_load_be64(void *p)

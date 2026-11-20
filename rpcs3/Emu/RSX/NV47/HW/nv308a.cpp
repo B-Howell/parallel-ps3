@@ -31,7 +31,7 @@ namespace rsx
 			const u32 method_range = std::min<u32>(0x700 - index, out_x_max - index);
 
 			// Get limit imposed by FIFO PUT (if put is behind get it will result in a number ignored by min)
-			const u32 fifo_read_limit = static_cast<u32>(((RSX(ctx)->ctrl->put & ~3ull) - (RSX(ctx)->fifo_ctrl->get_pos())) / 4);
+			const u32 fifo_read_limit = static_cast<u32>(((guest_atomic_load_be32(&RSX(ctx)->ctrl->put) & ~3ull) - (RSX(ctx)->fifo_ctrl->get_pos())) / 4);
 
 			u32 count = std::min<u32>({ fifo_args_cnt, fifo_read_limit, method_range });
 

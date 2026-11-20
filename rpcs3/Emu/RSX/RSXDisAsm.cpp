@@ -30,7 +30,7 @@ u32 RSXDisAsm::disasm(u32 pc)
 			if (pc == umax) return false;
 		}
 
-		m_op = *reinterpret_cast<const atomic_be_t<u32>*>(m_offset + pc);
+		m_op = guest_atomic_load_be32(const_cast<u8*>(m_offset) + pc);
 		return true;
 	};
 

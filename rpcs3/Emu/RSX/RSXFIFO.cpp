@@ -40,7 +40,7 @@ namespace rsx
 		{
 			if (retro_atomic_load_seq_cst_int(&g_get_waiters))
 			{
-				ctrl->get.notify_all();
+				retro_waitaddr_notify_all(&ctrl->get);
 			}
 		}
 
@@ -49,11 +49,11 @@ namespace rsx
 			if (m_fifo_pos - m_cache_addr <= m_cache_size)
 			{
 				// Atomic FIFO only path
-				m_ctrl->get.release(m_cache_addr + m_cache_size);
+				guest_atomic_store_be32(&m_ctrl->get, m_cache_addr + m_cache_size);
 			}
 			else
 			{
-				m_ctrl->get.release(m_fifo_pos);
+				guest_atomic_store_be32(&m_ctrl->get, m_fifo_pos);
 			}
 
 			notify_get(m_ctrl);
@@ -92,16 +92,16 @@ namespace rsx
 		{
 			if constexpr (!Full)
 			{
-				return m_ctrl->put & ~3;
+				return guest_atomic_load_be32(&m_ctrl->put) & ~3;
 			}
 			else
 			{
-				if (u32 put = m_ctrl->put; (put & 3) == 0) [[likely]]
+				if (u32 put = guest_atomic_load_be32(&m_ctrl->put); (put & 3) == 0) [[likely]]
 				{
 					return put;
 				}
 
-				return m_ctrl->put.and_fetch(~3);
+				return guest_atomic_fetch_and_be32(&m_ctrl->put, ~3u) & ~3u;
 			}
 		}
 
@@ -240,13 +240,13 @@ namespace rsx
 			{
 				m_memwatch_addr = get;
 				m_memwatch_cmp = spin_cmd;
-				m_ctrl->get.release(get);
+				guest_atomic_store_be32(&m_ctrl->get, get);
 				notify_get(m_ctrl);
 				return;
 			}
 
 			// Update ctrl registers
-			m_ctrl->get.release(m_fifo_pos = get);
+			guest_atomic_store_be32(&m_ctrl->get, m_fifo_pos = get);
 			m_remaining_commands = 0;
 			notify_get(m_ctrl);
 		}
@@ -780,7 +780,7 @@ namespace rsx
 				}
 
 				// Optimize returning to another CALL
-				if ((ctrl->put & ~3) != fifo_ret_addr)
+				if ((guest_atomic_load_be32(&ctrl->put) & ~3) != fifo_ret_addr)
 				{
 					if (u32 addr = iomap_table.get_addr(fifo_ret_addr); addr != umax)
 					{
@@ -790,7 +790,7 @@ namespace rsx
 						if ((cmd0 & RSX_METHOD_CALL_CMD_MASK) == RSX_METHOD_CALL_CMD && cpu_flag::dbg_step - state)
 						{
 							fifo_ctrl->set_get(cmd0 & RSX_METHOD_CALL_OFFSET_MASK);
-							last_known_code_start = ctrl->get;
+							last_known_code_start = guest_atomic_load_be32(&ctrl->get);
 							fifo_ret_addr += 4;
 							return;
 						}
