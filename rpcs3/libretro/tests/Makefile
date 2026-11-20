@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_DYLIB -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_vm_range_locks test_vm_range_locks_tsan test_spu_pc_table test_spu_pc_table_tsan test_jit_bump test_jit_bump_tsan test_rw_word test_rw_word_tsan test_yaml_value test_patch_db test_patch_options test_init_word test_init_word_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_jit_cores test_rpcn_signal test_rsx_wake test_rsx_wake_tsan test_rsx_hold test_rsx_hold_tsan test_rsx_timestamp test_rpcn_reply_slots test_rpcn_reply_slots_tsan test_osk_text test_osk_text_tsan test_game_text_patch test_net_wake test_vk_loader
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_vm_range_locks test_vm_range_locks_tsan test_spu_pc_table test_spu_pc_table_tsan test_jit_bump test_jit_bump_tsan test_rw_word test_rw_word_tsan test_yaml_value test_patch_db test_patch_options test_guest_atomic test_guest_atomic_tsan test_init_word test_init_word_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_jit_cores test_rpcn_signal test_rsx_wake test_rsx_wake_tsan test_rsx_hold test_rsx_hold_tsan test_rsx_timestamp test_rpcn_reply_slots test_rpcn_reply_slots_tsan test_osk_text test_osk_text_tsan test_game_text_patch test_net_wake test_vk_loader
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -597,6 +597,14 @@ test_patch_options: $(PATCH_OPTIONS_DEPS) $(call lrc_objs,$(test_patch_db_LRC))
 	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -c -o obj/po_game_text_patch.o ../../Emu/Cell/lv2/game_text_patch.c
 	$(CC) $(CFLAGS) -std=gnu99 $(SANITIZE) -o $@ obj/test_patch_options.o obj/libretro_patch_options.o obj/po_patch_db.o obj/po_yaml_value.o obj/po_game_text_patch.o $(call lrc_objs,$(test_patch_db_LRC)) $(LDFLAGS) $(LDLIBS) -lm
 
+# Guest words changed atomically from the host: big-endian whatever the
+# host; the header and the test as C89, and under ThreadSanitizer
+test_guest_atomic: test_guest_atomic.c test_common.h ../../Emu/Memory/guest_atomic.h
+	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -o $@ test_guest_atomic.c $(LDFLAGS) $(LDLIBS) -lpthread
+
+test_guest_atomic_tsan: test_guest_atomic.c test_common.h ../../Emu/Memory/guest_atomic.h
+	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -o $@ test_guest_atomic.c $(LDFLAGS) $(LDLIBS) -lpthread
+
 # The word behind init_mutex: the module and the test as C89
 INIT_WORD_DEPS := test_init_word.c test_common.h ../../util/init_word.c ../../util/init_word.h
 INIT_WORD_LRC  := $(LRC)/rthreads/retro_waitaddr.c $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
@@ -1072,6 +1080,8 @@ check: all
 	./test_yaml_value
 	./test_patch_db
 	./test_patch_options
+	./test_guest_atomic
+	./test_guest_atomic_tsan
 	./test_init_word
 	./test_init_word_tsan
 	./test_owner_calls
@@ -1456,6 +1466,8 @@ check: all
 	@if grep -nE "std::(map|set|vector|function)|include <(map|set|vector|functional)>" ../libretro_patch_manager.h ../libretro_patch_manager.cpp; then echo "the STL is back in the Patch Manager"; exit 1; else echo "the Patch Manager's options are C89 (libretro_patch_options.c)"; fi
 	@# shared_ptr.hpp is on retro_atomic: the counts and atomic_ptr's word are no atomic_t, and it does not include atomic.hpp
 	@if grep -nE "atomic_t<|atomic[.]hpp" ../../util/shared_ptr.hpp; then echo "atomic_t is back in shared_ptr.hpp"; exit 1; else echo "shared_ptr.hpp is on retro_atomic"; fi
+	@# sys_spinlock's guest word goes through guest_atomic.h, not atomic_be_t
+	@if grep -n "atomic_be_t" ../../Emu/Cell/Modules/sys_spinlock.cpp; then echo "atomic_be_t is back in sys_spinlock"; exit 1; else echo "sys_spinlock is on guest_atomic.h"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

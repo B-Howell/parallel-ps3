@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Guest words changed from the host through retro_atomic (Emu/Memory/guest_atomic.h); sys_spinlock first.** Not yet run on a game.
+  - **What changed:**
+    - **guest_atomic.h** (C89, header only) loads, stores, swaps, compare-and-swaps and adds to 4- and 8-byte words of guest memory through retro_atomic. The value is swapped to the PS3's big-endian order (one bswap) on a little-endian host. It is what the HLE modules will use instead of `atomic_be_t`, which is `atomic_t` on a big-endian value.
+    - **sys_spinlock** (`sys_spinlock_initialize`, `_lock`, `_trylock`, `_unlock`) takes the lock as a plain big-endian word and changes it through guest_atomic.h. The unlock is a release store where atomic_t's was sequentially consistent, which is all an unlock needs. The functions are the same size as before (x86-64, -O3).
+    - **Unchanged:** `sys_spinlock_lock` still spins until the word is free, as the PS3 library does. The game may release the lock with a plain store of its own, which nothing on the host is told about, so there is no event to wait on.
+  - **Tests:** `test_guest_atomic` (C89, and under ThreadSanitizer) checks that guest words hold big-endian bytes, that exchange and compare-and-swap see and return the guest's values for 32 and 64 bits, that adds wrap, and that two threads adding to one word lose nothing. A mutant that returns the swapped-out value unswapped, and one that adds with a load and a store, each fail it. A check fails if atomic_be_t comes back to sys_spinlock.
+
 - **Shared pointers on retro_atomic (util/shared_ptr.hpp), off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The reference count** of `single_ptr`, `shared_ptr` and `atomic_ptr` objects is a `retro_atomic_64_t`, counted with acq_rel adds and subtracts. The destructor pointer next to it is a plain pointer: it is set before the object is shared and called only by whoever drops the last reference, after the count's acq_rel.
