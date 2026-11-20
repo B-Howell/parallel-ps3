@@ -110,9 +110,10 @@ struct CellImeJpPredictItem
 struct ime_jp_manager
 {
 	// The HLE thread's: every cellImeJp call that touches it runs there
-	// (hle_call, hle_service.h), so it takes no lock
+	// (hle_call, hle_service.h), so it takes no lock, and its initialized
+	// flag is a plain bool
 
-	atomic_t<bool> is_initialized{ false };
+	bool is_initialized = false;
 
 	u32 input_state = CELL_IMEJP_BEFORE_INPUT;
 	std::vector<std::string> dictionary_paths;
@@ -128,6 +129,8 @@ struct ime_jp_manager
 	s16 allowed_extensions = CELL_IMEJP_EXTENSIONCH_UD09TO15 | CELL_IMEJP_EXTENSIONCH_UD85TO94 | CELL_IMEJP_EXTENSIONCH_OUTJIS;
 
 	ime_jp_manager();
+	ime_jp_manager(const ime_jp_manager&) = delete;
+	ime_jp_manager& operator=(const ime_jp_manager&) = delete;
 
 	bool addChar(u16 c);
 	bool addString(vm::cptr<u16> str);

@@ -1532,6 +1532,8 @@ check: all
 	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/sys_ppu_thread_.cpp; then echo "atomic_t is back in the TLS map"; exit 1; else echo "the TLS map is retro_atomic bits"; fi
 	@# cellFont's face owners and lent scratch bits are retro_atomic words (compare-and-swap, fetch-or/and), not atomic_t
 	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/cellFont.cpp ../../Emu/Cell/Modules/cellFont.h; then echo "atomic_t is back in cellFont"; exit 1; else echo "cellFont is on retro_atomic"; fi
+	@# cellImeJp's initialized flag is the HLE thread's plain bool: every call that touches it runs there (hle_call), so no atomic_t
+	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellImeJp.cpp; then echo "atomic_t is back in cellImeJp"; exit 1; else echo "cellImeJp's flag is the HLE thread's"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

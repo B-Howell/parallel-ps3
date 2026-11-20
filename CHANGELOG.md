@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellImeJp's initialized flag off atomic_t: the HLE thread's own.** Not yet run on a game.
+  - **What changed:**
+    - **The flag** (`ime_jp_manager::is_initialized`) is a plain bool. Every cellImeJp call that reads or writes it already runs on the HLE thread (`hle_call`), as the rest of the manager does, so it has one thread and needs no atomic. The manager's copy is deleted, as the object map asks.
+  - **Tests:** none. The flag is one thread's, and the calls need the HLE thread, which the tests do not run; the full build and suites pass. A check fails if atomic_t comes back to cellImeJp.
+
+
 - **cellFont on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **A face's owner** (`cell_font_face::owner`, the CellFont's address, 0 when free) is a `retro_atomic_int_t`: claimed with a compare-and-swap from 0, read with acquire, freed with a release store.
