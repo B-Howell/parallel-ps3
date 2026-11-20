@@ -34,6 +34,7 @@
 #include "Emu/Cell/Modules/cellSsl.h"
 #include "Emu/Cell/Modules/cellResc.h"
 #include "Emu/Cell/Modules/sysPrxForUser.h"
+#include "Emu/Cell/Modules/cellGcmSys.h"
 #include "Emu/NP/net_http_thread.h"
 #include "Emu/Cell/Modules/cellAudio.h"
 #include "Emu/Cell/Modules/cellDmuxPamf.h"
@@ -2333,6 +2334,24 @@ int main()
 		CHECK(tls_map_take(map, count) == 37 && tls_map_take(map, count) == umax);
 		CHECK(tls_map_give(map, 3) && tls_map_give(map, 0) && tls_map_take(map, count) == 0 && tls_map_take(map, count) == 3);
 		std::printf("test_emu_waits: the TLS map's 40 areas taken once each by four threads, given back and taken again\n");
+	}
+
+	// cellGcmSys's reserved IO size, checked and changed in one
+	// compare-and-swap: two threads reserving 1 MB at a time from 5 MB get
+	// five between them, no more; giving back more than is kept is refused
+	{
+		gcm_config cfg;
+		constexpr u32 mb = 0x100000;
+		std::atomic<int> got{0};
+		const auto reserve = [&] { for (int i = 0; i < 8; i++) if (cfg.reserve(mb, 5 * mb)) got++; };
+		std::thread r1(reserve), r2(reserve);
+		r1.join();
+		r2.join();
+		CHECK(got == 5 && cfg.reserved_now() == 5 * mb && !cfg.reserve(mb, 5 * mb));
+		CHECK(cfg.unreserve(2 * mb) && cfg.reserved_now() == 3 * mb);
+		CHECK(!cfg.unreserve(4 * mb) && cfg.reserved_now() == 3 * mb);
+		CHECK(cfg.reserve(2 * mb, 5 * mb) && cfg.unreserve(5 * mb) && cfg.reserved_now() == 0 && !cfg.unreserve(mb));
+		std::printf("test_emu_waits: cellGcmSys's reserved IO size kept within its limit by two threads\n");
 	}
 
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");

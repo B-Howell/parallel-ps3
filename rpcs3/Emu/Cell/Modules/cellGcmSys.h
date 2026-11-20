@@ -51,7 +51,41 @@ struct gcm_config
 	u32 local_size = 0;
 	u32 local_addr = 0;
 
-	atomic_t<u32> reserved_size = 0;
+	// The main memory cellGcmReserveIoMapSize has kept back, checked and
+	// changed in one compare-and-swap
+	retro_atomic_int_t reserved_size{0};
+
+	u32 reserved_now() const { return static_cast<u32>(retro_atomic_load_acquire_int(&reserved_size)); }
+
+	// @size more, if it leaves the total no more than @limit
+	bool reserve(u32 size, u32 limit)
+	{
+		for (;;)
+		{
+			const u32 reserved = reserved_now();
+
+			if (size > limit - reserved)
+				return false;
+
+			if (retro_atomic_cas_int(&reserved_size, static_cast<int>(reserved), static_cast<int>(reserved + size)))
+				return true;
+		}
+	}
+
+	// @size less, if that much is kept back
+	bool unreserve(u32 size)
+	{
+		for (;;)
+		{
+			const u32 reserved = reserved_now();
+
+			if (size > reserved)
+				return false;
+
+			if (retro_atomic_cas_int(&reserved_size, static_cast<int>(reserved), static_cast<int>(reserved - size)))
+				return true;
+		}
+	}
 };
 
 void InitOffsetTable();

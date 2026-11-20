@@ -999,7 +999,7 @@ u32 cellGcmGetMaxIoMapSize()
 {
 	cellGcmSys.trace("cellGcmGetMaxIoMapSize()");
 
-	return rsx::get_current_renderer()->main_mem_size - g_fxo->get<gcm_config>().reserved_size;
+	return rsx::get_current_renderer()->main_mem_size - g_fxo->get<gcm_config>().reserved_now();
 }
 
 void cellGcmGetOffsetTable(vm::ptr<CellGcmOffsetTable> table)
@@ -1134,7 +1134,7 @@ error_code cellGcmMapMainMemory(ppu_thread& ppu, u32 ea, u32 size, vm::ptr<u32> 
 	// thread marked first are passed over, and the search goes on after them
 	const u32 found = [&]() -> u32
 	{
-		for (u32 io = 0, end = (main_mem_size - gcm_cfg.reserved_size) >> 20, unmap_count = 1; unmap_count + io <= end; unmap_count++)
+		for (u32 io = 0, end = (main_mem_size - gcm_cfg.reserved_now()) >> 20, unmap_count = 1; unmap_count + io <= end; unmap_count++)
 		{
 			if (gcm_cfg.offsetTable.eaAddress[io + unmap_count - 1] > 0xBFF && !gcm_io_marked(gcm_cfg.io_pending, io + unmap_count - 1))
 			{
@@ -1186,16 +1186,7 @@ error_code cellGcmReserveIoMapSize(u32 size)
 	const u32 main_mem_size = rsx::get_current_renderer()->main_mem_size;
 
 	// Checked and added in one compare-and-swap
-	if (!gcm_cfg.reserved_size.fetch_op([&](u32& reserved)
-	{
-		if (size > main_mem_size - reserved)
-		{
-			return false;
-		}
-
-		reserved += size;
-		return true;
-	}).second)
+	if (!gcm_cfg.reserve(size, main_mem_size))
 	{
 		return CELL_GCM_ERROR_INVALID_VALUE;
 	}
@@ -1303,16 +1294,7 @@ error_code cellGcmUnreserveIoMapSize(u32 size)
 	auto& gcm_cfg = g_fxo->get<gcm_config>();
 
 	// Checked and taken off in one compare-and-swap
-	if (!gcm_cfg.reserved_size.fetch_op([&](u32& reserved)
-	{
-		if (size > reserved)
-		{
-			return false;
-		}
-
-		reserved -= size;
-		return true;
-	}).second)
+	if (!gcm_cfg.unreserve(size))
 	{
 		return CELL_GCM_ERROR_INVALID_VALUE;
 	}

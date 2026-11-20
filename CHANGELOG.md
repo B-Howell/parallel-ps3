@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellGcmSys's reserved IO size on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The size** (`gcm_config::reserved_size`, the main memory cellGcmReserveIoMapSize keeps back) is a `retro_atomic_int_t`. `reserve(size, limit)` and `unreserve(size)` check and change it in one compare-and-swap loop each, as atomic_t's fetch_op did: a reserve that would pass the main memory size is refused, and so is giving back more than is kept. `reserved_now()` reads it for cellGcmGetMaxIoMapSize and the unmap walk.
+  - **Tests:** test_emu_waits has two threads reserve 1 MB at a time, eight tries each, against a 5 MB limit: five succeed between them and the total stays at 5 MB. Then it gives back within and beyond what is kept. Mutants that drop either bound check fail it. A mutant reserve that stores instead of compare-and-swapping passed: the two threads seldom meet between the read and the write. A check fails if atomic_t comes back to cellGcmSys.
+
+
 - **sceNpTus's unused manager removed (its atomic_t flag with it).** Not yet run on a game.
   - **What changed:**
     - **`sce_np_tus_manager`** and its title and transaction context structs were declared in sceNpTus.h and used nowhere: nothing made one, nothing read its `atomic_t<bool> is_initialized`, and its methods were defined nowhere. They are deleted, with their `std::map`s and the header's `<map>` include.
