@@ -1761,7 +1761,7 @@ error_code sceNpBasicAbortGui()
 		return SCE_NP_BASIC_ERROR_NOT_REGISTERED;
 	}
 
-	g_fxo->get<np_state>().abort_gui_flag = true;
+	retro_atomic_store_release_int(&g_fxo->get<np_state>().abort_gui_flag, 1);
 
 	// The dialog's thread waits untimed: woken to see it
 	libretro_event();

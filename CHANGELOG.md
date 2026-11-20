@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **sceNp's abort-GUI flag on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The flag** (`np_state::abort_gui_flag`) is a `retro_atomic_int_t`. sceNpBasicAbortGui stores 1 with release and bumps the libretro events, as before, which wakes the open send or receive message dialog's untimed wait. The dialog reads it with acquire in its loop and takes it back to 0 with an exchange once it ends.
+  - **Tests:** none. Setting it needs sceNp initialized with a handler registered, and the dialogs need the overlays; the full build and suites pass. A check fails if atomic_t comes back to the flag.
+
+
 - **cellPngDec's decoder pool on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The pool's eight slots** (`png_dec_host_pool::slots`, decoders a closed stream gave back) are `retro_atomic_ptr_t`. A slot is still taken with an exchange to null and filled with a compare-and-swap from null, so the pool stays lock-free.

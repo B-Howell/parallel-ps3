@@ -1,5 +1,7 @@
 #pragma once
 
+#include <retro_atomic.h>
+
 #include "Emu/NP/rpcn_types.h"
 #include "cellRtc.h"
 #include "Emu/Cell/ErrorCodes.h"
@@ -1843,9 +1845,11 @@ struct message_data
 	void print() const;
 };
 
+// sceNpBasicAbortGui's flag: set by it, taken (exchanged back to 0) by the
+// message dialog it ends
 struct np_state
 {
-	atomic_t<bool> abort_gui_flag = false;
+	retro_atomic_int_t abort_gui_flag{0};
 };
 
 namespace rpcn

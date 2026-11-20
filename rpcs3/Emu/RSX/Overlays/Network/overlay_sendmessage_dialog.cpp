@@ -228,7 +228,7 @@ namespace rsx
 
 			bool confirmation_error = false;
 
-			while (!Emu.IsStopped() && !retro_atomic_load_acquire_int(notify.get()) && !nps.abort_gui_flag)
+			while (!Emu.IsStopped() && !retro_atomic_load_acquire_int(notify.get()) && !retro_atomic_load_acquire_int(&nps.abort_gui_flag))
 			{
 				if (retro_atomic_exchange_int(&m_open_confirmation_dialog, 0) != 0)
 				{
@@ -291,7 +291,7 @@ namespace rsx
 				return result;
 			}
 
-			if (nps.abort_gui_flag.exchange(false))
+			if (retro_atomic_exchange_int(&nps.abort_gui_flag, 0))
 			{
 				rsx_log.warning("Sendmessage dialog aborted by sceNp!");
 				close(false, true);

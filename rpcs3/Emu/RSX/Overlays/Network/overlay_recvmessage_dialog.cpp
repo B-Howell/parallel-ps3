@@ -260,7 +260,7 @@ namespace rsx
 				[notify](s32) { retro_atomic_store_release_int(notify.get(), 1); retro_waitaddr_notify_one(notify.get()); }
 			);
 
-			while (!Emu.IsStopped() && !retro_atomic_load_acquire_int(notify.get()) && !nps.abort_gui_flag)
+			while (!Emu.IsStopped() && !retro_atomic_load_acquire_int(notify.get()) && !retro_atomic_load_acquire_int(&nps.abort_gui_flag))
 			{
 				libretro_wait_on(*notify, u32{0});
 			}
@@ -269,7 +269,7 @@ namespace rsx
 
 			error_code result = CELL_CANCEL;
 
-			if (nps.abort_gui_flag.exchange(false))
+			if (retro_atomic_exchange_int(&nps.abort_gui_flag, 0))
 			{
 				rsx_log.warning("Recvmessage dialog aborted by sceNp!");
 				close(false, true);
