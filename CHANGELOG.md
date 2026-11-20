@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellGameExec on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The exit parameter** (`game_exec_data::execdata`) is a `retro_atomic_int_t`, stored with release by cellGameSetExitParam and read with acquire by cellGameGetBootGameInfo, from any PPU thread.
+  - **Tests:** none. The value is read back only through cellGameGetBootGameInfo, which writes to guest memory, and the tests do not map any; the full build and suites pass. A check fails if atomic_t comes back to cellGameExec.
+
+
 - **sceNpUtil on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The fake bandwidth test's word** (`sce_np_util_manager::test`: the guest time it started at, shifted up, with the aborted bit) is a `retro_atomic_64_t`. InitStart takes it with a compare-and-swap from 0, GetStatus reads it, Shutdown exchanges it back to 0, and Abort sets the bit with a compare-and-swap loop that gives up when there is no test. Same steps as before.

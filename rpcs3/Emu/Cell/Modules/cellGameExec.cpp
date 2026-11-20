@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <retro_atomic.h>
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/IdManager.h"
 #include "Emu/System.h"
@@ -11,14 +12,15 @@ LOG_CHANNEL(cellGameExec);
 
 struct game_exec_data
 {
-	atomic_t<u32> execdata = 0; // TODO: pass this to the source application after closing the current application
+	// Set by cellGameSetExitParam, read by cellGameGetBootGameInfo, from any PPU thread
+	retro_atomic_int_t execdata{0}; // TODO: pass this to the source application after closing the current application
 };
 
 error_code cellGameSetExitParam(u32 execdata)
 {
 	cellGameExec.todo("cellGameSetExitParam(execdata=0x%x)", execdata);
 
-	g_fxo->get<game_exec_data>().execdata = execdata;
+	retro_atomic_store_release_int(&g_fxo->get<game_exec_data>().execdata, static_cast<int>(execdata));
 
 	return CELL_OK;
 }
@@ -105,7 +107,7 @@ error_code cellGameGetBootGameInfo(vm::ptr<u32> type, vm::ptr<char> dirName, vm:
 
 	if (execdata)
 	{
-		*execdata = g_fxo->get<game_exec_data>().execdata;
+		*execdata = static_cast<u32>(retro_atomic_load_acquire_int(&g_fxo->get<game_exec_data>().execdata));
 	}
 
 	if (source_type == CELL_GAME_GAMETYPE_HDD)
