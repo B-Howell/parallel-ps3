@@ -112,7 +112,8 @@ protected:
 	s32 taskbar_index = 0;
 
 public:
-	atomic_t<MsgDialogState> state{ MsgDialogState::Close };
+	// A MsgDialogState, waited on with retro_waitaddr
+	retro_atomic_int_t state{static_cast<s32>(MsgDialogState::Close)};
 
 	MsgDialogType type{};
 	msg_dialog_source source = msg_dialog_source::_cellMsgDialog;

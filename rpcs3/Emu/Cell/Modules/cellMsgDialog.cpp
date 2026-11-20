@@ -108,17 +108,18 @@ struct msg_info
 
 struct msg_dlg_thread_info
 {
-	atomic_t<u64> wait_until = 0;
+	// The guest time to close at, 0 for none; its low half is waited on
+	retro_atomic_64_t wait_until{0};
 
 	void operator()()
 	{
 		while (thread_ctrl::state() != thread_state::aborting)
 		{
-			const u64 new_value = wait_until.load();
+			const u64 new_value = static_cast<u64>(retro_atomic_load_acquire_64(&wait_until));
 
 			if (new_value == 0)
 			{
-				thread_ctrl::wait_on(wait_until, 0);
+				thread_ctrl::wait_on_word(&wait_until, 0);
 				continue;
 			}
 
@@ -129,12 +130,12 @@ struct msg_dlg_thread_info
 			{
 				const u32 events = libretro_events_seen();
 
-				if (wait_until.load() != new_value || get_guest_system_time() >= new_value)
+				if (static_cast<u64>(retro_atomic_load_acquire_64(&wait_until)) != new_value || get_guest_system_time() >= new_value)
 					break;
 
 				thread_ctrl::wait_on_custom<2>([&](atomic_wait::list<4>& list)
 				{
-					list.template set<0>(wait_until, static_cast<u32>(new_value));
+					list.template set_raw<0>(&wait_until, static_cast<u32>(new_value));
 					list.template set_raw<1>(&g_libretro_events, events);
 				});
 			}
@@ -143,7 +144,7 @@ struct msg_dlg_thread_info
 			{
 				if (auto dlg = manager->get<rsx::overlays::message_dialog>())
 				{
-					if (!wait_until.compare_and_swap_test(new_value, 0))
+					if (!retro_atomic_cas_64(&wait_until, static_cast<s64>(new_value), 0))
 					{
 						continue;
 					}
@@ -153,7 +154,7 @@ struct msg_dlg_thread_info
 			}
 			else if (const auto dlg = g_fxo->get<msg_info>().get())
 			{
-				if (!wait_until.compare_and_swap_test(new_value, 0))
+				if (!retro_atomic_cas_64(&wait_until, static_cast<s64>(new_value), 0))
 				{
 					continue;
 				}
@@ -195,7 +196,7 @@ error_code open_msg_dialog(bool is_blocking, u32 type, vm::cptr<char> msgString,
 			return CellSysutilError{ret + 0u};
 		}
 
-		const auto notify = std::make_shared<atomic_t<u32>>(0);
+		const auto notify = std::make_shared<retro_atomic_int_t>(0);
 
 		const auto res = manager->create<rsx::overlays::message_dialog>()->show(is_blocking, msgString.get_ptr(), _type, source, [callback, userData, &return_code, is_blocking, notify](s32 status)
 		{
@@ -217,8 +218,8 @@ error_code open_msg_dialog(bool is_blocking, u32 type, vm::cptr<char> msgString,
 
 			if (is_blocking && notify)
 			{
-				*notify = 1;
-				notify->notify_one();
+				retro_atomic_store_release_int(notify.get(), 1);
+				retro_waitaddr_notify_one(notify.get());
 			}
 		});
 
@@ -229,7 +230,7 @@ error_code open_msg_dialog(bool is_blocking, u32 type, vm::cptr<char> msgString,
 		if (flagged)
 			cpu->state += cpu_flag::wait;
 
-		while (is_blocking && !Emu.IsStopped() && !*notify)
+		while (is_blocking && !Emu.IsStopped() && !retro_atomic_load_acquire_int(notify.get()))
 		{
 			libretro_wait_on(*notify, u32{0});
 		}
@@ -264,9 +265,9 @@ error_code open_msg_dialog(bool is_blocking, u32 type, vm::cptr<char> msgString,
 
 		const auto dlg = wptr.lock();
 
-		if (dlg && dlg->state.compare_and_swap_test(MsgDialogState::Open, MsgDialogState::Close))
+		if (dlg && retro_atomic_cas_int(&dlg->state, static_cast<s32>(MsgDialogState::Open), static_cast<s32>(MsgDialogState::Close)))
 		{
-			dlg->state.notify_all(); // a blocking open waits for it
+			retro_waitaddr_notify_all(&dlg->state); // a blocking open waits for it
 			sysutil_send_system_cmd(CELL_SYSUTIL_DRAWING_END, 0);
 
 			if (callback)
@@ -278,7 +279,7 @@ error_code open_msg_dialog(bool is_blocking, u32 type, vm::cptr<char> msgString,
 				});
 			}
 
-			g_fxo->get<msg_dlg_thread>().wait_until = 0;
+			retro_atomic_store_release_64(&g_fxo->get<msg_dlg_thread>().wait_until, 0);
 			g_fxo->get<msg_info>().remove();
 		}
 
@@ -321,12 +322,12 @@ error_code open_msg_dialog(bool is_blocking, u32 type, vm::cptr<char> msgString,
 		// loop before)
 		while (auto dlg = g_fxo->get<msg_info>().get())
 		{
-			if (Emu.IsStopped() || dlg->state != MsgDialogState::Open)
+			if (Emu.IsStopped() || retro_atomic_load_acquire_int(&dlg->state) != static_cast<s32>(MsgDialogState::Open))
 			{
 				break;
 			}
 
-			libretro_wait_on(dlg->state, MsgDialogState::Open);
+			libretro_wait_on(dlg->state, static_cast<u32>(MsgDialogState::Open));
 		}
 	}
 
@@ -341,7 +342,7 @@ void close_msg_dialog()
 	{
 		if (auto dlg = manager->get<rsx::overlays::message_dialog>())
 		{
-			g_fxo->get<msg_dlg_thread>().wait_until = 0;
+			retro_atomic_store_release_64(&g_fxo->get<msg_dlg_thread>().wait_until, 0);
 			dlg->close(false, true); // this doesn't call on_close
 			sysutil_send_system_cmd(CELL_SYSUTIL_DRAWING_END, 0);
 			return;
@@ -350,9 +351,9 @@ void close_msg_dialog()
 
 	if (const auto dlg = g_fxo->get<msg_info>().get())
 	{
-		dlg->state = MsgDialogState::Close;
-		dlg->state.notify_all();
-		g_fxo->get<msg_dlg_thread>().wait_until = 0;
+		retro_atomic_store_release_int(&dlg->state, static_cast<s32>(MsgDialogState::Close));
+		retro_waitaddr_notify_all(&dlg->state);
+		retro_atomic_store_release_64(&g_fxo->get<msg_dlg_thread>().wait_until, 0);
 		g_fxo->get<msg_info>().remove(); // this shouldn't call on_close
 		input::SetIntercepted(false);    // so we need to reenable the pads here
 		sysutil_send_system_cmd(CELL_SYSUTIL_DRAWING_END, 0);
@@ -547,8 +548,8 @@ error_code cellMsgDialogClose(f32 delay)
 			dlg && dlg->source() == msg_dialog_source::_cellMsgDialog)
 		{
 			auto& thr = g_fxo->get<msg_dlg_thread>();
-			thr.wait_until = wait_until;
-			thr.wait_until.notify_one();
+			retro_atomic_store_release_64(&thr.wait_until, static_cast<s64>(wait_until));
+			retro_waitaddr_notify_one(&thr.wait_until);
 			return CELL_OK;
 		}
 
@@ -563,8 +564,8 @@ error_code cellMsgDialogClose(f32 delay)
 	}
 
 	auto& thr = g_fxo->get<msg_dlg_thread>();
-	thr.wait_until = wait_until;
-	thr.wait_until.notify_one();
+	retro_atomic_store_release_64(&thr.wait_until, static_cast<s64>(wait_until));
+	retro_waitaddr_notify_one(&thr.wait_until);
 	return CELL_OK;
 }
 
@@ -577,7 +578,7 @@ error_code cellMsgDialogAbort()
 		if (auto dlg = manager->get<rsx::overlays::message_dialog>();
 			dlg && dlg->source() == msg_dialog_source::_cellMsgDialog)
 		{
-			g_fxo->get<msg_dlg_thread>().wait_until = 0;
+			retro_atomic_store_release_64(&g_fxo->get<msg_dlg_thread>().wait_until, 0);
 			dlg->close(false, true); // this doesn't call on_close
 			sysutil_send_system_cmd(CELL_SYSUTIL_DRAWING_END, 0);
 			return CELL_OK;
@@ -593,14 +594,14 @@ error_code cellMsgDialogAbort()
 		return CELL_OK; // Not CELL_MSGDIALOG_ERROR_DIALOG_NOT_OPENED, tested on HW.
 	}
 
-	if (!dlg->state.compare_and_swap_test(MsgDialogState::Open, MsgDialogState::Abort))
+	if (!retro_atomic_cas_int(&dlg->state, static_cast<s32>(MsgDialogState::Open), static_cast<s32>(MsgDialogState::Abort)))
 	{
 		return CELL_SYSUTIL_ERROR_BUSY;
 	}
 
-	dlg->state.notify_all();
+	retro_waitaddr_notify_all(&dlg->state);
 
-	g_fxo->get<msg_dlg_thread>().wait_until = 0;
+	retro_atomic_store_release_64(&g_fxo->get<msg_dlg_thread>().wait_until, 0);
 	g_fxo->get<msg_info>().remove(); // this shouldn't call on_close
 	input::SetIntercepted(false);     // so we need to reenable the pads here
 	sysutil_send_system_cmd(CELL_SYSUTIL_DRAWING_END, 0);

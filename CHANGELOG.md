@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellMsgDialog on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The dialog's state** (`MsgDialogBase::state`, a `MsgDialogState`) is a retro_atomic word. Closing and aborting are a compare-and-swap from Open, then a retro_waitaddr notify for the blocking open asleep on it.
+    - **The close timer's guest time** (`wait_until`) is a `retro_atomic_64_t`. Its thread waits on the word's low half, through `thread_ctrl::wait_on_word` and the wait list's `set_raw`, as atomic_t waited on it, and is told with a notify on the same address.
+    - **The overlay dialog's blocking-open flag** is a `retro_atomic_int_t`, as the overlays' own flags already are.
+  - **Tests:** test_emu_waits checks a dialog's state word: a blocking open stays asleep while the dialog is open and is woken by its abort's compare-and-swap and notify. A mutant `libretro_wait_on` that waits for the wrong value loops instead and fails it. The dialog's own paths (the overlay, the close timer) need the emulator and are not run; the full build and suites pass. A check fails if atomic_t comes back to cellMsgDialog.
+
 - **lv2's waiter counts on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The counts:** `lwcond_waiters` and `lwmutex_waiters` (the counts a destroy waits on, with the sign bit as its flag), a PRX's `exports_busy` and an SPU group's `spurs_running` are retro_atomic words. They are counted with adds, ors and compare-and-swap loops where atomic_t ran a lambda, and woken with retro_waitaddr on the same address. The SPU group log state is one too.

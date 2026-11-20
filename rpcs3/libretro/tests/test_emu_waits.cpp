@@ -2118,6 +2118,42 @@ int main()
 		std::printf("test_emu_waits: 16-byte reports stored whole under a reader; a semaphore wait woken\n");
 	}
 
+	// A message dialog's state, a retro_atomic word: a blocking open asleep
+	// on Open is woken by the dialog closing (compare-and-swap and notify)
+	{
+		struct state_dialog final : MsgDialogBase
+		{
+			void Create(const std::string&, const std::string&) override {}
+			void Close(bool) override {}
+			void SetMsg(const std::string&) override {}
+			void ProgressBarSetMsg(u32, const std::string&) override {}
+			void ProgressBarReset(u32) override {}
+			void ProgressBarInc(u32, u32) override {}
+			void ProgressBarSetValue(u32, u32) override {}
+			void ProgressBarSetLimit(u32, u32) override {}
+		} dlg;
+		CHECK(retro_atomic_load_acquire_int(&dlg.state) == static_cast<s32>(MsgDialogState::Close));
+		retro_atomic_store_release_int(&dlg.state, static_cast<s32>(MsgDialogState::Open));
+		std::atomic<int> done{0}, passes{0};
+		std::thread opener([&]
+		{
+			while (retro_atomic_load_acquire_int(&dlg.state) == static_cast<s32>(MsgDialogState::Open))
+			{
+				passes++;
+				libretro_wait_on(dlg.state, static_cast<u32>(MsgDialogState::Open));
+			}
+			done = 1;
+		});
+		for (int i = 0; i < 200000; i++)
+			std::this_thread::yield();
+		CHECK(done == 0 && passes <= 2);
+		CHECK(retro_atomic_cas_int(&dlg.state, static_cast<s32>(MsgDialogState::Open), static_cast<s32>(MsgDialogState::Abort)));
+		retro_waitaddr_notify_all(&dlg.state);
+		opener.join();
+		CHECK(done == 1 && retro_atomic_load_acquire_int(&dlg.state) == static_cast<s32>(MsgDialogState::Abort));
+		std::printf("test_emu_waits: a message dialog's state: a blocking open asleep until it closes\n");
+	}
+
 	// A function looked up once, on first use (libc, loaded already), a
 	// missing one false; shared memory mapped into its own storage once
 	// though two threads ask at once, and unmapped
