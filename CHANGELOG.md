@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellVideoExport on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The export's progress** (`video_export::progress`, 0 to 0xFFFF) is a `retro_atomic_int_t`, stored with release by the export's sysutil callbacks and read with acquire by cellVideoExportProgress's, which may run on another PPU thread. As cellPhotoExport's and cellMusicExport's.
+  - **Tests:** none. Both sides run in sysutil callbacks on a PPU thread, which the tests do not run; the full build and suites pass. A check fails if atomic_t comes back to cellVideoExport.
+
+
 - **cellMusicExport on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The export's progress** (`music_export::progress`, 0 to 0xFFFF) is a `retro_atomic_int_t`, stored with release by the export's sysutil callback and read with acquire by cellMusicExportProgress's, which may run on another PPU thread. As cellPhotoExport's.
