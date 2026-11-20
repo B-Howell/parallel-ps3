@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <retro_atomic.h>
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/emu_callbacks.h"
 #include "Emu/System.h"
@@ -69,9 +70,12 @@ struct CellPhotoExportSetParam
 
 using CellPhotoExportUtilFinishCallback = void(s32 result, vm::ptr<void> userdata);
 
+// The export's progress, 0x0-0xFFFF for 0-100%: set by the export's
+// callback, read by cellPhotoExportProgress's, which may run on another PPU
+// thread (cellSysutilCheckCallback)
 struct photo_export
 {
-	atomic_t<s32> progress = 0; // 0x0-0xFFFF for 0-100%
+	retro_atomic_int_t progress{0};
 };
 
 
@@ -194,7 +198,7 @@ error_code cellPhotoRegistFromFile(vm::cptr<char> path, vm::cptr<char> photo_tit
 	sysutil_register_cb([=](ppu_thread& ppu) -> s32
 	{
 		auto& pexp = g_fxo->get<photo_export>();
-		pexp.progress = 0; // 0%
+		retro_atomic_store_release_int(&pexp.progress, 0); // 0%
 
 		const std::string src_path = vfs::get(file_path);
 		const std::string dst_path = get_available_photo_path(filename);
@@ -224,7 +228,7 @@ error_code cellPhotoRegistFromFile(vm::cptr<char> path, vm::cptr<char> photo_tit
 
 		// TODO: track progress during file copy
 
-		pexp.progress = 0xFFFF; // 100%
+		retro_atomic_store_release_int(&pexp.progress, 0xFFFF); // 100%
 
 		funcFinish(ppu, CELL_OK, userdata);
 		return CELL_OK;
@@ -337,7 +341,7 @@ error_code cellPhotoExportFromFile(vm::cptr<char> srcHddDir, vm::cptr<char> srcH
 	sysutil_register_cb([=](ppu_thread& ppu) -> s32
 	{
 		auto& pexp = g_fxo->get<photo_export>();
-		pexp.progress = 0; // 0%
+		retro_atomic_store_release_int(&pexp.progress, 0); // 0%
 
 		const std::string src_path = vfs::get(file_path);
 		const std::string dst_path = get_available_photo_path(filename);
@@ -367,7 +371,7 @@ error_code cellPhotoExportFromFile(vm::cptr<char> srcHddDir, vm::cptr<char> srcH
 
 		// TODO: track progress during file copy
 
-		pexp.progress = 0xFFFF; // 100%
+		retro_atomic_store_release_int(&pexp.progress, 0xFFFF); // 100%
 
 		funcFinish(ppu, CELL_OK, userdata);
 		return CELL_OK;
@@ -411,7 +415,7 @@ error_code cellPhotoExportFromFileWithCopy(vm::cptr<char> srcHddDir, vm::cptr<ch
 	sysutil_register_cb([=](ppu_thread& ppu) -> s32
 	{
 		auto& pexp = g_fxo->get<photo_export>();
-		pexp.progress = 0; // 0%
+		retro_atomic_store_release_int(&pexp.progress, 0); // 0%
 
 		const std::string src_path = vfs::get(file_path);
 		const std::string dst_path = get_available_photo_path(filename);
@@ -430,7 +434,7 @@ error_code cellPhotoExportFromFileWithCopy(vm::cptr<char> srcHddDir, vm::cptr<ch
 
 		// TODO: track progress during file copy
 
-		pexp.progress = 0xFFFF; // 100%
+		retro_atomic_store_release_int(&pexp.progress, 0xFFFF); // 100%
 
 		funcFinish(ppu, CELL_OK, userdata);
 		return CELL_OK;
@@ -454,7 +458,7 @@ error_code cellPhotoExportProgress(vm::ptr<CellPhotoExportUtilFinishCallback> fu
 		// Only the copy or move of the movie and metadata files is considered for the progress.
 		const auto& pexp = g_fxo->get<photo_export>();
 
-		funcFinish(ppu, pexp.progress, userdata);
+		funcFinish(ppu, retro_atomic_load_acquire_int(&pexp.progress), userdata);
 		return CELL_OK;
 	});
 

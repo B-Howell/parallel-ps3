@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellPhotoExport on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The export's progress** (`photo_export::progress`, 0 to 0xFFFF) is a `retro_atomic_int_t`, stored with release by the export's sysutil callback and read with acquire by cellPhotoExportProgress's, which may run on another PPU thread.
+  - **Tests:** none. Both sides run in sysutil callbacks on a PPU thread, which the tests do not run; the full build and suites pass. A check fails if atomic_t comes back to cellPhotoExport.
+
+
 - **cellVoice's initialized flag off atomic_t: the HLE thread's own.** Not yet run on a game.
   - **What changed:**
     - **The flag** (`voice_manager::is_init`) is a plain bool. Every call that touched it already ran on the HLE thread (`hle_call`) except cellVoiceDebugTopology, which read it from the PPU thread; that call now looks in `hle_call` too. So the flag has one thread and needs no atomic.
