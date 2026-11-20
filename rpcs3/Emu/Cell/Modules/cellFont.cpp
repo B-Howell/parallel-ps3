@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <retro_atomic.h>
 #include "Emu/VFS.h"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/IdManager.h"
@@ -16,7 +17,10 @@ LOG_CHANNEL(cellFont);
 // guest memory after the game's CellFont; the CellFont holds a pointer.
 struct cell_font_face
 {
-	atomic_t<u32> owner{0}; // the CellFont's address; 0 when free
+	retro_atomic_int_t owner{0}; // the CellFont's address; 0 when free
+
+	u32 owner_now() const { return static_cast<u32>(retro_atomic_load_acquire_int(&owner)); }
+	void free_face() { retro_atomic_store_release_int(&owner, 0); }
 	rtt_font_t info{};
 
 	// Pixels per font unit at a height of @height pixels
@@ -34,9 +38,10 @@ struct cell_font_faces
 	cell_font_face faces[face_count];
 
 	// The rasterizer's memory, kept from glyph to glyph and lent to one
-	// drawing thread at a time
+	// drawing thread at a time: a bit per scratch in scratch_lent, set
+	// while it is lent
 	static constexpr usz scratch_count = 8;
-	atomic_t<u32> scratch_lent[scratch_count]{};
+	retro_atomic_int_t scratch_lent{0};
 	rtt_scratch_t scratch[scratch_count]{};
 
 	cell_font_faces() = default;
@@ -56,18 +61,18 @@ struct cell_font_faces
 		if (off >= sizeof(faces) || off % sizeof(cell_font_face))
 			return nullptr;
 		cell_font_face* face = &faces[off / sizeof(cell_font_face)];
-		return face->owner ? face : nullptr;
+		return face->owner_now() ? face : nullptr;
 	}
 
 	// A free face for the CellFont at @addr: the one it has if it is opened
 	// again, else the first free one
 	cell_font_face* claim(u32 addr, const cell_font_face* had)
 	{
-		if (cell_font_face* face = check(had); face && face->owner == addr)
+		if (cell_font_face* face = check(had); face && face->owner_now() == addr)
 			return face;
 		for (cell_font_face& face : faces)
 		{
-			if (face.owner.compare_and_swap_test(0, addr))
+			if (retro_atomic_cas_int(&face.owner, 0, static_cast<int>(addr)))
 				return &face;
 		}
 		return nullptr;
@@ -77,7 +82,9 @@ struct cell_font_faces
 	{
 		for (slot = 0; slot < scratch_count; slot++)
 		{
-			if (scratch_lent[slot].compare_and_swap_test(0, 1))
+			const int bit = 1 << slot;
+
+			if (!(retro_atomic_fetch_or_int(&scratch_lent, bit) & bit))
 				return &scratch[slot];
 		}
 		return nullptr;
@@ -85,7 +92,7 @@ struct cell_font_faces
 
 	void give_back(usz slot)
 	{
-		scratch_lent[slot].release(0);
+		retro_atomic_fetch_and_int(&scratch_lent, ~(1 << slot));
 	}
 };
 
@@ -238,7 +245,7 @@ error_code cellFontOpenFontMemory(vm::ptr<CellFontLibrary> library, u32 fontAddr
 
 	if (offset < 0 || !rtt_init(&face->info, data, fontSize, offset))
 	{
-		face->owner.release(0);
+		face->free_face();
 		font->face = nullptr;
 		return CELL_FONT_ERROR_FONT_OPEN_FAILED;
 	}
@@ -1001,9 +1008,9 @@ error_code cellFontCloseFont(vm::ptr<CellFont> font)
 		font->origin == CELL_FONT_OPEN_FONT_FILE ||
 		font->origin == CELL_FONT_OPEN_MEMORY)
 	{
-		if (cell_font_face* face = font_face(font); face && face->owner == font.addr())
+		if (cell_font_face* face = font_face(font); face && face->owner_now() == font.addr())
 		{
-			face->owner.release(0);
+			face->free_face();
 		}
 
 		font->face = nullptr;

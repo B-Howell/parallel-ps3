@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellFont on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **A face's owner** (`cell_font_face::owner`, the CellFont's address, 0 when free) is a `retro_atomic_int_t`: claimed with a compare-and-swap from 0, read with acquire, freed with a release store.
+    - **The lent scratch flags** were eight `atomic_t<u32>`. They are now eight bits of one `retro_atomic_int_t`: a scratch is lent with a fetch-or of its bit (lent if the bit was clear) and given back with a fetch-and.
+  - **Tests:** none. The table is local to cellFont.cpp and the calls need guest memory; test_font covers the rasterizer, not the table. The full build and suites pass. A check fails if atomic_t comes back to cellFont.
+
+
 - **The small TLS areas' map: a bit per area in retro_atomic words, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The map** (`s_tls_map` in sys_ppu_thread_.cpp, one entry per small TLS area, up to about 5,400 of them) was an array of `atomic_t<bool>`, scanned one by one with an exchange each. It is now a bit per area in `retro_atomic_int_t` words: `tls_map_take` finds the lowest clear bit of a word and sets it with a fetch-or, retrying if another thread set it first, so it looks at 32 areas per load. `tls_map_give` clears the bit with a fetch-and and says whether it was set, for the double-free error as before. The map shrinks to an eighth.
