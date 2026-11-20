@@ -1514,6 +1514,8 @@ check: all
 	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/cellPngDec.cpp ../../Emu/Cell/Modules/cellPngDec.h; then echo "atomic_t is back in cellPngDec"; exit 1; else echo "cellPngDec is on retro_atomic"; fi
 	@# sceNp's abort-GUI flag is a retro_atomic word (set by sceNpBasicAbortGui, exchanged back by the message dialog it ends), not atomic_t
 	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/sceNp.h ../../Emu/RSX/Overlays/Network/overlay_sendmessage_dialog.cpp ../../Emu/RSX/Overlays/Network/overlay_recvmessage_dialog.cpp; then echo "atomic_t is back in sceNp's abort-GUI flag"; exit 1; else echo "sceNp's abort-GUI flag is on retro_atomic"; fi
+	@# cellMusicExport's progress is a retro_atomic word (set by the export's callback, read by cellMusicExportProgress's), not atomic_t
+	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/cellMusicExport.cpp; then echo "atomic_t is back in cellMusicExport"; exit 1; else echo "cellMusicExport is on retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

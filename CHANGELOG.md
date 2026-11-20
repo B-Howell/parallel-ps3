@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellMusicExport on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The export's progress** (`music_export::progress`, 0 to 0xFFFF) is a `retro_atomic_int_t`, stored with release by the export's sysutil callback and read with acquire by cellMusicExportProgress's, which may run on another PPU thread. As cellPhotoExport's.
+  - **Tests:** none. Both sides run in sysutil callbacks on a PPU thread, which the tests do not run; the full build and suites pass. A check fails if atomic_t comes back to cellMusicExport.
+
+
 - **sceNp's abort-GUI flag on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The flag** (`np_state::abort_gui_flag`) is a `retro_atomic_int_t`. sceNpBasicAbortGui stores 1 with release and bumps the libretro events, as before, which wakes the open send or receive message dialog's untimed wait. The dialog reads it with acquire in its loop and takes it back to 0 with an exchange once it ends.

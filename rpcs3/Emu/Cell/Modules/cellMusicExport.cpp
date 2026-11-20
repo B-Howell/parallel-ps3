@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <retro_atomic.h>
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/IdManager.h"
 #include "Emu/VFS.h"
@@ -68,7 +69,9 @@ using CellMusicExportUtilFinishCallback = void(s32 result, vm::ptr<void> userdat
 
 struct music_export
 {
-	atomic_t<s32> progress = 0; // 0x0-0xFFFF for 0-100%
+	// 0x0-0xFFFF for 0-100%: set by the export's callback, read by
+	// cellMusicExportProgress's, which may run on another PPU thread
+	retro_atomic_int_t progress{0};
 };
 
 
@@ -240,7 +243,7 @@ error_code cellMusicExportFromFile(vm::cptr<char> srcHddDir, vm::cptr<char> srcH
 	sysutil_register_cb([=](ppu_thread& ppu) -> s32
 	{
 		auto& mexp = g_fxo->get<music_export>();
-		mexp.progress = 0; // 0%
+		retro_atomic_store_release_int(&mexp.progress, 0); // 0%
 
 		const std::string src_path = vfs::get(file_path);
 		const std::string dst_path = get_available_music_path(filename);
@@ -270,7 +273,7 @@ error_code cellMusicExportFromFile(vm::cptr<char> srcHddDir, vm::cptr<char> srcH
 
 		// TODO: track progress during file copy
 
-		mexp.progress = 0xFFFF; // 100%
+		retro_atomic_store_release_int(&mexp.progress, 0xFFFF); // 100%
 
 		funcFinish(ppu, CELL_OK, userdata);
 		return CELL_OK;
@@ -294,7 +297,7 @@ error_code cellMusicExportProgress(vm::ptr<CellMusicExportUtilFinishCallback> fu
 		// Only the copy or move of the movie and metadata files is considered for the progress.
 		const auto& mexp = g_fxo->get<music_export>();
 
-		funcFinish(ppu, mexp.progress, userdata);
+		funcFinish(ppu, retro_atomic_load_acquire_int(&mexp.progress), userdata);
 		return CELL_OK;
 	});
 
