@@ -45,7 +45,7 @@ error_code sceNpSnsFbInit(vm::cptr<SceNpSnsFbInitParams> params)
 
 	auto& manager = g_fxo->get<sce_np_sns_manager>();
 
-	if (manager.is_initialized)
+	if (manager.initialized())
 	{
 		return SCE_NP_SNS_FB_ERROR_ALREADY_INITIALIZED;
 	}
@@ -57,7 +57,11 @@ error_code sceNpSnsFbInit(vm::cptr<SceNpSnsFbInitParams> params)
 
 	// TODO: Use the initialization parameters somewhere
 
-	manager.is_initialized = true;
+	// One of two at once takes it
+	if (!retro_atomic_cas_int(&manager.is_initialized, 0, 1))
+	{
+		return SCE_NP_SNS_FB_ERROR_ALREADY_INITIALIZED;
+	}
 
 	return CELL_OK;
 }
@@ -68,12 +72,11 @@ error_code sceNpSnsFbTerm()
 
 	auto& manager = g_fxo->get<sce_np_sns_manager>();
 
-	if (!manager.is_initialized)
+	// One of two at once ends it
+	if (!retro_atomic_cas_int(&manager.is_initialized, 1, 0))
 	{
 		return SCE_NP_SNS_FB_ERROR_NOT_INITIALIZED;
 	}
-
-	manager.is_initialized = false;
 
 	return CELL_OK;
 }
@@ -82,7 +85,7 @@ error_code sceNpSnsFbCreateHandle(vm::ptr<u32> handle)
 {
 	sceNpSns.warning("sceNpSnsFbCreateHandle(handle=*0x%x)", handle);
 
-	if (!g_fxo->get<sce_np_sns_manager>().is_initialized)
+	if (!g_fxo->get<sce_np_sns_manager>().initialized())
 	{
 		return SCE_NP_SNS_FB_ERROR_NOT_INITIALIZED;
 	}
@@ -107,7 +110,7 @@ error_code sceNpSnsFbDestroyHandle(u32 handle)
 {
 	sceNpSns.warning("sceNpSnsFbDestroyHandle(handle=%d)", handle);
 
-	if (!g_fxo->get<sce_np_sns_manager>().is_initialized)
+	if (!g_fxo->get<sce_np_sns_manager>().initialized())
 	{
 		return SCE_NP_SNS_FB_ERROR_NOT_INITIALIZED;
 	}
@@ -129,7 +132,7 @@ error_code sceNpSnsFbAbortHandle(u32 handle)
 {
 	sceNpSns.todo("sceNpSnsFbAbortHandle(handle=%d)", handle);
 
-	if (!g_fxo->get<sce_np_sns_manager>().is_initialized)
+	if (!g_fxo->get<sce_np_sns_manager>().initialized())
 	{
 		return SCE_NP_SNS_FB_ERROR_NOT_INITIALIZED;
 	}
@@ -160,7 +163,7 @@ error_code sceNpSnsFbGetAccessToken(u32 handle, vm::cptr<SceNpSnsFbAccessTokenPa
 		return SCE_NP_SNS_ERROR_INVALID_ARGUMENT;
 	}
 
-	if (!g_fxo->get<sce_np_sns_manager>().is_initialized)
+	if (!g_fxo->get<sce_np_sns_manager>().initialized())
 	{
 		return SCE_NP_SNS_FB_ERROR_NOT_INITIALIZED;
 	}
@@ -229,7 +232,7 @@ s32 sceNpSnsFbCheckThrottle(vm::ptr<void> arg0)
 		return SCE_NP_SNS_ERROR_INVALID_ARGUMENT;
 	}
 
-	if (!g_fxo->get<sce_np_sns_manager>().is_initialized)
+	if (!g_fxo->get<sce_np_sns_manager>().initialized())
 	{
 		return SCE_NP_SNS_FB_ERROR_NOT_INITIALIZED;
 	}
@@ -241,7 +244,7 @@ s32 sceNpSnsFbCheckConfig(vm::ptr<void> arg0)
 {
 	sceNpSns.todo("sceNpSnsFbCheckConfig(arg0=*0x%x)", arg0);
 
-	if (!g_fxo->get<sce_np_sns_manager>().is_initialized)
+	if (!g_fxo->get<sce_np_sns_manager>().initialized())
 	{
 		return SCE_NP_SNS_FB_ERROR_NOT_INITIALIZED;
 	}
@@ -287,7 +290,7 @@ error_code sceNpSnsFbGetLongAccessToken(u32 handle, vm::cptr<SceNpSnsFbAccessTok
 		return SCE_NP_SNS_ERROR_INVALID_ARGUMENT;
 	}
 
-	if (!g_fxo->get<sce_np_sns_manager>().is_initialized)
+	if (!g_fxo->get<sce_np_sns_manager>().initialized())
 	{
 		return SCE_NP_SNS_FB_ERROR_NOT_INITIALIZED;
 	}

@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **sceNpSns on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The initialized flag** (`sce_np_sns_manager::is_initialized`) is a `retro_atomic_int_t`, read through `initialized()`. sceNpSnsFbInit takes it with a compare-and-swap from 0 to 1 and sceNpSnsFbTerm ends it with one from 1 to 0, so of two at once one succeeds and the other gets ALREADY_INITIALIZED or NOT_INITIALIZED. atomic_t's check-then-store let both succeed.
+  - **Tests:** test_emu_waits runs two Inits at once, then two Terms at once, twice over: one of each succeeds and the flag follows. A mutant Term that stores 0 without the compare-and-swap fails it every run. A mutant Init that stores 1 without it passed three runs out of three: the two threads almost never meet in the window between the check and the store. A check fails if atomic_t comes back to sceNpSns.
+
+
 - **cellPad on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **Whether cellPad is initialized** (`pad_info::max_connect`, with `starting` while a cellPadInit is under way) is a `retro_atomic_int_t`, read once per call through `max_connect_now`/`initialized`, set with `set_max_connect` and taken by cellPadInit and cellPadEnd with `cas_max_connect`, a compare-and-swap as before.

@@ -30,6 +30,7 @@
 #include "Emu/RSX/Overlays/Shaders/shader_loading_dialog.h"
 #include "Emu/Cell/Modules/cellMsgDialog.h"
 #include "Emu/Cell/Modules/sceNpTrophy.h"
+#include "Emu/Cell/Modules/sceNpSns.h"
 #include "Emu/NP/net_http_thread.h"
 #include "Emu/Cell/Modules/cellAudio.h"
 #include "Emu/Cell/Modules/cellDmuxPamf.h"
@@ -101,6 +102,9 @@ struct cfg_values final : cfg::node
 	cfg::uint64 u{this, "Uint64", 7};
 	cfg::uint128 w{this, "Uint128", 9};
 };
+
+error_code sceNpSnsFbInit(vm::cptr<SceNpSnsFbInitParams> params);
+error_code sceNpSnsFbTerm();
 
 int main()
 {
@@ -2212,6 +2216,33 @@ int main()
 		mem.unmap_self();
 		CHECK(mem.get() == nullptr);
 		std::printf("test_emu_waits: a function looked up once, shared memory mapped once by two threads\n");
+	}
+
+	// sceNpSns's initialized flag: two Inits at once, one takes it; two
+	// Terms at once, one ends it (the flag a retro_atomic word taken with
+	// compare-and-swap). Init does not read its parameters yet
+	{
+		g_fxo->reset();
+		g_fxo->init<sce_np_sns_manager>();
+		const auto params = vm::cptr<SceNpSnsFbInitParams>::make(0x10000);
+		for (int round = 0; round < 2; round++)
+		{
+			std::atomic<int> inits{0}, terms{0};
+			const auto init = [&] { if (sceNpSnsFbInit(params) == CELL_OK) inits++; };
+			const auto term = [&] { if (sceNpSnsFbTerm() == CELL_OK) terms++; };
+			std::thread i1(init), i2(init);
+			i1.join();
+			i2.join();
+			CHECK(inits == 1 && g_fxo->get<sce_np_sns_manager>().initialized());
+			CHECK(static_cast<s32>(sceNpSnsFbInit(params)) == static_cast<s32>(SCE_NP_SNS_FB_ERROR_ALREADY_INITIALIZED));
+			std::thread t1(term), t2(term);
+			t1.join();
+			t2.join();
+			CHECK(terms == 1 && !g_fxo->get<sce_np_sns_manager>().initialized());
+			CHECK(static_cast<s32>(sceNpSnsFbTerm()) == static_cast<s32>(SCE_NP_SNS_FB_ERROR_NOT_INITIALIZED));
+		}
+		g_fxo->clear();
+		std::printf("test_emu_waits: sceNpSns taken by one Init and ended by one Term\n");
 	}
 
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");

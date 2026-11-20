@@ -1,5 +1,6 @@
 #pragma once
 
+#include <retro_atomic.h>
 #include "Emu/Memory/vm_ptr.h"
 
 // Return codes
@@ -82,7 +83,11 @@ struct SceNpSnsFbLongAccessTokenResult
 
 // fxm objects
 
+// Whether sceNpSnsFbInit has run: taken by one Init and given back by one
+// Term (compare-and-swap), read by the other calls
 struct sce_np_sns_manager
 {
-	atomic_t<bool> is_initialized = false;
+	retro_atomic_int_t is_initialized{0};
+
+	bool initialized() const { return retro_atomic_load_acquire_int(&is_initialized) != 0; }
 };
