@@ -326,10 +326,8 @@ namespace rsx
 
 						if (seen < entry_count && !Emu.IsStopped())
 						{
-							atomic_wait::list<2> list;
-							list.template set_raw<0>(&processed, seen);
-							list.template set_raw<1>(&g_libretro_events, events);
-							list.wait();
+							const retro_waitaddr_t list[2]{{&processed, static_cast<u32>(seen)}, {&g_libretro_events, static_cast<u32>(events)}};
+							thread_ctrl::wait_list(list, 2);
 						}
 					}
 

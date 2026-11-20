@@ -487,11 +487,11 @@ public:
 
 	void wait(std::nullptr_t /*null*/ = nullptr) noexcept
 	{
-		if (!operator bool())
+		const retro_waitaddr_t w{wait_word(), 0};
+
+		while (!operator bool())
 		{
-			atomic_wait::list<1> list{};
-			list.template set_raw<0>(wait_word(), 0);
-			list.wait();
+			retro_waitaddr_wait(&w, 1, -1);
 		}
 	}
 

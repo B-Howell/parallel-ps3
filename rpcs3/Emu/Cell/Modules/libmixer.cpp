@@ -387,10 +387,8 @@ struct surmixer_thread : ppu_thread
 				const auto old_state = +state;
 				if (!::is_stopped(old_state))
 				{
-					atomic_wait::list<2> list;
-					list.template set<0>(state, old_state);
-					list.template set_raw<1>(&g_libretro_events, events);
-					list.wait();
+					const retro_waitaddr_t list[2]{thread_ctrl::waitaddr(state, old_state), {&g_libretro_events, events}};
+					thread_ctrl::wait_list(list, 2);
 				}
 				if (flagged)
 					check_state();

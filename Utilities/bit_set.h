@@ -517,13 +517,15 @@ public:
 		return load().none_of(arg);
 	}
 
-	// Waits while the flags are @old (the wait engine: thread stop checks
-	// apply); may return early
-	void wait(bs_t old, atomic_wait_timeout timeout = atomic_wait_timeout::inf) const
+	// Waits while the flags are @old
+	void wait(bs_t old) const
 	{
-		atomic_wait::list<1> list{};
-		list.template set_raw<0>(&m_word, static_cast<u32>(to(old)));
-		list.wait(timeout);
+		const retro_waitaddr_t w{&m_word, static_cast<u32>(to(old))};
+
+		while (retro_atomic_load_acquire_int(&m_word) == to(old))
+		{
+			retro_waitaddr_wait(&w, 1, -1);
+		}
 	}
 
 	void notify_one()

@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The standalone waits on retro_waitaddr, off atomic_wait::list.** Not yet run on a game.
+  - **What changed:**
+    - **`thread_ctrl::wait_list(list, count, usec)`** waits on a `retro_waitaddr_t` array: untimed, until one of its words is not what it was, through spurious wakes; timed, once. `wait_on_custom` goes through it too.
+    - **Moved to it, or to a plain retro_waitaddr loop on one word:** libmixer's, cellGcmSys's (the FIFO get), the shader-loading dialog's and the RSX cache's waits, the RSX thread's two start-up waits, thread_ctrl::wait_for, a named thread's join, a task's done wait, the launch retainer, the lockless queue's consumer wait, the bitset's wait and the SPU function's compile wait. They wait for the same words with the same old values as before.
+    - **Flagged, not changed:** a join from a destructor after a stop still waits 1 ms at a time and logs a "too sleepy" line from the CPU's timestamp counter, as it did. The SPU reservation wait stays on atomic_wait::list for now: it needs the wait engine's one-time callback, and goes with the SPU code.
+  - **Tests:** test_emu_waits and test_held_queues run through these waits, and the full build and suites pass. A mutant `wait_list` that waits on only the first word of its list fails test_emu_waits: a named thread waiting for a frame is told to end through a later word of its list, is not woken, and the check that its join ends fails. A check fails if an atomic_wait::list comes back outside the SPU reservation wait.
+
+
 - **thread_ctrl::wait_on_custom on retro_waitaddr, off atomic_wait::list.** Not yet run on a game.
   - **What changed:**
     - **The list** a named thread waits on (the caller's words, then the thread's own sync word and its task queue) is a `retro_waitaddr_t` array, waited on with `retro_waitaddr_wait`, where it was an `atomic_wait::list` going through atomic_t's wait engine to the same retro_waitaddr. A setter gets the array and fills its entries: `{address, old}` for a raw word, `thread_ctrl::waitaddr(word, old)` for a typed 32-bit one (a cpu state's flags, a queue's change count), `{x.wait_word(), 0}` for an atomic_ptr. 45 setters in 26 files are moved, as are `wait_on`, `wait_on_word` and the waits built on them.

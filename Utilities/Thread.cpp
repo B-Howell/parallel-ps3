@@ -3236,19 +3236,21 @@ void thread_ctrl::wait_for(u64 usec, [[maybe_unused]] bool alert /* true */)
 	}
 
 	// Wait for signal and thread state abort
-	atomic_wait::list<2> list{};
+	retro_waitaddr_t list[2]{};
+	uint count = 1;
 
 	if (alert)
 	{
-		list.set_raw<0>(&_this->m_sync, 0);
-		list.template set<1>(_this->m_taskq);
+		list[0] = {&_this->m_sync, 0};
+		list[1] = {_this->m_taskq.wait_word(), 0};
+		count = 2;
 	}
 	else
 	{
-		list.set_raw<0>(&_this->m_dummy, 0);
+		list[0] = {&_this->m_dummy, 0};
 	}
 
-	list.wait(atomic_wait_timeout{usec <= 0xffff'ffff'ffff'ffff / 1000 ? usec * 1000 : 0xffff'ffff'ffff'ffff});
+	thread_ctrl::wait_list(list, count, usec);
 }
 
 
@@ -3389,22 +3391,21 @@ bool thread_base::join(bool dtor) const
 	}
 
 	// Hacked for too sleepy threads (1ms) TODO: make sure it's unneeded and remove
-	const auto timeout = dtor && Emu.IsStopped() ? atomic_wait_timeout{1'000'000} : atomic_wait_timeout::inf;
+	const u64 timeout_us = dtor && Emu.IsStopped() ? u64{1000} : u64{umax};
 
 	auto stamp0 = utils::get_tsc();
 
 	for (u64 i = 0; (sync_word() & 3) <= 1; i++)
 	{
-		atomic_wait::list<1> list{};
-		list.set_raw<0>(&m_sync, sync_word() & ~2);
-		list.wait(timeout);
+		const retro_waitaddr_t w{&m_sync, sync_word() & ~2};
+		thread_ctrl::wait_list(&w, 1, timeout_us);
 
 		if (sync_word() & 2)
 		{
 			break;
 		}
 
-		if (i >= 16 && !(i & (i - 1)) && timeout != atomic_wait_timeout::inf)
+		if (i >= 16 && !(i & (i - 1)) && timeout_us != umax)
 		{
 			sig_log.error("Thread [%s] is too sleepy. Waiting for it %.3fus already!", *m_tname.load(), (utils::get_tsc() - stamp0) / (utils::get_tsc_freq() / 1000000.));
 		}

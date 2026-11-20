@@ -116,11 +116,11 @@ public:
 	// Wait (preset)
 	void wait() const
 	{
-		if (!retro_atomic_load_acquire_int(&done))
+		const retro_waitaddr_t w{&done, 0};
+
+		while (!retro_atomic_load_acquire_int(&done))
 		{
-			atomic_wait::list<1> list{};
-			list.template set_raw<0>(&done, 0);
-			list.wait();
+			retro_waitaddr_wait(&w, 1, -1);
 		}
 	}
 };
@@ -318,17 +318,22 @@ public:
 		list[Max + 1] = {_this->m_taskq.wait_word(), 0};
 		setter(list);
 
+		wait_list(list, Max + 2, usec);
+	}
+
+	// Waits on @count words: untimed (@usec umax) until one of them is not
+	// what it was, through spurious wakes; timed, once (it may end early)
+	static inline void wait_list(const retro_waitaddr_t* list, uint count, u64 usec = umax)
+	{
 		if (usec != umax)
 		{
-			// Timed: once (it may end early)
-			retro_waitaddr_wait(list, Max + 2, static_cast<s64>(std::min<u64>(usec, u64{umax} >> 1)));
+			retro_waitaddr_wait(list, count, static_cast<s64>(std::min<u64>(usec, u64{umax} >> 1)));
 			return;
 		}
 
-		// Untimed: until one of the words is not what it was
-		while (waitaddr_unchanged(list, Max + 2))
+		while (waitaddr_unchanged(list, count))
 		{
-			retro_waitaddr_wait(list, Max + 2, -1);
+			retro_waitaddr_wait(list, count, -1);
 		}
 	}
 
@@ -548,9 +553,8 @@ class named_thread final : public Context, result_storage<Context>, thread_base
 	{
 		while (const int value = retro_atomic_load_acquire_int(&stx::g_launch_retainer))
 		{
-			atomic_wait::list<1> list{};
-			list.template set_raw<0>(&stx::g_launch_retainer, static_cast<u32>(value));
-			list.wait();
+			const retro_waitaddr_t w{&stx::g_launch_retainer, static_cast<u32>(value)};
+			retro_waitaddr_wait(&w, 1, -1);
 		}
 
 		thread::initialize([]()

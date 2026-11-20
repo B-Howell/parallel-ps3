@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Utilities/Thread.h"
 #include "shader_loading_dialog.h"
 #include "Emu/emu_callbacks.h"
 #include "Emu/System.h"
@@ -121,10 +122,8 @@ namespace rsx
 				return;
 			}
 
-			atomic_wait::list<2> list;
-			list.template set_raw<0>(&ref_cnt, static_cast<u32>(refs));
-			list.template set_raw<1>(&g_libretro_events, events);
-			list.wait();
+			const retro_waitaddr_t list[2]{{&ref_cnt, static_cast<u32>(refs)}, {&g_libretro_events, events}};
+			thread_ctrl::wait_list(list, 2);
 		}
 	}
 

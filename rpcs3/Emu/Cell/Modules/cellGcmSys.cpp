@@ -1592,11 +1592,8 @@ s32 cellGcmCallback(ppu_thread& ppu, vm::ptr<CellGcmContextData> context, u32 co
 		const auto old_state = +ppu.state;
 		if (::is_stopped(old_state))
 			continue;
-		atomic_wait::list<3> list;
-		list.template set_raw<0>(&ctrl.get, std::bit_cast<u32>(be_t<u32>{seen}));
-		list.template set<1>(ppu.state, old_state);
-		list.template set_raw<2>(&g_libretro_events, events);
-		list.wait();
+		const retro_waitaddr_t list[3]{{&ctrl.get, std::bit_cast<u32>(be_t<u32>{seen})}, thread_ctrl::waitaddr(ppu.state, old_state), {&g_libretro_events, events}};
+		thread_ctrl::wait_list(list, 3);
 	}
 
 	retro_atomic_fetch_add_seq_cst_int(&rsx::FIFO::g_get_waiters, -1);

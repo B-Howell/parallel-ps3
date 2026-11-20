@@ -124,11 +124,11 @@ public:
 	// Waits for another thread's compile of the same block: its function
 	spu_function_t wait_compiled()
 	{
+		const retro_waitaddr_t w{&compiled_ready, 0};
+
 		while (!get_compiled())
 		{
-			atomic_wait::list<1> list{};
-			list.set_raw<0>(&compiled_ready, 0);
-			list.wait();
+			retro_waitaddr_wait(&w, 1, -1);
 		}
 
 		return get_compiled();

@@ -1030,10 +1030,8 @@ namespace rsx
 			const bs_t<cpu_flag> now = state;
 			if ((now & (cpu_flag::dbg_global_pause + cpu_flag::exit)) == cpu_flag::dbg_global_pause)
 			{
-				atomic_wait::list<2> list;
-				list.template set<0>(state, now);
-				list.template set_raw<1>(&g_libretro_events, events);
-				list.wait();
+				const retro_waitaddr_t list[2]{thread_ctrl::waitaddr(state, now), {&g_libretro_events, events}};
+				thread_ctrl::wait_list(list, 2);
 			}
 			static_cast<void>(old);
 		}
@@ -1151,10 +1149,8 @@ namespace rsx
 				break;
 			}
 
-			atomic_wait::list<2> list;
-			list.template set<0>(state, now);
-			list.template set_raw<1>(&g_libretro_events, events);
-			list.wait();
+			const retro_waitaddr_t list[2]{thread_ctrl::waitaddr(state, now), {&g_libretro_events, events}};
+			thread_ctrl::wait_list(list, 2);
 		}
 
 		performance_counters.state = FIFO::state::running;
