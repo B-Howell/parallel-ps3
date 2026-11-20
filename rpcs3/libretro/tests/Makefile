@@ -1558,6 +1558,8 @@ check: all
 	@if grep -n -A1 "libretro_event();" test_emu_waits.cpp | grep "CHECK(reaches(returns,"; then echo "a libretro_wait_on test fires one event and expects the waiter to have seen it again"; exit 1; else echo "the libretro_wait_on tests fire until the waiter returns"; fi
 	@# The core's libretro-common is RetroArch's (resynced with retro_atomic_thread_fence_acq_rel); a core-only edit to it does not come back
 	@if ! grep -q "retro_atomic_thread_fence_acq_rel" ../libretro-common/include/retro_atomic.h; then echo "libretro-common is behind RetroArch's again (no retro_atomic_thread_fence_acq_rel)"; exit 1; else echo "libretro-common has RetroArch's acq_rel fence"; fi
+	@# cellSync's fences are retro_atomic_thread_fence_acq_rel, not util/atomic.hpp's atomic_fence_*
+	@if grep -n "atomic_fence_" ../../Emu/Cell/Modules/cellSync.cpp; then echo "atomic_fence_* is back in cellSync"; exit 1; else echo "cellSync's fences are retro_atomic's"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

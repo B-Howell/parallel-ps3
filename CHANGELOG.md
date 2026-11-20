@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellSync's fences on retro_atomic.** Not yet run on a game.
+  - **What changed:**
+    - **The seven acquire-release fences** (after a mutex is taken, around the barrier and rwm calls, after a queue's or rwm's fields are written and after an LFQueue is found already set up) are `retro_atomic_thread_fence_acq_rel` in place of util/atomic.hpp's `atomic_fence_acq_rel`. On x86 both are a compiler barrier only (no mfence in cellSync.o); on aarch64 both are one dmb ish.
+  - **Tests:** none of its own; the fences order the guest's memory around the calls, which the tests do not run. The full build and suites pass. A check fails if atomic_fence_* comes back to cellSync.
+
+
 - **libretro-common resynced from RetroArch master.** Not yet run on a game.
   - **What changed:**
     - **42 files** that had fallen behind RetroArch's are RetroArch's again, among them retro_atomic.h (with the new `retro_atomic_thread_fence_acq_rel`), file_stream, the VFS, net_http and the SSL socket, rjson, rmp4, rflac, the image and audio formats, crypto, rthreads and its eventcount, rtime, features_cpu and libretro.h. Six headers they now include come with them: retro_assert.h, retro_horizon.h, formats/rlpcm.h, formats/rmodtracker.h, formats/video_audio_track.h and gfx/shaders/spirv_words.h.
