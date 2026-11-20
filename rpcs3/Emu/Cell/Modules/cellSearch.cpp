@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <retro_atomic.h>
 #include "Emu/Cell/Modules/hle_service.h"
 #include "Emu/VFS.h"
 #include "Emu/IdManager.h"
@@ -64,7 +65,23 @@ struct search_info
 	vm::ptr<CellSearchSystemCallback> func;
 	vm::ptr<void> userData;
 
-	atomic_t<search_state> state = search_state::not_initialized;
+	// Taken from one state to the next by compare-and-swap, from any PPU thread
+	retro_atomic_int_t state{static_cast<int>(search_state::not_initialized)};
+
+	search_state state_now() const { return static_cast<search_state>(retro_atomic_load_acquire_int(&state)); }
+	void set_state(search_state to) { retro_atomic_store_release_int(&state, static_cast<int>(to)); }
+
+	// @to if it was @from; the state it was in, either way
+	search_state cas_state(search_state from, search_state to)
+	{
+		for (;;)
+		{
+			const search_state old = state_now();
+
+			if (old != from || retro_atomic_cas_int(&state, static_cast<int>(from), static_cast<int>(to)))
+				return old;
+		}
+	}
 
 	// The HLE thread's: every call that touches it runs there (hle_call), so it takes no lock
 	search_info() = default;
@@ -411,7 +428,7 @@ error_code cellSearchInitialize(CellSearchMode mode, u32 container, vm::ptr<Cell
 
 	auto& search = g_fxo->get<search_info>();
 
-	if (error_code error = check_search_state(search.state.compare_and_swap(search_state::not_initialized, search_state::initializing), search_state::initializing))
+	if (error_code error = check_search_state(search.cas_state(search_state::not_initialized, search_state::initializing), search_state::initializing))
 	{
 		return error;
 	}
@@ -421,7 +438,7 @@ error_code cellSearchInitialize(CellSearchMode mode, u32 container, vm::ptr<Cell
 
 	sysutil_register_cb([=, &search](ppu_thread& ppu) -> s32
 	{
-		search.state.store(search_state::idle);
+		search.set_state(search_state::idle);
 		func(ppu, CELL_SEARCH_EVENT_INITIALIZE_RESULT, CELL_OK, vm::null, userData);
 		return CELL_OK;
 	});
@@ -435,7 +452,7 @@ error_code cellSearchFinalize()
 
 	auto& search = g_fxo->get<search_info>();
 
-	if (error_code error = check_search_state(search.state.compare_and_swap(search_state::idle, search_state::finalizing), search_state::finalizing))
+	if (error_code error = check_search_state(search.cas_state(search_state::idle, search_state::finalizing), search_state::finalizing))
 	{
 		return error;
 	}
@@ -448,7 +465,7 @@ error_code cellSearchFinalize()
 				search.content_links.clear();
 			});
 		}
-		search.state.store(search_state::not_initialized);
+		search.set_state(search_state::not_initialized);
 		search.func(ppu, CELL_SEARCH_EVENT_FINALIZE_RESULT, CELL_OK, vm::null, search.userData);
 		return CELL_OK;
 	});
@@ -504,7 +521,7 @@ error_code cellSearchStartListSearch(CellSearchListSearchType type, CellSearchSo
 
 	auto& search = g_fxo->get<search_info>();
 
-	if (error_code error = check_search_state(search.state.compare_and_swap(search_state::idle, search_state::in_progress), search_state::in_progress))
+	if (error_code error = check_search_state(search.cas_state(search_state::idle, search_state::in_progress), search_state::in_progress))
 	{
 		return error;
 	}
@@ -686,7 +703,7 @@ error_code cellSearchStartListSearch(CellSearchListSearchType type, CellSearchSo
 		searchInFolder(fmt::format("/dev_hdd0/%s", media_dir));
 		resultParam->resultNum = ::narrow<s32>(curr_search->content_ids.size());
 
-		search.state.store(search_state::idle);
+		search.set_state(search_state::idle);
 		search.func(ppu, CELL_SEARCH_EVENT_LISTSEARCH_RESULT, CELL_OK, vm::cast(resultParam.addr()), search.userData);
 		return CELL_OK;
 	});
@@ -734,7 +751,7 @@ error_code cellSearchStartContentSearchInList(vm::cptr<CellSearchContentId> list
 
 	auto& search = g_fxo->get<search_info>();
 
-	if (error_code error = check_search_state(search.state.compare_and_swap(search_state::idle, search_state::in_progress), search_state::in_progress))
+	if (error_code error = check_search_state(search.cas_state(search_state::idle, search_state::in_progress), search_state::in_progress))
 	{
 		return error;
 	}
@@ -915,7 +932,7 @@ error_code cellSearchStartContentSearchInList(vm::cptr<CellSearchContentId> list
 		searchInFolder(list_path);
 		resultParam->resultNum = ::narrow<s32>(curr_search->content_ids.size());
 
-		search.state.store(search_state::idle);
+		search.set_state(search_state::idle);
 		search.func(ppu, CELL_SEARCH_EVENT_CONTENTSEARCH_INLIST_RESULT, CELL_OK, vm::cast(resultParam.addr()), search.userData);
 		return CELL_OK;
 	});
@@ -974,7 +991,7 @@ error_code cellSearchStartContentSearch(CellSearchContentSearchType type, CellSe
 
 	auto& search = g_fxo->get<search_info>();
 
-	if (error_code error = check_search_state(search.state.compare_and_swap(search_state::idle, search_state::in_progress), search_state::in_progress))
+	if (error_code error = check_search_state(search.cas_state(search_state::idle, search_state::in_progress), search_state::in_progress))
 	{
 		return error;
 	}
@@ -1158,7 +1175,7 @@ error_code cellSearchStartContentSearch(CellSearchContentSearchType type, CellSe
 		searchInFolder(fmt::format("/dev_hdd0/%s", media_dir), "");
 		resultParam->resultNum = ::narrow<s32>(curr_search->content_ids.size());
 
-		search.state.store(search_state::idle);
+		search.set_state(search_state::idle);
 		search.func(ppu, CELL_SEARCH_EVENT_CONTENTSEARCH_RESULT, CELL_OK, vm::cast(resultParam.addr()), search.userData);
 		return CELL_OK;
 	});
@@ -1201,7 +1218,7 @@ error_code cellSearchStartSceneSearchInVideo(vm::cptr<CellSearchContentId> video
 
 	auto& search = g_fxo->get<search_info>();
 
-	if (error_code error = check_search_state(search.state.compare_and_swap(search_state::idle, search_state::in_progress), search_state::in_progress))
+	if (error_code error = check_search_state(search.cas_state(search_state::idle, search_state::in_progress), search_state::in_progress))
 	{
 		return error;
 	}
@@ -1228,7 +1245,7 @@ error_code cellSearchStartSceneSearchInVideo(vm::cptr<CellSearchContentId> video
 		resultParam->searchId = id;
 		resultParam->resultNum = 0; // TODO
 
-		search.state.store(search_state::idle);
+		search.set_state(search_state::idle);
 		search.func(ppu, CELL_SEARCH_EVENT_SCENESEARCH_INVIDEO_RESULT, CELL_OK, vm::cast(resultParam.addr()), search.userData);
 		return CELL_OK;
 	});
@@ -1308,7 +1325,7 @@ error_code cellSearchStartSceneSearch(CellSearchSceneSearchType searchType, vm::
 
 	auto& search = g_fxo->get<search_info>();
 
-	if (error_code error = check_search_state(search.state.compare_and_swap(search_state::idle, search_state::in_progress), search_state::in_progress))
+	if (error_code error = check_search_state(search.cas_state(search_state::idle, search_state::in_progress), search_state::in_progress))
 	{
 		return error;
 	}
@@ -1321,7 +1338,7 @@ error_code cellSearchStartSceneSearch(CellSearchSceneSearchType searchType, vm::
 		resultParam->searchId = id;
 		resultParam->resultNum = 0; // TODO
 
-		search.state.store(search_state::idle);
+		search.set_state(search_state::idle);
 		search.func(ppu, CELL_SEARCH_EVENT_SCENESEARCH_RESULT, CELL_OK, vm::cast(resultParam.addr()), search.userData);
 		return CELL_OK;
 	});
@@ -1362,7 +1379,7 @@ error_code cellSearchGetContentInfoByOffset(CellSearchId searchId, s32 offset, v
 		return CELL_SEARCH_ERROR_PARAM;
 	}
 
-	if (error_code error = check_search_state(g_fxo->get<search_info>().state.load(), search_state::in_progress))
+	if (error_code error = check_search_state(g_fxo->get<search_info>().state_now(), search_state::in_progress))
 	{
 		return error;
 	}
@@ -1435,7 +1452,7 @@ error_code cellSearchGetContentInfoByContentId(vm::cptr<CellSearchContentId> con
 		return CELL_SEARCH_ERROR_PARAM;
 	}
 
-	if (error_code error = check_search_state(g_fxo->get<search_info>().state.load(), search_state::in_progress))
+	if (error_code error = check_search_state(g_fxo->get<search_info>().state_now(), search_state::in_progress))
 	{
 		return error;
 	}
@@ -1491,7 +1508,7 @@ error_code cellSearchGetOffsetByContentId(CellSearchId searchId, vm::cptr<CellSe
 		*outOffset = -1;
 	}
 
-	if (error_code error = check_search_state(g_fxo->get<search_info>().state.load(), search_state::in_progress))
+	if (error_code error = check_search_state(g_fxo->get<search_info>().state_now(), search_state::in_progress))
 	{
 		return error;
 	}
@@ -1558,7 +1575,7 @@ error_code cellSearchGetContentIdByOffset(CellSearchId searchId, s32 offset, vm:
 		return CELL_SEARCH_ERROR_PARAM;
 	}
 
-	if (error_code error = check_search_state(g_fxo->get<search_info>().state.load(), search_state::in_progress))
+	if (error_code error = check_search_state(g_fxo->get<search_info>().state_now(), search_state::in_progress))
 	{
 		return error;
 	}
@@ -1600,7 +1617,7 @@ error_code cellSearchGetContentInfoGameComment(vm::cptr<CellSearchContentId> con
 	}
 
 	// TODO: find out if this check is correct
-	if (error_code error = check_search_state(g_fxo->get<search_info>().state.load(), search_state::in_progress))
+	if (error_code error = check_search_state(g_fxo->get<search_info>().state_now(), search_state::in_progress))
 	{
 		return error;
 	}
@@ -1651,7 +1668,7 @@ error_code cellSearchGetMusicSelectionContext(CellSearchId searchId, vm::cptr<Ce
 	auto& search = g_fxo->get<search_info>();
 
 	// TODO: find out if this check is correct
-	if (error_code error = check_search_state(search.state.load(), search_state::in_progress))
+	if (error_code error = check_search_state(search.state_now(), search_state::in_progress))
 	{
 		return error;
 	}
@@ -1809,7 +1826,7 @@ error_code cellSearchGetMusicSelectionContextOfSingleTrack(vm::cptr<CellSearchCo
 	auto& search = g_fxo->get<search_info>();
 
 	// TODO: find out if this check is correct
-	if (error_code error = check_search_state(search.state.load(), search_state::in_progress))
+	if (error_code error = check_search_state(search.state_now(), search_state::in_progress))
 	{
 		return error;
 	}
@@ -1865,7 +1882,7 @@ error_code cellSearchGetContentInfoPath(vm::cptr<CellSearchContentId> contentId,
 		return CELL_SEARCH_ERROR_PARAM;
 	}
 
-	if (error_code error = check_search_state(g_fxo->get<search_info>().state.load(), search_state::in_progress))
+	if (error_code error = check_search_state(g_fxo->get<search_info>().state_now(), search_state::in_progress))
 	{
 		return error;
 	}
@@ -1904,7 +1921,7 @@ error_code cellSearchGetContentInfoPathMovieThumb(vm::cptr<CellSearchContentId> 
 	}
 
 	// TODO: find out if this check is correct
-	if (error_code error = check_search_state(g_fxo->get<search_info>().state.load(), search_state::in_progress))
+	if (error_code error = check_search_state(g_fxo->get<search_info>().state_now(), search_state::in_progress))
 	{
 		return error;
 	}
@@ -1940,7 +1957,7 @@ error_code cellSearchPrepareFile(vm::cptr<char> path)
 
 	auto& search = g_fxo->get<search_info>();
 
-	if (error_code error = check_search_state(search.state.load(), search_state::in_progress))
+	if (error_code error = check_search_state(search.state_now(), search_state::in_progress))
 	{
 		return error;
 	}
@@ -1973,7 +1990,7 @@ error_code cellSearchGetContentInfoDeveloperData(vm::cptr<CellSearchContentId> c
 	}
 
 	// TODO: find out if this check is correct
-	if (error_code error = check_search_state(g_fxo->get<search_info>().state.load(), search_state::in_progress))
+	if (error_code error = check_search_state(g_fxo->get<search_info>().state_now(), search_state::in_progress))
 	{
 		return error;
 	}
@@ -2017,7 +2034,7 @@ error_code cellSearchGetContentInfoSharable(vm::cptr<CellSearchContentId> conten
 	}
 
 	// TODO: find out if this check is correct
-	if (error_code error = check_search_state(g_fxo->get<search_info>().state.load(), search_state::in_progress))
+	if (error_code error = check_search_state(g_fxo->get<search_info>().state_now(), search_state::in_progress))
 	{
 		return error;
 	}
@@ -2053,7 +2070,7 @@ error_code cellSearchCancel(CellSearchId searchId)
 		return CELL_SEARCH_ERROR_INVALID_SEARCHID;
 	}
 
-	if (error_code error = check_search_state(g_fxo->get<search_info>().state.load(), search_state::canceling))
+	if (error_code error = check_search_state(g_fxo->get<search_info>().state_now(), search_state::canceling))
 	{
 		return error;
 	}
@@ -2072,7 +2089,7 @@ error_code cellSearchEnd(CellSearchId searchId)
 		return CELL_SEARCH_ERROR_INVALID_SEARCHID;
 	}
 
-	if (error_code error = check_search_state(g_fxo->get<search_info>().state.load(), search_state::finalizing))
+	if (error_code error = check_search_state(g_fxo->get<search_info>().state_now(), search_state::finalizing))
 	{
 		return error;
 	}
