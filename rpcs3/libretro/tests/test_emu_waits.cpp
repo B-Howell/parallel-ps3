@@ -306,9 +306,17 @@ int main()
 		retro_atomic_fetch_add_int(&word, 1);
 		retro_waitaddr_notify_all(&word);
 		CHECK(reaches(returns, idle + 1)); // the word moved
+		// A change of state, or a retro_run: fired until it returns, as one
+		// fired before the waiter is back in its wait is not one it saw
 		const int moved = returns;
-		libretro_event();
-		CHECK(reaches(returns, moved + 1)); // a change of state, or a retro_run
+		bool woke = false;
+		for (int i = 0; i < 200000 && !woke; i++)
+		{
+			libretro_event();
+			std::this_thread::yield();
+			woke = returns > moved;
+		}
+		CHECK(woke);
 		stop = true;
 		libretro_event();
 		waiter.join();
@@ -692,9 +700,18 @@ int main()
 		retro_atomic_store_release_int(&word, 1);
 		retro_waitaddr_notify_all(&word);
 		CHECK(reaches(returns, 1));
+		// A retro_run wakes it. The waiter takes the event count as it goes
+		// back into its wait, so one fired before that is not one it saw:
+		// fire until it returns (a wait that only the word woke never would)
 		const int before = returns;
-		libretro_event();
-		CHECK(reaches(returns, before + 1));
+		bool woke = false;
+		for (int i = 0; i < 200000 && !woke; i++)
+		{
+			libretro_event();
+			std::this_thread::yield();
+			woke = returns > before;
+		}
+		CHECK(woke);
 		stop = true;
 		libretro_event();
 		waiter.join();

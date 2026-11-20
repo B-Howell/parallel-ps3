@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **test_emu_waits: the libretro_wait_on tests no longer race their own waiter.** Test only.
+  - **What changed:**
+    - **The two tests that check a retro_run wakes `libretro_wait_on`** fired one event as soon as the waiter's count moved, and failed now and then: the waiter takes the event count as it goes back into its wait, so an event fired before then is not one it saw, and it slept on. It showed in a full suite run after the libretro-common resync, whose eventcount changes move the timing. They now fire events until the waiter returns, with a bound.
+  - **Tests:** ten runs of test_emu_waits in a row pass. A mutant `libretro_wait_on` that does not wait on the events at all still fails it (the run hangs until it is killed). A check fails if a test goes back to firing one event and expecting it seen.
+
+
 - **The standalone waits on retro_waitaddr, off atomic_wait::list.** Not yet run on a game.
   - **What changed:**
     - **`thread_ctrl::wait_list(list, count, usec)`** waits on a `retro_waitaddr_t` array: untimed, until one of its words is not what it was, through spurious wakes; timed, once. `wait_on_custom` goes through it too.
