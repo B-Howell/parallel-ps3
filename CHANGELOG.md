@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The small TLS areas' map: a bit per area in retro_atomic words, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The map** (`s_tls_map` in sys_ppu_thread_.cpp, one entry per small TLS area, up to about 5,400 of them) was an array of `atomic_t<bool>`, scanned one by one with an exchange each. It is now a bit per area in `retro_atomic_int_t` words: `tls_map_take` finds the lowest clear bit of a word and sets it with a fetch-or, retrying if another thread set it first, so it looks at 32 areas per load. `tls_map_give` clears the bit with a fetch-and and says whether it was set, for the double-free error as before. The map shrinks to an eighth.
+  - **Tests:** test_emu_waits has four threads take all 40 areas of a two-word map (the second word partly used): each is taken once, the rest are refused, the last word's spare bits stay clear, and an area given back is taken again while one given twice is refused. A mutant that lets the last word's spare bits be taken fails it, and so does one whose give always says it was taken. A mutant take that does not check the bit was still clear passed: the four threads seldom meet on one word at once. A check fails if atomic_t comes back to the map.
+
+
 - **cellSearch's state on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The state** (`search_info::state`: not initialized, idle, in progress, initializing, canceling, finalizing) is a `retro_atomic_int_t`. `cas_state` takes it from one state to the next by compare-and-swap and returns the state it found, as atomic_t's compare_and_swap did, so the calls' error codes are unchanged. `set_state` stores and `state_now` reads.

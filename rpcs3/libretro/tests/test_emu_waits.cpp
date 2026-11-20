@@ -33,6 +33,7 @@
 #include "Emu/Cell/Modules/sceNpSns.h"
 #include "Emu/Cell/Modules/cellSsl.h"
 #include "Emu/Cell/Modules/cellResc.h"
+#include "Emu/Cell/Modules/sysPrxForUser.h"
 #include "Emu/NP/net_http_thread.h"
 #include "Emu/Cell/Modules/cellAudio.h"
 #include "Emu/Cell/Modules/cellDmuxPamf.h"
@@ -2292,6 +2293,46 @@ int main()
 		resc.exit();
 		CHECK(!resc.initialized() && resc.claim());
 		std::printf("test_emu_waits: cellResc claimed by one Init, initialized once its config is filled\n");
+	}
+
+	// The small TLS areas' map, a bit per area: four threads take all 40
+	// (two words, the second partly used) with none taken twice, a 41st is
+	// refused, one given back is taken again, and one given twice is refused
+	{
+		constexpr u32 count = 40;
+		retro_atomic_int_t map[2]{};
+		std::atomic<int> got[count]{};
+		std::atomic<int> refused{0};
+		std::thread takers[4];
+		for (auto& t : takers)
+		{
+			t = std::thread([&]
+			{
+				for (;;)
+				{
+					const u32 i = tls_map_take(map, count);
+					if (i == umax)
+					{
+						refused++;
+						return;
+					}
+					if (i < count)
+						got[i]++;
+				}
+			});
+		}
+		for (auto& t : takers)
+			t.join();
+		bool once = true;
+		for (u32 i = 0; i < count; i++)
+			once = once && got[i] == 1;
+		CHECK(once && refused == 4);
+		CHECK(tls_map_take(map, count) == umax);
+		CHECK(static_cast<u32>(retro_atomic_load_acquire_int(&map[1])) == 0xffu);
+		CHECK(tls_map_give(map, 37) && !tls_map_give(map, 37));
+		CHECK(tls_map_take(map, count) == 37 && tls_map_take(map, count) == umax);
+		CHECK(tls_map_give(map, 3) && tls_map_give(map, 0) && tls_map_take(map, count) == 0 && tls_map_take(map, count) == 3);
+		std::printf("test_emu_waits: the TLS map's 40 areas taken once each by four threads, given back and taken again\n");
 	}
 
 	std::printf("test_emu_waits: %s\n", failures ? "FAIL" : "ok");

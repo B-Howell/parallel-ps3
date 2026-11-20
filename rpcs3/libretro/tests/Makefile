@@ -1528,6 +1528,8 @@ check: all
 	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/cellMusic.cpp; then echo "atomic_t is back in cellMusic"; exit 1; else echo "cellMusic is on retro_atomic"; fi
 	@# cellSearch's state is a retro_atomic word taken from state to state by compare-and-swap, not atomic_t
 	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/cellSearch.cpp; then echo "atomic_t is back in cellSearch"; exit 1; else echo "cellSearch is on retro_atomic"; fi
+	@# The small TLS areas' map is a bit per area in retro_atomic words (fetch-or to take, fetch-and to give), not atomic_t bools
+	@if grep -n "atomic_t<" ../../Emu/Cell/Modules/sys_ppu_thread_.cpp; then echo "atomic_t is back in the TLS map"; exit 1; else echo "the TLS map is retro_atomic bits"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

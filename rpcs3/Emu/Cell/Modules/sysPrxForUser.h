@@ -1,5 +1,7 @@
 #pragma once
 
+#include <retro_atomic.h>
+
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/Cell/ErrorCodes.h"
 
@@ -80,3 +82,9 @@ error_code sys_prx_start_module(ppu_thread& ppu, u32 id, u32 args, vm::ptr<void>
 error_code sys_prx_stop_module(ppu_thread& ppu, u32 id, u32 args, vm::ptr<void> argp, vm::ptr<s32> result, u64 flags, vm::ptr<void> pOpt);
 error_code sys_prx_unload_module(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sys_prx_unload_module_option_t> pOpt);
 error_code sys_prx_get_module_info(ppu_thread& ppu, u32 id, u64 flags, vm::ptr<sys_prx_module_info_t> info);
+
+// The small TLS areas' map (sys_ppu_thread_.cpp): a bit per area in
+// retro_atomic words, @count areas. Take: the lowest free area's index,
+// umax when none. Give: false if it was not taken
+u32 tls_map_take(retro_atomic_int_t* map, u32 count);
+bool tls_map_give(retro_atomic_int_t* map, u32 i);

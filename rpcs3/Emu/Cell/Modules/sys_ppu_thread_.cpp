@@ -1,4 +1,6 @@
 #include "stdafx.h"
+#include <retro_atomic.h>
+#include <bit>
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/lv2/sys_ppu_thread.h"
 #include "Emu/Cell/lv2/sys_interrupt.h"
@@ -20,20 +22,51 @@ static u32 s_tls_zero = 0; // TLS zeroed area size (TLS mem size - TLS image siz
 static u32 s_tls_size = 0; // Size of TLS area per thread
 static u32 s_tls_area = 0; // Start of TLS memory area
 static u32 s_tls_max = 0; // Max number of threads
-static std::unique_ptr<atomic_t<bool>[]> s_tls_map; // I'd like to make it std::vector but it won't work
+// A bit per small TLS area, set while a thread has it: taken with a fetch-or
+// of a clear bit, given back with a fetch-and
+static std::unique_ptr<retro_atomic_int_t[]> s_tls_map;
+
+u32 tls_map_take(retro_atomic_int_t* map, u32 count)
+{
+	for (u32 w = 0; w * 32 < count; w++)
+	{
+		// The bits of the word that stand for an area
+		const u32 valid = count - w * 32 >= 32 ? ~0u : (1u << (count - w * 32)) - 1;
+
+		for (u32 used = static_cast<u32>(retro_atomic_load_acquire_int(&map[w]));;)
+		{
+			const u32 free = ~used & valid;
+
+			if (!free)
+				break;
+
+			const u32 bit = free & (0u - free);
+			const u32 old = static_cast<u32>(retro_atomic_fetch_or_int(&map[w], static_cast<int>(bit)));
+
+			if (!(old & bit))
+				return w * 32 + static_cast<u32>(std::countr_zero(bit));
+
+			used = old | bit;
+		}
+	}
+
+	return umax;
+}
+
+bool tls_map_give(retro_atomic_int_t* map, u32 i)
+{
+	const u32 bit = 1u << (i % 32);
+	return (static_cast<u32>(retro_atomic_fetch_and_int(&map[i / 32], static_cast<int>(~bit))) & bit) != 0;
+}
 
 static u32 ppu_alloc_tls()
 {
 	u32 addr = 0;
 
-	for (u32 i = 0; i < s_tls_max; i++)
+	if (const u32 i = tls_map_take(s_tls_map.get(), s_tls_max); i != umax)
 	{
-		if (!s_tls_map[i] && s_tls_map[i].exchange(true) == false)
-		{
-			// Default (small) TLS allocation
-			addr = s_tls_area + i * s_tls_size;
-			break;
-		}
+		// Default (small) TLS allocation
+		addr = s_tls_area + i * s_tls_size;
 	}
 
 	if (!addr)
@@ -60,7 +93,7 @@ static void ppu_free_tls(u32 addr)
 		return;
 	}
 
-	if (s_tls_map[i].exchange(false) == false)
+	if (!tls_map_give(s_tls_map.get(), i))
 	{
 		sysPrxForUser.error("ppu_free_tls(0x%x): deallocation failed", addr);
 		return;
@@ -81,7 +114,7 @@ void sys_initialize_tls(ppu_thread& ppu, u64 main_thread_id, u32 tls_seg_addr, u
 	s_tls_size = tls_mem_size + 0x30; // 0x30 is system area size
 	s_tls_area = vm::alloc(0x40000, vm::main) + 0x30;
 	s_tls_max  = (0x40000 - 0x30) / s_tls_size;
-	s_tls_map  = std::make_unique<atomic_t<bool>[]>(s_tls_max);
+	s_tls_map  = std::make_unique<retro_atomic_int_t[]>((s_tls_max + 31) / 32);
 
 	// Allocate TLS for main thread
 	ppu.gpr[13] = ppu_alloc_tls() + 0x7000 + 0x30;
