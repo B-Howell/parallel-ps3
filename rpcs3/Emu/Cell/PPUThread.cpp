@@ -3611,8 +3611,8 @@ static T ppu_load_acquire_reservation(ppu_thread& ppu, u32 addr)
 		fmt::throw_exception("PPU %s: Unaligned address: 0x%08x", sizeof(T) == 4 ? "LWARX" : "LDARX", addr);
 	}
 
-	// Always load aligned 64-bit value
-	auto& data = vm::_ref<const atomic_be_t<u64>>(addr & -8);
+	// Always load aligned 64-bit value (through guest_atomic.h)
+	u8* const data = vm::_ptr<u8>(addr & -8);
 	const u64 size_off = (sizeof(T) * 8) & 63;
 	const u64 data_off = (addr & 7) * 8;
 
@@ -3687,7 +3687,7 @@ static T ppu_load_acquire_reservation(ppu_thread& ppu, u32 addr)
 		be_t<u64> rdata;
 		std::memcpy(&rdata, &ppu.rdata[addr & 0x78], 8);
 
-		if (rdata == data.load())
+		if (rdata == guest_atomic_load_be64(data))
 		{
 			ppu.rtime = ppu.last_ftime;
 			ppu.raddr = ppu.last_faddr;
@@ -3720,7 +3720,7 @@ static T ppu_load_acquire_reservation(ppu_thread& ppu, u32 addr)
 
 	if (!ppu.use_full_rdata)
 	{
-		rdata = data.load();
+		rdata = guest_atomic_load_be64(data);
 
 		// Store only 64 bits of reservation data
 		std::memcpy(&ppu.rdata[addr & 0x78], &rdata, 8);
@@ -3759,7 +3759,8 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 	// Notify breakpoint handler
 	vm::write<void>(addr, T{0}, &ppu);
 
-	auto& data = const_cast<atomic_be_t<u64>&>(vm::_ref<atomic_be_t<u64>>(addr & -8));
+	// The aligned 64 bits, through guest_atomic.h
+	u8* const data = vm::_ptr<u8>(addr & -8);
 	const auto res = vm::reservation_word(addr);
 	const u64 rtime = ppu.rtime;
 
@@ -3789,7 +3790,7 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 			if (!vm::check_addr(addr, vm::page_writable))
 			{
 				// Access violate
-				data += 0;
+				guest_atomic_fetch_add_be64(data, 0); // a write access, changing nothing
 			}
 
 			ppu.raddr = 0;
@@ -3798,7 +3799,7 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 		}
 	}
 
-	if (old_data != data || rtime != (vm::reservation_load(res) & -128))
+	if (old_data != guest_atomic_load_be64(data) || rtime != (vm::reservation_load(res) & -128))
 	{
 		ppu.raddr = 0;
 		ppu.res_cached = 0;
@@ -3832,7 +3833,7 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 			// Cache line data
 			//auto& cline_data = vm::_ref<spu_rdata_t>(addr);
 
-			data += 0;
+			guest_atomic_fetch_add_be64(data, 0); // a write access, changing nothing
 			auto range_lock = vm::alloc_range_lock();
 			bool success = false;
 			{
@@ -3848,7 +3849,7 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 
 					if (cmp_rdata(ppu.rdata, super_data))
 					{
-						data.release(new_data);
+						guest_atomic_store_be64(data, new_data);
 						vm::reservation_add(res, 64);
 						return true;
 					}
@@ -3892,12 +3893,14 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 			return false;
 		}
 
-		// Store previous value in old_data on failure
-		if (data.compare_exchange(old_data, new_data))
+		if (guest_atomic_cas_be64(data, old_data, new_data))
 		{
 			vm::reservation_add(res, 128 - lock_bits);
 			return true;
 		}
+
+		// Store the value there now in old_data on failure
+		old_data = guest_atomic_load_be64(data);
 
 		const u64 old_rtime = vm::reservation_add(res, 0 - lock_bits);
 

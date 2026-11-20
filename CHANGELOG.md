@@ -4,6 +4,10 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The PPU's reservation loads and conditional stores through guest_atomic.h, off atomic_be_t.** Not yet run on a game.
+  - **What changed:** `lwarx`/`ldarx` load the aligned 64 bits of the reservation through `guest_atomic_load_be64`. `stwcx`/`stdcx` compare, store and compare-and-swap them through guest_atomic.h, and make their write access with a 64-bit add of 0, as atomic_t's `+= 0` did. Where the compare-and-swap fails, the value now there is loaded right after it, where atomic_t's compare-exchange handed back the one it saw; that value only seeds the next attempt's quick check, which compares again.
+  - **Tests:** none run the PPU's reservation instructions; a ppu_thread needs the whole emulator. guest_atomic.h's 64-bit operations are covered by `test_guest_atomic`, and the full build and suites pass. A check fails if atomic_be_t comes back to PPUThread.cpp.
+
 - **The RSX control words and the driver info through guest_atomic.h, off atomic_be_t.** Not yet run on a game.
   - **What changed:**
     - **put, get and ref** (`RsxDmaControl`, and `CellGcmControl`, the game's view of the same words) are plain big-endian words in the game's memory again. The FIFO, the RSX thread, the NV methods, cellGcmSys and sys_rsx read and change them through guest_atomic.h: loads, release stores, exchange where atomic_t's store was relied on to be sequentially consistent (setting the reference), an add for the flip command, and an and for the flag bits of put. The put/get pair is still written as one 64-bit store when a DMA control interrupt moves both.
