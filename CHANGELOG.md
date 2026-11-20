@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellPngDec's decoder pool on retro_atomic, off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The pool's eight slots** (`png_dec_host_pool::slots`, decoders a closed stream gave back) are `retro_atomic_ptr_t`. A slot is still taken with an exchange to null and filled with a compare-and-swap from null, so the pool stays lock-free.
+  - **Tests:** none. The pool is local to cellPngDec.cpp and is used by the open and close calls, which need guest memory; the full build and suites pass. A check fails if atomic_t comes back to cellPngDec.
+
+
 - **cellJpgDec's decoder pool on retro_atomic, off atomic_t.** Not yet run on a game.
   - **What changed:**
     - **The pool's eight slots** (`jpg_dec_host_pool::slots`, decoders a finished decode gave back) are `retro_atomic_ptr_t`. A slot is still taken with an exchange to null and filled with a compare-and-swap from null, so the pool stays lock-free.
