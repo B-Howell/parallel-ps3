@@ -1,9 +1,17 @@
 #pragma once // No BOM and only basic ASCII in this header, or a neko will die
 
+#include <functional>
 #include <memory>
 #include <utility>
-#include "atomic.hpp"
-#include "bless.hpp"
+#include "util/types.hpp"
+#include "util/bless.hpp"
+
+#include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
+
+#ifndef RETRO_ATOMIC_HAS_128
+#error "atomic_ptr needs a 128-bit compare-and-swap (x86-64 or AArch64)"
+#endif
 
 namespace stx
 {
@@ -24,12 +32,29 @@ namespace stx
 
 	struct shared_counter
 	{
-		// Stored destructor
-		atomic_t<void (*)(shared_counter* _this) noexcept> destroy{};
+		// Stored destructor: set before the object is shared, called by
+		// whoever drops the last reference (after the count's acq_rel)
+		void (*destroy)(shared_counter* _this) noexcept{};
 
 		// Reference counter
-		atomic_t<usz> refs{1};
+		retro_atomic_64_t refs{1};
 	};
+
+	// The count of references, and the count after adding or taking some
+	inline usz ref_count(const shared_counter* o) noexcept
+	{
+		return static_cast<usz>(retro_atomic_load_acquire_64(const_cast<retro_atomic_64_t*>(&o->refs)));
+	}
+
+	inline usz ref_add(shared_counter* o, usz n) noexcept
+	{
+		return static_cast<usz>(retro_atomic_fetch_add_64(&o->refs, n)) + n;
+	}
+
+	inline usz ref_sub(shared_counter* o, usz n) noexcept
+	{
+		return static_cast<usz>(retro_atomic_fetch_sub_64(&o->refs, n)) - n;
+	}
 
 	template <usz Size, usz Align>
 	struct align_filler
@@ -149,8 +174,8 @@ namespace stx
 			if (m_ptr) [[likely]]
 			{
 				const auto o = d();
-				ensure(o->refs == 1);
-				o->destroy.load()(o);
+				ensure(ref_count(o) == 1);
+				o->destroy(o);
 				m_ptr = nullptr;
 			}
 		}
@@ -244,7 +269,7 @@ namespace stx
 			}
 		}
 
-		ptr->m_ctr.destroy.raw() = [](shared_counter* _this) noexcept
+		ptr->m_ctr.destroy = [](shared_counter* _this) noexcept
 		{
 			delete reinterpret_cast<shared_data<T>*>(reinterpret_cast<u64>(_this) - offsetof(shared_data<T>, m_ctr));
 		};
@@ -290,7 +315,7 @@ namespace stx
 
 		ptr->m_count = count;
 
-		ptr->m_ctr.destroy.raw() = [](shared_counter* _this) noexcept
+		ptr->m_ctr.destroy = [](shared_counter* _this) noexcept
 		{
 			shared_data<T>* ptr = reinterpret_cast<shared_data<T>*>(reinterpret_cast<u64>(_this) - offsetof(shared_data<T>, m_ctr));
 
@@ -352,7 +377,7 @@ namespace stx
 			: m_ptr(r.m_ptr)
 		{
 			if (m_ptr)
-				d()->refs++;
+				ref_add(d(), 1);
 		}
 
 		// Default constructor or null_ptr constant should be used instead
@@ -367,7 +392,7 @@ namespace stx
 		{
 			m_ptr = r.m_ptr;
 			if (m_ptr)
-				d()->refs++;
+				ref_add(d(), 1);
 		}
 
 		shared_ptr(shared_ptr&& r) noexcept
@@ -437,7 +462,7 @@ namespace stx
 			{
 				const auto o = d();
 
-				if (!--o->refs)
+				if (!ref_sub(o, 1))
 				{
 					o->destroy(o);
 				}
@@ -450,7 +475,7 @@ namespace stx
 		template <typename U> requires PtrSame<T, U>
 		single_ptr<U> try_convert_to_single_ptr() noexcept
 		{
-			if (const auto o = m_ptr ? d() : nullptr; o && o->refs == 1u)
+			if (const auto o = m_ptr ? d() : nullptr; o && ref_count(o) == 1u)
 			{
 				// Convert last reference to single_ptr instance.
 				single_ptr<U> r;
@@ -496,7 +521,7 @@ namespace stx
 		{
 			if (m_ptr)
 			{
-				return d()->refs;
+				return ref_count(d());
 			}
 			else
 			{
@@ -515,7 +540,7 @@ namespace stx
 		{
 			if (m_ptr)
 			{
-				d()->refs++;
+				ref_add(d(), 1);
 			}
 
 			shared_ptr<U> r;
@@ -573,7 +598,7 @@ namespace stx
 		}
 
 		// Random checks which may fail on invalid pointer
-		ensure((r.d()->refs++ - 1) >> 58 == 0);
+		ensure((ref_add(r.d(), 1) - 2) >> 58 == 0);
 		return r;
 	}
 
@@ -589,7 +614,69 @@ namespace stx
 			u32 ref_ctr{};
 		};
 
-		mutable atomic_t<fat_ptr> m_val{fat_ptr{}};
+		// The pointer and its count of borrowed references, changed as one:
+		// lo the pointer, hi is_non_null (the word waited on) and ref_ctr
+		mutable retro_atomic_128_t m_val{};
+
+		static retro_u128_t pack(fat_ptr v) noexcept
+		{
+			return {static_cast<u64>(v.ptr), u64{v.is_non_null} | u64{v.ref_ctr} << 32};
+		}
+
+		static fat_ptr unpack(retro_u128_t v) noexcept
+		{
+			return fat_ptr{static_cast<uptr>(v.lo), static_cast<u32>(v.hi), static_cast<u32>(v.hi >> 32)};
+		}
+
+		// The value of one no other thread sees (being made or destroyed, a
+		// local holding what was swapped out)
+		fat_ptr raw() const noexcept
+		{
+			return unpack(retro_u128_t{m_val.w[0], m_val.w[1]});
+		}
+
+		void set_raw(fat_ptr v) noexcept
+		{
+			const retro_u128_t p = pack(v);
+			retro_atomic_128_init(&m_val, p);
+		}
+
+		// The pointer alone: a plain load
+		uptr ptr_now() const noexcept
+		{
+			return static_cast<uptr>(retro_atomic_load_acquire_128_lo(&m_val));
+		}
+
+		fat_ptr exchange_raw(fat_ptr v) noexcept
+		{
+			return unpack(retro_atomic_exchange_128(&m_val, pack(v)));
+		}
+
+		// Changes the value as @op says, until it sticks: the value before,
+		// and whether op changed it. Starts from the halves read apart (a
+		// torn pair only fails the compare-and-swap); where op leaves the
+		// value alone it decides by the pointer, a whole load of its own.
+		template <typename F>
+		std::pair<fat_ptr, bool> fetch_op(F op) const noexcept
+		{
+			retro_u128_t seen{retro_atomic_load_acquire_128_lo(&m_val), retro_atomic_load_acquire_128_hi(&m_val)};
+
+			while (true)
+			{
+				fat_ptr val = unpack(seen);
+				const fat_ptr before = val;
+
+				if (!op(val))
+				{
+					return {before, false};
+				}
+
+				if (retro_atomic_cas_seen_128(&m_val, &seen, pack(val)))
+				{
+					return {before, true};
+				}
+			}
+		}
 
 		static shared_counter* d(fat_ptr val) noexcept
 		{
@@ -598,7 +685,7 @@ namespace stx
 
 		shared_counter* d() const noexcept
 		{
-			return d(m_val);
+			return std::launder(reinterpret_cast<shared_counter*>(ptr_now() - sizeof(shared_counter)));
 		}
 
 		static fat_ptr to_val(const volatile std::remove_extent_t<T>* ptr) noexcept
@@ -640,6 +727,10 @@ namespace stx
 
 		constexpr atomic_ptr() noexcept = default;
 
+		atomic_ptr(const atomic_ptr&) = delete;
+
+		atomic_ptr& operator=(const atomic_ptr&) = delete;
+
 		// Optimized value construct
 		template <typename... Args> requires (true
 			&& sizeof...(Args) != 0
@@ -648,8 +739,8 @@ namespace stx
 		explicit atomic_ptr(Args&&... args) noexcept
 		{
 			shared_type r = make_single<T>(std::forward<Args>(args)...);
-			m_val.raw() = to_val(std::exchange(r.m_ptr, nullptr));
-			d()->refs.raw() += c_ref_mask;
+			set_raw(to_val(std::exchange(r.m_ptr, nullptr)));
+			ref_add(d(), c_ref_mask);
 		}
 
 		template <typename U> requires same_ptr_implicit_v<T, U>
@@ -658,8 +749,8 @@ namespace stx
 			// Obtain a ref + as many refs as an atomic_ptr can additionally reference
 			if (fat_ptr rval = to_val(r.m_ptr); rval.ptr != 0)
 			{
-				m_val.raw() = rval;
-				d(rval)->refs += c_ref_mask + 1;
+				set_raw(rval);
+				ref_add(d(rval), c_ref_mask + 1);
 			}
 		}
 
@@ -668,8 +759,8 @@ namespace stx
 		{
 			if (fat_ptr rval = to_val(r.m_ptr); rval.ptr != 0)
 			{
-				m_val.raw() = rval;
-				d(rval)->refs += c_ref_mask;
+				set_raw(rval);
+				ref_add(d(rval), c_ref_mask);
 			}
 
 			r.m_ptr = nullptr;
@@ -680,8 +771,8 @@ namespace stx
 		{
 			if (fat_ptr rval = to_val(r.m_ptr); rval.ptr != 0)
 			{
-				m_val.raw() = rval;
-				d(rval)->refs += c_ref_mask;
+				set_raw(rval);
+				ref_add(d(rval), c_ref_mask);
 			}
 
 			r.m_ptr = nullptr;
@@ -689,15 +780,15 @@ namespace stx
 
 		~atomic_ptr() noexcept
 		{
-			const fat_ptr v = m_val.raw();
+			const fat_ptr v = raw();
 
 			if (v.ptr)
 			{
 				const auto o = d(v);
 
-				if (!o->refs.sub_fetch(c_ref_mask + 1 - (v.ref_ctr & c_ref_mask)))
+				if (!ref_sub(o, c_ref_mask + 1 - (v.ref_ctr & c_ref_mask)))
 				{
-					o->destroy.load()(o);
+					o->destroy(o);
 				}
 			}
 		}
@@ -706,10 +797,10 @@ namespace stx
 		atomic_ptr& operator=(std::remove_cv_t<T> value) noexcept requires (!is_stx_pointer<T>)
 		{
 			shared_type r = make_single<T>(std::move(value));
-			r.d()->refs.raw() += c_ref_mask;
+			ref_add(r.d(), c_ref_mask);
 
 			atomic_ptr old;
-			old.m_val.raw() = m_val.exchange(to_val(std::exchange(r.m_ptr, nullptr)));
+			old.set_raw(exchange_raw(to_val(std::exchange(r.m_ptr, nullptr))));
 			return *this;
 		}
 
@@ -744,7 +835,7 @@ namespace stx
 			shared_type r;
 
 			// Add reference
-			const auto [prev, did_ref] = m_val.fetch_op([](fat_ptr& val)
+			const auto [prev, did_ref] = fetch_op([](fat_ptr& val)
 			{
 				if (val.ptr)
 				{
@@ -763,10 +854,10 @@ namespace stx
 
 			// Set referenced pointer
 			r.m_ptr = std::launder(ptr_to(prev));
-			r.d()->refs++;
+			ref_add(r.d(), 1);
 
 			// Dereference if still the same pointer
-			const auto [_, did_deref] = m_val.fetch_op([prev = prev](fat_ptr& val)
+			const auto [_, did_deref] = fetch_op([prev = prev](fat_ptr& val)
 			{
 				if (val.ptr == prev.ptr)
 				{
@@ -780,7 +871,7 @@ namespace stx
 			if (!did_deref)
 			{
 				// Otherwise fix ref count (atomic_ptr has been overwritten)
-				r.d()->refs--;
+				ref_sub(r.d(), 1);
 			}
 
 			return r;
@@ -793,7 +884,7 @@ namespace stx
 			shared_type r;
 
 			// Add reference
-			const auto [prev, did_ref] = m_val.fetch_op([](fat_ptr& val)
+			const auto [prev, did_ref] = fetch_op([](fat_ptr& val)
 			{
 				if (val.ptr)
 				{
@@ -834,7 +925,7 @@ namespace stx
 			}
 
 			// Dereference if still the same pointer
-			const auto [_, did_deref] = m_val.fetch_op([prev = prev](fat_ptr& val)
+			const auto [_, did_deref] = fetch_op([prev = prev](fat_ptr& val)
 			{
 				if (val.ptr == prev.ptr)
 				{
@@ -870,10 +961,10 @@ namespace stx
 		void store(Args&&... args) noexcept
 		{
 			shared_type r = make_single<T>(std::forward<Args>(args)...);
-			r.d()->refs.raw() += c_ref_mask;
+			ref_add(r.d(), c_ref_mask);
 
 			atomic_ptr old;
-			old.m_val.raw() = m_val.exchange(to_val(std::exchange(r.m_ptr, nullptr)));
+			old.set_raw(exchange_raw(to_val(std::exchange(r.m_ptr, nullptr))));
 		}
 
 		void store(shared_type value) noexcept
@@ -881,11 +972,11 @@ namespace stx
 			if (value.m_ptr)
 			{
 				// Consume value and add refs
-				value.d()->refs += c_ref_mask;
+				ref_add(value.d(), c_ref_mask);
 			}
 
 			atomic_ptr old;
-			old.m_val.raw() = m_val.exchange(to_val(std::exchange(value.m_ptr, nullptr)));
+			old.set_raw(exchange_raw(to_val(std::exchange(value.m_ptr, nullptr))));
 		}
 
 		template <typename... Args> requires (true
@@ -895,13 +986,14 @@ namespace stx
 		[[nodiscard]] shared_type exchange(Args&&... args) noexcept
 		{
 			shared_type r = make_single<T>(std::forward<Args>(args)...);
-			r.d()->refs.raw() += c_ref_mask;
+			ref_add(r.d(), c_ref_mask);
 
 			atomic_ptr old;
-			old.m_val.raw() = m_val.exchange(to_val(r.m_ptr));
-			old.m_val.raw().ref_ctr += 1;
+			fat_ptr was = exchange_raw(to_val(r.m_ptr));
+			was.ref_ctr += 1;
+			old.set_raw(was);
 
-			r.m_ptr = std::launder(ptr_to(old.m_val));
+			r.m_ptr = std::launder(ptr_to(was));
 			return r;
 		}
 
@@ -910,14 +1002,15 @@ namespace stx
 			if (value.m_ptr)
 			{
 				// Consume value and add refs
-				value.d()->refs += c_ref_mask;
+				ref_add(value.d(), c_ref_mask);
 			}
 
 			atomic_ptr old;
-			old.m_val.raw() = m_val.exchange(to_val(value.m_ptr));
-			old.m_val.raw().ref_ctr += 1;
+			fat_ptr was = exchange_raw(to_val(value.m_ptr));
+			was.ref_ctr += 1;
+			old.set_raw(was);
 
-			value.m_ptr = std::launder(ptr_to(old.m_val));
+			value.m_ptr = std::launder(ptr_to(was));
 			return value;
 		}
 
@@ -929,24 +1022,28 @@ namespace stx
 
 			if (exch.m_ptr)
 			{
-				exch.d()->refs += c_ref_mask;
+				ref_add(exch.d(), c_ref_mask);
 			}
 
 			atomic_ptr old;
 
-			const fat_ptr _val = m_val.fetch_op([&](fat_ptr& val)
+			const fat_ptr _val = fetch_op([&](fat_ptr& val)
 			{
 				if (val.ptr == _old)
 				{
 					// Set new value
 					val = to_val(_new);
+					return true;
 				}
 				else if (val.ptr != 0)
 				{
 					// Reference previous value
 					val.ref_ctr++;
+					return true;
 				}
-			});
+
+				return false;
+			}).first;
 
 			if (_val.ptr == _old)
 			{
@@ -957,16 +1054,17 @@ namespace stx
 				}
 
 				// Cleanup
-				old.m_val.raw() = _val;
+				old.set_raw(_val);
 				return true;
 			}
 
 			atomic_ptr old_exch;
-			old_exch.m_val.raw() = to_val(std::exchange(exch.m_ptr, nullptr));
+			old_exch.set_raw(to_val(std::exchange(exch.m_ptr, nullptr)));
 
 			// Set to reset old cmp_and_old value
-			old.m_val.raw() = to_val(cmp_and_old.m_ptr);
-			old.m_val.raw().ref_ctr |= c_ref_mask;
+			fat_ptr reset = to_val(cmp_and_old.m_ptr);
+			reset.ref_ctr |= c_ref_mask;
+			old.set_raw(reset);
 
 			if (!_val.ptr)
 			{
@@ -975,10 +1073,10 @@ namespace stx
 
 			// Set referenced pointer
 			cmp_and_old.m_ptr = std::launder(ptr_to(_val));
-			cmp_and_old.d()->refs++;
+			ref_add(cmp_and_old.d(), 1);
 
 			// Dereference if still the same pointer
-			const auto [_, did_deref] = m_val.fetch_op([_val](fat_ptr& val)
+			const auto [_, did_deref] = fetch_op([_val](fat_ptr& val)
 			{
 				if (val.ptr == _val.ptr)
 				{
@@ -992,7 +1090,7 @@ namespace stx
 			if (!did_deref)
 			{
 				// Otherwise fix ref count (atomic_ptr has been overwritten)
-				cmp_and_old.d()->refs--;
+				ref_sub(cmp_and_old.d(), 1);
 			}
 
 			return false;
@@ -1016,12 +1114,12 @@ namespace stx
 
 			if (exch.m_ptr)
 			{
-				exch.d()->refs += c_ref_mask;
+				ref_add(exch.d(), c_ref_mask);
 			}
 
 			atomic_ptr old;
 
-			const auto [_val, ok] = m_val.fetch_op([&](fat_ptr& val)
+			const auto [_val, ok] = fetch_op([&](fat_ptr& val)
 			{
 				if (val.ptr == _old)
 				{
@@ -1037,12 +1135,12 @@ namespace stx
 			{
 				// Success (exch is consumed, cmp_and_old is unchanged)
 				exch.m_ptr = nullptr;
-				old.m_val.raw() = _val;
+				old.set_raw(_val);
 				return true;
 			}
 
 			// Failure (return references)
-			old.m_val.raw() = to_val(std::exchange(exch.m_ptr, nullptr));
+			old.set_raw(to_val(std::exchange(exch.m_ptr, nullptr)));
 			return false;
 		}
 
@@ -1068,7 +1166,7 @@ namespace stx
 			if (exch.m_ptr) [[likely]]
 			{
 				// Add missing references first
-				exch.d()->refs += c_ref_mask;
+				ref_add(exch.d(), c_ref_mask);
 			}
 
 			if (next.m_ptr) [[unlikely]]
@@ -1078,14 +1176,16 @@ namespace stx
 			}
 
 			atomic_ptr old;
-			old.m_val.raw() = m_val.load();
+			retro_u128_t seen{retro_atomic_load_acquire_128_lo(&m_val), retro_atomic_load_acquire_128_hi(&m_val)};
 
 			do
 			{
 				// Update old head with current value
-				next.m_ptr = std::launder(ptr_to(old.m_val.raw()));
+				next.m_ptr = std::launder(ptr_to(unpack(seen)));
 
-			} while (!m_val.compare_exchange(old.m_val.raw(), to_val(exch.m_ptr)));
+			} while (!retro_atomic_cas_seen_128(&m_val, &seen, pack(to_val(exch.m_ptr))));
+
+			fat_ptr was = unpack(seen);
 
 			// This argument is consumed (moved from)
 			exch.m_ptr = nullptr;
@@ -1093,14 +1193,16 @@ namespace stx
 			if (next.m_ptr)
 			{
 				// Compensation for `next` assignment
-				old.m_val.raw().ref_ctr += 1;
+				was.ref_ctr += 1;
 			}
+
+			old.set_raw(was);
 		}
 
 		// Simple atomic load is much more effective than load(), but it's a non-owning reference
 		T* observe() const noexcept
 		{
-			return std::launder(ptr_to(m_val));
+			return std::launder(reinterpret_cast<T*>(ptr_now()));
 		}
 
 		explicit constexpr operator bool() const noexcept
@@ -1120,24 +1222,28 @@ namespace stx
 			return static_cast<volatile const void*>(observe()) == r.get();
 		}
 
-		atomic_t<u32> &get_wait_atomic()
+		// The word waiters sleep on, 0 while null: is_non_null, the low half
+		// of hi
+		const void* wait_word() const noexcept
 		{
-			return *utils::bless<atomic_t<u32>>(&m_val.raw().is_non_null);
+			return reinterpret_cast<const char*>(&m_val) + 8;
 		}
 
-		void wait(std::nullptr_t, atomic_wait_timeout timeout = atomic_wait_timeout::inf)
+		// Sleeps while null (may return early: callers loop)
+		void wait(std::nullptr_t) const noexcept
 		{
-			get_wait_atomic().wait(0, timeout);
+			const retro_waitaddr_t w{wait_word(), 0};
+			retro_waitaddr_wait(&w, 1, -1);
 		}
 
-		void notify_one()
+		void notify_one() const noexcept
 		{
-			get_wait_atomic().notify_one();
+			retro_waitaddr_notify_one(wait_word());
 		}
 
-		void notify_all()
+		void notify_all() const noexcept
 		{
-			get_wait_atomic().notify_all();
+			retro_waitaddr_notify_all(wait_word());
 		}
 	};
 

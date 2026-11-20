@@ -1454,6 +1454,8 @@ check: all
 	@if grep -nE "std::(map|unordered_map|set|function|stringstream|regex)|include <(map|unordered_map|set|functional|sstream|regex)>" ../../../Utilities/bin_patch.h ../../../Utilities/bin_patch.cpp; then echo "the STL is back in the patch engine"; exit 1; else echo "the patch engine is C89 (patch_db.c)"; fi
 	@# the Patch Manager's options are C89 (libretro_patch_options.c): no maps, sets, vectors or std::function in libretro_patch_manager
 	@if grep -nE "std::(map|set|vector|function)|include <(map|set|vector|functional)>" ../libretro_patch_manager.h ../libretro_patch_manager.cpp; then echo "the STL is back in the Patch Manager"; exit 1; else echo "the Patch Manager's options are C89 (libretro_patch_options.c)"; fi
+	@# shared_ptr.hpp is on retro_atomic: the counts and atomic_ptr's word are no atomic_t, and it does not include atomic.hpp
+	@if grep -nE "atomic_t<|atomic[.]hpp" ../../util/shared_ptr.hpp; then echo "atomic_t is back in shared_ptr.hpp"; exit 1; else echo "shared_ptr.hpp is on retro_atomic"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

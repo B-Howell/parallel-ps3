@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Shared pointers on retro_atomic (util/shared_ptr.hpp), off atomic_t.** Not yet run on a game.
+  - **What changed:**
+    - **The reference count** of `single_ptr`, `shared_ptr` and `atomic_ptr` objects is a `retro_atomic_64_t`, counted with acq_rel adds and subtracts. The destructor pointer next to it is a plain pointer: it is set before the object is shared and called only by whoever drops the last reference, after the count's acq_rel.
+    - **atomic_ptr's word** (the pointer with the count of references it lends out) is a `retro_atomic_128_t`, changed with compare-and-swap and exchange as before. The loops start from the two halves read apart instead of a whole 16-byte load; a torn pair only fails the compare-and-swap. Where nothing changes, the decision rests on the pointer half, which is read whole. `observe()` and `operator bool` read the pointer half alone. `load()` is 53 instructions instead of 63 and `observe()` 3 instead of 4 (x86-64, -O3); `store()` is 35 instead of 31.
+    - **Waiting:** `atomic_ptr::wait(nullptr)` and the notifies park on the `is_non_null` word with retro_waitaddr. The wait list in atomic.hpp names that word through `wait_word()`. The wait takes no timeout now; no caller passed one.
+    - atomic_ptr is explicitly not copyable, as it was when its word was an atomic_t.
+  - **Tests:** test_emu_waits loads an atomic_ptr from two threads while a third replaces it 100000 times. Every reader gets a live object, and every object is freed exactly once. It also checks compare-and-swap (failing and succeeding), exchange, push_head, the use counts, and a waiter asleep on the null pointer woken by a store. A mutant that frees without counting the lent references, and one that writes the word without a compare-and-swap, each crash it. A check fails if atomic_t or atomic.hpp come back to shared_ptr.hpp.
+
 - **The Patch Manager's options are C89 (rpcs3/libretro/libretro_patch_options.c), off the STL.** Not yet run on a game.
   - **What changed:**
     - **The options:** which of a game's patches are listed (one per description, in the order of the descriptions; "All titles" patches only for the games named for them), their keys, sublabels and value choices, and the core's text patches are built in C89 from the patch engine's arrays. They used to be built in maps of strings and vectors. The strings live in blocks of the module's own until the next game; the definitions are one array.

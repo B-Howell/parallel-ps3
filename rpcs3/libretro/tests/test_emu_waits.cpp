@@ -1881,6 +1881,92 @@ int main()
 		std::printf("test_emu_waits: a lock-free queue: 200000 items from two producers, none lost, in order; a bunch keeps all\n");
 	}
 
+	// Shared pointers on retro_atomic: an atomic_ptr loaded by two readers
+	// while a writer replaces it 100000 times, every object freed exactly
+	// once and none while a reader holds it; compare-and-swap, exchange,
+	// push_head; a waiter on the null pointer woken by a store
+	{
+		struct counted
+		{
+			u32 value;
+			std::atomic<int>* alive;
+
+			counted(u32 v, std::atomic<int>* a) : value(v), alive(a)
+			{
+				(*alive)++;
+			}
+
+			~counted()
+			{
+				value = 0xdeadbeef;
+				(*alive)--;
+			}
+		};
+
+		std::atomic<int> alive{0};
+		{
+			atomic_ptr<counted> slot(make_single<counted>(1, &alive));
+			std::atomic<int> stop{0}, bad{0};
+			auto reader = [&]
+			{
+				while (!stop)
+				{
+					const shared_ptr<counted> p = slot.load();
+					if (!p || p->value == 0xdeadbeef)
+						bad++;
+				}
+			};
+			std::thread r1(reader), r2(reader);
+			for (u32 i = 2; i < 100002; i++)
+				slot.store(make_single<counted>(i, &alive));
+			stop = 1;
+			r1.join();
+			r2.join();
+			CHECK(bad == 0 && alive == 1 && slot.load()->value == 100001);
+
+			shared_ptr<counted> cur = slot.load();
+			// Its own and the atomic_ptr's: one and as many as it lends
+			CHECK(cur.use_count() == 2 + stx::c_ref_mask);
+			CHECK(!slot.compare_and_swap_test(shared_ptr<counted>{}, make_single<counted>(5, &alive)));
+			CHECK(alive == 1);
+			CHECK(slot.compare_and_swap_test(cur, make_single<counted>(6, &alive)));
+			CHECK(slot.load()->value == 6 && cur.use_count() == 1);
+			cur.reset();
+			CHECK(alive == 1);
+
+			shared_ptr<counted> was = slot.exchange(make_single<counted>(7, &alive));
+			CHECK(was && was->value == 6 && alive == 2);
+			was.reset();
+			CHECK(alive == 1);
+
+			shared_ptr<counted> next;
+			slot.push_head(next, make_single<counted>(8, &alive));
+			CHECK(next && next->value == 7 && slot.load()->value == 8 && alive == 2);
+			next.reset();
+			CHECK(alive == 1);
+
+			slot.reset();
+			CHECK(alive == 0 && !slot);
+			std::atomic<int> waiting{0};
+			u32 seen = 0;
+			std::thread w([&]
+			{
+				waiting = 1;
+				while (!slot)
+					slot.wait(nullptr);
+				seen = slot.load()->value;
+			});
+			while (!waiting) {}
+			std::this_thread::sleep_for(std::chrono::milliseconds(20));
+			slot.store(make_single<counted>(9, &alive));
+			slot.notify_all();
+			w.join();
+			CHECK(seen == 9);
+		}
+		CHECK(alive == 0);
+		std::printf("test_emu_waits: atomic_ptr: 100000 replacements under two readers, each object freed once; a waiter woken\n");
+	}
+
 	// A function looked up once, on first use (libc, loaded already), a
 	// missing one false; shared memory mapped into its own storage once
 	// though two threads ask at once, and unmapped
