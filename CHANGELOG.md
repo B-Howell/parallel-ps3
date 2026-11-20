@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **sceNpTus's unused manager removed (its atomic_t flag with it).** Not yet run on a game.
+  - **What changed:**
+    - **`sce_np_tus_manager`** and its title and transaction context structs were declared in sceNpTus.h and used nowhere: nothing made one, nothing read its `atomic_t<bool> is_initialized`, and its methods were defined nowhere. They are deleted, with their `std::map`s and the header's `<map>` include.
+  - **Tests:** none; nothing used it. The full build and suites pass. A check fails if the manager or atomic_t comes back to sceNpTus.
+
+
 - **cellImeJp's initialized flag off atomic_t: the HLE thread's own.** Not yet run on a game.
   - **What changed:**
     - **The flag** (`ime_jp_manager::is_initialized`) is a plain bool. Every cellImeJp call that reads or writes it already runs on the HLE thread (`hle_call`), as the rest of the manager does, so it has one thread and needs no atomic. The manager's copy is deleted, as the object map asks.

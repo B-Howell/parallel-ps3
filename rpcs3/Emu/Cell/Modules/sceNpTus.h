@@ -3,7 +3,6 @@
 #include "cellRtc.h"
 #include "sceNp.h"
 
-#include <map>
 
 // Constants for TUS functions and structures
 enum
@@ -132,41 +131,4 @@ struct SceNpTssGetDataOptParam
 	vm::bptr<u64> offset;
 	vm::bptr<u64> lastByte;
 	vm::bptr<SceNpTssIfModifiedSinceParam> ifParam;
-};
-
-// fxm objects
-
-struct sce_np_tus_transaction_context
-{
-	s32 id = 0;
-	u32 timeout = 0;
-	bool abort = false;
-};
-
-struct sce_np_tus_title_context
-{
-	std::map<s32 /*transaction_context_id*/, sce_np_tus_transaction_context> transaction_contexts;
-};
-
-struct sce_np_tus_manager
-{
-private:
-	s32 next_title_context_id = 1;
-	s32 next_transaction_context_id = 1;
-	std::map<s32 /*title_context_id*/, sce_np_tus_title_context> title_contexts;
-
-public:
-	atomic_t<bool> is_initialized = false;
-
-	s32 add_title_context();
-	bool check_title_context_id(s32 titleCtxId);
-	bool remove_title_context_id(s32 titleCtxId);
-	sce_np_tus_title_context* get_title_context(s32 titleCtxId);
-
-	s32 add_transaction_context(s32 titleCtxId);
-	bool check_transaction_context_id(s32 transId);
-	bool remove_transaction_context_id(s32 transId);
-	sce_np_tus_transaction_context* get_transaction_context(s32 transId);
-
-	void terminate();
 };
