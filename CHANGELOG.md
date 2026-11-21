@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Loader: ISO dates and the IRD check's times off std::chrono.** Not yet run on a game.
+  - **What changed:**
+    - **A file's date in an ISO** (ECMA-119: the recorder's local date and time, and its offset from GMT in 15-minute steps) is turned into a UNIX time by counting days from 1970 with `iso_days_from_civil` (H. Hinnant's days_from_civil, the proleptic Gregorian calendar, in ISO.h) and adding the seconds, where it went through std::chrono's sys_days and durations. The result is the same; the host's time zone still never enters it.
+    - **The IRD check's closing log line** (milliseconds reading the IRD and listing the game, and hashing it) reads `cpu_features_get_time_usec`, libretro-common's monotonic clock, where it read std::chrono's steady clock. It times the check for the log, and paces nothing.
+  - **Tests:** three static assertions in ISO.h check days_from_civil on 1970-01-01, 2000-03-01 and 1969-12-31; the build fails on a count that does not move January and February to the year before. The IRD timing has none: it is a log line. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if std::chrono comes back to either loader.
+
+
 - **Savestates: their creation date without std::chrono.** Not yet run on a game.
   - **What changed:**
     - **The date a savestate records** (local time, `YYYY-MM-DDTHH:MM:SS`) is `time()` formatted by `date_time::fmt_time`, the same strftime format, where it was std::chrono's system clock formatted through a formatter of its own in Utilities/date_time.cpp. That file goes: it held only that formatter. The date is the wall clock on purpose: it says when the state was made, and paces nothing.

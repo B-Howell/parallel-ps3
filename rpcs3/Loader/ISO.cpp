@@ -8,7 +8,6 @@
 #include "Emu/System.h"
 #include "Crypto/utils.h"
 
-#include <chrono>
 #include <codecvt>
 #include <algorithm>
 #include <cmath>
@@ -1077,20 +1076,13 @@ static std::optional<iso_fs_metadata> iso_read_directory_entry(fs::file& entry, 
 	const u32 file_size = retrieve_endian_int<u32>(header.file_size);
 
 	// The recorded ECMA-119 date holds the local time of the recorder, paired with its offset from GMT.
-	// std::chrono::sys_days is anchored to the UNIX epoch, so the host time zone never enters the result.
-	const std::chrono::year_month_day file_date
-	{
-		std::chrono::year{1900 + header.year},
-		std::chrono::month{header.month},
-		std::chrono::day{header.day}
-	};
-
+	// The days are counted from the UNIX epoch, so the host time zone never enters the result.
 	// The offset from GMT is stored as a signed number of 15 minute intervals (ECMA-119 9.1.5),
 	// so it has to be subtracted from the recorded local time in order to obtain UTC
-	const auto file_time = std::chrono::sys_days{file_date} + std::chrono::hours{header.hour} + std::chrono::minutes{header.minute}
-		+ std::chrono::seconds{header.second} - std::chrono::minutes{static_cast<s8>(header.timezone_value) * 15};
+	const s64 file_time = iso_days_from_civil(1900 + header.year, header.month, header.day) * 86400
+		+ header.hour * 3600 + header.minute * 60 + header.second - static_cast<s8>(header.timezone_value) * 15 * 60;
 
-	const std::time_t date_time = static_cast<std::time_t>(file_time.time_since_epoch().count());
+	const std::time_t date_time = static_cast<std::time_t>(file_time);
 
 	// 2nd flag bit indicates whether a given fs node is a directory
 	const bool is_directory = header.flags & 0b00000010;

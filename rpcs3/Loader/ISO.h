@@ -9,6 +9,23 @@
 #include <optional>
 #include <span>
 
+// Days from 1970-01-01 to @year-@month-@day in the proleptic Gregorian
+// calendar (H. Hinnant's days_from_civil): an ISO's recorded dates are
+// turned into UNIX times with it, with no time zone of the host's
+constexpr s64 iso_days_from_civil(s64 year, u32 month, u32 day)
+{
+	year -= month <= 2;
+	const s64 era = (year >= 0 ? year : year - 399) / 400;
+	const u32 yoe = static_cast<u32>(year - era * 400);
+	const u32 doy = (153 * (month > 2 ? month - 3 : month + 9) + 2) / 5 + day - 1;
+	const u32 doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+	return era * 146097 + static_cast<s64>(doe) - 719468;
+}
+
+static_assert(iso_days_from_civil(1970, 1, 1) == 0);
+static_assert(iso_days_from_civil(2000, 3, 1) == 11017);
+static_assert(iso_days_from_civil(1969, 12, 31) == -1);
+
 bool is_iso_file(const std::string& path, u64* size = nullptr, bool* is_raw_device = nullptr);
 
 void load_iso(const std::string& path);

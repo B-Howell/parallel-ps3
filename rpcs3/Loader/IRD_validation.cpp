@@ -13,7 +13,7 @@
 
 #include <encodings/crc32.h>
 
-#include <chrono>
+#include <features/features_cpu.h>
 #include <map>
 
 LOG_CHANNEL(sys_log, "VALIDATION");
@@ -210,7 +210,7 @@ disc_check_status content_validation::check_ird_content(const std::string& game_
 
 	// Told apart in the line the check closes with, so that where its time went can be read off the log of a
 	// real run instead of being guessed at
-	const auto started = std::chrono::steady_clock::now();
+	const retro_time_t started = cpu_features_get_time_usec();
 
 	// The check starts from a clean state, so that neither the progress of a previous one nor a cancellation left
 	// over from it can be mistaken for its own. The name is set right away, so that the progress dialog reports
@@ -403,7 +403,7 @@ disc_check_status content_validation::check_ird_content(const std::string& game_
 	fs::file iso_handle;
 	iso_file* iso_reader = nullptr;
 
-	const auto listed = std::chrono::steady_clock::now();
+	const retro_time_t listed = cpu_features_get_time_usec();
 
 	usz file_index = 0;
 
@@ -525,12 +525,12 @@ disc_check_status content_validation::check_ird_content(const std::string& game_
 	report.status = (report.mismatched || report.missing > report.missing_update) ?
 		disc_check_status::FAILED : disc_check_status::PASSED;
 
-	const auto ms = [](auto from, auto to) { return std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count(); };
+	const auto ms = [](retro_time_t from, retro_time_t to) { return static_cast<s64>((to - from) / 1000); };
 
 	sys_log.notice("check_ird_content: '%s' checked against '%s': %d valid | %d invalid | %d missing | %d not required"
 		" (%d ms reading the IRD and listing the game, %d ms hashing %d MB)",
 		game_path, ird_path, report.matched, report.mismatched, report.missing, report.not_required,
-		ms(started, listed), ms(listed, std::chrono::steady_clock::now()), m_bytes_read >> 20);
+		ms(started, listed), ms(listed, cpu_features_get_time_usec()), m_bytes_read >> 20);
 
 	return report.status;
 }
