@@ -2159,6 +2159,20 @@ spu_recompiler_base::spu_recompiler_base()
 {
 }
 
+// A patch point rewritten in place, while other threads may be running the
+// code: the new instructions land whole, 8 bytes on x86 and 16 on aarch64
+[[maybe_unused]] static inline void spu_patch_store_64(void* p, u64 v)
+{
+	retro_atomic_store_release_64(static_cast<retro_atomic_64_t*>(p), static_cast<s64>(v));
+}
+
+[[maybe_unused]] static inline void spu_patch_store_128(void* p, const u128& v)
+{
+	retro_u128_t value;
+	std::memcpy(&value, &v, sizeof(value));
+	retro_atomic_store_release_128(static_cast<retro_atomic_128_t*>(p), value);
+}
+
 spu_recompiler_base::~spu_recompiler_base()
 {
 }
@@ -2183,7 +2197,7 @@ void spu_recompiler_base::dispatch(spu_thread& spu, void*, u8* rip)
 		bytes[6] = 0x90;
 		bytes[7] = 0x90;
 
-		atomic_storage<u64>::release(*reinterpret_cast<u64*>(rip - 8), result);
+		spu_patch_store_64(rip - 8, result);
 #elif defined(ARCH_ARM64)
 		union
 		{
@@ -2208,7 +2222,7 @@ void spu_recompiler_base::dispatch(spu_thread& spu, void*, u8* rip)
 #if defined(__APPLE__)
 		pthread_jit_write_protect_np(false);
 #endif
-		atomic_storage<u128>::release(*reinterpret_cast<u128*>(rip), result);
+		spu_patch_store_128(rip, result);
 #if defined(__APPLE__)
 		pthread_jit_write_protect_np(true);
 #endif
@@ -2331,7 +2345,7 @@ void spu_recompiler_base::branch(spu_thread& spu, void*, u8* rip)
 		fmt::throw_exception("Impossible far jump: %p -> %p", rip, func);
 	}
 
-	atomic_storage<u64>::release(*reinterpret_cast<u64*>(rip), result);
+	spu_patch_store_64(rip, result);
 #elif defined(ARCH_ARM64)
 	union
 	{
@@ -2356,7 +2370,7 @@ void spu_recompiler_base::branch(spu_thread& spu, void*, u8* rip)
 #if defined(__APPLE__)
 	pthread_jit_write_protect_np(false);
 #endif
-	atomic_storage<u128>::release(*reinterpret_cast<u128*>(rip), result);
+	spu_patch_store_128(rip, result);
 #if defined(__APPLE__)
 	pthread_jit_write_protect_np(true);
 #endif
@@ -9179,7 +9193,7 @@ struct spu_llvm_worker
 				bytes[6] = 0x90;
 				bytes[7] = 0x90;
 
-				atomic_storage<u64>::release(*reinterpret_cast<u64*>(prog->first), result);
+				spu_patch_store_64(reinterpret_cast<void*>(prog->first), result);
 			}
 
 			// Clear fake LS
@@ -9273,7 +9287,7 @@ struct spu_llvm
 			{
 				idm::select<named_thread<spu_thread>>([&](u32 /*id*/, spu_thread& spu)
 				{
-					const u64 name = atomic_storage<u64>::load(spu.block_hash);
+					const u64 name = static_cast<u64>(retro_atomic_load_acquire_64(static_cast<const retro_atomic_64_t*>(static_cast<const void*>(&spu.block_hash))));
 
 					if (auto state = +spu.state; !::is_paused(state) && !::is_stopped(state) && cpu_flag::wait - state)
 					{

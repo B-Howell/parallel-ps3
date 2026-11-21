@@ -1570,6 +1570,8 @@ check: all
 	@if grep -n "atomic_storage" ../../Emu/Cell/SPUThread.cpp; then echo "atomic_storage is back in SPUThread.cpp"; exit 1; else echo "SPUThread.cpp has no atomic_storage"; fi
 	@# The core's retro_atomic.h is RetroArch's with the aarch64 exclusive-pair 128-bit store, load and exchange
 	@if ! grep -q "aarch64's exclusive pair needs no compare" ../libretro-common/include/retro_atomic.h; then echo "libretro-common's retro_atomic.h is behind RetroArch's again (no aarch64 exclusive-pair 128-bit store)"; exit 1; else echo "libretro-common has RetroArch's aarch64 128-bit store"; fi
+	@# SPUCommonRecompiler's patch-point rewrites and block hash read are retro_atomic (spu_patch_store_64/128), not atomic_storage
+	@if grep -n "atomic_storage" ../../Emu/Cell/SPUCommonRecompiler.cpp; then echo "atomic_storage is back in SPUCommonRecompiler.cpp"; exit 1; else echo "SPUCommonRecompiler.cpp has no atomic_storage"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

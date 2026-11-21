@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **SPUCommonRecompiler off atomic_storage.** Not yet run on a game.
+  - **What changed:**
+    - **The patch points the SPU recompiler rewrites in place** while other threads may be running the code (the dispatcher's jump back to the dispatcher on a failed check, the branch patcher, and the reverse-branch patch) land whole through `spu_patch_store_64` on x86, a `retro_atomic_store_release_64`, and `spu_patch_store_128` on aarch64, a `retro_atomic_store_release_128`. On x86 that is the same plain 8-byte store; on aarch64 it is one LDXP/STLXP loop, as atomic_storage's was where the CPU has no LSE2 (where it has, atomic_storage used a dmb and an stp).
+    - **The profiler's read** of each SPU's block hash is a `retro_atomic` acquire load.
+  - **Tests:** none of their own; the rewrites happen as SPU code runs on its threads. The full build and suites pass. A check fails if atomic_storage comes back to SPUCommonRecompiler.cpp.
+
+
 - **libretro-common resynced from RetroArch master again.** Not yet run on a game.
   - **What changed:**
     - **Three files** are RetroArch's again: retro_atomic.h, whose 128-bit release store, acquire load and exchange are now one exclusive-pair loop each on aarch64 (no compare-and-swap loop), rmp4.c and stdstring.c. The core builds against them as it is.
