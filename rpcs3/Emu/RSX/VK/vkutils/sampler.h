@@ -2,6 +2,7 @@
 
 #include "device.h"
 #include "shared.h"
+#include <functional>
 
 namespace vk
 {

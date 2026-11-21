@@ -690,7 +690,6 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/rpcs3/Loader/content_validation.cpp \
 	$(CORE_DIR)/rpcs3/Loader/disc.cpp \
 	$(CORE_DIR)/rpcs3/Loader/mself.cpp \
-	$(CORE_DIR)/rpcs3/util/atomic.cpp \
 	$(CORE_DIR)/rpcs3/util/console.cpp \
 	$(CORE_DIR)/rpcs3/util/cpu_stats.cpp \
 	$(CORE_DIR)/rpcs3/util/dyn_lib.cpp \

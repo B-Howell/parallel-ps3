@@ -1,6 +1,5 @@
 #pragma once
 
-#include "util/atomic.hpp"
 #include <retro_atomic.h>
 #include "util/shared_ptr.hpp"
 

@@ -2,7 +2,6 @@
 
 #include "util/types.hpp"
 #include "util/tsc.hpp"
-#include "util/atomic.hpp"
 #include <retro_atomic.h>
 #include "util/sysinfo.hpp"
 #include <functional>

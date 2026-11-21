@@ -22,7 +22,6 @@ Intersection (&) and symmetric difference (^) is also available.
 */
 
 #include "util/types.hpp"
-#include "util/atomic.hpp"
 #include <retro_atomic.h>
 #include <rthreads/retro_waitaddr.h>
 #include <utility>

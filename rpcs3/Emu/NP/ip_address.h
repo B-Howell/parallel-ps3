@@ -10,7 +10,6 @@
 #include <retro_atomic.h>
 
 #include "util/types.hpp"
-#include "util/atomic.hpp"
 
 #ifdef _WIN32
 #include <winsock2.h>

@@ -7,67 +7,42 @@ reference_ringbuf::reference_ringbuf(u64 size)
 
 reference_ringbuf::~reference_ringbuf()
 {
-	rw_ptr.load(); // Sync
 }
 
 reference_ringbuf::reference_ringbuf(const reference_ringbuf& other)
+	: rw_ptr(other.rw_ptr)
+	, buf(other.buf)
 {
-	ctr_state old = other.rw_ptr.load();
-
-	for (;;)
-	{
-		buf = other.buf;
-		rw_ptr = old;
-
-		const ctr_state current = other.rw_ptr.load();
-		if (old == current)
-		{
-			break;
-		}
-		old = current;
-	}
 }
 
 reference_ringbuf& reference_ringbuf::operator=(const reference_ringbuf& other)
 {
 	if (this == &other) return *this;
 
-	ctr_state old = other.rw_ptr.load();
-
-	for (;;)
-	{
-		buf = other.buf;
-		rw_ptr = old;
-
-		const ctr_state current = other.rw_ptr.load();
-		if (old == current)
-		{
-			break;
-		}
-		old = current;
-	}
+	buf = other.buf;
+	rw_ptr = other.rw_ptr;
 
 	return *this;
 }
 
 reference_ringbuf::reference_ringbuf(reference_ringbuf&& other)
 {
-	const ctr_state other_rw_ptr = other.rw_ptr.load();
+	const ctr_state other_rw_ptr = other.rw_ptr;
 	buf = std::move(other.buf);
 	rw_ptr = other_rw_ptr;
 
-	other.rw_ptr.store({});
+	other.rw_ptr = {};
 }
 
 reference_ringbuf& reference_ringbuf::operator=(reference_ringbuf&& other)
 {
 	if (this == &other) return *this;
 
-	const ctr_state other_rw_ptr = other.rw_ptr.load();
+	const ctr_state other_rw_ptr = other.rw_ptr;
 	buf = std::move(other.buf);
 	rw_ptr = other_rw_ptr;
 
-	other.rw_ptr.store({});
+	other.rw_ptr = {};
 
 	return *this;
 }
@@ -84,7 +59,6 @@ u64 reference_ringbuf::get_used_size() const
 
 u64 reference_ringbuf::get_total_size() const
 {
-	rw_ptr.load(); // Sync
 	return buf.size() - 1;
 }
 
@@ -111,33 +85,33 @@ void reference_ringbuf::set_buf_size(u64 size)
 	ensure(size != umax);
 
 	buf.resize(size + 1);
-	rw_ptr.store({});
+	rw_ptr = {};
 }
 
 void reference_ringbuf::writer_flush(u64 cnt)
 {
-	rw_ptr.atomic_op([&](ctr_state& val)
+	[&](ctr_state& val)
 	{
 		const u64 used = get_used_size(val);
 		if (used == 0) return;
 
 		val.write_ptr += buf.size() - std::min<u64>(used, cnt);
-	});
+	}(rw_ptr);
 }
 
 void reference_ringbuf::reader_flush(u64 cnt)
 {
-	rw_ptr.atomic_op([&](ctr_state& val)
+	[&](ctr_state& val)
 	{
 		val.read_ptr += std::min(get_used_size(val), cnt);
-	});
+	}(rw_ptr);
 }
 
 u64 reference_ringbuf::push(const void* data, u64 size, bool force)
 {
 	ensure(data != nullptr);
 
-	return rw_ptr.atomic_op([&](ctr_state& val) -> u64
+	return [&](ctr_state& val) -> u64
 	{
 		const u64 buf_size  = buf.size();
 		const u64 old       = val.write_ptr % buf_size;
@@ -164,14 +138,14 @@ u64 reference_ringbuf::push(const void* data, u64 size, bool force)
 		val.write_ptr += to_push;
 
 		return to_push;
-	});
+	}(rw_ptr);
 }
 
 u64 reference_ringbuf::pop(void* data, u64 size, bool force)
 {
 	ensure(data != nullptr);
 
-	return rw_ptr.atomic_op([&](ctr_state& val) -> u64
+	return [&](ctr_state& val) -> u64
 	{
 		const u64 buf_size  = buf.size();
 		const u64 old       = val.read_ptr % buf_size;
@@ -198,5 +172,5 @@ u64 reference_ringbuf::pop(void* data, u64 size, bool force)
 		val.read_ptr += to_pop;
 
 		return to_pop;
-	});
+	}(rw_ptr);
 }

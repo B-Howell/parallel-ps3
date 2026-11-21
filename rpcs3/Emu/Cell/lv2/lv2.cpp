@@ -1442,7 +1442,7 @@ static void sched_edge_put(ppu_thread* target, void* ctx, int edge)
 
 	target->start_time = 0;
 
-	if ((target->state.fetch_op(AOFN(x += cpu_flag::signal, x -= cpu_flag::suspend, x-= remove_yield, void())) & (cpu_flag::wait + cpu_flag::signal)) != cpu_flag::wait)
+	if ((target->state.fetch_op([&](bs_t<cpu_flag>& x) { x += cpu_flag::signal; x -= cpu_flag::suspend; x -= remove_yield; }) & (cpu_flag::wait + cpu_flag::signal)) != cpu_flag::wait)
 	{
 		return;
 	}

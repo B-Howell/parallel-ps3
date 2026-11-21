@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "util/tsc.hpp"
 #include "Emu/VFS.h"
 #include "Emu/System.h"
 #include "TRP.h"

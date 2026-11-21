@@ -1,12 +1,14 @@
 #pragma once
 
 #include "util/types.hpp"
-#include "util/atomic.hpp"
+#include <algorithm>
+#include <cstring>
 #include <vector>
 
 // Upstream RPCS3's simple_ringbuf, kept here only for the tests to compare
 // against: the core no longer has it (its users are on libretro-common's
-// retro_spsc and libretro_audio_ring).
+// retro_spsc and libretro_audio_ring). Its pointers are plain here (they
+// were a 16-byte atomic_t): the tests use it from one thread.
 // Single reader/writer simple ringbuffer.
 class reference_ringbuf
 {
@@ -49,7 +51,7 @@ private:
 
 	static_assert(sizeof(ctr_state) == sizeof(u64) * 2);
 
-	atomic_t<ctr_state> rw_ptr{};
+	ctr_state rw_ptr{};
 	std::vector<u8> buf{};
 
 	u64 get_free_size(ctr_state val) const;

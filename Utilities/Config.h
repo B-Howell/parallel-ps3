@@ -3,7 +3,6 @@
 #include "util/types.hpp"
 #include "Utilities/StrUtil.h"
 #include "util/logs.hpp"
-#include "util/atomic.hpp"
 #include <retro_atomic.h>
 #include <bit>
 #include "util/shared_ptr.hpp"

@@ -3,7 +3,6 @@
 #include "vm.h"
 #include "vm_locking.h"
 #include "vm_ptr.h"
-#include "util/atomic.hpp"
 #include <retro_atomic.h>
 #include <rthreads/retro_waitaddr.h>
 #include "util/tsc.hpp"

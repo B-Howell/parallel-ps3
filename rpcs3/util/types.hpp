@@ -184,9 +184,6 @@ std::remove_cvref_t<T> as_rvalue(T&& obj)
 	return std::forward<T>(obj);
 }
 
-template <typename T, usz Align>
-class atomic_t;
-
 namespace stx
 {
 	template <typename T, bool Se, usz Align>

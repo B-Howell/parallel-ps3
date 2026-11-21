@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **util/atomic.hpp and util/atomic.cpp removed.** Not yet run on a game.
+  - **What changed:**
+    - **The two files are gone,** with their 18 includes, the forward declaration of atomic_t in types.hpp and their build lines in Makefile.common and the CMake list. Nothing in the core used atomic_t, atomic_storage, the atomic_wait engine or its fences any more: every word is a retro_atomic one, every wait a retro_waitaddr one.
+    - **The TSC stamp for unique file names** (`utils::get_unique_tsc`, used for temporary file names in fs, VFS and the trophy loader) moves to tsc.hpp, with its last-given stamp a `retro_atomic_64_t`: a compare-and-swap when the stamp is past it, a fetch-and-add of one when not, as before. It is a clock read, flagged for the std::chrono pass; it names files, it paces nothing.
+    - **lv2's thread wake** changes its thread's flags with a plain lambda where it used the header's AOFN macro, its last user. The Vulkan sampler pool includes `<functional>` itself, which it had through the header.
+  - **Tests:** test_vfs_positional's test of atomic_t's wait and notify goes with it (retro_waitaddr is tested in RetroArch). The old ring the rsxaudio test compares against keeps its two pointers plain where they were a 16-byte atomic_t; the test uses it from one thread, and its benchmark baseline no longer pays a 16-byte compare-and-swap per call. The full build and suites pass. A check fails if either file, an include of it or atomic_t's declaration comes back.
+
+
 - **The SPU's reservation waits on retro_waitaddr, off the atomic_wait engine.** Not yet run on a game.
   - **What changed:**
     - **vm::reservation_notifier_wait** waits on the waiter's flag with `retro_waitaddr_wait`, its bound in microseconds where it was nanoseconds (the four SPU waits keep theirs: 50, 100, 100 and 200 µs).

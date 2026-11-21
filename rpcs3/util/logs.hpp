@@ -6,7 +6,6 @@
 #include <string>
 #include <set>
 #include <initializer_list>
-#include "util/atomic.hpp"
 #include "Utilities/StrFmt.h"
 
 namespace logs

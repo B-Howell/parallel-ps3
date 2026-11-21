@@ -4,7 +4,6 @@
 #include <map>
 #include <vector>
 #include "util/types.hpp"
-#include "util/atomic.hpp"
 #include <retro_atomic.h>
 #include "util/auto_typemap.hpp"
 

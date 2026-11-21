@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "util/tsc.hpp"
 #include "IdManager.h"
 #include "emu_callbacks.h"
 #include "System.h"

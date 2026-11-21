@@ -67,7 +67,6 @@ target_include_directories(rpcs3_emu
 
 # Utilities
 target_sources(rpcs3_emu PRIVATE
-    ../util/atomic.cpp
     ../util/console.cpp
     ../util/emu_utils.cpp
     ../util/media_decode.c
