@@ -2342,8 +2342,16 @@ bool lv2_obj::wait_timeout(u64 usec, ppu_thread* cpu, bool scale, bool is_usleep
 #endif
 			else
 			{
-				// Try yielding. May cause long wake latency but helps weaker CPUs a lot by alleviating resource pressure
+#ifdef _WIN32
+				// Try yielding. May cause long wake latency but helps weaker CPUs a lot by alleviating resource pressure.
+				// Windows only: its timed waits round up to the timer period (1 ms here), far past a sleep this short
 				std::this_thread::yield();
+#else
+				// The few microseconds left as one timed wait on the same words (state and the guest clock), where it
+				// yielded in a loop until they had passed: a timed wait here is precise to the microsecond (1 us timer
+				// slack on Linux)
+				wait_for(remaining);
+#endif
 			}
 		}
 

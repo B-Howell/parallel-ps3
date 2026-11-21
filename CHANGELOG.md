@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **lv2 sleeps: the last few microseconds as a timed wait, not a yield loop, off Windows.** Not yet run on a game.
+  - **What changed:**
+    - **A game's sleep with Sleep Timers Accuracy set to usleep or all timers** (`lv2_obj::wait_timeout`; on Linux and macOS the default is As Host, which already only waited) ends, once 10 µs or less are left and the CPU has no WAITPKG/MWAITX timed pause, with one timed wait on the thread's state and the guest clock, where it yielded in a loop until the time had passed. On Linux a timed wait is precise to the microsecond (the core sets 1 µs timer slack).
+    - **Windows keeps the yield loop:** its timed waits round up to the timer period (1 ms with the core's raised resolution), far past a sleep of a few microseconds; it is the default there (usleep accuracy). Flagged: an Intel CPU without WAITPKG (before Alder Lake) spins in it for a game's short usleeps.
+  - **Tests:** none of its own: the yield and the wait both end on time, and the change is in how the waiting thread spends those microseconds. test_guest_clock's timed waits pass. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if the yield comes back off Windows.
+
+
 - **SPU channels and mailboxes: straight to the wait, no busy-waits first.** Not yet run on a game.
   - **What changed:**
     - **A channel's pop and push waits** (`spu_channel::pop_wait`/`push_wait`: the SPU reading a signal or the outbound mailbox, writing one that is full) and **the inbound mailbox's** (`spu_channel_4_t::pop_wait`) wait on the channel's word at once, where each spun ten 3000-cycle busy-waits (about 10 µs) first. The other side already clears the wait bit and wakes the word, so nothing else changes; the pending lv2 wakes are still flushed before the wait.
