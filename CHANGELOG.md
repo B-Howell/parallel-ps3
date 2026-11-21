@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **libretro-common resynced from RetroArch master again: retro_atomic.h.** Not yet run on a game.
+  - **What changed:**
+    - **retro_atomic.h** is RetroArch's again, with its new 8- and 16-bit words (`retro_atomic_8_t`, `retro_atomic_16_t`: acquire load, release store, relaxed load and store, exchange, each one access of its width), for vm.cpp's narrow guest writes and the page flags. The core builds against it as it is.
+  - **Tests:** the full build and suites pass. A check fails if the copy's retro_atomic.h falls behind the 8- and 16-bit words again.
+
+
 - **SPUCommonRecompiler off atomic_storage.** Not yet run on a game.
   - **What changed:**
     - **The patch points the SPU recompiler rewrites in place** while other threads may be running the code (the dispatcher's jump back to the dispatcher on a failed check, the branch patcher, and the reverse-branch patch) land whole through `spu_patch_store_64` on x86, a `retro_atomic_store_release_64`, and `spu_patch_store_128` on aarch64, a `retro_atomic_store_release_128`. On x86 that is the same plain 8-byte store; on aarch64 it is one LDXP/STLXP loop, as atomic_storage's was where the CPU has no LSE2 (where it has, atomic_storage used a dmb and an stp).
