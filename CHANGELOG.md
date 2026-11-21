@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **RB3 MIDI drums: hit and combo times on libretro-common's clock, off std::chrono.** Not yet run on a game.
+  - **What changed:**
+    - **A drum hit's expiry** (each hit is held for the pulse width, 30 ms by default, so the game sees it) and **a combo's** (the window, 2 s by default, to play the notes that mean start, select or hold kick) are microsecond readings of `cpu_features_get_time_usec`, libretro-common's monotonic clock, where they were std::chrono steady-clock time points. The pulse width and window are microsecond counts from the same settings. The times are real time: a hit is held as long whatever the frame rate.
+  - **Tests:** none of its own; the device needs a host MIDI port (rtmidi). The Windows (MinGW) syntax check, the full build and suites pass. A check fails if std::chrono comes back to the drums.
+
+
 - **Loader: ISO dates and the IRD check's times off std::chrono.** Not yet run on a game.
   - **What changed:**
     - **A file's date in an ISO** (ECMA-119: the recorder's local date and time, and its offset from GMT in 15-minute steps) is turned into a UNIX time by counting days from 1970 with `iso_days_from_civil` (H. Hinnant's days_from_civil, the proleptic Gregorian calendar, in ISO.h) and adding the seconds, where it went through std::chrono's sys_days and durations. The result is the same; the host's time zone still never enters it.

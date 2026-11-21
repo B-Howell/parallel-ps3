@@ -5,7 +5,13 @@
 #include "Emu/Cell/lv2/sys_usbd.h"
 #include "Emu/Io/rb3drums_config.h"
 
-using namespace std::chrono_literals;
+#include <features/features_cpu.h>
+
+// Now, in microseconds on libretro-common's monotonic clock
+static u64 now_us()
+{
+	return static_cast<u64>(cpu_features_get_time_usec());
+}
 
 LOG_CHANNEL(rb3_midi_drums_log);
 
@@ -81,10 +87,10 @@ constexpr std::array<u8, 27> default_state = {
 namespace drum
 {
 
-// Hold each hit for a period of time. Rock band doesn't pick up a single tick.
-std::chrono::milliseconds hit_duration()
+// Hold each hit for a period of time, in microseconds. Rock band doesn't pick up a single tick.
+u64 hit_duration()
 {
-	return std::chrono::milliseconds(g_cfg_rb3drums.pulse_ms);
+	return u64{g_cfg_rb3drums.pulse_ms} * 1000;
 }
 
 // Scale velocity from midi to what rock band expects.
@@ -116,7 +122,7 @@ constexpr FlagByIndex SELECT_BUTTON = controller::BUTTON_9;
 rb3drums::KitState start_state()
 {
 	rb3drums::KitState s{};
-	s.expiry = std::chrono::steady_clock::now() + drum::hit_duration();
+	s.expiry = now_us() + drum::hit_duration();
 	s.start = true;
 	return s;
 }
@@ -124,7 +130,7 @@ rb3drums::KitState start_state()
 rb3drums::KitState select_state()
 {
 	rb3drums::KitState s{};
-	s.expiry = std::chrono::steady_clock::now() + drum::hit_duration();
+	s.expiry = now_us() + drum::hit_duration();
 	s.select = true;
 	return s;
 }
@@ -132,7 +138,7 @@ rb3drums::KitState select_state()
 rb3drums::KitState toggle_hold_kick_state()
 {
 	rb3drums::KitState s{};
-	s.expiry = std::chrono::steady_clock::now() + drum::hit_duration();
+	s.expiry = now_us() + drum::hit_duration();
 	s.toggle_hold_kick = true;
 	return s;
 }
@@ -140,7 +146,7 @@ rb3drums::KitState toggle_hold_kick_state()
 rb3drums::KitState kick_state()
 {
 	rb3drums::KitState s{};
-	s.expiry = std::chrono::steady_clock::now() + drum::hit_duration();
+	s.expiry = now_us() + drum::hit_duration();
 	s.kick_pedal = 127;
 	return s;
 }
@@ -276,9 +282,10 @@ std::vector<u8> parse_combo(const std::string_view name, const std::string_view 
 	return notes;
 }
 
-std::chrono::milliseconds window()
+// In microseconds
+u64 window()
 {
-	return std::chrono::milliseconds{g_cfg_rb3drums.combo_window_ms};
+	return u64{g_cfg_rb3drums.combo_window_ms} * 1000;
 }
 
 }
@@ -578,7 +585,7 @@ void usb_device_rb3_midi_drums::interrupt_transfer(u32 buf_size, u8* buf, u32 /*
 	}
 
 	// Clean expired states.
-	auto now = std::chrono::steady_clock::now();
+	const u64 now = now_us();
 	kit_states.erase(std::remove_if(std::begin(kit_states), std::end(kit_states), [&now](const rb3drums::KitState& kit_state) {
 		return now >= kit_state.expiry;
 	}), std::end(kit_states));
@@ -655,7 +662,7 @@ rb3drums::KitState usb_device_rb3_midi_drums::parse_midi_note(const u8 id, const
 	}
 
 	rb3drums::KitState kit_state{};
-	kit_state.expiry = std::chrono::steady_clock::now() + drum::hit_duration();
+	kit_state.expiry = now_us() + drum::hit_duration();
 	const midi::Note note = id_to_note(static_cast<midi::Id>(id));
 	switch (note)
 	{
@@ -780,7 +787,7 @@ void usb_device_rb3_midi_drums::ComboTracker::reload_definitions()
 
 void usb_device_rb3_midi_drums::ComboTracker::add(u8 note)
 {
-	if (!midi_notes.empty() && std::chrono::steady_clock::now() >= expiry)
+	if (!midi_notes.empty() && now_us() >= expiry)
 	{
 		// Combo expired.
 		reset();
@@ -807,7 +814,7 @@ void usb_device_rb3_midi_drums::ComboTracker::add(u8 note)
 	if (midi_notes.size() == 1)
 	{
 		// New combo.
-		expiry = std::chrono::steady_clock::now() + midi::combo::window();
+		expiry = now_us() + midi::combo::window();
 	}
 }
 

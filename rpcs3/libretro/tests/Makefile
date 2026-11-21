@@ -1604,6 +1604,8 @@ check: all
 	@if test -e ../../../Utilities/date_time.cpp || grep -n "chrono" ../../Emu/System.cpp || grep -n "date_time.cpp" ../../../Makefile.common ../../Emu/CMakeLists.txt; then echo "std::chrono is back in the savestate's date"; exit 1; else echo "the savestate's date is formatted without std::chrono"; fi
 	@# The ISO and IRD loaders use no std::chrono: an ISO's file dates are counted with iso_days_from_civil, the IRD check's times read libretro-common's clock
 	@if grep -n "chrono" ../../Loader/ISO.cpp ../../Loader/ISO.h ../../Loader/IRD_validation.cpp; then echo "std::chrono is back in the ISO or IRD loader"; exit 1; else echo "the ISO and IRD loaders use no std::chrono"; fi
+	@# The RB3 MIDI drums' hit and combo expiries are microsecond readings of libretro-common's clock, not std::chrono time points
+	@if grep -n "chrono" ../../Emu/Io/RB3MidiDrums.h ../../Emu/Io/RB3MidiDrums.cpp; then echo "std::chrono is back in the RB3 MIDI drums"; exit 1; else echo "the RB3 MIDI drums keep their times without std::chrono"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

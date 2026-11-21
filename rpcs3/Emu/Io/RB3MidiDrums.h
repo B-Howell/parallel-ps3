@@ -3,7 +3,6 @@
 #include "Emu/Io/usb_device.h"
 
 #include <rtmidi_c.h>
-#include <chrono>
 #include <vector>
 #include <optional>
 
@@ -11,7 +10,9 @@ namespace rb3drums
 {
 struct KitState
 {
-	std::chrono::steady_clock::time_point expiry;
+	// When the hit stops being held, in microseconds on libretro-common's
+	// clock (cpu_features_get_time_usec)
+	u64 expiry{};
 
 	u8 kick_pedal{};
 	u8 hihat_pedal{};
@@ -141,7 +142,7 @@ private:
 		std::optional<rb3drums::KitState> take_state();
 
 	private:
-		std::chrono::steady_clock::time_point expiry;
+		u64 expiry{}; // microseconds, as KitState::expiry
 		std::vector<u8> midi_notes;
 		std::vector<Definition> m_definitions;
 	};
