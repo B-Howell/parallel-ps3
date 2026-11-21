@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Threads: join waits for the thread to finish, no 1 ms wake-ups.** Not yet run on a game.
+  - **What changed:**
+    - **thread_base::join** waits on the thread's sync word until the thread has set its result (finished or errored), which wakes that word's waiters, as each notify does; it looks again on every change. When it was called from a destructor while the emulator was stopped, it woke every 1 ms instead (an upstream workaround for threads slow to finish, marked to be removed) and, after 16 wake-ups and at each power of two, logged how long it had waited, read from the TSC. It went on waiting either way, so only the wake-ups and the log line go.
+  - **Tests:** none of their own; nothing is left to see but the wait, and every suite joins threads through it. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if the 1 ms wake-ups' log or a TSC read comes back to Thread.cpp.
+
+
 - **SPU captures: a taken name gets a number, no one-second sleep.** Not yet run on a game.
   - **What changed:**
     - **Saving an SPU's local storage as an ELF** (`spu_progs/<title>_<name>_<time>_capture.elf`) when a capture already has that second's name adds a number of its own to the name (`_<base57>`, from `fs::unique_id`), where the SPU thread slept a whole second for the timestamp to change. The timestamp in the name is the wall clock on purpose: it names the file and paces nothing.

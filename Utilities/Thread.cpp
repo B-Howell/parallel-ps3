@@ -3315,33 +3315,14 @@ thread_base::~thread_base() noexcept
 	}
 }
 
-bool thread_base::join(bool dtor) const
+bool thread_base::join([[maybe_unused]] bool dtor) const
 {
-	// Check if already finished
-	if (sync_word() & 2)
+	// Until the thread has finished: it sets its result and wakes m_sync's
+	// waiters, and so does each notify; every change wakes this and it looks again
+	for (u32 v = sync_word(); (v & 3) <= 1; v = sync_word())
 	{
-		return (sync_word() & 3) == 3;
-	}
-
-	// Hacked for too sleepy threads (1ms) TODO: make sure it's unneeded and remove
-	const u64 timeout_us = dtor && Emu.IsStopped() ? u64{1000} : u64{umax};
-
-	auto stamp0 = utils::get_tsc();
-
-	for (u64 i = 0; (sync_word() & 3) <= 1; i++)
-	{
-		const retro_waitaddr_t w{&m_sync, sync_word() & ~2};
-		thread_ctrl::wait_list(&w, 1, timeout_us);
-
-		if (sync_word() & 2)
-		{
-			break;
-		}
-
-		if (i >= 16 && !(i & (i - 1)) && timeout_us != umax)
-		{
-			sig_log.error("Thread [%s] is too sleepy. Waiting for it %.3fus already!", *m_tname.load(), (utils::get_tsc() - stamp0) / (utils::get_tsc_freq() / 1000000.));
-		}
+		const retro_waitaddr_t w{&m_sync, v};
+		retro_waitaddr_wait(&w, 1, -1);
 	}
 
 	return (sync_word() & 3) == 3;
