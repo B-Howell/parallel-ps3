@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Threads: wait_for_accurate off std::chrono.** Not yet run on a game.
+  - **What changed:**
+    - **thread_ctrl::wait_for_accurate** (the SPU wake-up delay's wait) is one timed wait on every host, as it already was on Linux. On Windows and macOS it was a loop that waited in 500 µs steps, then yielded, then busy-waited 100 cycles at a time, reading the steady clock after each step until the time was up.
+    - **The wait itself stays**: it is the SPU Wake-Up Delay setting's, off by default (0 µs), a per-game workaround that delays an SPU on purpose. It is flagged here, not removed. A delay that is shorter than the host's scheduler step may now run long on Windows, where it was spun out exactly.
+  - **Tests:** none of its own; the delay is only reached with the setting on, and the changed path is not Linux's. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if std::chrono or a busy-wait comes back to Thread.cpp.
+
+
 - **util/atomic.hpp and util/atomic.cpp removed.** Not yet run on a game.
   - **What changed:**
     - **The two files are gone,** with their 18 includes, the forward declaration of atomic_t in types.hpp and their build lines in Makefile.common and the CMake list. Nothing in the core used atomic_t, atomic_storage, the atomic_wait engine or its fences any more: every word is a retro_atomic one, every wait a retro_waitaddr one.

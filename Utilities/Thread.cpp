@@ -3271,43 +3271,9 @@ void thread_ctrl::wait_for_accurate(u64 usec)
 		fmt::throw_exception("thread_ctrl::wait_for_accurate: unsupported amount");
 	}
 
-#ifdef __linux__
-	return wait_for(usec, false);
-#else
-	using namespace std::chrono_literals;
-
-	const auto until = std::chrono::steady_clock::now() + 1us * usec;
-
-	while (true)
-	{
-		// Host scheduler quantum for windows (worst case)
-		constexpr u64 host_min_quantum = 500;
-
-		if (usec >= host_min_quantum)
-		{
-			// Wait on multiple of min quantum for large durations to avoid overloading low thread cpus
-			wait_for(usec - (usec % host_min_quantum), false);
-		}
-		// TODO: Determine best value for yield delay
-		else if (usec >= host_min_quantum / 2)
-		{
-			std::this_thread::yield();
-		}
-		else
-		{
-			busy_wait(100);
-		}
-
-		const auto current = std::chrono::steady_clock::now();
-
-		if (current >= until)
-		{
-			break;
-		}
-
-		usec = std::chrono::duration_cast<std::chrono::microseconds>(until - current).count();
-	}
-#endif
+	// One timed wait on every host: it was one on Linux, and elsewhere a
+	// loop of waits, yields and busy-waits reading the steady clock
+	wait_for(usec, false);
 }
 
 std::string thread_ctrl::get_name_cached()
