@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **libretro-common resynced from RetroArch master again.** Not yet run on a game.
+  - **What changed:**
+    - **Three files** are RetroArch's again: retro_atomic.h, whose 128-bit release store, acquire load and exchange are now one exclusive-pair loop each on aarch64 (no compare-and-swap loop), rmp4.c and stdstring.c. The core builds against them as it is.
+  - **Tests:** the full build and suites pass. A check fails if the copy's retro_atomic.h falls behind the aarch64 128-bit store again.
+
+
 - **SPUThread off atomic_storage.** Not yet run on a game.
   - **What changed:**
     - **PUTLLC's 16-byte write**, when only one 16-byte part of the line differs, is a compare-and-swap of that part. It goes through `spu_cas_16`, `retro_atomic_cas_seen_128` on the line, which like `atomic_storage<u128>::compare_exchange` gives the caller what was there when it fails. It is the same lock cmpxchg16b: 49 in SPUThread.o before and after.
