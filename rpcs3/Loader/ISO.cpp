@@ -14,6 +14,7 @@
 #include <stack>
 #include <span>
 #include <cstdlib>
+#include <ctime>
 
 LOG_CHANNEL(sys_log, "SYS");
 LOG_CHANNEL(iso_log, "ISO");

@@ -5,7 +5,6 @@
 #include <cstring>
 #include <type_traits>
 #include <utility>
-#include <chrono>
 #include <array>
 #include <tuple>
 #include <compare>
@@ -28,7 +27,6 @@
 #endif
 #endif
 
-using std::chrono::steady_clock;
 
 using namespace std::literals;
 

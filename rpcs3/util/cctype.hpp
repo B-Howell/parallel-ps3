@@ -3,6 +3,7 @@
 #include "types.hpp"
 
 #include <cctype>
+#include <limits>
 #include <concepts>
 
 namespace utils

@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **std::chrono out of the core: types.hpp no longer includes it.** Not yet run on a game.
+  - **What changed:**
+    - **types.hpp** (included by every file) no longer includes `<chrono>` or brings `steady_clock` into the global namespace. Nothing in the core uses std::chrono any more: its times are microsecond counts, on libretro-common's clock where they are real time.
+    - **Five files had leaned on what <chrono> pulled in:** cctype.hpp includes `<limits>`, ISO.cpp `<ctime>` and serialization_ext.cpp `<span>` themselves; the pad handler's minimum output interval (300 ms, unused) goes.
+    - **The random system name** (`RPCS3-` and three digits, for a new configuration) takes its number from `crypto_random_bytes`, libretro-common's entropy source, where it was `rand()` seeded with the wall clock.
+  - **Tests:** none of their own. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if std::chrono comes back to types.hpp or anywhere in the core's sources.
+
+
 - **Network (Emu/NP): its times on libretro-common's clock, off std::chrono.** Not yet run on a game.
   - **What changed:**
     - **Every time in Emu/NP** is a microsecond reading of `cpu_features_get_time_usec`, libretro-common's monotonic clock, where it was a std::chrono steady-clock time point or duration: RPCN's UDP pings to the signaling server (every 5 s, every 500 ms until answered) and its TLS handshake's 10 s bound; the signaling manager's packet queue (each packet's wake-up time, its resend delays of 200 and 500 ms, the 10 s ping and the 60 s timeout of a silent peer) and the timestamps it sends for round-trip times; the clan server's 30 s request bound; and the local side of the network time handed to games. These are the protocols' own timers, real time on purpose.

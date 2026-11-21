@@ -7,6 +7,7 @@
 #include "Utilities/File.h"
 #include "Utilities/StrFmt.h"
 #include "serialization_ext.hpp"
+#include <span>
 
 #include <encodings/deflate.h>
 #include <encodings/rzstd.h>

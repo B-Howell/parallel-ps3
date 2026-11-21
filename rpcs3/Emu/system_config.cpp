@@ -2,14 +2,18 @@
 #include "system_config.h"
 
 #include <random>
+#include <crypto/kdf.h>
 
 cfg_root g_cfg{};
 cfg_root g_backup_cfg{};
 
 std::string cfg_root::node_sys::get_random_system_name()
 {
-	std::srand(static_cast<u32>(std::time(nullptr)));
-	return "RPCS3-" + std::to_string(100 + std::rand() % 899);
+	// From libretro-common's entropy source, where it was rand() seeded by the
+	// wall clock; 0 when no source answers
+	u32 r = 0;
+	crypto_random_bytes(reinterpret_cast<uint8_t*>(&r), sizeof(r));
+	return "RPCS3-" + std::to_string(100 + r % 899);
 }
 
 u128 cfg_root::node_sys::get_random_psid()
