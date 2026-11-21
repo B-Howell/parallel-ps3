@@ -52,6 +52,7 @@
 #include "Utilities/Config.h"
 #include "Loader/TROPUSR.h"
 #include "util/dyn_lib.hpp"
+#include "Utilities/Timer.h"
 #include "util/vm.hpp"
 #include "Emu/system_config_types.h"
 
@@ -114,6 +115,21 @@ error_code cellSslEnd();
 
 int main()
 {
+	// The overlays' stopwatch (Timer), on libretro-common's microsecond
+	// clock: a stopped one keeps its time, and the milliseconds since a
+	// reading 5 ms before it was started are 5 (the auto-repeat's test)
+	{
+		const u64 before = Timer::now_us();
+		Timer t;
+		t.Stop();
+		const u64 elapsed = t.GetElapsedTimeInMicroSec();
+		CHECK(elapsed < 1000 && t.GetElapsedTimeInMicroSec() == elapsed);
+		const u64 ms = t.GetMsSince(before - 5000);
+		CHECK(ms >= 5 && ms <= 6);
+		CHECK(Timer::now_us() >= before);
+		std::printf("test_emu_waits: the overlays' stopwatch: %llu ms since a reading 5 ms back\n", static_cast<unsigned long long>(ms));
+	}
+
 	// The camera's savestates, off atomic_t: the same bytes its fields made
 	// as u8, bool, u32, u64 and s32, and read back. First, while the emulator
 	// is stopped, as a savestate is written

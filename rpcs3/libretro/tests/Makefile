@@ -1588,6 +1588,8 @@ check: all
 	@if grep -n "chrono\|busy_wait" ../../../Utilities/Thread.cpp; then echo "std::chrono or a busy-wait is back in Thread.cpp"; exit 1; else echo "Thread.cpp reads no std::chrono clock"; fi
 	@# The shader cache's loading dialog updates once a frontend frame, by g_libretro_events: rsx_cache.h reads no std::chrono clock
 	@if grep -n "chrono\|steady_clock" ../../Emu/RSX/rsx_cache.h; then echo "std::chrono is back in rsx_cache.h"; exit 1; else echo "rsx_cache.h reads no std::chrono clock"; fi
+	@# The overlays' stopwatch (Utilities/Timer.h) and the dialogs' button auto-repeat read libretro-common's microsecond clock, not std::chrono
+	@if grep -n "chrono\|steady_clock" ../../../Utilities/Timer.h ../../Emu/RSX/Overlays/overlays.cpp; then echo "std::chrono is back in Timer.h or the overlays' input loop"; exit 1; else echo "Timer.h and the overlays' input loop read no std::chrono clock"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

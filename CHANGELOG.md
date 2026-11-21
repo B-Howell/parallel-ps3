@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Overlays: their stopwatch and button auto-repeat on libretro-common's clock, off std::chrono.** Not yet run on a game.
+  - **What changed:**
+    - **Utilities/Timer.h** (the stopwatch the overlays use: the performance overlay's update and frame times, and the dialogs' input loop) reads `cpu_features_get_time_usec`, libretro-common's monotonic microsecond clock, where it read std::chrono's steady clock. Its times are plain microsecond counts; `Timer::now_us()` gives a reading. The nanosecond getter goes: nothing used it.
+    - **A dialog's button auto-repeat** (a held button repeats after 500 ms, then at the dialog's interval) keeps its per-pad press times as microsecond readings where they were steady-clock time points. The input loop is still woken once a frame; the repeat goes by real time, as before.
+  - **Tests:** test_emu_waits checks that a stopped timer keeps its time and that the milliseconds since a reading 5 ms before it started are 5; it fails on a timer that gives microseconds there. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if std::chrono comes back to Timer.h or the overlays' input loop.
+
+
 - **Shader cache loading: its dialog paced by frontend frames, off std::chrono.** Not yet run on a game.
   - **What changed:**
     - **With one worker** (the cache loaded on the calling thread, ten entries at a time), the loading dialog is updated when the frontend's frame count (`g_libretro_events`) has moved since the last update, and after the last entry. Before, it read the steady clock after each ten entries and updated when 16 ms had passed. With several workers it already went by the frame count.

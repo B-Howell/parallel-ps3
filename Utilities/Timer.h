@@ -2,30 +2,38 @@
 
 #include "util/types.hpp"
 
-#include <chrono>
+#include <features/features_cpu.h>
 
+// A stopwatch on libretro-common's monotonic microsecond clock
+// (cpu_features_get_time_usec): its times are plain microsecond counts
 class Timer
 {
 private:
 	bool m_stopped;
-	steady_clock::time_point m_start;
-	steady_clock::time_point m_end;
+	u64 m_start;
+	u64 m_end;
 
 public:
-	Timer() : m_stopped(false), m_start(steady_clock::now())
+	// Now, in microseconds, on the clock the timer reads
+	static u64 now_us()
+	{
+		return static_cast<u64>(cpu_features_get_time_usec());
+	}
+
+	Timer() : m_stopped(false), m_start(now_us()), m_end(0)
 	{
 	}
 
 	void Start()
 	{
 		m_stopped = false;
-		m_start = steady_clock::now();
+		m_start = now_us();
 	}
 
 	void Stop()
 	{
 		m_stopped = true;
-		m_end = steady_clock::now();
+		m_end = now_us();
 	}
 
 	double GetElapsedTimeInSec() const
@@ -40,22 +48,12 @@ public:
 
 	u64 GetElapsedTimeInMicroSec() const
 	{
-		const steady_clock::time_point now = m_stopped ? m_end : steady_clock::now();
-
-		return std::chrono::duration_cast<std::chrono::microseconds>(now - m_start).count();
+		return (m_stopped ? m_end : now_us()) - m_start;
 	}
 
-	u64 GetElapsedTimeInNanoSec() const
+	// Milliseconds since @timestamp_us (a now_us() reading)
+	u64 GetMsSince(u64 timestamp_us) const
 	{
-		const steady_clock::time_point now = m_stopped ? m_end : steady_clock::now();
-
-		return std::chrono::duration_cast<std::chrono::nanoseconds>(now - m_start).count();
-	}
-
-	u64 GetMsSince(steady_clock::time_point timestamp) const
-	{
-		const steady_clock::time_point now = m_stopped ? m_end : steady_clock::now();
-
-		return std::chrono::duration_cast<std::chrono::milliseconds>(now - timestamp).count();
+		return ((m_stopped ? m_end : now_us()) - timestamp_us) / 1000;
 	}
 };

@@ -137,12 +137,13 @@ namespace rsx
 
 			retro_atomic_store_release_int(&m_interactive, 1);
 
-			std::array<steady_clock::time_point, CELL_PAD_MAX_PORT_NUM> timestamp;
-			timestamp.fill(steady_clock::now());
+			// Microsecond readings of m_input_timer's clock (Timer::now_us)
+			std::array<u64, CELL_PAD_MAX_PORT_NUM> timestamp;
+			timestamp.fill(Timer::now_us());
 
 			constexpr u64 ms_threshold = 500;
-			std::array<steady_clock::time_point, CELL_PAD_MAX_PORT_NUM> initial_timestamp;
-			initial_timestamp.fill(steady_clock::now());
+			std::array<u64, CELL_PAD_MAX_PORT_NUM> initial_timestamp;
+			initial_timestamp.fill(timestamp[0]);
 
 			std::array<pad_button, CELL_PAD_MAX_PORT_NUM> last_auto_repeat_button;
 			last_auto_repeat_button.fill(pad_button::pad_button_max_enum);
@@ -178,7 +179,7 @@ namespace rsx
 					if (!last_state)
 					{
 						// The button was not pressed before, so this is a new button press. Reset auto-repeat.
-						timestamp[pad_index] = steady_clock::now();
+						timestamp[pad_index] = Timer::now_us();
 						initial_timestamp[pad_index] = timestamp[pad_index];
 						last_auto_repeat_button[pad_index] = is_auto_repeat_button ? button_id : pad_button::pad_button_max_enum;
 						// Acted on by the renderer, which owns the dialog
@@ -191,7 +192,7 @@ namespace rsx
 						    && m_input_timer.GetMsSince(timestamp[pad_index]) > m_auto_repeat_ms_interval)
 						{
 							// The auto-repeat button was pressed for at least the given threshold in ms and will trigger at an interval.
-							timestamp[pad_index] = steady_clock::now();
+							timestamp[pad_index] = Timer::now_us();
 							post_call([this, button_id]() { on_button_pressed(static_cast<pad_button>(button_id), true); });
 						}
 						else if (last_auto_repeat_button[pad_index] == pad_button::pad_button_max_enum)
