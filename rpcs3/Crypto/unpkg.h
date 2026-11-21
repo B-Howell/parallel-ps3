@@ -321,6 +321,12 @@ public:
 	} self_info;
 };
 
+// The installer's path check: @utf8_path resolved as the standard library's weakly_canonical resolves it (what exists of it
+// with its links resolved, the rest by its text; empty when it cannot be), and whether a resolved path lies in a
+// resolved directory by whole components
+std::string pkg_resolve_path(std::string_view utf8_path);
+bool pkg_path_is_inside(std::string_view root, std::string_view path);
+
 struct package_install_result
 {
 	enum class error_type

@@ -57,6 +57,9 @@
 #include <sstream>
 #include "Emu/system_config.h"
 #include "util/sysinfo.hpp"
+#include "Crypto/unpkg.h"
+#include <sys/stat.h>
+#include <unistd.h>
 #include "util/vm.hpp"
 #include "Emu/system_config_types.h"
 
@@ -169,6 +172,31 @@ int main()
 		CHECK(retro_atomic_load_acquire_int(&s_ran) == 1);
 		CHECK(retro_atomic_load_acquire_int(&s_freed) == 1);
 		std::printf("test_emu_waits: a detached thread: ran its callable and freed it\n");
+	}
+
+	// The PKG installer's path check: a file to be made under the install
+	// directory is inside it; one through a link that leads out, or in a
+	// directory beside it whose name begins with its, is not
+	{
+		char tmpl[] = "/tmp/pkg_paths_XXXXXX";
+		CHECK(mkdtemp(tmpl) != nullptr);
+		const std::string dir = tmpl;
+		const std::string install = dir + "/game";
+		CHECK(::mkdir(install.c_str(), 0700) == 0 && ::mkdir((dir + "/gamez").c_str(), 0700) == 0);
+		CHECK(::symlink("/tmp", (install + "/out").c_str()) == 0);
+
+		const std::string root = pkg_resolve_path(install);
+		CHECK(!root.empty());
+		CHECK(pkg_path_is_inside(root, pkg_resolve_path(install + "/USRDIR/new/EBOOT.BIN")));
+		CHECK(!pkg_path_is_inside(root, pkg_resolve_path(install + "/out/escaped")));
+		CHECK(!pkg_path_is_inside(root, pkg_resolve_path(dir + "/gamez/file")));
+		CHECK(pkg_path_is_inside(root, root));
+
+		::unlink((install + "/out").c_str());
+		::rmdir(install.c_str());
+		::rmdir((dir + "/gamez").c_str());
+		::rmdir(dir.c_str());
+		std::printf("test_emu_waits: the PKG path check: inside, out through a link, and a sibling, told apart\n");
 	}
 
 	// The host's memory use, read from /proc/meminfo with libretro-common's

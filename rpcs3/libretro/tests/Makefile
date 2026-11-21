@@ -1638,6 +1638,8 @@ check: all
 	@if grep -rn "stringstream\|std::ostream\b\|<sstream>" --include=*.cpp --include=*.h --include=*.hpp ../../Emu ../../util ../../Loader ../../Crypto ../../../Utilities; then echo "a string stream is back in the core"; exit 1; else echo "no string stream is left in the core"; fi
 	@# The core's libretro-common is RetroArch master's again, with path_resolve_realpath_weak
 	@if ! grep -q "path_resolve_realpath_weak" ../libretro-common/include/file/file_path.h; then echo "libretro-common is behind RetroArch's again (no path_resolve_realpath_weak)"; exit 1; else echo "libretro-common has RetroArch's path_resolve_realpath_weak"; fi
+	@# The PKG installer resolves its paths with libretro-common's path_resolve_realpath_weak: no std::filesystem is left in the core
+	@if grep -rn "std::filesystem\|<filesystem>" --include=*.cpp --include=*.h --include=*.hpp ../../Emu ../../util ../../Loader ../../Crypto ../../../Utilities; then echo "std::filesystem is back in the core"; exit 1; else echo "no std::filesystem is left in the core"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

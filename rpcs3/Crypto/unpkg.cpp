@@ -13,28 +13,42 @@
 #include "util/sysinfo.hpp"
 #include "Loader/PSF.h"
 
-#include <filesystem>
+#include <file/file_path.h>
+#include <retro_miscellaneous.h>
 
 LOG_CHANNEL(pkg_log, "PKG");
 
-// Every path in here is UTF-8, and these two conversions never fail: on Windows a byte no sequence accounts for
-// becomes U+FFFD, elsewhere a path is the bytes themselves
-static std::filesystem::path fs_path_from_utf8(std::string_view utf8)
-{
 #ifdef _WIN32
-	return utf8_to_wchar(utf8);
+static constexpr char s_pkg_sep = '\\';
 #else
-	return std::filesystem::path(utf8);
+static constexpr char s_pkg_sep = '/';
 #endif
+
+std::string pkg_resolve_path(std::string_view utf8_path)
+{
+	// libretro-common's path_resolve_realpath_weak, as the standard library's weakly_canonical: what exists of it with its
+	// links resolved, the rest by its text
+	std::string buf(utf8_path);
+	buf.resize(buf.size() + PATH_MAX_LENGTH);
+
+	if (!path_resolve_realpath_weak(buf.data(), buf.size()))
+	{
+		return {};
+	}
+
+	buf.resize(std::strlen(buf.c_str()));
+	return buf;
 }
 
-static std::string fs_path_to_utf8(const std::filesystem::path& path)
+bool pkg_path_is_inside(std::string_view root, std::string_view path)
 {
-#ifdef _WIN32
-	return wchar_to_utf8(path.native());
-#else
-	return path.native();
-#endif
+	// By whole components: "/a/b" is inside "/a", "/ab" is not
+	if (!path.starts_with(root))
+	{
+		return false;
+	}
+
+	return path.size() == root.size() || root.ends_with(s_pkg_sep) || path[root.size()] == s_pkg_sep;
 }
 
 // Whether a name read from the package could reach outside the directory it is joined to: a leading "/", or a "."
@@ -931,23 +945,22 @@ bool package_reader::fill_data(std::map<std::string, install_entry*>& all_instal
 		return false;
 	}
 
+	// A path that cannot be resolved (too long, or a ".." above the root) is empty, and an empty one is refused
 	const auto canonicalize = [](std::string_view utf8_path)
 	{
-		std::error_code ec;
-		auto result = std::filesystem::weakly_canonical(fs_path_from_utf8(utf8_path), ec);
+		std::string result = pkg_resolve_path(utf8_path);
 
-		if (ec)
+		if (result.empty())
 		{
-			pkg_log.warning("Failed to canonicalize path '%s' (%s); falling back to lexical normalization.", utf8_path, ec.message());
-			result = fs_path_from_utf8(utf8_path).lexically_normal();
+			pkg_log.warning("Failed to canonicalize path '%s'", utf8_path);
 		}
 
 		return result;
 	};
 
-	// weakly_canonical stats every prefix of a path that does not exist yet, and a package holds thousands of files in a
+	// Resolving stats every prefix of a path that does not exist yet, and a package holds thousands of files in a
 	// few hundred directories: a directory is resolved once, and a file not on disk is that result plus its own name
-	std::map<std::string, std::filesystem::path, std::less<>> canonical_dirs;
+	std::map<std::string, std::string, std::less<>> canonical_dirs;
 
 	// The installation directory is resolved without its closing "/", like every entry below it: on a file system that
 	// cannot resolve it, the lexical form would keep that separator as an empty last element no entry can match
@@ -958,7 +971,7 @@ bool package_reader::fill_data(std::map<std::string, install_entry*>& all_instal
 		install_dir.remove_suffix(1);
 	}
 
-	const std::filesystem::path install_path = canonicalize(install_dir);
+	const std::string install_path = canonicalize(install_dir);
 
 	if (install_path.empty())
 	{
@@ -966,9 +979,9 @@ bool package_reader::fill_data(std::map<std::string, install_entry*>& all_instal
 		return false;
 	}
 
-	const auto is_inside_install_path = [&install_path](const std::filesystem::path& path)
+	const auto is_inside_install_path = [&install_path](std::string_view path)
 	{
-		return std::mismatch(install_path.begin(), install_path.end(), path.begin(), path.end()).first == install_path.end();
+		return pkg_path_is_inside(install_path, path);
 	};
 
 	m_install_entries.clear();
@@ -1023,7 +1036,7 @@ bool package_reader::fill_data(std::map<std::string, install_entry*>& all_instal
 		const u8 entry_type = entry.type & 0xff;
 		const bool is_folder = entry_type == PKG_FILE_ENTRY_FOLDER || entry_type == 0x12;
 
-		std::filesystem::path canonical_path;
+		std::string canonical_path;
 
 		// A path already on disk is resolved as a whole: it may be a link, or be spelt otherwise there
 		if (is_folder || fs::exists(path))
@@ -1046,7 +1059,17 @@ bool package_reader::fill_data(std::map<std::string, install_entry*>& all_instal
 				found = canonical_dirs.emplace(std::string(dir), canonicalize(dir)).first;
 			}
 
-			canonical_path = found->second / fs_path_from_utf8(std::string_view(path).substr(slash + 1));
+			if (!found->second.empty())
+			{
+				canonical_path = found->second;
+
+				if (!canonical_path.ends_with(s_pkg_sep))
+				{
+					canonical_path += s_pkg_sep;
+				}
+
+				canonical_path += std::string_view(path).substr(slash + 1);
+			}
 		}
 
 		if (canonical_path.empty() || !is_inside_install_path(canonical_path))
@@ -1056,7 +1079,7 @@ bool package_reader::fill_data(std::map<std::string, install_entry*>& all_instal
 			break;
 		}
 
-		path = fs_path_to_utf8(canonical_path);
+		path = std::move(canonical_path);
 
 		if (entry.pad || (entry.type & ~PKG_FILE_ENTRY_KNOWN_BITS))
 		{

@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **PKG installer: its path check on libretro-common, no std::filesystem left in the core.** Not yet run on a game.
+  - **What changed:**
+    - **Every path a package installs to** is resolved with `path_resolve_realpath_weak` (libretro-common, from RetroArch): the part that exists with its links resolved, the rest by its text, as std::filesystem's weakly_canonical resolved it. A file is installed only if its resolved path lies in the resolved install directory by whole components (`pkg_path_is_inside`: `/a/b` is in `/a`, `/ab` is not), as std::filesystem's component-wise comparison checked. Directories are still resolved once each, the files in them joined to that.
+    - **A path that cannot be resolved** (too long, or a `..` above the root) is refused, where it fell back to its text alone: a name with `.` or `..` was already refused before it got there.
+  - **Tests:** test_emu_waits makes an install directory with a link inside it that leads to /tmp, and a directory beside it whose name begins with its: a new file under it is inside, one through the link is not, one in the other directory is not. It fails on a check by prefix alone, and on one that does not resolve links. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if std::filesystem comes back to the core.
+
+
 - **libretro-common resynced with RetroArch master.** Not yet run on a game.
   - **What changed:**
     - **Twelve files** are RetroArch master's again: `file_path` (path_resolve_realpath_weak, for the PKG installer next), `rtime` (the Gregorian calendar), `features_cpu` (Android ARM64 timer frequencies), `rjpeg_encode` and `formats/image.h` (a block at a time), `rslc` (C89 sprintf names) and `crypto/x509.c`. None of the core's own code changes with them.
