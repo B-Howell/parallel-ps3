@@ -29,12 +29,12 @@ protected:
 	std::string getFunction(FUNCTION f) override;
 	std::string compareFunction(COMPARE f, std::string_view Op0, std::string_view Op1, bool scalar) override;
 
-	void insertHeader(std::stringstream& OS) override;
-	void insertInputs(std::stringstream& OS, const std::vector<ParamType>& inputs) override;
-	void insertConstants(std::stringstream& OS, const std::vector<ParamType>& constants) override;
-	void insertOutputs(std::stringstream& OS, const std::vector<ParamType>& outputs) override;
-	void insertMainStart(std::stringstream& OS) override;
-	void insertMainEnd(std::stringstream& OS) override;
+	void insertHeader(fmt::text_writer& OS) override;
+	void insertInputs(fmt::text_writer& OS, const std::vector<ParamType>& inputs) override;
+	void insertConstants(fmt::text_writer& OS, const std::vector<ParamType>& constants) override;
+	void insertOutputs(fmt::text_writer& OS, const std::vector<ParamType>& outputs) override;
+	void insertMainStart(fmt::text_writer& OS) override;
+	void insertMainEnd(fmt::text_writer& OS) override;
 
 	const RSXVertexProgram &rsx_vertex_program;
 	std::unordered_map<std::string, int> input_locations;

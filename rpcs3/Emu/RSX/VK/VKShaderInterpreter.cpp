@@ -200,7 +200,7 @@ namespace vk
 		ParamType uniforms = { PF_PARAM_UNIFORM, "vec4" };
 		uniforms.items.emplace_back("vc[468]", -1);
 
-		std::stringstream builder;
+		fmt::text_writer builder;
 		comp.insertHeader(builder);
 		comp.insertConstants(builder, { uniforms });
 		comp.insertInputs(builder, {});
@@ -300,7 +300,7 @@ namespace vk
 
 		VKFragmentDecompilerThread comp(shader_str, arr, frag, len, *vk_prog);
 
-		std::stringstream builder;
+		fmt::text_writer builder;
 		builder <<
 		"#version 450\n"
 		"#extension GL_EXT_scalar_block_layout : require\n"

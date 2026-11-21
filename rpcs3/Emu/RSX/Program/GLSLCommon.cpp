@@ -10,7 +10,7 @@
 namespace program_common
 {
 	template <typename T>
-	void define_glsl_constants(std::ostream& OS, std::initializer_list<std::pair<const char*, T>> enums)
+	void define_glsl_constants(fmt::text_writer& OS, std::initializer_list<std::pair<const char*, T>> enums)
 	{
 		for (const auto& e : enums)
 		{
@@ -27,7 +27,7 @@ namespace program_common
 		OS << "\n";
 	}
 
-	void define_glsl_switches(std::ostream& OS, std::vector<std::string_view>& enums)
+	void define_glsl_switches(fmt::text_writer& OS, std::vector<std::string_view>& enums)
 	{
 		for (const auto& e : enums)
 		{
@@ -116,7 +116,7 @@ namespace glsl
 		fmt::throw_exception("Unknown compare function");
 	}
 
-	void insert_vertex_input_fetch(std::stringstream& OS, glsl_rules rules, bool glsl4_compliant)
+	void insert_vertex_input_fetch(fmt::text_writer& OS, glsl_rules rules, bool glsl4_compliant)
 	{
 		std::string vertex_id_name = (rules != glsl_rules_vulkan) ? "gl_VertexID" : "gl_VertexIndex";
 
@@ -144,14 +144,14 @@ namespace glsl
 		;
 	}
 
-	void insert_blend_prologue(std::ostream& OS)
+	void insert_blend_prologue(fmt::text_writer& OS)
 	{
 		OS <<
 			#include "GLSLSnippets/RSXProg/RSXProgrammableBlendPrologue.glsl"
 			;
 	}
 
-	void insert_rop_init(std::ostream& OS, u32 mrt_buffer_count)
+	void insert_rop_init(fmt::text_writer& OS, u32 mrt_buffer_count)
 	{
 		program_common::define_glsl_constants<u32>(OS,
 		{
@@ -163,14 +163,14 @@ namespace glsl
 			;
 	}
 
-	void insert_rop(std::ostream& OS, const shader_properties& /*props*/)
+	void insert_rop(fmt::text_writer& OS, const shader_properties& /*props*/)
 	{
 		OS <<
 			#include "GLSLSnippets/RSXProg/RSXROPEpilogue.glsl"
 			;
 	}
 
-	void insert_glsl_legacy_function(std::ostream& OS, const shader_properties& props)
+	void insert_glsl_legacy_function(fmt::text_writer& OS, const shader_properties& props)
 	{
 		std::vector<std::string_view> enabled_options;
 		if (props.low_precision_tests)
@@ -628,7 +628,7 @@ namespace glsl
 		return "$Ty(0.)";
 	}
 
-	void insert_subheader_block(std::ostream& OS)
+	void insert_subheader_block(fmt::text_writer& OS)
 	{
 		// Global types and stuff
 		// Must be compatible with std140 packing rules
@@ -638,7 +638,7 @@ namespace glsl
 	}
 
 	void insert_fragment_shader_inputs_block(
-		std::stringstream& OS,
+		fmt::text_writer& OS,
 		const std::string_view ext_flavour,
 		const RSXFragmentProgram& prog,
 		const std::vector<ParamType>& params,

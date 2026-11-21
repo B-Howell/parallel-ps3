@@ -280,7 +280,7 @@ namespace gl
 		ParamType uniforms = { PF_PARAM_UNIFORM, "vec4" };
 		uniforms.items.emplace_back("vc[468]", -1);
 
-		std::stringstream builder;
+		fmt::text_writer builder;
 		comp.insertHeader(builder);
 
 		builder << "#define Z_NEGATIVE_ONE_TO_ONE\n\n";
@@ -348,7 +348,7 @@ namespace gl
 		RSXFragmentProgram frag;
 		GLFragmentDecompilerThread comp(shader_str, arr, frag, len);
 
-		std::stringstream builder;
+		fmt::text_writer builder;
 		builder << "#version 450\n";
 
 		if (compiler_options & COMPILER_OPT_ENABLE_TEXTURES)

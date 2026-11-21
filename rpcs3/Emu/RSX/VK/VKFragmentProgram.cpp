@@ -107,7 +107,7 @@ void VKFragmentDecompilerThread::prepareBindingTable()
 	}
 }
 
-void VKFragmentDecompilerThread::insertHeader(std::stringstream & OS)
+void VKFragmentDecompilerThread::insertHeader(fmt::text_writer & OS)
 {
 	prepareBindingTable();
 
@@ -143,7 +143,7 @@ void VKFragmentDecompilerThread::insertHeader(std::stringstream & OS)
 	glsl::insert_subheader_block(OS);
 }
 
-void VKFragmentDecompilerThread::insertInputs(std::stringstream & OS)
+void VKFragmentDecompilerThread::insertInputs(fmt::text_writer & OS)
 {
 	glsl::insert_fragment_shader_inputs_block(
 		OS,
@@ -158,7 +158,7 @@ void VKFragmentDecompilerThread::insertInputs(std::stringstream & OS)
 	);
 }
 
-void VKFragmentDecompilerThread::insertOutputs(std::stringstream & OS)
+void VKFragmentDecompilerThread::insertOutputs(fmt::text_writer & OS)
 {
 	const std::pair<std::string, std::string> table[] =
 	{
@@ -192,7 +192,7 @@ void VKFragmentDecompilerThread::insertOutputs(std::stringstream & OS)
 	}
 }
 
-void VKFragmentDecompilerThread::insertConstants(std::stringstream & OS)
+void VKFragmentDecompilerThread::insertConstants(fmt::text_writer & OS)
 {
 	// Fixed inputs from shader decompilation process
 	for (const ParamType& PT : m_parr.params[PF_PARAM_UNIFORM])
@@ -382,7 +382,7 @@ void VKFragmentDecompilerThread::insertConstants(std::stringstream & OS)
 	inputs.push_back(in);
 }
 
-void VKFragmentDecompilerThread::insertGlobalFunctions(std::stringstream &OS)
+void VKFragmentDecompilerThread::insertGlobalFunctions(fmt::text_writer &OS)
 {
 	m_shader_props.domain = glsl::glsl_fragment_program;
 	m_shader_props.require_lit_emulation = properties.has_lit_op;
@@ -443,7 +443,7 @@ void VKFragmentDecompilerThread::insertGlobalFunctions(std::stringstream &OS)
 	glsl::insert_glsl_legacy_function(OS, m_shader_props);
 }
 
-void VKFragmentDecompilerThread::insertMainStart(std::stringstream & OS)
+void VKFragmentDecompilerThread::insertMainStart(fmt::text_writer & OS)
 {
 	std::set<std::string> output_registers;
 	if (m_prog.ctrl & CELL_GCM_SHADER_CONTROL_32_BITS_EXPORTS)
@@ -536,7 +536,7 @@ void VKFragmentDecompilerThread::insertMainStart(std::stringstream & OS)
 	}
 }
 
-void VKFragmentDecompilerThread::insertMainEnd(std::stringstream & OS)
+void VKFragmentDecompilerThread::insertMainEnd(fmt::text_writer & OS)
 {
 	OS << "}\n\n";
 

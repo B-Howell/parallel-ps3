@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Shaders: GLSL built with fmt::text_writer, no string streams left in the core.** Not yet run on a game.
+  - **What changed:**
+    - **`fmt::text_writer`** (StrFmt.h) is a `std::string` appended to with `<<`, as the decompilers used streams for: it writes what a std::ostringstream with its default flags writes (characters as themselves, bool as 1 or 0, integers and unscoped enums in decimal, strings as they are) with no stream buffer, locale or sentry per `<<`. Floating point and pointers other than strings will not compile with it, so no value can be formatted otherwise without being seen: none of the decompilers wrote one, so the shader text is the same byte for byte.
+    - **Every GLSL source the core makes** goes through it in place of std::stringstream: the vertex and fragment program decompilers (RSX Program), their OpenGL and Vulkan back ends, both shader interpreters and the shared GLSL helpers (GLSLCommon); `std::endl` there is a newline (nothing was flushed).
+  - **Tests:** test_emu_waits writes every type the decompilers write (u32, u8, s8, bool, negative and 64-bit integers, an unscoped enum, strings) to a text_writer and a std::ostringstream and checks the two texts are the same; it fails on a writer that writes bool as `true`. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if a string stream comes back to the core.
+
+
 - **No string streams in Thread.cpp and the PKG reader.** Not yet run on a game.
   - **What changed:**
     - **The stack trace logged on an unhandled host exception** (local builds with a C++23 stacktrace only) is `std::to_string` of it, where it went through a std::ostringstream.

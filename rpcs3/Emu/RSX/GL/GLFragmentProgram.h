@@ -37,13 +37,13 @@ protected:
 	std::string getFunction(FUNCTION f) override;
 	std::string compareFunction(COMPARE f, std::string_view Op0, std::string_view Op1) override;
 
-	void insertHeader(std::stringstream &OS) override;
-	void insertInputs(std::stringstream &OS) override;
-	void insertOutputs(std::stringstream &OS) override;
-	void insertConstants(std::stringstream &OS) override;
-	void insertGlobalFunctions(std::stringstream &OS) override;
-	void insertMainStart(std::stringstream &OS) override;
-	void insertMainEnd(std::stringstream &OS) override;
+	void insertHeader(fmt::text_writer &OS) override;
+	void insertInputs(fmt::text_writer &OS) override;
+	void insertOutputs(fmt::text_writer &OS) override;
+	void insertConstants(fmt::text_writer &OS) override;
+	void insertGlobalFunctions(fmt::text_writer &OS) override;
+	void insertMainStart(fmt::text_writer &OS) override;
+	void insertMainEnd(fmt::text_writer &OS) override;
 };
 
 /** Storage for an Fragment Program in the process of of recompilation.

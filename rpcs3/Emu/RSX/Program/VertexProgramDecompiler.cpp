@@ -1,7 +1,6 @@
 #include "stdafx.h"
 #include "VertexProgramDecompiler.h"
 
-#include <sstream>
 
 std::string VertexProgramDecompiler::GetMask(bool is_sca) const
 {
@@ -420,18 +419,18 @@ std::string VertexProgramDecompiler::BuildCode()
 		type_list->ReplaceOrInsert("vc[468]", item);
 	}
 
-	std::stringstream OS;
+	fmt::text_writer OS;
 	insertHeader(OS);
 
 	insertInputs(OS, m_parr.params[PF_PARAM_IN]);
-	OS << std::endl;
+	OS << '\n';
 	insertOutputs(OS, m_parr.params[PF_PARAM_NONE]);
-	OS << std::endl;
+	OS << '\n';
 	insertConstants(OS, m_parr.params[PF_PARAM_UNIFORM]);
-	OS << std::endl;
+	OS << '\n';
 
 	insertMainStart(OS);
-	OS << main_body.c_str() << std::endl;
+	OS << main_body.c_str() << '\n';
 	insertMainEnd(OS);
 
 	return OS.str();

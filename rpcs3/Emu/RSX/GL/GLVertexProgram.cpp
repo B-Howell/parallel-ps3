@@ -26,7 +26,7 @@ std::string GLVertexDecompilerThread::compareFunction(COMPARE f, std::string_vie
 	return glsl::compareFunctionImpl(f, Op0, Op1, scalar);
 }
 
-void GLVertexDecompilerThread::insertHeader(std::stringstream& OS)
+void GLVertexDecompilerThread::insertHeader(fmt::text_writer& OS)
 {
 	OS <<
 		"#version 430\n"
@@ -50,13 +50,13 @@ void GLVertexDecompilerThread::insertHeader(std::stringstream& OS)
 		"};\n\n";
 }
 
-void GLVertexDecompilerThread::insertInputs(std::stringstream& OS, const std::vector<ParamType>& /*inputs*/)
+void GLVertexDecompilerThread::insertInputs(fmt::text_writer& OS, const std::vector<ParamType>& /*inputs*/)
 {
 	OS << "layout(location=0) uniform usamplerBuffer persistent_input_stream;\n";    // Data stream with persistent vertex data (cacheable)
 	OS << "layout(location=1) uniform usamplerBuffer volatile_input_stream;\n";      // Data stream with per-draw data (registers and immediate draw data)
 }
 
-void GLVertexDecompilerThread::insertConstants(std::stringstream& OS, const std::vector<ParamType>& constants)
+void GLVertexDecompilerThread::insertConstants(fmt::text_writer& OS, const std::vector<ParamType>& constants)
 {
 	for (const ParamType &PT: constants)
 	{
@@ -150,7 +150,7 @@ static const vertex_reg_info reg_table[] =
 	{ "tc9", true, "dst_reg6", "", false, "", "", "", true, CELL_GCM_ATTRIB_OUTPUT_MASK_TEX9 }  // In this line, dst_reg6 is correct since dst_reg goes from 0 to 15.
 };
 
-void GLVertexDecompilerThread::insertOutputs(std::stringstream& OS, const std::vector<ParamType>& /*outputs*/)
+void GLVertexDecompilerThread::insertOutputs(fmt::text_writer& OS, const std::vector<ParamType>& /*outputs*/)
 {
 	for (auto &i : reg_table)
 	{
@@ -166,7 +166,7 @@ void GLVertexDecompilerThread::insertOutputs(std::stringstream& OS, const std::v
 	}
 }
 
-void GLVertexDecompilerThread::insertMainStart(std::stringstream& OS)
+void GLVertexDecompilerThread::insertMainStart(fmt::text_writer& OS)
 {
 	const auto& dev_caps = gl::get_driver_caps();
 
@@ -240,7 +240,7 @@ void GLVertexDecompilerThread::insertMainStart(std::stringstream& OS)
 	}
 }
 
-void GLVertexDecompilerThread::insertMainEnd(std::stringstream& OS)
+void GLVertexDecompilerThread::insertMainEnd(fmt::text_writer& OS)
 {
 	OS << "}\n\n";
 

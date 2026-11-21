@@ -53,6 +53,8 @@
 #include "Loader/TROPUSR.h"
 #include "util/dyn_lib.hpp"
 #include "Utilities/Timer.h"
+#include "Utilities/StrFmt.h"
+#include <sstream>
 #include "Emu/system_config.h"
 #include "util/sysinfo.hpp"
 #include "util/vm.hpp"
@@ -117,6 +119,25 @@ error_code cellSslEnd();
 
 int main()
 {
+	// The shader decompilers' text (fmt::text_writer): what a default
+	// std::ostringstream writes for every type they hand it, byte for byte
+	{
+		enum unscoped_index : u32 { index_two = 2 };
+		const std::string str = "vec4";
+		const std::string_view view = "frag_depth";
+
+		fmt::text_writer w;
+		std::ostringstream o;
+		const auto both = [&](const auto& v) { w << v; o << v; };
+
+		both("layout(location="); both(u32{7}); both(','); both(u8{'x'}); both(s8{'y'});
+		both(true); both(false); both(-42); both(s64{-1} << 40); both(u64{umax});
+		both(u16{65535}); both(index_two); both(str); both(view); both('\n');
+
+		CHECK(w.str() == o.str());
+		std::printf("test_emu_waits: shader text: %zu bytes, as a stream writes them\n", w.str().size());
+	}
+
 	// A detached thread (thread_ctrl::spawn_detached, on rthreads): it runs
 	// its callable, a move-only one too, and frees it when done
 	{

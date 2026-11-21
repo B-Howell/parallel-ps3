@@ -10,12 +10,12 @@
 * - virtual std::string getFloatTypeName(usz elementCount) = 0;
 * - virtual std::string getFunction(enum class FUNCTION) = 0;
 * - virtual std::string compareFunction(enum class COMPARE, const std::string &, const std::string &) = 0;
-* - virtual void insertHeader(std::stringstream &OS) = 0;
-* - virtual void insertInputs(std::stringstream &OS) = 0;
-* - virtual void insertOutputs(std::stringstream &OS) = 0;
-* - virtual void insertConstants(std::stringstream &OS) = 0;
-* - virtual void insertMainStart(std::stringstream &OS) = 0;
-* - virtual void insertMainEnd(std::stringstream &OS) = 0;
+* - virtual void insertHeader(fmt::text_writer &OS) = 0;
+* - virtual void insertInputs(fmt::text_writer &OS) = 0;
+* - virtual void insertOutputs(fmt::text_writer &OS) = 0;
+* - virtual void insertConstants(fmt::text_writer &OS) = 0;
+* - virtual void insertMainStart(fmt::text_writer &OS) = 0;
+* - virtual void insertMainEnd(fmt::text_writer &OS) = 0;
 */
 struct VertexProgramDecompiler
 {
@@ -107,27 +107,27 @@ protected:
 
 	/** Insert header of shader file (eg #version, "system constants"...)
 	*/
-	virtual void insertHeader(std::stringstream& OS) = 0;
+	virtual void insertHeader(fmt::text_writer& OS) = 0;
 
 	/** Insert vertex declaration.
 	*/
-	virtual void insertInputs(std::stringstream& OS, const std::vector<ParamType>& inputs) = 0;
+	virtual void insertInputs(fmt::text_writer& OS, const std::vector<ParamType>& inputs) = 0;
 
 	/** insert global declaration of vertex shader outputs.
 	*/
-	virtual void insertConstants(std::stringstream& OS, const std::vector<ParamType>& constants) = 0;
+	virtual void insertConstants(fmt::text_writer& OS, const std::vector<ParamType>& constants) = 0;
 
 	/** insert declaration of shader constants.
 	*/
-	virtual void insertOutputs(std::stringstream& OS, const std::vector<ParamType>& outputs) = 0;
+	virtual void insertOutputs(fmt::text_writer& OS, const std::vector<ParamType>& outputs) = 0;
 
 	/** insert beginning of main (signature, temporary declaration...)
 	*/
-	virtual void insertMainStart(std::stringstream& OS) = 0;
+	virtual void insertMainStart(fmt::text_writer& OS) = 0;
 
 	/** insert end of main function (return value, output copy...)
 	*/
-	virtual void insertMainEnd(std::stringstream& OS) = 0;
+	virtual void insertMainEnd(fmt::text_writer& OS) = 0;
 
 public:
 	struct

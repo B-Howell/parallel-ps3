@@ -25,7 +25,7 @@ std::string GLFragmentDecompilerThread::compareFunction(COMPARE f, std::string_v
 	return glsl::compareFunctionImpl(f, Op0, Op1);
 }
 
-void GLFragmentDecompilerThread::insertHeader(std::stringstream & OS)
+void GLFragmentDecompilerThread::insertHeader(fmt::text_writer & OS)
 {
 	int gl_version = 430;
 	std::vector<std::string> required_extensions;
@@ -73,7 +73,7 @@ void GLFragmentDecompilerThread::insertHeader(std::stringstream & OS)
 	glsl::insert_subheader_block(OS);
 }
 
-void GLFragmentDecompilerThread::insertInputs(std::stringstream & OS)
+void GLFragmentDecompilerThread::insertInputs(fmt::text_writer & OS)
 {
 	glsl::insert_fragment_shader_inputs_block(
 		OS,
@@ -88,7 +88,7 @@ void GLFragmentDecompilerThread::insertInputs(std::stringstream & OS)
 	);
 }
 
-void GLFragmentDecompilerThread::insertOutputs(std::stringstream & OS)
+void GLFragmentDecompilerThread::insertOutputs(fmt::text_writer & OS)
 {
 	const std::pair<std::string, std::string> table[] =
 	{
@@ -118,7 +118,7 @@ void GLFragmentDecompilerThread::insertOutputs(std::stringstream & OS)
 	}
 }
 
-void GLFragmentDecompilerThread::insertConstants(std::stringstream & OS)
+void GLFragmentDecompilerThread::insertConstants(fmt::text_writer & OS)
 {
 	for (const ParamType& PT : m_parr.params[PF_PARAM_UNIFORM])
 	{
@@ -213,7 +213,7 @@ void GLFragmentDecompilerThread::insertConstants(std::stringstream & OS)
 	"#define TEX_PARAM(index) texture_parameters[index]\n\n";
 }
 
-void GLFragmentDecompilerThread::insertGlobalFunctions(std::stringstream &OS)
+void GLFragmentDecompilerThread::insertGlobalFunctions(fmt::text_writer &OS)
 {
 	m_shader_props.domain = glsl::glsl_fragment_program;
 	m_shader_props.require_lit_emulation = properties.has_lit_op;
@@ -253,7 +253,7 @@ void GLFragmentDecompilerThread::insertGlobalFunctions(std::stringstream &OS)
 	glsl::insert_glsl_legacy_function(OS, m_shader_props);
 }
 
-void GLFragmentDecompilerThread::insertMainStart(std::stringstream & OS)
+void GLFragmentDecompilerThread::insertMainStart(fmt::text_writer & OS)
 {
 	std::set<std::string> output_registers;
 	if (m_prog.ctrl & CELL_GCM_SHADER_CONTROL_32_BITS_EXPORTS)
@@ -336,7 +336,7 @@ void GLFragmentDecompilerThread::insertMainStart(std::stringstream & OS)
 	}
 }
 
-void GLFragmentDecompilerThread::insertMainEnd(std::stringstream & OS)
+void GLFragmentDecompilerThread::insertMainEnd(fmt::text_writer & OS)
 {
 	OS << "}\n\n";
 

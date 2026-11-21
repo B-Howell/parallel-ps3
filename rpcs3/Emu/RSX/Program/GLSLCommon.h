@@ -1,6 +1,6 @@
 #pragma once
-#include <sstream>
 #include <string_view>
+#include "Utilities/StrFmt.h"
 
 #include "GLSLTypes.h"
 #include "ShaderParam.h"
@@ -79,15 +79,15 @@ namespace glsl
 	std::string getFloatTypeNameImpl(usz elementCount);
 	std::string getHalfTypeNameImpl(usz elementCount);
 	std::string compareFunctionImpl(COMPARE f, std::string_view Op0, std::string_view Op1, bool scalar = false);
-	void insert_vertex_input_fetch(std::stringstream& OS, glsl_rules rules, bool glsl4_compliant=true);
-	void insert_rop_init(std::ostream& OS, u32 mrt_buffers_count);
-	void insert_rop(std::ostream& OS, const shader_properties& props);
-	void insert_glsl_legacy_function(std::ostream& OS, const shader_properties& props);
+	void insert_vertex_input_fetch(fmt::text_writer& OS, glsl_rules rules, bool glsl4_compliant=true);
+	void insert_rop_init(fmt::text_writer& OS, u32 mrt_buffers_count);
+	void insert_rop(fmt::text_writer& OS, const shader_properties& props);
+	void insert_glsl_legacy_function(fmt::text_writer& OS, const shader_properties& props);
 	std::string getFunctionImpl(FUNCTION f);
-	void insert_subheader_block(std::ostream& OS);
+	void insert_subheader_block(fmt::text_writer& OS);
 
 	void insert_fragment_shader_inputs_block(
-		std::stringstream& OS,
+		fmt::text_writer& OS,
 		const std::string_view bary_coords_extenstion_type,
 		const RSXFragmentProgram& prog,
 		const std::vector<ParamType>& params,

@@ -70,7 +70,7 @@ void VKVertexDecompilerThread::prepareBindingTable()
 	}
 }
 
-void VKVertexDecompilerThread::insertHeader(std::stringstream& OS)
+void VKVertexDecompilerThread::insertHeader(fmt::text_writer& OS)
 {
 	prepareBindingTable();
 
@@ -159,7 +159,7 @@ void VKVertexDecompilerThread::insertHeader(std::stringstream& OS)
 	inputs.push_back(std::move(push_constants));
 }
 
-void VKVertexDecompilerThread::insertInputs(std::stringstream& OS, const std::vector<ParamType>& /*inputs*/)
+void VKVertexDecompilerThread::insertInputs(fmt::text_writer& OS, const std::vector<ParamType>& /*inputs*/)
 {
 	static const char* input_streams[] =
 	{
@@ -183,7 +183,7 @@ void VKVertexDecompilerThread::insertInputs(std::stringstream& OS, const std::ve
 	}
 }
 
-void VKVertexDecompilerThread::insertConstants(std::stringstream& OS, const std::vector<ParamType>& constants)
+void VKVertexDecompilerThread::insertConstants(fmt::text_writer& OS, const std::vector<ParamType>& constants)
 {
 	vk::glsl::program_input in
 	{
@@ -302,7 +302,7 @@ static const vertex_reg_info reg_table[] =
 	{ "tc9", true, "dst_reg6", "", false, "", "", "", true, CELL_GCM_ATTRIB_OUTPUT_MASK_TEX9 }  // In this line, dst_reg6 is correct since dst_reg goes from 0 to 15.
 };
 
-void VKVertexDecompilerThread::insertOutputs(std::stringstream& OS, const std::vector<ParamType>& /*outputs*/)
+void VKVertexDecompilerThread::insertOutputs(fmt::text_writer& OS, const std::vector<ParamType>& /*outputs*/)
 {
 	for (auto &i : reg_table)
 	{
@@ -323,7 +323,7 @@ void VKVertexDecompilerThread::insertOutputs(std::stringstream& OS, const std::v
 	}
 }
 
-void VKVertexDecompilerThread::insertFSExport(std::stringstream& OS)
+void VKVertexDecompilerThread::insertFSExport(fmt::text_writer& OS)
 {
 	OS <<
 		"void write_fs_payload()\n"
@@ -335,7 +335,7 @@ void VKVertexDecompilerThread::insertFSExport(std::stringstream& OS)
 		"}\n\n";
 }
 
-void VKVertexDecompilerThread::insertMainStart(std::stringstream& OS)
+void VKVertexDecompilerThread::insertMainStart(fmt::text_writer& OS)
 {
 	glsl::shader_properties properties2{};
 	properties2.domain = glsl::glsl_vertex_program;
@@ -419,7 +419,7 @@ void VKVertexDecompilerThread::insertMainStart(std::stringstream& OS)
 	OS << "\nuint xform_constants_offset = get_draw_params().xform_constants_offset;\n\n";
 }
 
-void VKVertexDecompilerThread::insertMainEnd(std::stringstream& OS)
+void VKVertexDecompilerThread::insertMainEnd(fmt::text_writer& OS)
 {
 	OS << "}\n\n";
 

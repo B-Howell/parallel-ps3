@@ -811,7 +811,7 @@ std::string FragmentProgramDecompiler::BuildCode()
 	std::array<std::string, 4> output_register_names;
 
 	// Holder for any "cleanup" before exiting main
-	std::stringstream main_epilogue;
+	fmt::text_writer main_epilogue;
 
 	// Check depth export
 	if (m_prog.ctrl & CELL_GCM_SHADER_CONTROL_DEPTH_EXPORT)
@@ -864,7 +864,7 @@ std::string FragmentProgramDecompiler::BuildCode()
 		m_parr.AddParam(PF_PARAM_CONST, getFloatTypeName(4), var_name);
 	}
 
-	std::stringstream OS;
+	fmt::text_writer OS;
 
 	if (!m_is_valid_ucode)
 	{
@@ -1058,12 +1058,12 @@ std::string FragmentProgramDecompiler::BuildCode()
 	}
 
 	insertMainStart(OS);
-	OS << main << std::endl;
+	OS << main << '\n';
 
 	if (const auto epilogue = main_epilogue.str(); !epilogue.empty())
 	{
 		OS << "	// Epilogue\n";
-		OS << epilogue << std::endl;
+		OS << epilogue << '\n';
 	}
 	insertMainEnd(OS);
 

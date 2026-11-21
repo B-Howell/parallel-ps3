@@ -2,7 +2,6 @@
 #include "ShaderParam.h"
 #include "RSXFragmentProgram.h"
 
-#include <sstream>
 #include <unordered_map>
 
 /**
@@ -13,12 +12,12 @@
  * - virtual std::string getFunction(enum class FUNCTION) = 0;
  * - virtual std::string saturate(const std::string &code) = 0;
  * - virtual std::string compareFunction(enum class COMPARE, const std::string &, const std::string &) = 0;
- * - virtual void insertHeader(std::stringstream &OS) = 0;
- * - virtual void insertInputs(std::stringstream &OS) = 0;
- * - virtual void insertOutputs(std::stringstream &OS) = 0;
- * - virtual void insertConstants(std::stringstream &OS) = 0;
- * - virtual void insertMainStart(std::stringstream &OS) = 0;
- * - virtual void insertMainEnd(std::stringstream &OS) = 0;
+ * - virtual void insertHeader(fmt::text_writer &OS) = 0;
+ * - virtual void insertInputs(fmt::text_writer &OS) = 0;
+ * - virtual void insertOutputs(fmt::text_writer &OS) = 0;
+ * - virtual void insertConstants(fmt::text_writer &OS) = 0;
+ * - virtual void insertMainStart(fmt::text_writer &OS) = 0;
+ * - virtual void insertMainEnd(fmt::text_writer &OS) = 0;
  */
 class FragmentProgramDecompiler
 {
@@ -117,25 +116,25 @@ protected:
 
 	/** Insert header of shader file (eg #version, "system constants"...)
 	 */
-	virtual void insertHeader(std::stringstream& OS) = 0;
+	virtual void insertHeader(fmt::text_writer& OS) = 0;
 	/** Insert global declaration of fragments inputs.
 	 */
-	virtual void insertInputs(std::stringstream& OS) = 0;
+	virtual void insertInputs(fmt::text_writer& OS) = 0;
 	/** insert global declaration of fragments outputs.
 	*/
-	virtual void insertOutputs(std::stringstream& OS) = 0;
+	virtual void insertOutputs(fmt::text_writer& OS) = 0;
 	/** insert declaration of shader constants.
 	*/
-	virtual void insertConstants(std::stringstream& OS) = 0;
+	virtual void insertConstants(fmt::text_writer& OS) = 0;
 	/** insert helper function definitions.
 	*/
-	virtual void insertGlobalFunctions(std::stringstream& OS) = 0;
+	virtual void insertGlobalFunctions(fmt::text_writer& OS) = 0;
 	/** insert beginning of main (signature, temporary declaration...)
 	*/
-	virtual void insertMainStart(std::stringstream& OS) = 0;
+	virtual void insertMainStart(fmt::text_writer& OS) = 0;
 	/** insert end of main function (return value, output copy...)
 	 */
-	virtual void insertMainEnd(std::stringstream& OS) = 0;
+	virtual void insertMainEnd(fmt::text_writer& OS) = 0;
 
 public:
 	enum : u16

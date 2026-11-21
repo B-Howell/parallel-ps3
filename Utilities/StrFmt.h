@@ -339,6 +339,37 @@ namespace fmt
 		}
 	};
 
+	// Text built by appending with <<, as a C++ string stream was used for
+	// it, with no stream, locale or buffer of its own: what a stream with its
+	// default flags wrote, it writes (characters as themselves, bool as 1 or
+	// 0, other integers and unscoped enums in decimal). Floating point and
+	// pointers other than strings are refused, so their formatting is chosen
+	// where they are written
+	struct text_writer
+	{
+		std::string text;
+
+		text_writer& operator<<(const char* s) { text.append(s); return *this; }
+		text_writer& operator<<(std::string_view s) { text.append(s); return *this; }
+		text_writer& operator<<(const std::string& s) { text.append(s); return *this; }
+		text_writer& operator<<(char c) { text.push_back(c); return *this; }
+		text_writer& operator<<(signed char c) { text.push_back(static_cast<char>(c)); return *this; }
+		text_writer& operator<<(unsigned char c) { text.push_back(static_cast<char>(c)); return *this; }
+		text_writer& operator<<(bool b) { text.push_back(b ? '1' : '0'); return *this; }
+
+		template <typename T> requires (std::is_integral_v<T> && !std::is_same_v<T, bool> && !std::is_same_v<T, char> && !std::is_same_v<T, signed char> && !std::is_same_v<T, unsigned char>)
+		text_writer& operator<<(T v) { text += std::to_string(v); return *this; }
+
+		// An unscoped enum as its value, as a stream promotes it
+		template <typename T> requires (std::is_enum_v<T> && !std::is_scoped_enum_v<T>)
+		text_writer& operator<<(T v) { return *this << static_cast<std::underlying_type_t<T>>(v); }
+
+		template <typename T> requires (std::is_floating_point_v<T> || std::is_pointer_v<T>)
+		text_writer& operator<<(T) = delete;
+
+		const std::string& str() const { return text; }
+	};
+
 	struct base57_result : public base57
 	{
 		std::unique_ptr<uchar[]> memory;
