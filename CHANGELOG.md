@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Logs: message stamps on libretro-common's clock, off std::chrono.** Not yet run on a game.
+  - **What changed:**
+    - **A log message's stamp** (microseconds since the first message) reads `cpu_features_get_time_usec`, libretro-common's monotonic microsecond clock, on every host. It read std::chrono's steady clock, or on Windows QueryPerformanceCounter with its own arithmetic (the same arithmetic libretro-common's does). The stamp is one subtraction from the first reading, kept in a static.
+  - **Tests:** test_vfs_positional logs two messages 2 ms apart by that clock and checks their stamps are 2000 to 500000 apart; it fails on stamps in nanoseconds. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if std::chrono or a clock of its own comes back to logs.cpp.
+
+
 - **Overlays: their stopwatch and button auto-repeat on libretro-common's clock, off std::chrono.** Not yet run on a game.
   - **What changed:**
     - **Utilities/Timer.h** (the stopwatch the overlays use: the performance overlay's update and frame times, and the dialogs' input loop) reads `cpu_features_get_time_usec`, libretro-common's monotonic microsecond clock, where it read std::chrono's steady clock. Its times are plain microsecond counts; `Timer::now_us()` gives a reading. The nanosecond getter goes: nothing used it.

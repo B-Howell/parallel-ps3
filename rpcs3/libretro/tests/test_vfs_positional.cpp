@@ -40,6 +40,7 @@
 #include <malloc.h>
 
 #include <retro_atomic.h>
+#include <features/features_cpu.h>
 
 #include <cstdio>
 #include <cstring>
@@ -607,6 +608,36 @@ int main()
 		CHECK(found == 2000);
 		fs::remove_file(path);
 		fs::remove_file(path + ".gz");
+	}
+
+	// A message's stamp: microseconds on libretro-common's monotonic clock,
+	// so two messages logged 2 ms apart (by that clock) are about 2000 apart
+	{
+		struct stamps final : logs::listener
+		{
+			u64 got[2]{};
+			u32 count = 0;
+
+			void log(u64 stamp, const logs::message&, std::string_view, std::string_view) override
+			{
+				if (count < 2)
+					got[count++] = stamp;
+			}
+		} heard;
+
+		logs::listener::add(&heard);
+		logs::set_ceiling(logs::level::trace);
+		test_log.notice("the first stamp");
+		const retro_time_t t0 = cpu_features_get_time_usec();
+		while (cpu_features_get_time_usec() - t0 < 2000)
+			std::this_thread::yield(); // not pacing: the test's 2 ms between messages
+		test_log.notice("the second stamp");
+		logs::set_ceiling(logs::level::fatal);
+		logs::listener::remove(&heard);
+		CHECK(heard.count == 2);
+		const u64 apart = heard.got[1] - heard.got[0];
+		CHECK(heard.got[1] >= heard.got[0] && apart >= 2000 && apart < 500000);
+		std::printf("test_vfs_positional: two messages 2 ms apart: stamps %llu us apart\n", static_cast<unsigned long long>(apart));
 	}
 
 	// The log file with no lock: four threads logging at once, the writer

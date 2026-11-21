@@ -7,7 +7,6 @@
 #include <string>
 #include <unordered_map>
 #include <thread>
-#include <chrono>
 #include <cstring>
 #include <cerrno>
 #include <regex>
@@ -15,8 +14,7 @@
 #include <retro_atomic.h>
 #include <rthreads/retro_waitaddr.h>
 #include <queues/mpsc_stack.h>
-
-using namespace std::literals::chrono_literals;
+#include <features/features_cpu.h>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -169,37 +167,13 @@ namespace logs
 		return &logger;
 	}
 
+	// Microseconds since the first message, on libretro-common's monotonic
+	// clock (cpu_features_get_time_usec)
 	static u64 get_stamp()
 	{
-		static struct time_initializer
-		{
-#ifdef _WIN32
-			LARGE_INTEGER freq;
-			LARGE_INTEGER start;
+		static const retro_time_t start = cpu_features_get_time_usec();
 
-			time_initializer()
-			{
-				QueryPerformanceFrequency(&freq);
-				QueryPerformanceCounter(&start);
-			}
-#else
-			steady_clock::time_point start = steady_clock::now();
-#endif
-
-			u64 get() const
-			{
-#ifdef _WIN32
-				LARGE_INTEGER now;
-				QueryPerformanceCounter(&now);
-				const LONGLONG diff = now.QuadPart - start.QuadPart;
-				return diff / freq.QuadPart * 1'000'000 + diff % freq.QuadPart * 1'000'000 / freq.QuadPart;
-#else
-				return (steady_clock::now() - start).count() / 1000;
-#endif
-			}
-		} timebase{};
-
-		return timebase.get();
+		return static_cast<u64>(cpu_features_get_time_usec() - start);
 	}
 
 	// No lock: the channel registry is made at static initialisation, before
