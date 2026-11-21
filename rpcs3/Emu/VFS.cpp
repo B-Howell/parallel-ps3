@@ -1,5 +1,4 @@
 #include "stdafx.h"
-#include "util/tsc.hpp"
 #include "IdManager.h"
 #include "emu_callbacks.h"
 #include "System.h"
@@ -1132,7 +1131,7 @@ std::string vfs::unescape(std::string_view name)
 
 std::string vfs::host::hash_path(const std::string& path, const std::string& dev_root, std::string_view prefix)
 {
-	return fmt::format(u8"%s/＄%s%s%s", dev_root, fmt::base57(std::hash<std::string>()(path)), prefix, fmt::base57(utils::get_unique_tsc()));
+	return fmt::format(u8"%s/＄%s%s%s", dev_root, fmt::base57(std::hash<std::string>()(path)), prefix, fmt::base57(fs::unique_id()));
 }
 
 bool vfs::host::rename(const std::string& from, const std::string& to, const lv2_fs_mount_point* mp, bool overwrite, bool lock)

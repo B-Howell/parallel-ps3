@@ -1,5 +1,4 @@
 #include "stdafx.h"
-#include "util/tsc.hpp"
 #include "Emu/VFS.h"
 #include "Emu/System.h"
 #include "TRP.h"
@@ -31,7 +30,7 @@ bool TRPLoader::Install(std::string_view dest, bool /*show*/)
 
 	const std::string local_path = vfs::get(dest);
 
-	const std::string temp = fmt::format(u8"%s.＄temp＄%u", local_path, utils::get_unique_tsc());
+	const std::string temp = fmt::format(u8"%s.＄temp＄%u", local_path, fs::unique_id());
 
 	if (!fs::create_dir(temp))
 	{

@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Temporary file names without the TSC.** Not yet run on a game.
+  - **What changed:**
+    - **The number in a temporary file's name** (the file replaced in one step by fs, a VFS temporary path, the trophy loader's temporary copy, and the prefix of a virtual device) comes from `fs::unique_id` in File.h: one past the last number given, counting from 64 bits of `crypto_random_bytes`, libretro-common's entropy source, taken on the first call. It was `utils::get_unique_tsc`, which read the CPU's timestamp counter on each call; that goes from tsc.hpp. Names stay unique within a run (a counter, a compare-and-swap only the first time) and differ between runs (the random start). If no entropy source answers, the count starts at 1.
+  - **Tests:** test_vfs_positional takes two numbers and checks they are one apart and not 0; it fails on a number that does not count. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if get_unique_tsc comes back.
+
+
 - **std::chrono out of the core: types.hpp no longer includes it.** Not yet run on a game.
   - **What changed:**
     - **types.hpp** (included by every file) no longer includes `<chrono>` or brings `steady_clock` into the global namespace. Nothing in the core uses std::chrono any more: its times are microsecond counts, on libretro-common's clock where they are real time.

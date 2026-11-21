@@ -1610,6 +1610,8 @@ check: all
 	@if grep -rn "std::chrono\|steady_clock\|<chrono>" ../../Emu/NP --include=*.cpp --include=*.h; then echo "std::chrono is back in Emu/NP"; exit 1; else echo "Emu/NP keeps its times without std::chrono"; fi
 	@# types.hpp, which every file includes, no longer brings in <chrono> or steady_clock: std::chrono is out of the core
 	@if grep -n "chrono\|steady_clock" ../../util/types.hpp || grep -rln "std::chrono\|steady_clock\|system_clock\|<chrono>" --include=*.cpp --include=*.h --include=*.hpp ../../Emu ../../util ../../Loader ../../Crypto ../../../Utilities ../*.cpp ../*.h; then echo "std::chrono is back in the core"; exit 1; else echo "std::chrono is out of the core"; fi
+	@# Temporary file names are numbered by fs::unique_id, a counter from a random start: no TSC read names a file
+	@if grep -rn "get_unique_tsc" --include=*.cpp --include=*.h --include=*.hpp ../../Emu ../../util ../../Loader ../../../Utilities; then echo "get_unique_tsc is back"; exit 1; else echo "temporary file names read no clock"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

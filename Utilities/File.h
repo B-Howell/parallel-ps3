@@ -5,6 +5,7 @@
 #include "util/shared_ptr.hpp"
 #include "bit_set.h"
 #include <retro_atomic.h>
+#include <crypto/kdf.h>
 
 #include <memory>
 #include <string>
@@ -13,6 +14,27 @@
 
 namespace fs
 {
+	// A number no other call in this process returns, for temporary file
+	// names: one past the last, counting from 64 bits of libretro-common's
+	// entropy source (crypto_random_bytes) taken on the first call, so names
+	// differ between runs too. It reads no clock
+	inline u64 unique_id()
+	{
+		static retro_atomic_64_t s_next;
+
+		if (retro_atomic_load_acquire_64(&s_next) == 0)
+		{
+			u64 start = 0;
+			crypto_random_bytes(reinterpret_cast<uint8_t*>(&start), sizeof(start));
+			start |= 1; // never 0, which means not yet started
+
+			// The first to start wins; the others count from its start
+			retro_atomic_cas_64(&s_next, 0, static_cast<s64>(start));
+		}
+
+		return static_cast<u64>(retro_atomic_fetch_add_64(&s_next, 1));
+	}
+
 #ifdef _WIN32
 	static constexpr auto& delim = "/\\";
 	static constexpr auto& wdelim = L"/\\";

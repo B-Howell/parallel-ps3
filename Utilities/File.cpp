@@ -1,5 +1,4 @@
 #include "File.h"
-#include "util/tsc.hpp"
 #include "mutex.h"
 #include "StrFmt.h"
 
@@ -510,7 +509,7 @@ namespace fs
 	}
 
 	device_base::device_base()
-		: fs_prefix(fmt::format("/vfsv0_%s%s_", fmt::base57(reinterpret_cast<u64>(this)), fmt::base57(utils::get_unique_tsc())))
+		: fs_prefix(fmt::format("/vfsv0_%s%s_", fmt::base57(reinterpret_cast<u64>(this)), fmt::base57(fs::unique_id())))
 	{
 	}
 
@@ -3150,7 +3149,7 @@ std::string fs::generate_neighboring_path(std::string_view source, [[maybe_unuse
 {
 	// Seed is currently not used
 
-	return fmt::format(u8"%s/＄%s.%s.tmp", get_parent_dir(source), source.substr(source.find_last_of(fs::delim) + 1), fmt::base57(utils::get_unique_tsc()));
+	return fmt::format(u8"%s/＄%s.%s.tmp", get_parent_dir(source), source.substr(source.find_last_of(fs::delim) + 1), fmt::base57(fs::unique_id()));
 }
 
 bool fs::pending_file::open(std::string_view path)

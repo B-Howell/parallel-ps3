@@ -610,6 +610,15 @@ int main()
 		fs::remove_file(path + ".gz");
 	}
 
+	// A temporary file's number (fs::unique_id): counted from a random start,
+	// so two calls give two numbers one apart, and none is 0
+	{
+		const u64 a = fs::unique_id();
+		const u64 b = fs::unique_id();
+		CHECK(a != 0 && b == a + 1);
+		std::printf("test_vfs_positional: two temporary file numbers: one apart, from a random start\n");
+	}
+
 	// A message's stamp: microseconds on libretro-common's monotonic clock,
 	// so two messages logged 2 ms apart (by that clock) are about 2000 apart
 	{
