@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Logs: the file writer on libretro-common's rthreads, not std::thread.** Not yet run on a game.
+  - **What changed:**
+    - **The thread that writes the log file** is made with `sthread_create` and joined with `sthread_join` (libretro-common's rthreads), where it was a std::thread; its body is a member function of the writer, unchanged.
+  - **Tests:** test_vfs_positional's log file case (four threads logging at once, every line there in order) goes through the writer; with no writer thread it never finishes. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if std::thread comes back to logs.cpp.
+
+
 - **No C++ file streams: /proc and sysfs read with libretro-common's filestream, the fallback copy through fs::file.** Not yet run on a game.
   - **What changed:**
     - **The host's memory use** (/proc/meminfo, for the performance overlay), **the CPU's per-core use** (/proc/stat) and **the kernel's clock sources** (sysfs, read once to decide whether the TSC can be trusted) are each read whole with `filestream_read_file`, libretro-common's whole-file read (it reads to the end when, as here, the file gives no size), and looked at in place: split into lines as views, numbers with `strtoull`. They went through std::ifstream, with getline into a string per line, or a stringstream copied out once more (/proc/stat, twice a second while the overlay shows it).

@@ -13,6 +13,7 @@
 
 #include <retro_atomic.h>
 #include <rthreads/retro_waitaddr.h>
+#include <rthreads/rthreads.h>
 #include <queues/mpsc_stack.h>
 #include <features/features_cpu.h>
 
@@ -79,7 +80,7 @@ namespace logs
 
 	class file_writer
 	{
-		std::thread m_writer{};
+		sthread_t* m_writer = nullptr; // the writer thread (rthreads)
 		fs::file m_fout{};
 		u64 m_max_size{};
 
@@ -105,6 +106,9 @@ namespace logs
 		// The writer thread's: write buffered logs out
 		bool flush(u64 bufv);
 		void wake_writer();
+
+		// The writer thread's body
+		void writer_loop();
 
 	public:
 		file_writer(const std::string& name, u64 max_size);
@@ -499,51 +503,54 @@ logs::file_writer::file_writer(const std::string& name, u64 max_size)
 		fprintf(stderr, "Log file open failed: %s (error %d)\n", name.c_str(), errno);
 	}
 
-	m_writer = std::thread([this]()
+	// On libretro-common's rthreads
+	m_writer = sthread_create([](void* self) { static_cast<file_writer*>(self)->writer_loop(); }, this);
+}
+
+void logs::file_writer::writer_loop()
+{
+	thread_base::set_name("Log Writer");
+
+	thread_ctrl::scoped_priority low_prio(-1);
+
+	while (true)
 	{
-		thread_base::set_name("Log Writer");
+		// Read before looking: a line committed after wakes the wait
+		const int commits = retro_atomic_load_acquire_int(&m_commits);
+		const u64 bufv = buf();
 
-		thread_ctrl::scoped_priority low_prio(-1);
-
-		while (true)
+		if (retro_atomic_load_acquire_int(&m_close) == 1)
 		{
-			// Read before looking: a line committed after wakes the wait
-			const int commits = retro_atomic_load_acquire_int(&m_commits);
-			const u64 bufv = buf();
+			m_fout.close();
+			retro_atomic_store_release_int(&m_close, 2);
+			retro_atomic_inc_int(&m_flushes);
+			retro_waitaddr_notify_all(&m_flushes);
+		}
 
-			if (retro_atomic_load_acquire_int(&m_close) == 1)
-			{
-				m_fout.close();
-				retro_atomic_store_release_int(&m_close, 2);
-				retro_atomic_inc_int(&m_flushes);
-				retro_waitaddr_notify_all(&m_flushes);
-			}
-
-			if (bufv % s_log_size)
-			{
-				// A thread is putting its line in: until it has
-				const retro_waitaddr_t list[1] = {{&m_commits, static_cast<u32>(commits)}};
-				retro_waitaddr_wait(list, 1, -1);
-				continue;
-			}
-
-			if (flush(bufv))
-			{
-				retro_atomic_inc_int(&m_flushes);
-				retro_waitaddr_notify_all(&m_flushes);
-				continue;
-			}
-
-			if (out() == umax)
-			{
-				break;
-			}
-
-			// Nothing to write: until a line is
+		if (bufv % s_log_size)
+		{
+			// A thread is putting its line in: until it has
 			const retro_waitaddr_t list[1] = {{&m_commits, static_cast<u32>(commits)}};
 			retro_waitaddr_wait(list, 1, -1);
+			continue;
 		}
-	});
+
+		if (flush(bufv))
+		{
+			retro_atomic_inc_int(&m_flushes);
+			retro_waitaddr_notify_all(&m_flushes);
+			continue;
+		}
+
+		if (out() == umax)
+		{
+			break;
+		}
+
+		// Nothing to write: until a line is
+		const retro_waitaddr_t list[1] = {{&m_commits, static_cast<u32>(commits)}};
+		retro_waitaddr_wait(list, 1, -1);
+	}
 }
 
 logs::file_writer::~file_writer()
@@ -558,7 +565,7 @@ logs::file_writer::~file_writer()
 
 	retro_atomic_store_release_64(&m_out, -1);
 	wake_writer();
-	m_writer.join();
+	sthread_join(m_writer);
 }
 
 void logs::file_writer::wake_writer()
