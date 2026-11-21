@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **vm's page flags on retro_atomic, off atomic_t: the last atomic_t in the core.** Not yet run on a game.
+  - **What changed:**
+    - **The page table** (`vm::g_pages`, a byte of flags per 4 KB page of the 4 GB guest space) is an array of `retro_atomic_8_t`, the new 8-bit word, where it was `atomic_t<u8>`. Its 22 uses in vm.h and vm.cpp say what they do: `retro_atomic_load_acquire_8` where atomic_t read it implicitly or with load(), `retro_atomic_store_release_8` for its release(), and `retro_atomic_exchange_8` where a page is mapped. The savestate writes the byte loaded, and the table is cleared through a void pointer as before. Each is still one byte access: a plain mov on x86, ldarb or stlrb on aarch64.
+  - **Tests:** none of its own; the table is guest memory's, which the tests do not map. The full build and suites pass. A check fails if atomic_t comes back to vm.h or vm.cpp.
+
+
 - **vm::try_access's narrow guest writes on retro_atomic.** Not yet run on a game.
   - **What changed:**
     - **An aligned write of 1, 2, 4, 8 or 16 bytes** to guest memory through `vm::try_access` (the debugger's and patches' way in) is a retro_atomic release store of that width: the new 8- and 16-bit words for a byte or halfword, the 32- and 64-bit words, and the 128-bit word for 16 bytes. Each is one access of its width, as atomic_storage's release was; on x86 the code is the same (plain moves, movdqa for 16 bytes, no locked instruction).

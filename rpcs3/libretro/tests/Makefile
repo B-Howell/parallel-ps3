@@ -1576,6 +1576,8 @@ check: all
 	@if ! grep -q "RETRO_ATOMIC_HAS_8_16" ../libretro-common/include/retro_atomic.h; then echo "libretro-common's retro_atomic.h is behind RetroArch's again (no 8- and 16-bit words)"; exit 1; else echo "libretro-common has RetroArch's 8- and 16-bit words"; fi
 	@# vm::try_access's aligned guest writes of 1 to 16 bytes are retro_atomic release stores of their width, not atomic_storage
 	@if grep -n "atomic_storage" ../../Emu/Memory/vm.cpp; then echo "atomic_storage is back in vm.cpp"; exit 1; else echo "vm.cpp has no atomic_storage"; fi
+	@# vm's page flags are retro_atomic_8_t, read with acquire loads and changed with release stores and exchanges, not atomic_t<u8>
+	@if grep -n "atomic_t<" ../../Emu/Memory/vm.h ../../Emu/Memory/vm.cpp; then echo "atomic_t is back in vm's page flags"; exit 1; else echo "vm's page flags are retro_atomic_8_t"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

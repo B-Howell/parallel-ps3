@@ -198,7 +198,7 @@ namespace vm
 
 				for (u32 i = begin / 4096, max = (begin + size - 1) / 4096; i <= max; i++)
 				{
-					if (!(g_pages[i] & (vm::page_readable)))
+					if (!(retro_atomic_load_acquire_8(&g_pages[i]) & (vm::page_readable)))
 					{
 						test = i * 4096;
 						break;
@@ -542,7 +542,7 @@ namespace vm
 			else
 			{
 				// TODO: Accurate locking in this case
-				if (!(g_pages[addr / 4096] & page_writable))
+				if (!(retro_atomic_load_acquire_8(&g_pages[addr / 4096]) & page_writable))
 				{
 					return -1;
 				}
@@ -634,7 +634,7 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
 		{
-			if (g_pages[i])
+			if (retro_atomic_load_acquire_8(&g_pages[i]))
 			{
 				fmt::throw_exception("Memory already mapped (addr=0x%x, size=0x%x, flags=0x%x, current_addr=0x%x)", addr, size, flags, i * 4096);
 			}
@@ -757,7 +757,7 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
 		{
-			if (g_pages[i].exchange(flags | page_allocated))
+			if (retro_atomic_exchange_8(&g_pages[i], flags | page_allocated))
 			{
 				fmt::throw_exception("Concurrent access (addr=0x%x, size=0x%x, flags=0x%x, current_addr=0x%x)", addr, size, flags, i * 4096);
 			}
@@ -792,7 +792,7 @@ namespace vm
 			return true;
 		}
 
-		const u8 first_flag = g_pages[addr / 4096];
+		const u8 first_flag = retro_atomic_load_acquire_8(&g_pages[addr / 4096]);
 
 		if (first_flag & page_1m_size)
 		{
@@ -820,14 +820,14 @@ namespace vm
 
 			if (i < end)
 			{
-				new_val = g_pages[i];
+				new_val = retro_atomic_load_acquire_8(&g_pages[i]);
 				new_val |= flags_set;
 				new_val &= ~flags_clear;
 			}
 
 			if (new_val != start_value)
 			{
-				const u8 old_val = g_pages[start];
+				const u8 old_val = retro_atomic_load_acquire_8(&g_pages[start]);
 
 				if (u32 page_size = (i - start) * 4096; page_size && old_val != start_value)
 				{
@@ -843,7 +843,7 @@ namespace vm
 
 					for (u32 j = start; j < i; j++)
 					{
-						g_pages[j].release(start_value);
+						retro_atomic_store_release_8(&g_pages[j], start_value);
 					}
 
 					if ((old_val ^ start_value) & (page_readable | page_writable))
@@ -880,12 +880,12 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + max_size / 4096; i++)
 		{
-			if ((g_pages[i] & page_allocated) == 0)
+			if ((retro_atomic_load_acquire_8(&g_pages[i]) & page_allocated) == 0)
 			{
 				break;
 			}
 
-			const u8 page_flags = g_pages[i] & ~(page_writable | page_readable);
+			const u8 page_flags = retro_atomic_load_acquire_8(&g_pages[i]) & ~(page_writable | page_readable);
 
 			if (size && map_flags != page_flags)
 			{
@@ -918,12 +918,12 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
 		{
-			if (!(g_pages[i] & page_allocated))
+			if (!(retro_atomic_load_acquire_8(&g_pages[i]) & page_allocated))
 			{
 				fmt::throw_exception("Concurrent access (addr=0x%x, size=0x%x, current_addr=0x%x)", addr, size, i * 4096);
 			}
 
-			g_pages[i].release(0);
+			retro_atomic_store_release_8(&g_pages[i], 0);
 		}
 
 		// Notify rsx to invalidate range
@@ -994,7 +994,7 @@ namespace vm
 
 		for (u64 i = addr / 4096, max = (addr + size - 1) / 4096; i <= max;)
 		{
-			auto state = +g_pages[i];
+			auto state = retro_atomic_load_acquire_8(&g_pages[i]);
 
 			if (~state & flags) [[unlikely]]
 			{
@@ -1093,19 +1093,19 @@ namespace vm
 			}
 
 			// Protect guard pages
-			if (g_pages[addr / 4096 - 1] || g_pages[addr / 4096 + size / 4096])
+			if (retro_atomic_load_acquire_8(&g_pages[addr / 4096 - 1]) || retro_atomic_load_acquire_8(&g_pages[addr / 4096 + size / 4096]))
 			{
 				return  false;
 			}
 
 			// Guard pages must be consecutive for non-edge allocations
-			if (addr > this->addr + 4096 && g_pages[addr / 4096 - 2])
+			if (addr > this->addr + 4096 && retro_atomic_load_acquire_8(&g_pages[addr / 4096 - 2]))
 			{
 				return false;
 			}
 
 			// Same
-			if (size + addr < this->addr + this->size - 4096 && g_pages[addr / 4096 + size / 4096 + 1])
+			if (size + addr < this->addr + this->size - 4096 && retro_atomic_load_acquire_8(&g_pages[addr / 4096 + size / 4096 + 1]))
 			{
 				return false;
 			}
@@ -1114,7 +1114,7 @@ namespace vm
 		// Check if memory area is already mapped
 		for (u32 i = addr / 4096; i <= (addr + size - 1) / 4096; i++)
 		{
-			if (g_pages[i])
+			if (retro_atomic_load_acquire_8(&g_pages[i]))
 			{
 				return false;
 			}
@@ -1735,7 +1735,7 @@ namespace vm
 		for (const auto& [addr, shm] : m_map)
 		{
 			// Assume first page flags represent all the map
-			ar(g_pages[addr / 4096]);
+			ar(static_cast<u8>(retro_atomic_load_acquire_8(&g_pages[addr / 4096])));
 
 			ar(addr);
 			ar(shm.first);
@@ -1904,7 +1904,7 @@ namespace vm
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
 		{
-			if (g_pages[i])
+			if (retro_atomic_load_acquire_8(&g_pages[i]))
 			{
 				fmt::throw_exception("Unexpected pages allocated (current_addr=0x%x)", i * 4096);
 			}
@@ -2223,7 +2223,7 @@ namespace vm
 			g_stat_addr, g_stat_addr + 0xffff'ffff,
 			g_reservations, g_reservations + sizeof(g_reservations) - 1);
 
-			std::memset(&g_pages, 0, sizeof(g_pages));
+			std::memset(static_cast<void*>(g_pages.data()), 0, sizeof(g_pages));
 
 			g_locations =
 			{

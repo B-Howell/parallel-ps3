@@ -73,8 +73,9 @@ namespace vm
 	// Address type
 	enum addr_t : u32 {};
 
-	// Page information
-	using memory_page = atomic_t<u8>;
+	// Page information: a byte of flags per 4 KB page, read with acquire and
+	// changed with release stores and exchanges by any thread
+	using memory_page = retro_atomic_8_t;
 
 	// Change memory protection of specified memory region
 	bool page_protect(u32 addr, u32 size, u8 flags_test = 0, u8 flags_set = 0, u8 flags_clear = 0);
@@ -93,7 +94,7 @@ namespace vm
 			return check_addr(addr, flags, Size);
 		}
 
-		return !(~g_pages[addr / 4096] & (flags | page_allocated));
+		return !(~retro_atomic_load_acquire_8(&g_pages[addr / 4096]) & (flags | page_allocated));
 	}
 
 	// Like check_addr but should only be used in lock-free context with care
@@ -101,7 +102,7 @@ namespace vm
 	{
 		extern std::array<memory_page, 0x100000000 / 4096> g_pages;
 
-		const u8 flags = g_pages[addr / 4096].load();
+		const u8 flags = retro_atomic_load_acquire_8(&g_pages[addr / 4096]);
 
 		return std::make_pair(!!(flags & page_allocated), flags);
 	}
