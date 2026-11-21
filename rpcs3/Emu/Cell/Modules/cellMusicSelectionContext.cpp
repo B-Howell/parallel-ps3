@@ -4,6 +4,7 @@
 #include "Emu/VFS.h"
 
 #include <random>
+#include <crypto/kdf.h>
 
 // This is just a helper and not a real cell entity
 
@@ -381,8 +382,11 @@ u32 music_selection_context::step_track(bool next)
 		{
 			// We reached the first or last track again. Let's shuffle!
 			cellMusicSelectionContext.notice("step_track: Shuffling playlist...");
-			std::random_device rd;
-			auto engine = std::default_random_engine{rd()};
+			// Seeded from libretro-common's entropy source (crypto_random_bytes):
+			// the standard library's random device keeps 5 KiB of state on the stack
+			std::default_random_engine::result_type seed = 0;
+			crypto_random_bytes(reinterpret_cast<uint8_t*>(&seed), sizeof(seed));
+			auto engine = std::default_random_engine{seed};
 			std::shuffle(std::begin(playlist), std::end(playlist), engine);
 
 			// Don't play the same track twice

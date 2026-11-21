@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "rpcn_config.h"
 #include "Utilities/File.h"
+#include <crypto/kdf.h>
 
 cfg_rpcn g_cfg_rpcn;
 
@@ -60,11 +61,14 @@ std::string cfg_rpcn::generate_npid()
 	const char list_chars[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X',
 		'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z'};
 
-	std::srand(static_cast<u32>(time(nullptr)));
+	// From libretro-common's entropy source, where it was rand() seeded by the
+	// wall clock (two IDs made in the same second were the same)
+	u8 random[10]{};
+	crypto_random_bytes(random, sizeof(random));
 
-	for (int i = 0; i < 10; i++)
+	for (u8 r : random)
 	{
-		gen_npid += list_chars[std::rand() % (sizeof(list_chars))];
+		gen_npid += list_chars[r % sizeof(list_chars)];
 	}
 
 	return gen_npid;

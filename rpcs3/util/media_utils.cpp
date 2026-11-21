@@ -356,7 +356,7 @@ namespace utils
 				// Shuffle once if necessary
 				media_log.notice("audio_decoder: shuffling initial playlist...");
 				// Seeded from libretro-common's entropy source (crypto_random_bytes):
-				// std::random_device keeps its state on the stack, 5 KiB, past the
+				// the standard library's random device keeps its state on the stack, 5 KiB, past the
 				// core's 4 KiB stack frame
 				std::default_random_engine::result_type seed = 0;
 				crypto_random_bytes(reinterpret_cast<uint8_t*>(&seed), sizeof(seed));

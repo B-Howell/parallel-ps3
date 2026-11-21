@@ -13,7 +13,7 @@
 #include "util/media_utils.h"
 #include "util/media_decode.h"
 
-#include <random>
+#include <crypto/kdf.h>
 
 LOG_CHANNEL(cellSearch);
 
@@ -1692,10 +1692,12 @@ error_code cellSearchGetMusicSelectionContext(CellSearchId searchId, vm::cptr<Ce
 			return first_content;
 		}
 
-		std::vector<content_id_type> result;
-		std::sample(searchObject->content_ids.begin(), searchObject->content_ids.end(), std::back_inserter(result), 1, std::mt19937{std::random_device{}()});
-		ensure(result.size() == 1);
-		shared_ptr<search_content_t> content = ensure(result[0].second);
+		// One content picked with libretro-common's entropy source, where it
+		// was std::sample with an engine seeded by the standard library's random device
+		u64 r = 0;
+		crypto_random_bytes(reinterpret_cast<uint8_t*>(&r), sizeof(r));
+		const auto it = std::next(searchObject->content_ids.begin(), static_cast<std::ptrdiff_t>(r % searchObject->content_ids.size()));
+		shared_ptr<search_content_t> content = ensure(it->second);
 		return content;
 	};
 

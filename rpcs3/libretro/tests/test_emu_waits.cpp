@@ -53,6 +53,7 @@
 #include "Loader/TROPUSR.h"
 #include "util/dyn_lib.hpp"
 #include "Utilities/Timer.h"
+#include "Emu/system_config.h"
 #include "util/vm.hpp"
 #include "Emu/system_config_types.h"
 
@@ -115,6 +116,16 @@ error_code cellSslEnd();
 
 int main()
 {
+	// A new configuration's PSID and system name: drawn from libretro-common's
+	// entropy source, so two PSIDs drawn at once differ
+	{
+		const u128 a = cfg_root::node_sys::get_random_psid();
+		const u128 b = cfg_root::node_sys::get_random_psid();
+		CHECK(a != 0 && b != 0 && a != b);
+		CHECK(cfg_root::node_sys::get_random_system_name().starts_with("RPCS3-"));
+		std::printf("test_emu_waits: two PSIDs drawn at once: different\n");
+	}
+
 	// The overlays' stopwatch (Timer), on libretro-common's microsecond
 	// clock: a stopped one keeps its time, and the milliseconds since a
 	// reading 5 ms before it was started are 5 (the auto-repeat's test)

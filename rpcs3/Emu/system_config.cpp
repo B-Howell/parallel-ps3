@@ -1,7 +1,6 @@
 #include "stdafx.h"
 #include "system_config.h"
 
-#include <random>
 #include <crypto/kdf.h>
 
 cfg_root g_cfg{};
@@ -18,15 +17,10 @@ std::string cfg_root::node_sys::get_random_system_name()
 
 u128 cfg_root::node_sys::get_random_psid()
 {
-	// Generate seed for each 32-bits for maximum entropy using Standard Library
-	std::uniform_int_distribution<u32> uniform_dist;
-	std::mt19937 prng;
-
+	// 128 bits from libretro-common's entropy source, where each 32 bits
+	// came from an engine seeded by the standard library's random device
 	u128 result{};
-	prng.seed(std::random_device()()), result += u128{uniform_dist(prng)} << 0;
-	prng.seed(std::random_device()()), result += u128{uniform_dist(prng)} << 32;
-	prng.seed(std::random_device()()), result += u128{uniform_dist(prng)} << 64;
-	prng.seed(std::random_device()()), result += u128{uniform_dist(prng)} << 96;
+	crypto_random_bytes(reinterpret_cast<uint8_t*>(&result), sizeof(result));
 
 	return result;
 }

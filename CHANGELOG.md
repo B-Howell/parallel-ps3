@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Random numbers from libretro-common's entropy source: no std::random_device, mt19937 or rand().** Not yet run on a game.
+  - **What changed:**
+    - **A new configuration's console PSID** is 128 bits of `crypto_random_bytes` (libretro-common's entropy source: getentropy or /dev/urandom, BCrypt on Windows), where each 32 bits came from an mt19937 seeded by std::random_device.
+    - **A new RPCN NPID** (`RPCS3_` and ten letters or digits) takes its ten from `crypto_random_bytes`, where it was `rand()` seeded by the wall clock: two made in the same second were the same.
+    - **cellSearch's random content** (a random-order search) is picked with one draw of `crypto_random_bytes`, where it was std::sample with an mt19937 seeded by std::random_device; **cellMusic's reshuffled playlist** (shuffle with repeat all, at the end of the list) seeds its engine from `crypto_random_bytes`. std::random_device keeps 5 KiB of state on the stack.
+    - If no entropy source answers, the PSID is 0, the NPID letters are all `0`, the content is the first and the shuffle is the same each time.
+  - **Tests:** test_emu_waits draws two PSIDs and checks they are not 0 and differ; it fails on a PSID not drawn. The NPID is private to the RPCN configuration and has none. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if std::random_device, mt19937 or rand() comes back to the core.
+
+
 - **JIT: the allocator's macOS lock removed.** Not yet run on a game.
   - **What changed:**
     - **jit_runtime::alloc** (code and data memory for the PPU, SPU and RSX recompilers) took a `std::mutex` on macOS only. It goes: the allocation is a compare-and-swap on one word (jit_bump), and an allocation past the committed top commits its own range (mprotect) before it returns, so none hands out memory another thread is still committing; committing a range twice is harmless. Windows, which also commits as it goes, never took the lock. Not built or run on macOS here.
