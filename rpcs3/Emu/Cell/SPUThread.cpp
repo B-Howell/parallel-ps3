@@ -842,7 +842,7 @@ void spu_thread::dump_regs(std::string& ret, std::any& /*custom_data*/) const
 		std::memcpy(gpr_saved.data(), gpr.data(), sizeof(v128) * gpr.size());
 		std::memcpy(rdata_saved, rdata, sizeof(rdata));
 		std::memcpy(lsa_saved, lsa_state_ptr, std::min<usz>(128, SPU_LS_SIZE - (lsa_state_ptr - _ptr<u8>(0))));
-		atomic_fence_acquire();
+		retro_atomic_thread_fence_acquire();
 	}
 	while (saved_pc != pc || std::memcmp(rdata_saved, rdata, sizeof(rdata)) != 0 || std::memcmp(gpr_saved.data(), gpr.data(), sizeof(v128) * gpr.size()) != 0
 		|| std::memcmp(&mfc_regs_saved, &ch_mfc_cmd, sizeof(mfc_regs_saved)) != 0 || std::memcmp(lsa_saved, lsa_state_ptr, std::min<usz>(128, SPU_LS_SIZE - (lsa_state_ptr - _ptr<u8>(0)))) != 0);
@@ -2549,7 +2549,7 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 				}
 			}
 
-			//atomic_fence_seq_cst();
+			//retro_atomic_thread_fence_seq_cst();
 
 			if (g_cfg.core.mfc_debug && _this)
 			{
@@ -3806,7 +3806,7 @@ bool spu_thread::do_mfc(bool can_escape, bool must_finish)
 			if (&args - mfc_queue <= removed)
 			{
 				// Remove barrier-class command if it's the first in the queue
-				atomic_fence_seq_cst();
+				retro_atomic_thread_fence_seq_cst();
 				removed++;
 				return true;
 			}
@@ -4610,7 +4610,7 @@ bool spu_thread::process_mfc_cmd()
 				// Exit loop
 				if (ok && (ntime & 127) == 0)
 				{
-					atomic_fence_seq_cst();
+					retro_atomic_thread_fence_seq_cst();
 					i = -1;
 					return;
 				}
@@ -5009,7 +5009,7 @@ bool spu_thread::process_mfc_cmd()
 	{
 		if (mfc_size == 0)
 		{
-			atomic_fence_seq_cst();
+			retro_atomic_thread_fence_seq_cst();
 		}
 		else
 		{
@@ -6857,7 +6857,7 @@ bool spu_thread::stop_and_signal(u32 code)
 			fmt::throw_exception("STOP code 0x100: Out_MBox is not empty");
 		}
 
-		atomic_fence_seq_cst();
+		retro_atomic_thread_fence_seq_cst();
 		return true;
 	}
 

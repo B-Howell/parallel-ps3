@@ -3604,7 +3604,7 @@ static T ppu_load_acquire_reservation(ppu_thread& ppu, u32 addr)
 	const u64 now = utils::get_tsc();
 
 	// Do not allow stores accessed from the same cache line to past reservation load
-	atomic_fence_seq_cst();
+	retro_atomic_thread_fence_seq_cst();
 
 	if (addr % sizeof(T))
 	{
@@ -3728,7 +3728,7 @@ static T ppu_load_acquire_reservation(ppu_thread& ppu, u32 addr)
 	else
 	{
 		mov_rdata(ppu.rdata, vm::_ref<spu_rdata_t>(addr & -128));
-		atomic_fence_acquire();
+		retro_atomic_thread_fence_acquire();
 
 		// Load relevant 64 bits of reservation data
 		std::memcpy(&rdata, &ppu.rdata[addr & 0x78], 8);

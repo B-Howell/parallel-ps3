@@ -1562,6 +1562,8 @@ check: all
 	@if grep -n "atomic_fence_" ../../Emu/Cell/Modules/cellSync.cpp; then echo "atomic_fence_* is back in cellSync"; exit 1; else echo "cellSync's fences are retro_atomic's"; fi
 	@# The core's retro_atomic.h is RetroArch's with the x86 locked-or seq_cst fence (no mfence with Clang)
 	@if ! grep -q "RETRO_ATOMIC_X86_FULL_FENCE_" ../libretro-common/include/retro_atomic.h; then echo "libretro-common's retro_atomic.h is behind RetroArch's again (no x86 locked-or fence)"; exit 1; else echo "libretro-common has RetroArch's x86 seq_cst fence"; fi
+	@# The core's fences are retro_atomic_thread_fence_*; util/atomic.hpp's atomic_fence_* have no callers
+	@if grep -rn "[^_]atomic_fence_\|^atomic_fence_" --include=*.cpp --include=*.h --include=*.hpp ../../Emu ../../../Utilities | grep -v "util/atomic\."; then echo "an atomic_fence_* is back"; exit 1; else echo "the core's fences are retro_atomic's"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

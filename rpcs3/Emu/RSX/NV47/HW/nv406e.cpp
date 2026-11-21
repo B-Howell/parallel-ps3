@@ -30,7 +30,7 @@ namespace rsx
 			RSX(ctx)->m_graphics_state |= rsx::pipeline_state::fragment_program_needs_rehash;
 
 			// Ensure atomic seq-cst memory ordering for FIFO GET update
-			atomic_fence_seq_cst();
+			retro_atomic_thread_fence_seq_cst();
 
 			const auto& sema = vm::_ref<RsxSemaphore>(addr);
 

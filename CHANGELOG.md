@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The last fences on retro_atomic.** Not yet run on a game.
+  - **What changed:**
+    - **The remaining 15 `atomic_fence_*` calls** are retro_atomic's fences, one for one: the PPU interpreter's (sync, eieio, the reservation), the SPU interpreter's and threads' (sync, dsync, the channels and the reservation), the raw SPU's MMIO, the PPU thread's, the RSX FIFO's and the NV47 sync and NV406E semaphore writes, cellSpurs' two and sys_lwmutex's two. The seq_cst ones are a locked or on x86 as before (no mfence in PPUInterpreter.o, SPUInterpreter.o, SPUThread.o, PPUThread.o or RSXFIFO.o); the acquire and acq_rel ones are compiler barriers on x86 as before. Nothing calls util/atomic.hpp's fences now.
+  - **Tests:** none of their own; they order the guest's memory, which the tests do not run on threads that race. The full build and suites pass. A check fails if an atomic_fence_* comes back.
+
+
 - **libretro-common resynced from RetroArch master again.** Not yet run on a game.
   - **What changed:**
     - **Eight files** are RetroArch's again: retro_atomic.h, whose seq_cst fence is now a locked or on x86 with Clang as with GCC (no mfence), encoding_utf and utf.h, file_path and file_path.h, audio_transfer, and rmp4 and rmp4.h. The core builds against them as it is.

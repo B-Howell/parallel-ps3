@@ -3367,7 +3367,7 @@ auto ISYNC()
 		return ppu_exec_select<Flags...>::template select<>();
 
 	static const auto exec = [](auto&&, auto) {
-	atomic_fence_acquire();
+	retro_atomic_thread_fence_acquire();
 	};
 	RETURN_(ppu, op);
 }
@@ -5307,7 +5307,7 @@ auto SYNC()
 		return ppu_exec_select<Flags...>::template select<>();
 
 	static const auto exec = [](auto&&, auto) {
-	atomic_fence_seq_cst();
+	retro_atomic_thread_fence_seq_cst();
 	};
 	RETURN_(ppu, op);
 }
@@ -5647,7 +5647,7 @@ auto EIEIO()
 		return ppu_exec_select<Flags...>::template select<>();
 
 	static const auto exec = [](auto&&, auto) {
-	atomic_fence_seq_cst();
+	retro_atomic_thread_fence_seq_cst();
 	};
 	RETURN_(ppu, op);
 }

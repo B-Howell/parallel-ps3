@@ -188,7 +188,7 @@ bool LNOP(spu_thread&, spu_opcode_t)
 template <spu_exec_bit... Flags>
 bool SYNC(spu_thread&, spu_opcode_t)
 {
-	atomic_fence_seq_cst();
+	retro_atomic_thread_fence_seq_cst();
 	return true;
 }
 
@@ -196,7 +196,7 @@ bool SYNC(spu_thread&, spu_opcode_t)
 template <spu_exec_bit... Flags>
 bool DSYNC(spu_thread&, spu_opcode_t)
 {
-	atomic_fence_seq_cst();
+	retro_atomic_thread_fence_seq_cst();
 	return true;
 }
 

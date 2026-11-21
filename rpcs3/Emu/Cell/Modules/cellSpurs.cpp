@@ -3098,7 +3098,7 @@ s32 _cellSpursWorkloadFlagReceiver(ppu_thread& ppu, vm::ptr<CellSpurs> spurs, u3
 		return CELL_SPURS_POLICY_MODULE_ERROR_STAT;
 	}
 
-	atomic_fence_acq_rel();
+	retro_atomic_thread_fence_acq_rel();
 
 	struct alignas(128) wklFlagOp
 	{
@@ -3184,7 +3184,7 @@ s32 _cellSpursWorkloadFlagReceiver2(ppu_thread& /*ppu*/, vm::ptr<CellSpurs> spur
 		return CELL_SPURS_POLICY_MODULE_ERROR_STAT;
 	}
 
-	atomic_fence_acq_rel();
+	retro_atomic_thread_fence_acq_rel();
 
 	s32 res = CELL_OK;
 

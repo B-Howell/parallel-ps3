@@ -189,7 +189,7 @@ bool spu_thread::read_reg(const u32 addr, u32& value)
 		case MFC_EIEIO_CMD:
 		case MFC_SYNC_CMD:
 		{
-			atomic_fence_seq_cst();
+			retro_atomic_thread_fence_seq_cst();
 			value = MFC_PPU_DMA_CMD_ENQUEUE_SUCCESSFUL;
 			return true;
 		}
@@ -230,7 +230,7 @@ bool spu_thread::read_reg(const u32 addr, u32& value)
 
 		while (true)
 		{
-			atomic_fence_acquire();
+			retro_atomic_thread_fence_acquire();
 
 			const auto counts_check = std::make_tuple(ch_out_mbox.get_count(), ch_in_mbox.get_count(), ch_out_intr_mbox.get_count());
 
