@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **libretro-common resynced from RetroArch master again.** Not yet run on a game.
+  - **What changed:**
+    - **Eight files** are RetroArch's again: retro_atomic.h, whose seq_cst fence is now a locked or on x86 with Clang as with GCC (no mfence), encoding_utf and utf.h, file_path and file_path.h, audio_transfer, and rmp4 and rmp4.h. The core builds against them as it is.
+  - **Tests:** the full build and suites pass. A check fails if the copy's retro_atomic.h falls behind the locked-or fence again.
+
+
 - **cellSync's fences on retro_atomic.** Not yet run on a game.
   - **What changed:**
     - **The seven acquire-release fences** (after a mutex is taken, around the barrier and rwm calls, after a queue's or rwm's fields are written and after an LFQueue is found already set up) are `retro_atomic_thread_fence_acq_rel` in place of util/atomic.hpp's `atomic_fence_acq_rel`. On x86 both are a compiler barrier only (no mfence in cellSync.o); on aarch64 both are one dmb ish.
