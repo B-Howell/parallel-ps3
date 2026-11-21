@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **No std::thread left in the core: thread ids and the CPU count from libretro-common.** Not yet run on a game.
+  - **What changed:**
+    - **The host's logical CPU count** (`utils::get_thread_count`, taken once: the thread pools, the SPU thread count and the CPU usage overlay size by it) is `cpu_features_get_core_amount`, libretro-common's, where it asked the host itself (GetNativeSystemInfo, sysconf). The AArch64 CPU name reads each core's MIDR up to that count, where it asked std::thread::hardware_concurrency.
+    - **The OpenGL renderer's trace lines** (compiled out unless their trace switch is on) tag themselves with `sthread_get_current_thread_id`, where they hashed std::this_thread's id.
+  - **Tests:** test_emu_waits checks the CPU count is the host's (sysconf); it fails on a count of 1 on a host with more. The AArch64 file was syntax-checked with the aarch64 cross compiler (its only errors are the x86-configured LLVM's). The Windows (MinGW) syntax check, the full build and suites pass. A check fails if std::thread comes back to the core.
+
+
 - **Detached helper threads on libretro-common's rthreads: thread_ctrl::spawn_detached.** Not yet run on a game.
   - **What changed:**
     - **`thread_ctrl::spawn_detached(callable)`** (Thread.h) runs a callable on a new detached thread made with `sthread_create` and let go with `sthread_detach`: the callable is moved to the heap and the thread frees it when it returns. It fails as a std::thread did if no thread can be made.

@@ -18,7 +18,7 @@
 
 static inline unsigned long long lrgl_glgs_tid_hash()
 {
-	return static_cast<unsigned long long>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+	return static_cast<unsigned long long>(sthread_get_current_thread_id()); // rthreads
 }
 
 #if RPCS3_LIBRETRO_GLGS_TRACE
@@ -33,6 +33,7 @@ static inline unsigned long long lrgl_glgs_tid_hash()
 #include "Emu/RSX/rsx_methods.h"
 #include "Emu/RSX/Host/RSXDMAWriter.h"
 #include "Emu/RSX/NV47/HW/context_accessors.define.h"
+#include <rthreads/rthreads.h>
 
 [[noreturn]] extern void report_fatal_error(std::string_view _text, bool is_html = false, bool include_help_text = true);
 

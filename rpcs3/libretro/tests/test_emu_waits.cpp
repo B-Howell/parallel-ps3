@@ -151,10 +151,12 @@ int main()
 	}
 
 	// The host's memory use, read from /proc/meminfo with libretro-common's
-	// filestream: a total, and some of it available
+	// filestream: a total, and some of it available; and its CPU count
 	{
 		const auto [total, used] = utils::get_memory_usage();
 		CHECK(total > 0 && used > 0 && used < total);
+		// And the logical CPU count, from libretro-common: the host's
+		CHECK(utils::get_thread_count() == static_cast<u32>(::sysconf(_SC_NPROCESSORS_ONLN)));
 		std::printf("test_emu_waits: memory use from /proc/meminfo: %llu of %llu MiB\n", static_cast<unsigned long long>(used >> 20), static_cast<unsigned long long>(total >> 20));
 	}
 

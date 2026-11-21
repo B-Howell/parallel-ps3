@@ -15,6 +15,7 @@
 #include "util/video_provider.h"
 #include <thread>
 #include <functional>
+#include <rthreads/rthreads.h>
 
 LOG_CHANNEL(screenshot_log, "SCREENSHOT");
 
@@ -27,7 +28,7 @@ extern retro_atomic_int_t g_recording_mode; // a recording_mode
 
 static inline unsigned long long lrrsx_present_tid_hash()
 {
-	return static_cast<unsigned long long>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+	return static_cast<unsigned long long>(sthread_get_current_thread_id()); // rthreads
 }
 
 #if RPCS3_LIBRETRO_RSX_PRESENT_TRACE

@@ -1630,6 +1630,8 @@ check: all
 	@if grep -n "std::thread\|<thread>" ../../Emu/NP/rpcn_client.h ../../Emu/NP/rpcn_client.cpp; then echo "std::thread is back in the RPCN client"; exit 1; else echo "the RPCN client's threads are rthreads threads"; fi
 	@# Detached helper threads are rthreads sthreads (thread_ctrl::spawn_detached), not detached std::threads
 	@if grep -n "std::thread" ../../Emu/System.cpp ../../Emu/RSX/Overlays/Trophies/overlay_trophy_list_dialog.cpp; then echo "a detached std::thread is back"; exit 1; else echo "detached helper threads are rthreads threads"; fi
+	@# No std::thread is left in the core: thread ids and the CPU count come from libretro-common (sthread_get_current_thread_id, cpu_features_get_core_amount)
+	@if grep -rn "std::thread\b\|std::this_thread::get_id" --include=*.cpp --include=*.h --include=*.hpp ../../Emu ../../util ../../Loader ../../Crypto ../../../Utilities; then echo "std::thread is back in the core"; exit 1; else echo "no std::thread is left in the core"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

@@ -1,7 +1,7 @@
 #include "stdafx.h"
 #include "AArch64Common.h"
 
-#include <thread>
+#include "util/sysinfo.hpp"
 #include <map>
 
 #if defined(__APPLE__)
@@ -139,7 +139,7 @@ namespace aarch64
     std::string get_cpu_name()
     {
         std::map<u64, int> core_layout;
-        for (u32 i = 0; i < std::thread::hardware_concurrency(); ++i)
+        for (u32 i = 0; i < utils::get_thread_count(); ++i)
         {
             const auto midr = read_MIDR_EL1(i);
             if (midr == umax)
@@ -180,7 +180,7 @@ namespace aarch64
     {
         // Fetch vendor and part numbers. ARM CPUs often have more than 1 architecture on the SoC, so we check all of them.
         std::map<u64, int> core_layout;
-        for (u32 i = 0; i < std::thread::hardware_concurrency(); ++i)
+        for (u32 i = 0; i < utils::get_thread_count(); ++i)
         {
             const auto midr = read_MIDR_EL1(i);
             if (midr == umax)

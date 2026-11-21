@@ -33,6 +33,7 @@ DYNAMIC_IMPORT("ntdll.dll", RtlGetVersion, NTSTATUS(OSVERSIONINFOW* lpVersionInf
 
 #include <thread>
 #include <streams/file_stream.h>
+#include <features/features_cpu.h>
 #include <cstdlib>
 
 #include "util/asm.hpp"
@@ -1141,16 +1142,8 @@ u64 utils::get_total_memory()
 
 u32 utils::get_thread_count()
 {
-	static const u32 g_count = []()
-	{
-#ifdef _WIN32
-		::SYSTEM_INFO sysInfo;
-		::GetNativeSystemInfo(&sysInfo);
-		return sysInfo.dwNumberOfProcessors;
-#else
-		return ::sysconf(_SC_NPROCESSORS_ONLN);
-#endif
-	}();
+	// libretro-common's count of the host's logical CPUs, taken once
+	static const u32 g_count = cpu_features_get_core_amount();
 
 	return g_count;
 }

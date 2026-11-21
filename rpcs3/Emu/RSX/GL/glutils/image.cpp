@@ -6,6 +6,7 @@
 
 #include <functional>
 #include <thread>
+#include <rthreads/rthreads.h>
 
 #ifndef RPCS3_LIBRETRO_GL_TEXTURE_TRACE
 #define RPCS3_LIBRETRO_GL_TEXTURE_TRACE 0
@@ -13,7 +14,7 @@
 
 static inline unsigned long long lrgl_tex_tid_hash()
 {
-	return static_cast<unsigned long long>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+	return static_cast<unsigned long long>(sthread_get_current_thread_id()); // rthreads
 }
 
 #if RPCS3_LIBRETRO_GL_TEXTURE_TRACE
