@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **SPUThread off atomic_storage.** Not yet run on a game.
+  - **What changed:**
+    - **PUTLLC's 16-byte write**, when only one 16-byte part of the line differs, is a compare-and-swap of that part. It goes through `spu_cas_16`, `retro_atomic_cas_seen_128` on the line, which like `atomic_storage<u128>::compare_exchange` gives the caller what was there when it fails. It is the same lock cmpxchg16b: 49 in SPUThread.o before and after.
+    - **The block statistics' reads** (the block counter and hash shown in the debugger's thread text), the SPURS thread-limit hack's exchange of `max_run`, and the scheduler's look at another thread's reservation address are `retro_atomic` acquire loads and an exchange on the same fields. A load of a local copy of the hash is a plain read.
+  - **Tests:** none of its own; the 16-byte path needs a reservation on an SPU thread with accurate reservations off, and the rest is debugger text and a game hack. The full build and suites pass. A check fails if atomic_storage comes back to SPUThread.cpp.
+
+
 - **The lv2 sleep queues' links on retro_atomic.** Not yet run on a game.
   - **What changed:**
     - **The nine release stores** of a sleep queue's head and next links (unqueue, schedule and emplace in sys_sync.h) go through `lv2_obj::release_link`, a `retro_atomic_store_release_ptr` of the plain pointer slot, in place of `atomic_storage<T*>::release`. The queues are changed under their lock but read by other threads without it, so the stores stay release stores; the code is the same plain store on x86.

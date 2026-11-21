@@ -50,6 +50,23 @@
 #endif
 #endif
 
+// A 16-byte compare-and-swap of a reservation's line: on failure @expected
+// gets what was there, as the old 16-byte compare-exchange gave it
+static bool spu_cas_16(u128& dest, u128& expected, const u128& desired)
+{
+	retro_u128_t seen, value;
+	std::memcpy(&seen, &expected, sizeof(seen));
+	std::memcpy(&value, &desired, sizeof(value));
+
+	if (retro_atomic_cas_seen_128(static_cast<retro_atomic_128_t*>(static_cast<void*>(&dest)), &seen, value))
+	{
+		return true;
+	}
+
+	std::memcpy(&expected, &seen, sizeof(seen));
+	return false;
+}
+
 // LUTs for SPU instructions
 
 const u32 spu_frest_fraction_lut[32] =
@@ -1253,7 +1270,7 @@ void spu_thread::dump_misc(std::string& ret, std::any& custom_data) const
 		func_data->cpu_id = this->id;
 	}
 
-	const u64 current_block_counter = atomic_storage<u64>::load(block_counter);
+	const u64 current_block_counter = static_cast<u64>(retro_atomic_load_acquire_64(static_cast<const retro_atomic_64_t*>(static_cast<const void*>(&block_counter))));
 
 	const auto [diff_time, diff_block] = func_data->update(current_block_counter);
 
@@ -1261,7 +1278,7 @@ void spu_thread::dump_misc(std::string& ret, std::any& custom_data) const
 
 	fmt::append(ret, "Block Weight: log10(%u/second): %.1f (Retreats: %u)", rate_of_diff, std::log10(std::max<u64>(rate_of_diff, 10)), block_failure);
 
-	if (u64 hash = atomic_storage<u64>::load(block_hash))
+	if (u64 hash = static_cast<u64>(retro_atomic_load_acquire_64(static_cast<const retro_atomic_64_t*>(static_cast<const void*>(&block_hash)))))
 	{
 		// Get short function hash and position in chunk
 		fmt::append(ret, "\nCurrent block: %s", spu_block_hash{hash});
@@ -1531,7 +1548,7 @@ void spu_thread::cpu_task()
 
 		if (u64 hash = cpu->block_hash)
 		{
-			return fmt::format("%sSPU[0x%07x] Thread (%s) [0x%05x: %s]", type >= spu_type::raw ? type == spu_type::isolated ? "Iso" : "Raw" : "", cpu->lv2_id, *name_cache.get(), cpu->pc, spu_block_hash_short{atomic_storage<u64>::load(hash)});
+			return fmt::format("%sSPU[0x%07x] Thread (%s) [0x%05x: %s]", type >= spu_type::raw ? type == spu_type::isolated ? "Iso" : "Raw" : "", cpu->lv2_id, *name_cache.get(), cpu->pc, spu_block_hash_short{hash});
 		}
 
 		return fmt::format("%sSPU[0x%07x] Thread (%s) [0x%05x]", type >= spu_type::raw ? type == spu_type::isolated ? "Iso" : "Raw" : "", cpu->lv2_id, *name_cache.get(), cpu->pc);
@@ -3537,7 +3554,7 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 			if (!g_cfg.core.spu_accurate_reservations && diff16_pos != umax)
 			{
 				vm::range_lock<128>(range_lock, addr, 128);
-				const bool ok = cmp_rdata(rdata, super_data) && atomic_storage<u128>::compare_exchange(*cast_as(super_data, diff16_pos), *cast_as(rdata, diff16_pos), *cast_as_const(to_write, diff16_pos));
+				const bool ok = cmp_rdata(rdata, super_data) && spu_cas_16(*cast_as(super_data, diff16_pos), *cast_as(rdata, diff16_pos), *cast_as_const(to_write, diff16_pos));
 				vm::range_lock_release(range_lock);
 				return ok;
 			}
@@ -3551,7 +3568,7 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 				if (diff16_pos != umax)
 				{
 					// Do it with CMPXCHG16B if possible, this allows to improve accuracy whenever "RSX Accurate Reservations" is off 
-					if (atomic_storage<u128>::compare_exchange(*cast_as(super_data, diff16_pos), *cast_as(rdata, diff16_pos), *cast_as_const(to_write, diff16_pos)))
+					if (spu_cas_16(*cast_as(super_data, diff16_pos), *cast_as(rdata, diff16_pos), *cast_as_const(to_write, diff16_pos)))
 					{
 						return true;
 					}
@@ -5858,7 +5875,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 					if (group->name.ends_with(spurs_suffix) && !group->name.substr(0, group->name.size() - spurs_suffix.size()).ends_with("_libsail"))
 					{
 						// Hack: don't run more SPURS threads than specified.
-						if (u32 old = atomic_storage<u32>::exchange(group->max_run, max_threads); old > max_threads)
+						if (u32 old = static_cast<u32>(retro_atomic_exchange_int(static_cast<retro_atomic_int_t*>(static_cast<void*>(&group->max_run)), static_cast<int>(max_threads))); old > max_threads)
 						{
 							spu_log.success("HACK: '%s' (0x%x) limited to %u threads.", group->name, group->id, max_threads);
 						}
@@ -6981,7 +6998,7 @@ bool spu_thread::stop_and_signal(u32 code)
 				{
 					thread_ctrl::notify(*thread);
 
-					if (u32 resv = atomic_storage<u32>::load(thread->raddr))
+					if (u32 resv = static_cast<u32>(retro_atomic_load_acquire_int(static_cast<const retro_atomic_int_t*>(static_cast<const void*>(&thread->raddr)))))
 					{
 						if (prev_resv && (prev_resv != resv || thread->rtime != prev_rtime))
 						{

@@ -1566,6 +1566,8 @@ check: all
 	@if grep -rn "[^_]atomic_fence_\|^atomic_fence_" --include=*.cpp --include=*.h --include=*.hpp ../../Emu ../../../Utilities | grep -v "util/atomic\."; then echo "an atomic_fence_* is back"; exit 1; else echo "the core's fences are retro_atomic's"; fi
 	@# The lv2 sleep queues' links are stored with retro_atomic_store_release_ptr (lv2_obj::release_link), not atomic_storage
 	@if grep -n "atomic_storage" ../../Emu/Cell/lv2/sys_sync.h; then echo "atomic_storage is back in sys_sync.h"; exit 1; else echo "the sleep queues' links are retro_atomic's"; fi
+	@# SPUThread's atomic_storage uses are retro_atomic: block stats loads, the max_run exchange, a thread's reservation address, and the PUTLLC 16-byte compare-and-swap (spu_cas_16)
+	@if grep -n "atomic_storage" ../../Emu/Cell/SPUThread.cpp; then echo "atomic_storage is back in SPUThread.cpp"; exit 1; else echo "SPUThread.cpp has no atomic_storage"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
