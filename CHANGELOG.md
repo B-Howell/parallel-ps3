@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **No C++ file streams: /proc and sysfs read with libretro-common's filestream, the fallback copy through fs::file.** Not yet run on a game.
+  - **What changed:**
+    - **The host's memory use** (/proc/meminfo, for the performance overlay), **the CPU's per-core use** (/proc/stat) and **the kernel's clock sources** (sysfs, read once to decide whether the TSC can be trusted) are each read whole with `filestream_read_file`, libretro-common's whole-file read (it reads to the end when, as here, the file gives no size), and looked at in place: split into lines as views, numbers with `strtoull`. They went through std::ifstream, with getline into a string per line, or a stringstream copied out once more (/proc/stat, twice a second while the overlay shows it).
+    - **fs::copy_file on a host with no native copy** (not Windows, Linux, macOS or Solaris) copies through fs::file in 1 MiB blocks, as a copy to or from the frontend's VFS already did, where it went through std::ifstream and std::ofstream.
+  - **Tests:** test_emu_waits reads the memory use and checks it has a total and some available; it fails if /proc/meminfo is not read. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if a C++ file stream comes back to the core.
+
+
 - **Random numbers from libretro-common's entropy source: no std::random_device, mt19937 or rand().** Not yet run on a game.
   - **What changed:**
     - **A new configuration's console PSID** is 128 bits of `crypto_random_bytes` (libretro-common's entropy source: getentropy or /dev/urandom, BCrypt on Windows), where each 32 bits came from an mt19937 seeded by std::random_device.

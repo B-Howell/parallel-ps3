@@ -32,7 +32,8 @@ DYNAMIC_IMPORT("ntdll.dll", RtlGetVersion, NTSTATUS(OSVERSIONINFOW* lpVersionInf
 #endif
 
 #include <thread>
-#include <fstream>
+#include <streams/file_stream.h>
+#include <cstdlib>
 
 #include "util/asm.hpp"
 #include "util/fence.hpp"
@@ -729,20 +730,30 @@ std::pair<u64, u64> utils::get_memory_usage()
 	::GlobalMemoryStatusEx(&status);
 	return { status.ullTotalPhys, status.ullTotalPhys - status.ullAvailPhys };
 #elif __linux__
-	std::ifstream proc("/proc/meminfo");
-	std::string line;
 	uint64_t mem_total = get_total_memory();
 	uint64_t mem_available = 0;
 
-	while (std::getline(proc, line))
+	// Read whole with libretro-common's filestream (to its end: /proc gives
+	// no size) and looked at line by line in place
+	void* proc_buf = nullptr;
+	int64_t proc_len = 0;
+
+	if (!filestream_read_file("/proc/meminfo", &proc_buf, &proc_len) || !proc_buf)
+	{
+		return { mem_total, 0 };
+	}
+
+	const std::unique_ptr<void, decltype(&std::free)> proc_owner(proc_buf, &std::free);
+
+	for (const std::string_view line : fmt::split_sv(std::string_view(static_cast<const char*>(proc_buf), static_cast<usz>(proc_len)), {"\n"}))
 	{
 		if (line.rfind("MemTotal:", 0) == 0 && line.find("kB") != std::string::npos)
 		{
-			mem_total = std::stoull(line.substr(line.find_first_of("0123456789"))) * 1024;
+			mem_total = std::strtoull(line.data() + line.find_first_of("0123456789"), nullptr, 10) * 1024;
 		}
 		else if (line.rfind("MemAvailable:", 0) == 0 && line.find("kB") != std::string::npos)
 		{
-			mem_available = std::stoull(line.substr(line.find_first_of("0123456789"))) * 1024;
+			mem_available = std::strtoull(line.data() + line.find_first_of("0123456789"), nullptr, 10) * 1024;
 			break;
 		}
 	}
@@ -980,15 +991,19 @@ static const bool s_tsc_freq_evaluated = []() -> bool
 			return 0;
 		}
 
-		std::string clock_sources;
-		std::ifstream file(clocksource_file);
-		std::getline(file, clock_sources);
+		// Its first line, read with libretro-common's filestream
+		void* clock_buf = nullptr;
+		int64_t clock_len = 0;
 
-		if (file.fail())
+		if (!filestream_read_file(clocksource_file, &clock_buf, &clock_len) || !clock_buf)
 		{
 			printf("[TSC calibration] Could not read the available clock sources on this system. Disabling TSC.\n");
 			return 0;
 		}
+
+		std::string clock_sources(static_cast<const char*>(clock_buf), static_cast<usz>(clock_len));
+		std::free(clock_buf);
+		clock_sources.resize(std::min(clock_sources.size(), clock_sources.find('\n')));
 
 		printf("[TSC calibration] Available clock sources: '%s'\n", clock_sources.c_str());
 

@@ -54,6 +54,7 @@
 #include "util/dyn_lib.hpp"
 #include "Utilities/Timer.h"
 #include "Emu/system_config.h"
+#include "util/sysinfo.hpp"
 #include "util/vm.hpp"
 #include "Emu/system_config_types.h"
 
@@ -116,6 +117,14 @@ error_code cellSslEnd();
 
 int main()
 {
+	// The host's memory use, read from /proc/meminfo with libretro-common's
+	// filestream: a total, and some of it available
+	{
+		const auto [total, used] = utils::get_memory_usage();
+		CHECK(total > 0 && used > 0 && used < total);
+		std::printf("test_emu_waits: memory use from /proc/meminfo: %llu of %llu MiB\n", static_cast<unsigned long long>(used >> 20), static_cast<unsigned long long>(total >> 20));
+	}
+
 	// A new configuration's PSID and system name: drawn from libretro-common's
 	// entropy source, so two PSIDs drawn at once differ
 	{

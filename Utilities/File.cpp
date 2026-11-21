@@ -182,7 +182,6 @@ static fs::error to_error(DWORD e)
 #include <sys/sysmacros.h>
 #include <linux/fs.h>
 #else
-#include <fstream>
 #include <sys/disk.h>
 #include <sys/param.h>
 #include <sys/mount.h>
@@ -1790,6 +1789,34 @@ bool fs::rename(const std::string& from, const std::string& to, bool overwrite)
 #endif
 }
 
+// A copy read and written through fs::file: to or from the frontend's VFS,
+// and on hosts with no native copy
+static bool copy_file_by_reading(const std::string& from, const std::string& to, bool overwrite)
+{
+	fs::file src(from);
+	if (!src)
+		return false;
+
+	bs_t<fs::open_mode> dst_mode = fs::write + fs::create + fs::trunc;
+	if (!overwrite)
+		dst_mode += fs::excl;
+
+	fs::file dst(to, dst_mode);
+	if (!dst)
+		return false;
+
+	std::vector<u8> buf(1 << 20);
+	while (const u64 n = src.read(buf.data(), buf.size()))
+	{
+		if (dst.write(buf.data(), n) != n)
+		{
+			fs::g_tls_error = fs::error::nospace;
+			return false;
+		}
+	}
+	return true;
+}
+
 bool fs::copy_file(const std::string& from, const std::string& to, bool overwrite)
 {
 	const auto device = get_virtual_device(from);
@@ -1797,28 +1824,7 @@ bool fs::copy_file(const std::string& from, const std::string& to, bool overwrit
 	// To or from the frontend's VFS: read and written through it
 	if (libretro_vfs::is_uri(from) || libretro_vfs::is_uri(to))
 	{
-		fs::file src(from);
-		if (!src)
-			return false;
-
-		bs_t<fs::open_mode> dst_mode = fs::write + fs::create + fs::trunc;
-		if (!overwrite)
-			dst_mode += fs::excl;
-
-		fs::file dst(to, dst_mode);
-		if (!dst)
-			return false;
-
-		std::vector<u8> buf(1 << 20);
-		while (const u64 n = src.read(buf.data(), buf.size()))
-		{
-			if (dst.write(buf.data(), n) != n)
-			{
-				g_tls_error = fs::error::nospace;
-				return false;
-			}
-		}
-		return true;
+		return copy_file_by_reading(from, to, overwrite);
 	}
 
 	if (device != get_virtual_device(to) || device) // TODO
@@ -1887,31 +1893,8 @@ bool fs::copy_file(const std::string& from, const std::string& to, bool overwrit
 	::close(input);
 	::close(output);
 	return true;
-#else // fallback
-	{
-		std::ifstream out{to, std::ios::binary};
-		if (out.good() && !overwrite)
-		{
-			g_tls_error = to_error(EEXIST);
-			return false;
-		}
-	}
-
-	std::ifstream in{from, std::ios::binary};
-	std::ofstream out{to,  std::ios::binary};
-
-	if (!in.good() || !out.good())
-	{
-		g_tls_error = to_error(errno);
-		return false;
-	}
-
-	std::istreambuf_iterator<char> bin(in);
-	std::istreambuf_iterator<char> ein;
-	std::ostreambuf_iterator<char> bout(out);
-	std::copy(bin, ein, bout);
-
-	return true;
+#else // fallback: through fs::file, as the frontend's VFS is
+	return copy_file_by_reading(from, to, overwrite);
 #endif
 }
 

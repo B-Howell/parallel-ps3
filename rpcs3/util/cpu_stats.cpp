@@ -14,9 +14,8 @@
 #pragma comment(lib, "pdh.lib")
 #endif
 #else
-#include "fstream"
-#include "sstream"
 #include "stdlib.h"
+#include <streams/file_stream.h>
 #include "sys/times.h"
 #endif
 
@@ -202,13 +201,16 @@ namespace utils
 		m_previous_idle_times_per_cpu.resize(utils::get_thread_count(), 0.0);
 		m_previous_total_times_per_cpu.resize(utils::get_thread_count(), 0.0);
 
-		if (std::ifstream proc_stat("/proc/stat"); proc_stat.good())
-		{
-			std::stringstream content;
-			content << proc_stat.rdbuf();
-			proc_stat.close();
+		// Read whole with libretro-common's filestream (to its end: /proc gives
+		// no size) and split in place, where it went through a stream and two
+		// copies of the text
+		void* proc_buf = nullptr;
+		int64_t proc_len = 0;
 
-			const std::string content_str = content.str();
+		if (filestream_read_file("/proc/stat", &proc_buf, &proc_len) && proc_buf)
+		{
+			const std::unique_ptr<void, decltype(&std::free)> proc_owner(proc_buf, &std::free);
+			const std::string_view content_str(static_cast<const char*>(proc_buf), static_cast<usz>(proc_len));
 			const std::vector<std::string_view> lines = fmt::split_sv(content_str, {"\n"});
 			if (lines.empty())
 			{
