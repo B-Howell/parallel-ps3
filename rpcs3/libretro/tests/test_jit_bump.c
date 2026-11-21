@@ -4,8 +4,9 @@
  *   steps and kept; an allocation past the limit fails, and every one
  *   after it too; the pointer form the same within its range.
  * - Two threads, each on a CPU of its own, taking a block each at once
- *   200000 times: never the same block, all aligned, and the counter
- *   ends at the total. */
+ *   200000 times: never the same block, all aligned, each inside the
+ *   range its taker commits or saw committed (no lock is taken), and the
+ *   counter ends at the total. */
 
 #ifdef __linux__
 #define _GNU_SOURCE
@@ -60,6 +61,9 @@ static void alone(void)
 
 static retro_atomic_64_t shared;
 static uint64_t got[2][ROUNDS];
+/* Blocks handed out past what their taker was told to commit or saw
+ * committed: the allocator takes no lock, so each taker commits its own */
+static int uncommitted[2];
 static retro_atomic_int_t step_of[2];
 
 static void meet(int me, int step)
@@ -95,6 +99,8 @@ static void *taker(void *arg)
       uint64_t o, n;
       meet(me, r + 1);
       got[me][r] = jit_bump_alloc(&shared, 24, 32, 0x40000000, 0x200000, &o, &n);
+      if (got[me][r] + 32 > (n > o ? n : o))
+         uncommitted[me]++;
       if (n != o)
          jit_bump_commit(&shared, n);
    }
@@ -122,6 +128,7 @@ static void together(void)
 
    TEST_CHECK(same == 0);
    TEST_CHECK(unaligned == 0);
+   TEST_CHECK(uncommitted[0] == 0 && uncommitted[1] == 0);
    if (same)
       fprintf(stderr, "rounds where both took the same block: %d\n", same);
    TEST_CHECK(jit_bump_used(&shared) == (uint64_t)2 * ROUNDS * 32);

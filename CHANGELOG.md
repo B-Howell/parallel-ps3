@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **JIT: the allocator's macOS lock removed.** Not yet run on a game.
+  - **What changed:**
+    - **jit_runtime::alloc** (code and data memory for the PPU, SPU and RSX recompilers) took a `std::mutex` on macOS only. It goes: the allocation is a compare-and-swap on one word (jit_bump), and an allocation past the committed top commits its own range (mprotect) before it returns, so none hands out memory another thread is still committing; committing a range twice is harmless. Windows, which also commits as it goes, never took the lock. Not built or run on macOS here.
+  - **Tests:** test_jit_bump's two threads now also check that every block lies inside the range its taker commits or saw committed; it fails on an allocator that does not report a new top to commit. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if a lock comes back to JITASM.cpp. The core's std::lock_guard count goes to 2.
+
+
 - **Threads: join waits for the thread to finish, no 1 ms wake-ups.** Not yet run on a game.
   - **What changed:**
     - **thread_base::join** waits on the thread's sync word until the thread has set its result (finished or errored), which wakes that word's waiters, as each notify does; it looks again on every change. When it was called from a destructor while the emulator was stopped, it woke every 1 ms instead (an upstream workaround for threads slow to finish, marked to be removed) and, after 16 wake-ups and at each power of two, logged how long it had waited, read from the TSC. It went on waiting either way, so only the wake-ups and the log line go.

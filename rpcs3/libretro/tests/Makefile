@@ -1006,7 +1006,7 @@ test_audio_mix: test_audio_mix.c test_common.h ../../Emu/Cell/Modules/cellAudio_
 # Files whose state is the HLE thread's alone (Emu/Cell/Modules/hle_service.h)
 HLE_OWNED := ../../Emu/Cell/Modules/cellImeJp.cpp ../../Emu/Cell/Modules/cellImeJp.h ../../Emu/Cell/Modules/cellHttp.cpp ../../Emu/Cell/Modules/cellHttp.h ../../Emu/Cell/Modules/cellSubDisplay.cpp ../../Emu/Cell/Modules/cellKb.cpp ../../Emu/Cell/Modules/cellScreenshot.cpp ../../Emu/Cell/Modules/cellScreenshot.h ../../Emu/Cell/Modules/cellPhotoImport.cpp ../../Emu/Cell/Modules/cellSearch.cpp ../../Emu/Cell/Modules/cellVoice.cpp ../../Emu/Cell/Modules/cellVoice.h
 
-LOCK_GUARD_MAX := 3
+LOCK_GUARD_MAX := 2
 
 CLOCK_FILES := $(filter-out ../libretro.h,$(wildcard ../*.c ../*.cpp ../*.h)) ../../Emu/RSX/VK/VKLibretro.cpp ../../Emu/RSX/VK/VKLibretro.h
 
@@ -1618,6 +1618,8 @@ check: all
 	@if grep -n "sleep_for(1s)" ../../Emu/Cell/SPUThread.cpp; then echo "the SPU capture's one-second sleep is back"; exit 1; else echo "an SPU capture does not sleep for its name"; fi
 	@# A thread's join waits on its sync word until it finishes, with no 1 ms bound while the emulator is stopped and no TSC read for a log line
 	@if grep -n "too sleepy\|get_tsc" ../../../Utilities/Thread.cpp; then echo "join's 1 ms wake-ups or TSC log are back"; exit 1; else echo "a thread's join waits on its sync word only"; fi
+	@# The JIT allocator takes no lock on any host: macOS's std::mutex around it is gone
+	@if grep -n "std::mutex\|lock_guard\|<mutex>" ../../../Utilities/JITASM.cpp; then echo "a lock is back in the JIT allocator"; exit 1; else echo "the JIT allocator takes no lock"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

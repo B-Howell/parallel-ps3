@@ -16,10 +16,6 @@
 #define CAN_OVERCOMMIT
 #endif
 
-#if defined(__APPLE__)
-#include <mutex>
-#endif
-
 LOG_CHANNEL(jit_log, "JIT");
 
 void jit_announce(uptr func, usz size, std::string_view name)
@@ -242,11 +238,10 @@ uchar* jit_runtime::_alloc(usz size, usz align) noexcept
 
 u8* jit_runtime::alloc(usz size, usz align, bool exec) noexcept
 {
-#if defined(__APPLE__)
-	static std::mutex s_alloc_lock;
-	std::lock_guard lock(s_alloc_lock);
-#endif
-
+	// No lock on any host: the bump is a compare-and-swap, and an allocation
+	// past the committed top commits its own range before it returns
+	// (committing a range twice is harmless), so none hands out memory
+	// another is still committing
 	if (exec)
 	{
 		return add_jit_memory<s_code_pos, 0x0, utils::protection::wx>(size, align);
