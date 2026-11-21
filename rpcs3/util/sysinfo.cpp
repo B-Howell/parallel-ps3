@@ -1108,7 +1108,7 @@ static const bool s_tsc_freq_evaluated = []() -> bool
 		return round_tsc(res, utils::mul_saturate<u64>(utils::add_saturate<u64>(rdtsc_diff[0], rdtsc_diff[1]), utils::aligned_div(timer_freq, timer_data[1] - timer_data[0])));
 	}();
 
-	atomic_storage<u64>::store(utils::s_tsc_freq, cal_tsc);
+	retro_atomic_store_release_64(static_cast<retro_atomic_64_t*>(static_cast<void*>(&utils::s_tsc_freq)), static_cast<s64>(cal_tsc));
 	return true;
 }();
 

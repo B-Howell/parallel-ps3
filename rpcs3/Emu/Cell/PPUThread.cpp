@@ -798,13 +798,13 @@ static void ppu_check_toc(ppu_thread& ppu, ppu_opcode_t op, be_t<u32>* this_op, 
 
 		if (found != ppu_toc.end())
 		{
-			const u32 toc = atomic_storage<u32>::load(found->second);
+			const u32 toc = static_cast<u32>(retro_atomic_load_acquire_int(static_cast<const retro_atomic_int_t*>(static_cast<const void*>(&found->second))));
 
 			// Compare TOC with expected value
 			if (toc != umax && ppu.gpr[2] != toc)
 			{
 				ppu_log.error("Unexpected TOC (0x%x, expected 0x%x)", ppu.gpr[2], toc);
-				atomic_storage<u32>::exchange(found->second, u32{umax});
+				retro_atomic_exchange_int(static_cast<retro_atomic_int_t*>(static_cast<void*>(&found->second)), -1);
 			}
 		}
 
@@ -1369,7 +1369,7 @@ static void ppu_break(ppu_thread& ppu, ppu_opcode_t, be_t<u32>* this_op, ppu_int
 		Emu.CallFromMainThread([]() { Emu.Pause(); });
 	}
 
-	if (ppu.check_state() || old_cia != atomic_storage<u32>::load(ppu.cia))
+	if (ppu.check_state() || old_cia != static_cast<u32>(retro_atomic_load_acquire_int(static_cast<const retro_atomic_int_t*>(static_cast<const void*>(&ppu.cia)))))
 	{
 		// Do not execute if PC changed
 		return;

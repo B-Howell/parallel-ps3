@@ -1767,7 +1767,7 @@ error_code sys_spu_thread_group_terminate(ppu_thread& ppu, u32 id, s32 value)
 			{
 				thread_ctrl::notify(*thread);
 
-				if (u32 resv = atomic_storage<u32>::load(thread->raddr))
+				if (u32 resv = static_cast<u32>(retro_atomic_load_acquire_int(static_cast<const retro_atomic_int_t*>(static_cast<const void*>(&thread->raddr)))))
 				{
 					if (prev_resv && (prev_resv != resv || prev_time != thread->rtime))
 					{

@@ -979,7 +979,7 @@ error_code _sys_prx_register_library(ppu_thread& ppu, vm::ptr<void> library)
 				{
 					if (std::memcmp(vm::base(lib_addr), mem_copy.data(), sizeof_lib) == 0)
 					{
-						atomic_storage<char>::release(prx.m_external_loaded_flags[index], true);
+						retro_atomic_store_release_8(static_cast<retro_atomic_8_t*>(static_cast<void*>(&prx.m_external_loaded_flags[index])), 1);
 						return true;
 					}
 				}

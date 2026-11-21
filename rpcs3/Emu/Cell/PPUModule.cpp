@@ -752,7 +752,7 @@ extern u32 ppu_get_exported_func_addr(u32 fnid, const std::string& module_name)
 	// address read as the one word it is
 	const auto flink = reinterpret_cast<const ppu_linkage_info::module_data::info*>(lf_u64_map_get(&link.exports, ppu_export_key(module_name, fnid)));
 
-	return flink ? atomic_storage<u32>::load(flink->export_addr) : 0;
+	return flink ? static_cast<u32>(retro_atomic_load_acquire_int(static_cast<const retro_atomic_int_t*>(static_cast<const void*>(&flink->export_addr)))) : 0;
 }
 
 extern bool ppu_register_library_lock(std::string_view libname, bool lock_lib)

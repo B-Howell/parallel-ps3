@@ -173,7 +173,7 @@ struct music_selection_context
 
 	operator bool() const
 	{
-		return atomic_storage<bool>::load(valid);
+		return retro_atomic_load_acquire_8(static_cast<const retro_atomic_8_t*>(static_cast<const void*>(&valid))) != 0;
 	}
 
 	// Helper

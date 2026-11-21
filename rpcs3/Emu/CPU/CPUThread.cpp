@@ -795,7 +795,7 @@ cpu_thread& cpu_thread::operator=(thread_state)
 
 		if (auto thread = try_get<spu_thread>())
 		{
-			if (u32 resv = atomic_storage<u32>::load(thread->raddr))
+			if (u32 resv = static_cast<u32>(retro_atomic_load_acquire_int(static_cast<const retro_atomic_int_t*>(static_cast<const void*>(&thread->raddr)))))
 			{
 				vm::reservation_notifier_notify(resv, thread->rtime);
 			}
@@ -897,7 +897,7 @@ u32 cpu_thread::get_pc() const
 	default: break;
 	}
 
-	return pc ? atomic_storage<u32>::load(*pc) : u32{umax};
+	return pc ? static_cast<u32>(retro_atomic_load_acquire_int(static_cast<const retro_atomic_int_t*>(static_cast<const void*>(&*pc)))) : u32{umax};
 }
 
 u32* cpu_thread::get_pc2()

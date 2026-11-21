@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The last atomic_storage calls on retro_atomic.** Not yet run on a game.
+  - **What changed:**
+    - **Thirteen loads, stores and exchanges** of plain fields in nine files are retro_atomic's of the same width: the scheduler's and lv2's look at another thread's reservation address and the CPU thread's pc (acquire loads), a PPU module export's address and the PPU thread's TOC and cia (acquire loads, and an exchange marking a TOC done), cellMusic's valid flag and sys_prx's loaded flags (the new 8-bit word), the raw SPU's entry pc (a release store), and the TSC frequency set at start (a release store where it was a seq_cst one; it is set once before anything reads it).
+    - **The PPU interpreter's dispatch** loads the next function with `retro_atomic_load_acquire_ptr`, or `retro_atomic_load_relaxed_ptr` where it used atomic_storage's observe: a plain load either way. PPUInterpreter.o is 68 bytes smaller, with as many locked instructions as before (119).
+  - **Tests:** none of their own; they read and write fields of running threads. The full build and suites pass. A check fails if atomic_storage comes back outside util/atomic.
+
+
 - **vm's page flags on retro_atomic, off atomic_t: the last atomic_t in the core.** Not yet run on a game.
   - **What changed:**
     - **The page table** (`vm::g_pages`, a byte of flags per 4 KB page of the 4 GB guest space) is an array of `retro_atomic_8_t`, the new 8-bit word, where it was `atomic_t<u8>`. Its 22 uses in vm.h and vm.cpp say what they do: `retro_atomic_load_acquire_8` where atomic_t read it implicitly or with load(), `retro_atomic_store_release_8` for its release(), and `retro_atomic_exchange_8` where a page is mapped. The savestate writes the byte loaded, and the table is cleared through a void pointer as before. Each is still one byte access: a plain mov on x86, ldarb or stlrb on aarch64.

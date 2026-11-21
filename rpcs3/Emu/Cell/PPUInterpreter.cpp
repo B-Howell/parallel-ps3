@@ -142,14 +142,14 @@ struct ppu_exec_select
 		if (is_debugger_present() || g_cfg.core.ppu_debug) return +[](ppu_thread& ppu, ppu_opcode_t op, be_t<u32>* this_op, ppu_intrp_func* next_fn) { \
 			exec(__VA_ARGS__); \
 			const auto next_op = this_op + 1; \
-			const auto fn = atomic_storage<ppu_intrp_func_t>::load(next_fn->fn); \
+			const auto fn = reinterpret_cast<ppu_intrp_func_t>(retro_atomic_load_acquire_ptr(static_cast<retro_atomic_ptr_t*>(static_cast<void*>(&next_fn->fn)))); \
 			ppu.cia = vm::get_addr(next_op); \
 			return fn(ppu, {*next_op}, next_op, next_fn + 1); \
 		}; \
 		return +[](ppu_thread& ppu, ppu_opcode_t op, be_t<u32>* this_op, ppu_intrp_func* next_fn) { \
 			exec(__VA_ARGS__); \
 			const auto next_op = this_op + 1; \
-			const auto fn = atomic_storage<ppu_intrp_func_t>::observe(next_fn->fn); \
+			const auto fn = reinterpret_cast<ppu_intrp_func_t>(retro_atomic_load_relaxed_ptr(static_cast<retro_atomic_ptr_t*>(static_cast<void*>(&next_fn->fn)))); \
 			return fn(ppu, {*next_op}, next_op, next_fn + 1); \
 		}; \
 	}

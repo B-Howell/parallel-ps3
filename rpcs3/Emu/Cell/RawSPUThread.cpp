@@ -549,7 +549,7 @@ void spu_load_exec(const spu_exec_object& elf)
 	retro_atomic_store_release_int(&spu_thread::g_raw_spu_id[0], static_cast<int>(spu->id));
 
 	spu->store_status_npc({SPU_STATUS_RUNNING, elf.header.e_entry});
-	atomic_storage<u32>::release(spu->pc, elf.header.e_entry);
+	retro_atomic_store_release_int(static_cast<retro_atomic_int_t*>(static_cast<void*>(&spu->pc)), static_cast<int>(elf.header.e_entry));
 
 	const auto funcs = spu->discover_functions(0, { spu->ls , SPU_LS_SIZE }, true, umax);
 
@@ -627,5 +627,5 @@ void spu_load_rel_exec(const spu_rel_object& elf)
 	retro_atomic_store_release_int(&spu_thread::g_raw_spu_id[0], static_cast<int>(spu->id));
 
 	spu->store_status_npc({SPU_STATUS_RUNNING, elf.header.e_entry});
-	atomic_storage<u32>::release(spu->pc, elf.header.e_entry);
+	retro_atomic_store_release_int(static_cast<retro_atomic_int_t*>(static_cast<void*>(&spu->pc)), static_cast<int>(elf.header.e_entry));
 }
