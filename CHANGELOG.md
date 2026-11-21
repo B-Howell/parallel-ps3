@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **suspend_all: a paused thread sleeps until the work is done, no spin or 10 µs timer.** Not yet run on a game.
+  - **What changed:**
+    - **A PPU or SPU thread paused by `cpu_thread::suspend_all`** (savestates, the SPU and PPU recompilers' patching, the debugger, and every other suspend in the core) waits on two words: the suspend counter and its own state. It leaves when the counter has moved on to the next suspend (the owner's last increment, after which it wakes the counter's waiters, as it already did) or when its pause has been taken off. Before, it spun 300 cycles at a time for its first 20 looks and for as long as the counter was odd (the whole time the owner ran the work), then woke every 10 µs (marked upstream as a workaround to fix). The owner clears every pause before it wakes the counter, so no wake is missed.
+  - **From the council's review** (performance, correctness and PS3 accuracy, reading the code): this was the first site all three agreed is safe to make event-driven; it was the biggest one, as every paused thread spun for the whole of each suspend.
+  - **Tests:** none of their own; the wait needs running PPU or SPU threads inside a suspend, which no test here makes. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if the 10 µs timer comes back.
+
+
 - **No std::regex left: wildcards through libretro-common's rl_fnmatch.** Not yet run on a game.
   - **What changed:**
     - **A version string** (`utils::compare_versions`: firmware, patches) is valid when it holds only digits and dots, checked by `find_first_not_of`, where a std::regex (`[0-9.]*`) checked it.

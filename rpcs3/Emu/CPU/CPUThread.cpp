@@ -682,29 +682,25 @@ bool cpu_thread::check_state() noexcept
 			// If only cpu_flag::pause was set, wait on suspend counter instead
 			if (state0 & cpu_flag::pause)
 			{
-				// Wait for current suspend_all operation
-				for (u64 i = 0;; i++)
+				// Wait for current suspend_all operation: until the counter moves
+				// on to the next one (its owner's last increment, then it wakes
+				// the counter's waiters) or this thread's pause is taken off. Both
+				// are words this waits on, so it sleeps for as long as the work
+				// runs, where it spun (the whole time the counter was odd) and
+				// then woke every 10 us
+				while (true)
 				{
-					u64 ctr = suspend_counter();
+					const u64 ctr = suspend_counter();
+					const auto seen = +state;
 
-					if (ctr >> 2 == s_tls_sctr >> 2 && state & cpu_flag::pause)
-					{
-						if (i < 20 || ctr & 1)
-						{
-							busy_wait(300);
-						}
-						else
-						{
-							// TODO: fix the workaround
-							const retro_waitaddr_t w{&g_suspend_counter, static_cast<u32>(ctr)};
-							retro_waitaddr_wait(&w, 1, 10);
-						}
-					}
-					else
+					if (ctr >> 2 != s_tls_sctr >> 2 || !(seen & cpu_flag::pause))
 					{
 						s_tls_sctr = -1;
 						break;
 					}
+
+					const retro_waitaddr_t list[2]{{&g_suspend_counter, static_cast<u32>(ctr)}, thread_ctrl::waitaddr(state, seen)};
+					retro_waitaddr_wait(list, 2, -1);
 				}
 
 				continue;
