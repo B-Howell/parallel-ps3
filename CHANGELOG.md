@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Media: the shuffled playlist seeded from libretro-common's entropy, off std::chrono.** Not yet run on a game.
+  - **What changed:**
+    - **A game's music played shuffled** (cellSearch's shuffle option, through the audio decoder) is shuffled once with an engine seeded by `crypto_random_bytes`, libretro-common's platform entropy source (getentropy or /dev/urandom, BCrypt on Windows), where it took the steady clock's reading as the seed. If no source answers, the seed is 0 and the order is the same each time. std::random_device stays out: its state is 5 KiB on the stack.
+  - **Tests:** none of its own; the path needs a game's music search context and the audio decoder. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if std::chrono comes back to media_utils.cpp.
+
+
 - **Logs: message stamps on libretro-common's clock, off std::chrono.** Not yet run on a game.
   - **What changed:**
     - **A log message's stamp** (microseconds since the first message) reads `cpu_features_get_time_usec`, libretro-common's monotonic microsecond clock, on every host. It read std::chrono's steady clock, or on Windows QueryPerformanceCounter with its own arithmetic (the same arithmetic libretro-common's does). The stamp is one subtraction from the first reading, kept in a static.

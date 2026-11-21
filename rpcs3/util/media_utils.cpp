@@ -5,6 +5,7 @@
 #include "Emu/emu_callbacks.h"
 
 #include <formats/rtags.h>
+#include <crypto/kdf.h>
 
 #include <random>
 #include <rthreads/retro_waitaddr.h>
@@ -354,9 +355,12 @@ namespace utils
 			{
 				// Shuffle once if necessary
 				media_log.notice("audio_decoder: shuffling initial playlist...");
-				// Seeded from the clock: std::random_device keeps its state
-				// on the stack, 5 KiB, past the core's 4 KiB stack frame
-				auto engine = std::default_random_engine{static_cast<std::default_random_engine::result_type>(std::chrono::steady_clock::now().time_since_epoch().count())};
+				// Seeded from libretro-common's entropy source (crypto_random_bytes):
+				// std::random_device keeps its state on the stack, 5 KiB, past the
+				// core's 4 KiB stack frame
+				std::default_random_engine::result_type seed = 0;
+				crypto_random_bytes(reinterpret_cast<uint8_t*>(&seed), sizeof(seed));
+				auto engine = std::default_random_engine{seed};
 				std::shuffle(std::begin(m_context.playlist), std::end(m_context.playlist), engine);
 			}
 
