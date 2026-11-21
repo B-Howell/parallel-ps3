@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **SPU captures: a taken name gets a number, no one-second sleep.** Not yet run on a game.
+  - **What changed:**
+    - **Saving an SPU's local storage as an ELF** (`spu_progs/<title>_<name>_<time>_capture.elf`) when a capture already has that second's name adds a number of its own to the name (`_<base57>`, from `fs::unique_id`), where the SPU thread slept a whole second for the timestamp to change. The timestamp in the name is the wall clock on purpose: it names the file and paces nothing.
+    - **Flagged, not changed:** the SPU still sleeps 1 ms on a stop-and-signal 0x001 (an upstream hack), and waits 300 µs and 200 µs on purpose to let other SPU threads take over SPURS work.
+  - **Tests:** none of its own; a capture needs a running SPU. The full build and suites pass. A check fails if the one-second sleep comes back.
+
+
 - **Access violations: a paused thread waits on the emulator's state, no timer or yield loop.** Not yet run on a game.
   - **What changed:**
     - **Every change of the emulator's state wakes its waiters:** `set_state` and a successful `state_cas` wake whoever waits on the state word, where only Run and Kill did. `Emu.wait_state_change(old)` waits until the state is no longer `old`; WaitReady is that wait on ready.

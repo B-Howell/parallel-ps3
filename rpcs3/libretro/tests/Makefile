@@ -1614,6 +1614,8 @@ check: all
 	@if grep -rn "get_unique_tsc" --include=*.cpp --include=*.h --include=*.hpp ../../Emu ../../util ../../Loader ../../../Utilities; then echo "get_unique_tsc is back"; exit 1; else echo "temporary file names read no clock"; fi
 	@# A thread paused by an access violation waits on the emulator's state word (every change wakes it), not on a 1 ms timer or a yield loop
 	@if grep -n "this_thread::yield\|this_thread::sleep_for" ../../../Utilities/Thread.cpp; then echo "a yield or sleep is back in Thread.cpp's access violation path"; exit 1; else echo "Thread.cpp's access violation path waits on events"; fi
+	@# An SPU capture whose name is taken gets a number of its own (fs::unique_id) where it slept a second for the next timestamp
+	@if grep -n "sleep_for(1s)" ../../Emu/Cell/SPUThread.cpp; then echo "the SPU capture's one-second sleep is back"; exit 1; else echo "an SPU capture does not sleep for its name"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

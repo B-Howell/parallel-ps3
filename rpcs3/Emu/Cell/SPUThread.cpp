@@ -7193,19 +7193,18 @@ bool spu_thread::capture_state()
 	name = vfs::escape(name, true);
 	std::replace(name.begin(), name.end(), ' ', '_');
 
-	auto get_filename = [&]() -> std::string
+	auto get_filename = [&](const std::string& unique) -> std::string
 	{
-		return fs::get_cache_dir() + "spu_progs/" + Emu.GetTitleID() + "_" + vfs::escape(name, true) + '_' + date_time::current_time_narrow() + "_capture.elf";
+		return fs::get_cache_dir() + "spu_progs/" + Emu.GetTitleID() + "_" + vfs::escape(name, true) + '_' + date_time::current_time_narrow() + unique + "_capture.elf";
 	};
 
-	auto elf_path = get_filename();
+	auto elf_path = get_filename({});
 
 	if (fs::exists(elf_path))
 	{
-		// Wait 1 second so current_time_narrow() will return a different string
-		std::this_thread::sleep_for(1s);
-
-		if (elf_path = get_filename(); fs::exists(elf_path))
+		// A capture already has this second's name: this one gets a number
+		// of its own, where it waited a second for the next name
+		if (elf_path = get_filename(fmt::format("_%s", fmt::base57(fs::unique_id()))); fs::exists(elf_path))
 		{
 			spu_log.error("Failed to create '%s' (error=%s)", elf_path, fs::g_tls_error);
 			return false;
