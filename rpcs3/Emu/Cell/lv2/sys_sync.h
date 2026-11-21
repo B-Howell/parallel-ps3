@@ -69,6 +69,16 @@ struct ppu_non_sleeping_count_t
 // Base class for some kernel objects (shared set of 8192 objects).
 struct lv2_obj
 {
+	// A release store of a sleep queue's pointer link: the queues are
+	// walked under their lock, but their heads and links are read by
+	// other threads without it
+	template <typename P>
+	static inline void release_link(P& slot, std::type_identity_t<P> value)
+	{
+		static_assert(std::is_pointer_v<P> && sizeof(P) == sizeof(void*));
+		retro_atomic_store_release_ptr(reinterpret_cast<retro_atomic_ptr_t*>(&slot), const_cast<void*>(static_cast<const void*>(value)));
+	}
+
 	static const u32 id_step = 0x100;
 	static const u32 id_count = 8192;
 	static constexpr std::pair<u32, u32> id_invl_range = {0, 8};
@@ -122,11 +132,11 @@ public:
 
 		if (it == object)
 		{
-			atomic_storage<T*>::release(first, it->*mem_ptr);
+			release_link(first, it->*mem_ptr);
 
 			if constexpr (ModifyNode)
 			{
-				atomic_storage<T*>::release(it->*mem_ptr, nullptr);
+				release_link(it->*mem_ptr, nullptr);
 			}
 
 			return it;
@@ -138,11 +148,11 @@ public:
 
 			if (next == object)
 			{
-				atomic_storage<T*>::release(it->*mem_ptr, next->*mem_ptr);
+				release_link(it->*mem_ptr, next->*mem_ptr);
 
 				if constexpr (ModifyNode)
 				{
-					atomic_storage<T*>::release(next->*mem_ptr, nullptr);
+					release_link(next->*mem_ptr, nullptr);
 				}
 
 				return next;
@@ -182,7 +192,7 @@ public:
 
 				if (cpu_flag::again - it->state)
 				{
-					atomic_storage<T>::release(*parent_found, nullptr);
+					release_link(*parent_found, nullptr);
 				}
 
 				return it;
@@ -217,11 +227,11 @@ public:
 
 		if (cpu_flag::again - found->state)
 		{
-			atomic_storage<T>::release(*parent_found, found->next_cpu);
+			release_link(*parent_found, found->next_cpu);
 
 			if (modify_node)
 			{
-				atomic_storage<T>::release(found->next_cpu, nullptr);
+				release_link(found->next_cpu, nullptr);
 			}
 		}
 
@@ -231,8 +241,8 @@ public:
 	template <typename T>
 	static void emplace(T& first, T object)
 	{
-		atomic_storage<T>::release(object->next_cpu, first);
-		atomic_storage<T>::release(first, object);
+		release_link(object->next_cpu, first);
+		release_link(first, object);
 
 		object->prio_op([order = retro_atomic_fetch_add_64(&g_priority_order_tag, 1) + 1](decltype(std::declval<T>()->get_prio())& prio)
 		{

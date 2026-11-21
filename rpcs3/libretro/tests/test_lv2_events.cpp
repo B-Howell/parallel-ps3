@@ -17,6 +17,7 @@
 #include "Emu/IdManager.h"
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/Cell/lv2/sys_event.h"
+#include "Emu/Cell/lv2/sys_sync.h"
 #include "util/serialization.hpp"
 
 #include <cstdio>
@@ -250,6 +251,29 @@ int main()
 		CHECK(take(*small, got) && got == event_of(7));
 		CHECK(small->send(event_of(8)) == CellError{});
 		CHECK(take(*small, got) && got == event_of(8) && !take(*small, got));
+	}
+
+	// A sleep queue's unqueue, its links stored with release: the head, a
+	// middle and the last node come out, their own links cleared, the rest
+	// of the list kept; a node not on it is not found
+	{
+		struct node
+		{
+			node* next_cpu = nullptr;
+		};
+		node n[4];
+		node* first = &n[0];
+		n[0].next_cpu = &n[1];
+		n[1].next_cpu = &n[2];
+		n[2].next_cpu = &n[3];
+		node stray;
+		CHECK(lv2_obj::unqueue(first, &stray) == nullptr && first == &n[0]);
+		CHECK(lv2_obj::unqueue(first, &n[2]) == &n[2] && n[2].next_cpu == nullptr && n[1].next_cpu == &n[3]);
+		CHECK(lv2_obj::unqueue(first, &n[0]) == &n[0] && n[0].next_cpu == nullptr && first == &n[1]);
+		CHECK(lv2_obj::unqueue<false>(first, &n[3]) == &n[3] && n[1].next_cpu == nullptr);
+		CHECK(lv2_obj::unqueue(first, &n[1]) == &n[1] && first == nullptr);
+		CHECK(lv2_obj::unqueue(first, &n[1]) == nullptr);
+		std::printf("test_lv2_events: a sleep queue's unqueue takes out the head, a middle and the last node\n");
 	}
 
 	std::printf("test_lv2_events: %s\n", failures ? "FAIL" : "ok");

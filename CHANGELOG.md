@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The lv2 sleep queues' links on retro_atomic.** Not yet run on a game.
+  - **What changed:**
+    - **The nine release stores** of a sleep queue's head and next links (unqueue, schedule and emplace in sys_sync.h) go through `lv2_obj::release_link`, a `retro_atomic_store_release_ptr` of the plain pointer slot, in place of `atomic_storage<T*>::release`. The queues are changed under their lock but read by other threads without it, so the stores stay release stores; the code is the same plain store on x86.
+  - **Tests:** test_lv2_events takes the head, a middle and the last node out of a four-node queue, the last without clearing its link, and checks that a node not on it is not found. A mutant `release_link` that stores nothing fails it. A check fails if atomic_storage comes back to sys_sync.h.
+
+
 - **The last fences on retro_atomic.** Not yet run on a game.
   - **What changed:**
     - **The remaining 15 `atomic_fence_*` calls** are retro_atomic's fences, one for one: the PPU interpreter's (sync, eieio, the reservation), the SPU interpreter's and threads' (sync, dsync, the channels and the reservation), the raw SPU's MMIO, the PPU thread's, the RSX FIFO's and the NV47 sync and NV406E semaphore writes, cellSpurs' two and sys_lwmutex's two. The seq_cst ones are a locked or on x86 as before (no mfence in PPUInterpreter.o, SPUInterpreter.o, SPUThread.o, PPUThread.o or RSXFIFO.o); the acquire and acq_rel ones are compiler barriers on x86 as before. Nothing calls util/atomic.hpp's fences now.
