@@ -58,6 +58,7 @@
 #include "Emu/system_config.h"
 #include "util/sysinfo.hpp"
 #include "Crypto/unpkg.h"
+#include <time/rtime.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include "util/vm.hpp"
@@ -172,6 +173,18 @@ int main()
 		CHECK(retro_atomic_load_acquire_int(&s_ran) == 1);
 		CHECK(retro_atomic_load_acquire_int(&s_freed) == 1);
 		std::printf("test_emu_waits: a detached thread: ran its callable and freed it\n");
+	}
+
+	// An ISO file's date: days from 1970 by libretro-common's Gregorian
+	// count (rtime_days_from_civil), January and February counted with
+	// the year before, as the ISO loader counts them
+	{
+		CHECK(rtime_days_from_civil(1970, 1, 1) == 0);
+		CHECK(rtime_days_from_civil(1969, 12, 31) == -1);
+		CHECK(rtime_days_from_civil(2000, 3, 1) == 11017);
+		CHECK(rtime_days_from_civil(2006, 11, 11) == 13463);
+		CHECK(rtime_days_from_civil(1900 + 155, 12, 31) == 31410);
+		std::printf("test_emu_waits: ISO dates: days from 1970 as the calendar counts them\n");
 	}
 
 	// The PKG installer's path check: a file to be made under the install

@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **ISO dates: days counted with libretro-common's rtime_days_from_civil.** Not yet run on a game.
+  - **What changed:**
+    - **A file's date in an ISO** is turned into a UNIX time with `rtime_days_from_civil` (libretro-common's rtime.h, from RetroArch), where it used the core's own copy of the same count (`iso_days_from_civil` in ISO.h, with three static assertions), which goes. The two are the same algorithm, so the times are the same.
+  - **Tests:** test_emu_waits checks the count on 1970-01-01, 1969-12-31, 2000-03-01, 2006-11-11 and 2055-12-31; it fails on a count that does not take January and February with the year before. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if the core's own copy comes back.
+
+
 - **PKG installer: its path check on libretro-common, no std::filesystem left in the core.** Not yet run on a game.
   - **What changed:**
     - **Every path a package installs to** is resolved with `path_resolve_realpath_weak` (libretro-common, from RetroArch): the part that exists with its links resolved, the rest by its text, as std::filesystem's weakly_canonical resolved it. A file is installed only if its resolved path lies in the resolved install directory by whole components (`pkg_path_is_inside`: `/a/b` is in `/a`, `/ab` is not), as std::filesystem's component-wise comparison checked. Directories are still resolved once each, the files in them joined to that.

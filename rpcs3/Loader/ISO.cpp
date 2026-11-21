@@ -15,6 +15,7 @@
 #include <span>
 #include <cstdlib>
 #include <ctime>
+#include <time/rtime.h>
 
 LOG_CHANNEL(sys_log, "SYS");
 LOG_CHANNEL(iso_log, "ISO");
@@ -1080,7 +1081,7 @@ static std::optional<iso_fs_metadata> iso_read_directory_entry(fs::file& entry, 
 	// The days are counted from the UNIX epoch, so the host time zone never enters the result.
 	// The offset from GMT is stored as a signed number of 15 minute intervals (ECMA-119 9.1.5),
 	// so it has to be subtracted from the recorded local time in order to obtain UTC
-	const s64 file_time = iso_days_from_civil(1900 + header.year, header.month, header.day) * 86400
+	const s64 file_time = rtime_days_from_civil(1900 + header.year, header.month, header.day) * 86400
 		+ header.hour * 3600 + header.minute * 60 + header.second - static_cast<s8>(header.timezone_value) * 15 * 60;
 
 	const std::time_t date_time = static_cast<std::time_t>(file_time);
