@@ -85,7 +85,6 @@ target_sources(rpcs3_emu PRIVATE
     ../../Utilities/bin_patch.cpp
     ../../Utilities/cheat_info.cpp
     ../../Utilities/Config.cpp
-    ../../Utilities/date_time.cpp
     ../../Utilities/File.cpp
     ../../Utilities/JITASM.cpp
     ../../Utilities/JITLLVM.cpp

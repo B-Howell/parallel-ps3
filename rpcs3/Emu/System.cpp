@@ -40,6 +40,7 @@
 #include "rpcs3_version.h"
 
 #include "Utilities/StrUtil.h"
+#include "Utilities/date_time.h"
 
 #include "../Crypto/unself.h"
 #include "util/logs.hpp"
@@ -3736,7 +3737,7 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 
 				ar(u8{1});
 				ar(rpcs3::get_verbose_version());
-				ar(fmt::format("%s", std::chrono::system_clock::now()));
+				ar(date_time::fmt_time("%Y-%m-%dT%H:%M:%S", time(nullptr))); // when it was made, local time
 				ar(GetTitleAndTitleID());
 				ar(std::string{}); // Possible user note
 

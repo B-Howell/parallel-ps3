@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Savestates: their creation date without std::chrono.** Not yet run on a game.
+  - **What changed:**
+    - **The date a savestate records** (local time, `YYYY-MM-DDTHH:MM:SS`) is `time()` formatted by `date_time::fmt_time`, the same strftime format, where it was std::chrono's system clock formatted through a formatter of its own in Utilities/date_time.cpp. That file goes: it held only that formatter. The date is the wall clock on purpose: it says when the state was made, and paces nothing.
+  - **Tests:** none of its own; writing a savestate needs a running game. The full build and suites pass. A check fails if std::chrono comes back to System.cpp or date_time.cpp comes back.
+
+
 - **Utilities/sync.h removed.** Not yet run on a game.
   - **What changed:**
     - **The futex wrapper** (a Linux futex syscall, emulated elsewhere with a mutex and a condition variable per bucket, its timeout a std::chrono duration) goes: no file included it any more; every wait in the core is retro_waitaddr's.
