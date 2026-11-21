@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **libretro-common resynced with RetroArch master.** Not yet run on a game.
+  - **What changed:**
+    - **Twelve files** are RetroArch master's again: `file_path` (path_resolve_realpath_weak, for the PKG installer next), `rtime` (the Gregorian calendar), `features_cpu` (Android ARM64 timer frequencies), `rjpeg_encode` and `formats/image.h` (a block at a time), `rslc` (C89 sprintf names) and `crypto/x509.c`. None of the core's own code changes with them.
+  - **Tests:** none of their own here; path_resolve_realpath_weak is tested in RetroArch (samples/file/file_path) and in the core with the PKG installer next. The full build and suites pass. A check fails if libretro-common falls behind without path_resolve_realpath_weak.
+
+
 - **Shaders: GLSL built with fmt::text_writer, no string streams left in the core.** Not yet run on a game.
   - **What changed:**
     - **`fmt::text_writer`** (StrFmt.h) is a `std::string` appended to with `<<`, as the decompilers used streams for: it writes what a std::ostringstream with its default flags writes (characters as themselves, bool as 1 or 0, integers and unscoped enums in decimal, strings as they are) with no stream buffer, locale or sentry per `<<`. Floating point and pointers other than strings will not compile with it, so no value can be formatted otherwise without being seen: none of the decompilers wrote one, so the shader text is the same byte for byte.
