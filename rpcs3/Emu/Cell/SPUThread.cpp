@@ -4521,7 +4521,7 @@ bool spu_thread::process_mfc_cmd()
 						if (auto [wait_var, flag_val] = vm::reservation_notifier_begin_wait(addr, rtime); wait_var)
 						{
 							cache_line_waiter_index = register_cache_line_waiter(addr);
-							vm::reservation_notifier_wait(wait_var, flag_val, 100'000);
+							vm::reservation_notifier_wait(wait_var, flag_val, 100);
 							vm::reservation_notifier_end_wait(*wait_var);
 						}
 
@@ -5923,7 +5923,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 							}
 							else if (check_cache_line_waiter())
 							{
-								vm::reservation_notifier_wait(wait_var, flag_val, 200'000);
+								vm::reservation_notifier_wait(wait_var, flag_val, 200);
 							}
 
 							vm::reservation_notifier_end_wait(*wait_var);
@@ -5943,7 +5943,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 						}
 						else if (check_cache_line_waiter())
 						{
-							vm::reservation_notifier_wait(wait_var, flag_val, 50'000);
+							vm::reservation_notifier_wait(wait_var, flag_val, 50);
 						}
 
 						vm::reservation_notifier_end_wait(*wait_var);
@@ -6023,8 +6023,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 						}
 						else if (check_cache_line_waiter())
 						{
-							atomic_wait_engine::set_one_time_use_wait_callback(wait_cb);
-							vm::reservation_notifier_wait(wait_var, flag_val, 100'000);
+							vm::reservation_notifier_wait(wait_var, flag_val, 100, wait_cb);
 						}
 
 						vm::reservation_notifier_end_wait(*wait_var);

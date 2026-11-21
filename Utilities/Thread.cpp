@@ -108,8 +108,6 @@ LOG_CHANNEL(vm_log, "VM");
 thread_local u64 g_tls_fault_all = 0;
 thread_local u64 g_tls_fault_rsx = 0;
 thread_local u64 g_tls_fault_spu = 0;
-thread_local u64 g_tls_wait_time = 0;
-thread_local u64 g_tls_wait_fail = 0;
 thread_local u64 g_tls_access_violation_recovered = umax;
 extern thread_local std::string(*g_tls_log_prefix)();
 
@@ -2936,20 +2934,6 @@ void thread_base::initialize(void (*error_cb)())
 		return thread_ctrl::get_name_cached();
 	};
 
-	atomic_wait_engine::set_wait_callback([](const void*, u64 attempts, u64 stamp0) -> bool
-	{
-		if (attempts == umax)
-		{
-			g_tls_wait_time += utils::get_tsc() - stamp0;
-		}
-		else if (attempts > 1)
-		{
-			g_tls_wait_fail += attempts - 1;
-		}
-
-		return true;
-	});
-
 	set_name(thread_ctrl::get_name_cached());
 }
 
@@ -3055,17 +3039,13 @@ u64 thread_base::finalize(thread_state result_state) noexcept
 	const bool is_cpu_thread = !!cpu_thread::get_current();
 	auto& thread_log = (is_cpu_thread || g_tls_fault_all ? sig_log.notice : sig_log.trace);
 
-	thread_log("Thread time: %fs (%fGc); Faults: %u [rsx:%u, spu:%u]; [soft:%u hard:%u]; Switches:[vol:%u unvol:%u]; Wait:[%.3fs, spur:%u]",
+	thread_log("Thread time: %fs (%fGc); Faults: %u [rsx:%u, spu:%u]; [soft:%u hard:%u]; Switches:[vol:%u unvol:%u]",
 		time / 1000000000.,
 		cycles / 1000000000.,
 		g_tls_fault_all,
 		g_tls_fault_rsx,
 		g_tls_fault_spu,
-		fsoft, fhard, ctxvol, ctxinv,
-		g_tls_wait_time / (utils::get_tsc_freq() / 1.),
-		g_tls_wait_fail);
-
-	atomic_wait_engine::set_wait_callback(nullptr);
+		fsoft, fhard, ctxvol, ctxinv);
 
 	// Avoid race with the destructor
 	const u64 _self = thread_handle();
@@ -3092,8 +3072,6 @@ thread_base::native_entry thread_base::finalize(u64 _self) noexcept
 	g_tls_fault_all = 0;
 	g_tls_fault_rsx = 0;
 	g_tls_fault_spu = 0;
-	g_tls_wait_time = 0;
-	g_tls_wait_fail = 0;
 	g_tls_access_violation_recovered = umax;
 
 	g_tls_log_prefix = []() -> std::string { return {}; };

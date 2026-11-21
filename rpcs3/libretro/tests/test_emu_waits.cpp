@@ -1562,7 +1562,7 @@ int main()
 			{
 				while (static_cast<u32>(vm::reservation_waiter_load(w)) == f && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3))
 				{
-					vm::reservation_notifier_wait(w, f, 3'000'000'000);
+					vm::reservation_notifier_wait(w, f, 3'000'000);
 				}
 				vm::reservation_notifier_end_wait(*w);
 			}
@@ -1575,6 +1575,31 @@ int main()
 		t.join();
 		CHECK(waited_ms >= 0 && waited_ms < 1000);
 		std::printf("test_emu_waits: a reservation waiter slot: counted, notified once, waiter woken in %lld ms\n", static_cast<long long>(waited_ms.load()));
+	}
+
+	// A reservation wait with a condition: asked before each wait with
+	// the waits so far, the wait goes on past its bound until it says to
+	// stop (the SPU's lost-reservation check), and without one a wait
+	// is one bound long
+	{
+		const u32 addr = 0x20100;
+		const u64 rtime = vm::reservation_time(addr) & -128;
+		auto [w, f] = vm::reservation_notifier_begin_wait(addr, rtime);
+		CHECK(w != nullptr);
+		static u64 s_asked;
+		static u64 s_last;
+		s_asked = 0;
+		s_last = umax;
+		vm::reservation_notifier_wait(w, f, 1, +[](u64 attempts) -> bool
+		{
+			s_asked++;
+			s_last = attempts;
+			return attempts < 4;
+		});
+		CHECK(s_asked == 5 && s_last == 4);
+		vm::reservation_notifier_wait(w, f, 1);
+		vm::reservation_notifier_end_wait(*w);
+		std::printf("test_emu_waits: a reservation wait with a condition: asked %llu times, stopped when it said so\n", static_cast<unsigned long long>(s_asked));
 	}
 
 	// A compiled SPU block: its function installed only where none is (a

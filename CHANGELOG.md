@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The SPU's reservation waits on retro_waitaddr, off the atomic_wait engine.** Not yet run on a game.
+  - **What changed:**
+    - **vm::reservation_notifier_wait** waits on the waiter's flag with `retro_waitaddr_wait`, its bound in microseconds where it was nanoseconds (the four SPU waits keep theirs: 50, 100, 100 and 200 µs).
+    - **The SPU's lost-reservation check** (GETLLAR's wait for its line to change) is passed to the wait as a condition, where it was a thread-local one-time callback the engine called: asked before each wait with the waits so far, the wait goes on until it says to stop or the flag changes. Each wait is still 100 µs long, so a thread whose reservation nobody notifies wakes every 100 µs to check it; that was so before, and is flagged here, not changed.
+    - **Two notifies** (lv2's postponed wakes, and the one the SPU LLVM recompiler emits after PUTLLC16) call `retro_waitaddr_notify_all` themselves, where they went through the engine's, which did the same.
+    - **A thread's exit log line** no longer gives its time waited and spurious wakes (`Wait:[…]`): they were counted by a callback the engine called on its own waits, which nothing makes any more; the TSC read at each wait goes with it.
+  - **Tests:** test_emu_waits waits with a condition that says stop after its fifth ask, and checks it was asked five times; it fails on a wait that asks once. The full build and suites pass. A check fails if atomic_wait comes back outside util/atomic.
+
+
 - **The last atomic_storage calls on retro_atomic.** Not yet run on a game.
   - **What changed:**
     - **Thirteen loads, stores and exchanges** of plain fields in nine files are retro_atomic's of the same width: the scheduler's and lv2's look at another thread's reservation address and the CPU thread's pc (acquire loads), a PPU module export's address and the PPU thread's TOC and cia (acquire loads, and an exchange marking a TOC done), cellMusic's valid flag and sys_prx's loaded flags (the new 8-bit word), the raw SPU's entry pc (a release store), and the TSC frequency set at start (a release store where it was a seq_cst one; it is set once before anything reads it).

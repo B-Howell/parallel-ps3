@@ -1470,7 +1470,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 
 			m_ir->CreateCondBr(compare_data_change_res, notify_block, notify_next);
 			m_ir->SetInsertPoint(notify_block);
-			call("atomic_wait_engine::notify_all", static_cast<void(*)(const void*)>(atomic_wait_engine::notify_all), rptr);
+			call("retro_waitaddr_notify_all", static_cast<void(*)(const void*)>(retro_waitaddr_notify_all), rptr);
 			m_ir->CreateBr(notify_next);
 			m_ir->SetInsertPoint(notify_next);
 		}
@@ -1597,7 +1597,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 			, g_cfg.core.spu_accurate_reservations ? _fail : _next0); // Succeed unconditionally
 
 		m_ir->SetInsertPoint(_next0);
-		//call("atomic_wait_engine::notify_all", static_cast<void(*)(const void*)>(atomic_wait_engine::notify_all), rptr);
+		//call("retro_waitaddr_notify_all", static_cast<void(*)(const void*)>(retro_waitaddr_notify_all), rptr);
 		m_ir->CreateStore(m_ir->getInt64(spu_channel::bit_count | MFC_PUTLLC_SUCCESS), spu_ptr(&spu_thread::ch_atomic_stat));
 		m_ir->CreateBr(_final);
 

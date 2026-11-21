@@ -2381,7 +2381,7 @@ void lv2_obj::notify_all() noexcept
 		}
 
 		// Note: by the time of notification the thread could have been deallocated which is why the direct function is used
-		atomic_wait_engine::notify_all(cpu);
+		retro_waitaddr_notify_all(cpu);
 	}
 
 	g_to_notify[0] = nullptr;

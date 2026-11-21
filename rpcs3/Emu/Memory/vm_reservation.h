@@ -211,14 +211,28 @@ namespace vm
 		return { &waiter, seen_flag };
 	}
 
-	// Waits while the waiter's flag is still @flag_val, up to @timeout_ns,
-	// through the wait engine (its thread stop checks and one-time callback
-	// apply); may return early
-	inline void reservation_notifier_wait(reservation_waiter_t* waiter, u32 flag_val, u64 timeout_ns)
+	// Waits while the waiter's flag is still @flag_val, up to @timeout_us;
+	// may return early. With @until, it is asked before each wait (with
+	// the number of waits so far) and the wait goes on, each @timeout_us
+	// long, until it says to stop or the flag changes
+	inline void reservation_notifier_wait(reservation_waiter_t* waiter, u32 flag_val, u64 timeout_us, bool (*until)(u64 attempts) = nullptr)
 	{
-		atomic_wait::list<1> list{};
-		list.set_raw<0>(reservation_waiter_flag(waiter), flag_val);
-		list.wait(atomic_wait_timeout{timeout_ns});
+		retro_waitaddr_t list[1] = {{reservation_waiter_flag(waiter), flag_val}};
+
+		for (u64 attempts = 0; static_cast<u32>(reservation_waiter_load(waiter)) == flag_val; attempts++)
+		{
+			if (until && !until(attempts))
+			{
+				break;
+			}
+
+			retro_waitaddr_wait(list, 1, static_cast<s64>(timeout_us));
+
+			if (!until)
+			{
+				break;
+			}
+		}
 	}
 
 	// Wakes the waiters on a flag reservation_notifier_notify() gave back
