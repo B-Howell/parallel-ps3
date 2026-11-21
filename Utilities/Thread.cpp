@@ -3468,9 +3468,7 @@ void thread_ctrl::set_name(std::string name)
 #ifdef __cpp_lib_stacktrace
 	if (rpcs3::is_local_build())
 	{
-		std::ostringstream oss;
-		oss << std::stacktrace::current();
-		sys_log.notice("StackTrace\n\n%s\n", oss.str());
+		sys_log.notice("StackTrace\n\n%s\n", std::to_string(std::stacktrace::current()));
 	}
 #endif
 

@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **No string streams in Thread.cpp and the PKG reader.** Not yet run on a game.
+  - **What changed:**
+    - **The stack trace logged on an unhandled host exception** (local builds with a C++23 stacktrace only) is `std::to_string` of it, where it went through a std::ostringstream.
+    - **A PKG's digests in hex** (logged while it installs) are written two digits a byte into a string sized once, where they went through a std::stringstream with setw and setfill per byte; unpkg.h no longer includes <sstream> or <iomanip>.
+    - **Not changed here:** the shader decompilers (RSX Program, GL and VK) still build their GLSL with std::stringstream, about 90 uses passed between files; that is a sweep of its own.
+  - **Tests:** none of their own; the hex is private to the PKG reader, and the stack trace is only in local builds. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if a string stream comes back to those files.
+
+
 - **No std::thread left in the core: thread ids and the CPU count from libretro-common.** Not yet run on a game.
   - **What changed:**
     - **The host's logical CPU count** (`utils::get_thread_count`, taken once: the thread pools, the SPU thread count and the CPU usage overlay size by it) is `cpu_features_get_core_amount`, libretro-common's, where it asked the host itself (GetNativeSystemInfo, sysconf). The AArch64 CPU name reads each core's MIDR up to that count, where it asked std::thread::hardware_concurrency.

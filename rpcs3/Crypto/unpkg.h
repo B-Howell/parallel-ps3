@@ -4,8 +4,6 @@
 #include "util/endian.hpp"
 #include "util/types.hpp"
 #include "Utilities/File.h"
-#include <sstream>
-#include <iomanip>
 #include <span>
 #include <deque>
 #include <retro_atomic.h>
@@ -151,12 +149,15 @@ struct PKGMetaData
 private:
 	static std::string to_hex_string(const u8* buf, usz size)
 	{
-		std::stringstream sstream;
+		// Two lowercase hex digits a byte, written in place
+		static constexpr char digits[] = "0123456789abcdef";
+		std::string out(size * 2, '\0');
 		for (usz i = 0; i < size; i++)
 		{
-			sstream << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(buf[i]);
+			out[i * 2] = digits[buf[i] >> 4];
+			out[i * 2 + 1] = digits[buf[i] & 15];
 		}
-		return sstream.str();
+		return out;
 	}
 	static std::string to_hex_string(const u8* buf, usz size, usz dotpos)
 	{
