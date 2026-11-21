@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Shader cache loading: its dialog paced by frontend frames, off std::chrono.** Not yet run on a game.
+  - **What changed:**
+    - **With one worker** (the cache loaded on the calling thread, ten entries at a time), the loading dialog is updated when the frontend's frame count (`g_libretro_events`) has moved since the last update, and after the last entry. Before, it read the steady clock after each ten entries and updated when 16 ms had passed. With several workers it already went by the frame count.
+  - **Tests:** none of its own; the path needs a shader cache on disk and the dialog. The full build and suites pass. A check fails if std::chrono comes back to rsx_cache.h.
+
+
 - **Threads: wait_for_accurate off std::chrono.** Not yet run on a game.
   - **What changed:**
     - **thread_ctrl::wait_for_accurate** (the SPU wake-up delay's wait) is one timed wait on every host, as it already was on Linux. On Windows and macOS it was a loop that waited in 500 µs steps, then yielded, then busy-waited 100 cycles at a time, reading the steady clock after each step until the time was up.

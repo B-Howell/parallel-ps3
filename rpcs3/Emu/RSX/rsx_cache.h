@@ -15,7 +15,6 @@
 #include "Emu/RSX/Program/RSXFragmentProgram.h"
 #include "Overlays/Shaders/shader_loading_dialog.h"
 
-#include <chrono>
 
 #include "util/sysinfo.hpp"
 #include "util/fnv_hash.hpp"
@@ -287,7 +286,9 @@ namespace rsx
 		{
 			if (nb_workers == 1)
 			{
-				steady_clock::time_point last_update;
+				// The frontend frame the dialog was last updated in (g_libretro_events):
+				// one before this one, so the first batch updates it
+				u32 last_events = libretro_events_seen() - 1;
 
 				// Call the worker function directly, stopping it prematurely to be able update the screen
 				u32 stop_at = 0;
@@ -297,13 +298,13 @@ namespace rsx
 
 					worker(stop_at);
 
-					// Only update the screen at about 60fps since updating it everytime slows down the process
-					steady_clock::time_point now = steady_clock::now();
-					if ((std::chrono::duration_cast<std::chrono::milliseconds>(now - last_update) > 16ms) || (stop_at == entry_count))
+					// Only update the screen once a frontend frame since updating it everytime slows down the process
+					const u32 events = libretro_events_seen();
+					if (events != last_events || stop_at == entry_count)
 					{
 						dlg->update_msg(step, get_message(step, stop_at, entry_count));
 						dlg->set_value(step, stop_at);
-						last_update = now;
+						last_events = events;
 					}
 				} while (stop_at < entry_count && !Emu.IsStopped());
 			}

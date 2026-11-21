@@ -1586,6 +1586,8 @@ check: all
 	@if test -e ../../util/atomic.hpp || test -e ../../util/atomic.cpp || grep -n "util/atomic" ../../../Makefile.common ../../Emu/CMakeLists.txt || grep -rn "util/atomic\.hpp\|class atomic_t\b" --include=*.cpp --include=*.h --include=*.hpp ../../Emu ../../util ../../Loader ../../../Utilities .; then echo "util/atomic is back"; exit 1; else echo "util/atomic.hpp and util/atomic.cpp are gone"; fi
 	@# Utilities/Thread.cpp reads no std::chrono clock: thread_ctrl::wait_for_accurate is one timed wait on every host
 	@if grep -n "chrono\|busy_wait" ../../../Utilities/Thread.cpp; then echo "std::chrono or a busy-wait is back in Thread.cpp"; exit 1; else echo "Thread.cpp reads no std::chrono clock"; fi
+	@# The shader cache's loading dialog updates once a frontend frame, by g_libretro_events: rsx_cache.h reads no std::chrono clock
+	@if grep -n "chrono\|steady_clock" ../../Emu/RSX/rsx_cache.h; then echo "std::chrono is back in rsx_cache.h"; exit 1; else echo "rsx_cache.h reads no std::chrono clock"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
