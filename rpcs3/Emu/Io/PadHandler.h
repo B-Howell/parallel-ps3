@@ -37,7 +37,6 @@ public:
 	u8 large_motor{0};
 	u8 small_motor{0};
 	bool new_output_data{true};
-	steady_clock::time_point last_output;
 
 	struct color
 	{
@@ -50,8 +49,6 @@ public:
 
 	bool enable_player_leds{};
 	bool update_player_leds{true};
-
-	steady_clock::time_point last_reconnect_attempt{};
 
 	std::shared_ptr<FusionAhrs> ahrs; // Used to calculate quaternions from sensor data
 	u64 last_ahrs_update_time_us = 0; // Last ahrs update

@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Pads: two unused clock fields removed.** Not yet run on a game.
+  - **What changed:**
+    - **PadDevice's last output and last reconnect times** (`steady_clock` time points, 16 bytes a device) go: nothing read or wrote them since the host pad handlers left for the libretro one, which takes its pads from retro_run's input.
+  - **Tests:** none; nothing used them. The full build and suites pass. A check fails if std::chrono comes back to the pad handler.
+
+
 - **cellGame: the new game data's temporary directory named without the clock.** Not yet run on a game.
   - **What changed:**
     - **cellGameCreateGameData's temporary directory** (`/dev_hdd0/game/_GDATA_<number>`, where the game writes its new data before cellGameContentPermit moves it) is numbered with 64 bits from `crypto_random_bytes`, libretro-common's entropy source, where the number was the steady clock's reading. It is as many digits at most (20), so the paths handed back to the game fit as before; a number already taken fails the directory's creation, as a clash did before.
