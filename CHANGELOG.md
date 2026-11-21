@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Waits: their records made at retro_init, so the fault handler's waits never allocate; libretro-common resynced.** Not yet run on a game.
+  - **What changed:**
+    - **libretro-common** is RetroArch master's again: `retro_waitaddr` with `retro_waitaddr_reserve` (a wait looks through the records already made before it makes more), and `file_path`'s `path_resolve_realpath_weak` building where realpath or Windows Vista's calls are missing.
+    - **retro_init makes the wait records for 1024 threads waiting at once** (`retro_waitaddr_reserve(1024)`, about 100 KiB, out of a pool of 4096). A wait reached from the fault handler (a guest access violation pausing the emulator, a page mapped on demand) used to be able to call calloc for a new chunk of records, which a signal handler must not do; with the records made first, it takes one already there. A thread past the 1024 still gets one, outside a fault handler. This is the council's prerequisite for the waits that follow.
+  - **Tests:** the reservation is tested in RetroArch (samples/rthreads/retro_waitaddr_reserve_test: 32 threads waiting at once allocate nothing after it). The core's call has none of its own: the tests do not run retro_init. The full build and suites pass. A check fails if retro_init stops making the reservation.
+
+
 - **suspend_all: a paused thread sleeps until the work is done, no spin or 10 µs timer.** Not yet run on a game.
   - **What changed:**
     - **A PPU or SPU thread paused by `cpu_thread::suspend_all`** (savestates, the SPU and PPU recompilers' patching, the debugger, and every other suspend in the core) waits on two words: the suspend counter and its own state. It leaves when the counter has moved on to the next suspend (the owner's last increment, after which it wakes the counter's waiters, as it already did) or when its pause has been taken off. Before, it spun 300 cycles at a time for its first 20 looks and for as long as the counter was odd (the whole time the owner ran the work), then woke every 10 µs (marked upstream as a workaround to fix). The owner clears every pause before it wakes the counter, so no wake is missed.

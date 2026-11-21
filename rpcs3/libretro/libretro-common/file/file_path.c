@@ -1086,6 +1086,12 @@ char *path_resolve_realpath(char *s, size_t len, bool resolve_symlinks)
    return NULL;
 }
 
+#if defined(_WIN32) && !defined(__WINRT__) && !defined(_XBOX)
+/* Vista and later: looked up, so the function still links and runs
+ * where kernel32 has no such entry point or the SDK no declaration */
+typedef DWORD (WINAPI *path_final_name_t)(HANDLE, LPWSTR, DWORD, DWORD);
+#endif
+
 /**
  * path_resolve_realpath_weak:
  *
@@ -1098,29 +1104,57 @@ char *path_resolve_realpath(char *s, size_t len, bool resolve_symlinks)
  **/
 char *path_resolve_realpath_weak(char *s, size_t len)
 {
-#if defined(RARCH_CONSOLE) || defined(__WINRT__) || defined(_XBOX)
+/* No realpath() in these C libraries */
+#if defined(RARCH_CONSOLE) || defined(__WINRT__) || defined(_XBOX) \
+      || defined(PS2) || defined(PSP) || defined(VITA) \
+      || defined(__PS3__) || defined(__PSL1GHT__) || defined(ORBIS) \
+      || defined(_3DS) || defined(GEKKO) || defined(WIIU) \
+      || defined(HAVE_LIBNX)
    (void)s;
    (void)len;
    return NULL;
 #elif defined(_WIN32)
-   wchar_t full[PATH_MAX_LENGTH];
-   wchar_t head[PATH_MAX_LENGTH];
-   wchar_t real[PATH_MAX_LENGTH];
+   /* full, head, real and joined in one block: four wide paths are
+    * too much for a thread's stack on the small targets */
+   wchar_t *full;
+   wchar_t *head;
+   wchar_t *real;
+   wchar_t *joined;
    wchar_t *in;
    char *out;
+   bool ok             = false;
    size_t cut;
    size_t full_len;
    const wchar_t *tail = NULL;
+   const wchar_t *r;
+   size_t r_len;
+   path_final_name_t final_name = (path_final_name_t)GetProcAddress(
+         GetModuleHandleA("kernel32.dll"), "GetFinalPathNameByHandleW");
    if (!s || !*s || !(in = utf8_to_utf16_string_alloc(s)))
       return NULL;
+   if (!(full = (wchar_t*)malloc(4 * PATH_MAX_LENGTH * sizeof(wchar_t))))
+   {
+      free(in);
+      return NULL;
+   }
+   head   = full + PATH_MAX_LENGTH;
+   real   = head + PATH_MAX_LENGTH;
+   joined = real + PATH_MAX_LENGTH;
    /* Absolute and lexically resolved first: Windows resolves ".."
     * before it reaches the file system anyway */
    if (!_wfullpath(full, in, PATH_MAX_LENGTH))
    {
       free(in);
-      return NULL;
+      goto end;
    }
    free(in);
+   /* Without the final name there is nothing to resolve symlinks with:
+    * the absolute, lexically resolved path is the answer */
+   if (!final_name)
+   {
+      wcscpy(joined, full);
+      goto convert;
+   }
    full_len = wcslen(full);
    wcscpy(head, full);
    cut      = full_len;
@@ -1132,11 +1166,12 @@ char *path_resolve_realpath_weak(char *s, size_t len)
             OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
       if (h != INVALID_HANDLE_VALUE)
       {
-         DWORD n = GetFinalPathNameByHandleW(h, real, PATH_MAX_LENGTH,
-               FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+         /* FILE_NAME_NORMALIZED | VOLUME_NAME_DOS, both 0, which
+          * older SDKs do not name */
+         DWORD n = final_name(h, real, PATH_MAX_LENGTH, 0);
          CloseHandle(h);
          if (n == 0 || n >= PATH_MAX_LENGTH)
-            return NULL;
+            goto end;
          tail = full + cut;
          break;
       }
@@ -1146,44 +1181,45 @@ char *path_resolve_realpath_weak(char *s, size_t len)
       while (cut > 0 && full[cut - 1] != L'\\' && full[cut - 1] != L'/')
          cut--;
       if (cut == 0)
-         return NULL;
+         goto end;
       wcsncpy(head, full, cut);
       head[cut] = L'\0';
    }
+   /* "\\?\UNC\server" is "\\server"; "\\?\C:" is "C:" */
+   r = real;
+   if (!wcsncmp(r, L"\\\\?\\UNC\\", 8))
    {
-      /* "\\?\UNC\server" is "\\server"; "\\?\C:" is "C:" */
-      wchar_t joined[PATH_MAX_LENGTH];
-      const wchar_t *r = real;
-      size_t r_len;
-      if (!wcsncmp(r, L"\\\\?\\UNC\\", 8))
-      {
-         joined[0] = L'\\';
-         joined[1] = L'\\';
-         joined[2] = L'\0';
-         r        += 8;
-      }
-      else
-      {
-         joined[0] = L'\0';
-         if (!wcsncmp(r, L"\\\\?\\", 4))
-            r += 4;
-      }
-      r_len = wcslen(joined) + wcslen(r);
-      if (r_len + 1 + wcslen(tail) + 1 > PATH_MAX_LENGTH)
-         return NULL;
-      wcscat(joined, r);
-      if (*tail)
-      {
-         if (joined[r_len - 1] != L'\\')
-            wcscat(joined, L"\\");
-         wcscat(joined, tail);
-      }
-      if (!(out = utf16_to_utf8_string_alloc(joined)))
-         return NULL;
+      joined[0] = L'\\';
+      joined[1] = L'\\';
+      joined[2] = L'\0';
+      r        += 8;
    }
-   strlcpy(s, out, len);
-   free(out);
-   return s;
+   else
+   {
+      joined[0] = L'\0';
+      if (!wcsncmp(r, L"\\\\?\\", 4))
+         r += 4;
+   }
+   r_len = wcslen(joined) + wcslen(r);
+   if (r_len + 1 + wcslen(tail) + 1 > PATH_MAX_LENGTH)
+      goto end;
+   wcscat(joined, r);
+   if (*tail)
+   {
+      if (joined[r_len - 1] != L'\\')
+         wcscat(joined, L"\\");
+      wcscat(joined, tail);
+   }
+convert:
+   if ((out = utf16_to_utf8_string_alloc(joined)))
+   {
+      strlcpy(s, out, len);
+      free(out);
+      ok = true;
+   }
+end:
+   free(full);
+   return ok ? s : NULL;
 #else
    char head[PATH_MAX_LENGTH];
    char joined[PATH_MAX_LENGTH];

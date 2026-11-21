@@ -22,6 +22,7 @@
 #include <cstdlib>
 
 #include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 
 #include "Emu/System.h"
 #include "Emu/Cell/timers.hpp"
@@ -1676,6 +1677,13 @@ void retro_init(void)
 {
     if (core_initialized)
         return;
+
+    // The wait records for as many threads as wait at once, made now: a
+    // wait reached from the fault handler (a guest access violation pausing
+    // the emulator, or a page mapped on demand) must not allocate one.
+    // A thread past them still gets one, outside a fault handler.
+    if (!retro_waitaddr_reserve(1024) && log_cb)
+        log_cb(RETRO_LOG_WARN, "Could not make the wait records up front\n");
 
     // The upstream build and the commit of this repository the core was built
     // from ("v0.0.43-20243 (libretro core 1a2b3c4)"), so a tester's log says

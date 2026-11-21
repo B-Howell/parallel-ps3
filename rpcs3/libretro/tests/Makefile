@@ -1646,6 +1646,8 @@ check: all
 	@if grep -rn "std::regex\|std::smatch\|<regex>" --include=*.cpp --include=*.h --include=*.hpp ../../Emu ../../util ../../Loader ../../Crypto ../../../Utilities; then echo "std::regex is back in the core"; exit 1; else echo "no std::regex is left in the core"; fi
 	@# A thread paused by suspend_all sleeps on the suspend counter and its own state until the work is done, with no spin and no 10 us timer
 	@if grep -n "TODO: fix the workaround\|retro_waitaddr_wait(&w, 1, 10)" ../../Emu/CPU/CPUThread.cpp; then echo "the suspend wait's 10 us timer is back"; exit 1; else echo "a thread paused by suspend_all waits on events"; fi
+	@# libretro-common is RetroArch master's (retro_waitaddr_reserve), and retro_init reserves the wait records so a wait from the fault handler never allocates
+	@if ! grep -q "retro_waitaddr_reserve(" ../libretro_core.cpp; then echo "retro_init no longer reserves the wait records"; exit 1; else echo "retro_init reserves the wait records up front"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
