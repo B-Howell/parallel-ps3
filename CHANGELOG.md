@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Utilities/sync.h removed.** Not yet run on a game.
+  - **What changed:**
+    - **The futex wrapper** (a Linux futex syscall, emulated elsewhere with a mutex and a condition variable per bucket, its timeout a std::chrono duration) goes: no file included it any more; every wait in the core is retro_waitaddr's.
+  - **Tests:** none; nothing used it. The full build and suites pass. A check fails if the file or an include of it comes back.
+
+
 - **Pads: two unused clock fields removed.** Not yet run on a game.
   - **What changed:**
     - **PadDevice's last output and last reconnect times** (`steady_clock` time points, 16 bytes a device) go: nothing read or wrote them since the host pad handlers left for the libretro one, which takes its pads from retro_run's input.
