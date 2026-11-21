@@ -1626,6 +1626,8 @@ check: all
 	@if grep -rn "std::ifstream\|std::ofstream\|std::fstream\|<fstream>\|\"fstream\"" --include=*.cpp --include=*.h --include=*.hpp ../../Emu ../../util ../../Loader ../../Crypto ../../../Utilities; then echo "a C++ file stream is back in the core"; exit 1; else echo "the core reads files without C++ file streams"; fi
 	@# The log file's writer thread is an rthreads sthread, not a std::thread
 	@if grep -n "std::thread" ../../util/logs.cpp; then echo "std::thread is back in logs.cpp"; exit 1; else echo "the log writer is an rthreads thread"; fi
+	@# RPCN's three threads are rthreads sthreads, not std::thread
+	@if grep -n "std::thread\|<thread>" ../../Emu/NP/rpcn_client.h ../../Emu/NP/rpcn_client.cpp; then echo "std::thread is back in the RPCN client"; exit 1; else echo "the RPCN client's threads are rthreads threads"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

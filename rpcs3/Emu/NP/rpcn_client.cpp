@@ -3,7 +3,6 @@
 #include "Emu/NP/ip_address.h"
 #include <string>
 #include <mutex>
-#include <thread>
 #include <features/features_cpu.h>
 #include "rpcn_client.h"
 #include <net/net_socket_ssl.h>
@@ -325,9 +324,9 @@ namespace rpcn
 
 	rpcn_client::rpcn_client(u32 binding_address)
 		: binding_address(binding_address),
-		  thread_rpcn(std::thread(&rpcn_client::rpcn_thread, this)),
-		  thread_rpcn_reader(std::thread(&rpcn_client::rpcn_reader_thread, this)),
-		  thread_rpcn_writer(std::thread(&rpcn_client::rpcn_writer_thread, this))
+		  thread_rpcn(sthread_create([](void* self) { static_cast<rpcn_client*>(self)->rpcn_thread(); }, this)),
+		  thread_rpcn_reader(sthread_create([](void* self) { static_cast<rpcn_client*>(self)->rpcn_reader_thread(); }, this)),
+		  thread_rpcn_writer(sthread_create([](void* self) { static_cast<rpcn_client*>(self)->rpcn_writer_thread(); }, this))
 	{
 		// Before the RPCN thread is let go (sem_rpcn): nothing reads them yet
 		init_states();
@@ -352,12 +351,9 @@ namespace rpcn
 		sem_reader.release();
 		sem_writer.release();
 
-		if (thread_rpcn.joinable())
-			thread_rpcn.join();
-		if (thread_rpcn_reader.joinable())
-			thread_rpcn_reader.join();
-		if (thread_rpcn_writer.joinable())
-			thread_rpcn_writer.join();
+		sthread_join(thread_rpcn);
+		sthread_join(thread_rpcn_reader);
+		sthread_join(thread_rpcn_writer);
 
 		disconnect();
 

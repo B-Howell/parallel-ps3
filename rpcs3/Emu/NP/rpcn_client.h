@@ -2,11 +2,11 @@
 
 #include <optional>
 #include <unordered_map>
-#include <thread>
 #include "rpcn_signal.h"
 #include "rpcn_reply_slots.h"
 #include <array>
 #include <retro_atomic.h>
+#include <rthreads/rthreads.h>
 #include <rthreads/retro_waitaddr.h>
 #include <queues/mpsc_stack.h>
 #include <queues/retro_retire.h>
@@ -287,7 +287,10 @@ namespace rpcn
 		// before it frees the connection. No lock.
 		retro_atomic_int_t reader_busy{0}, writer_busy{0};
 
-		std::thread thread_rpcn, thread_rpcn_reader, thread_rpcn_writer;
+		// libretro-common rthreads (sthread_join takes none that failed to start)
+		sthread_t* thread_rpcn = nullptr;
+		sthread_t* thread_rpcn_reader = nullptr;
+		sthread_t* thread_rpcn_writer = nullptr;
 
 		retro_atomic_int_t terminate{0};
 

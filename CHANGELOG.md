@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **RPCN: its three threads on libretro-common's rthreads, not std::thread.** Not yet run on a game.
+  - **What changed:**
+    - **The RPCN client's threads** (the main one, the socket reader and the socket writer) are made with `sthread_create` and joined with `sthread_join` (libretro-common's rthreads), where they were std::threads; their bodies are unchanged. A thread that failed to start is none to join.
+  - **Tests:** none of their own; the client needs the RPCN server. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if std::thread comes back to the RPCN client.
+
+
 - **Logs: the file writer on libretro-common's rthreads, not std::thread.** Not yet run on a game.
   - **What changed:**
     - **The thread that writes the log file** is made with `sthread_create` and joined with `sthread_join` (libretro-common's rthreads), where it was a std::thread; its body is a member function of the writer, unchanged.
