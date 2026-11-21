@@ -22,6 +22,7 @@
 #include "util/asm.hpp"
 #include "util/cctype.hpp"
 #include "Crypto/utils.h"
+#include <crypto/kdf.h>
 
 #include <span>
 
@@ -1293,7 +1294,12 @@ error_code cellGameCreateGameData(vm::ptr<CellGameSetInitParams> init, vm::ptr<c
 	// Account for for filesystem operations
 	lv2_sleep(50'000);
 
-	std::string dirname = "_GDATA_" + std::to_string(steady_clock::now().time_since_epoch().count());
+	// A name no other temporary directory has: 64 bits from libretro-common's
+	// entropy source (crypto_random_bytes), as many digits as the clock
+	// reading it was; a name already taken fails create_dir below
+	u64 unique = 0;
+	crypto_random_bytes(reinterpret_cast<uint8_t*>(&unique), sizeof(unique));
+	std::string dirname = "_GDATA_" + std::to_string(unique);
 	std::string tmp_contentInfo = "/dev_hdd0/game/" + dirname;
 	std::string tmp_usrdir = "/dev_hdd0/game/" + dirname + "/USRDIR";
 

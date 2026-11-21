@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **cellGame: the new game data's temporary directory named without the clock.** Not yet run on a game.
+  - **What changed:**
+    - **cellGameCreateGameData's temporary directory** (`/dev_hdd0/game/_GDATA_<number>`, where the game writes its new data before cellGameContentPermit moves it) is numbered with 64 bits from `crypto_random_bytes`, libretro-common's entropy source, where the number was the steady clock's reading. It is as many digits at most (20), so the paths handed back to the game fit as before; a number already taken fails the directory's creation, as a clash did before.
+    - **Flagged, not changed:** cellGame waits on purpose in 20 places (`lv2_sleep`, 300 µs to 300 ms), standing in for the time the firmware's calls take; this one waits 50 ms before making the directory. These are the guest's timing, and stay for now.
+  - **Tests:** none of its own; the call needs a running game's HLE thread. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if std::chrono comes back to cellGame.cpp.
+
+
 - **Media: the shuffled playlist seeded from libretro-common's entropy, off std::chrono.** Not yet run on a game.
   - **What changed:**
     - **A game's music played shuffled** (cellSearch's shuffle option, through the audio decoder) is shuffled once with an engine seeded by `crypto_random_bytes`, libretro-common's platform entropy source (getentropy or /dev/urandom, BCrypt on Windows), where it took the steady clock's reading as the seed. If no source answers, the seed is 0 and the order is the same each time. std::random_device stays out: its state is 5 KiB on the stack.

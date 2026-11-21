@@ -1594,6 +1594,8 @@ check: all
 	@if grep -n "chrono\|steady_clock\|QueryPerformance" ../../util/logs.cpp; then echo "std::chrono or a clock of its own is back in logs.cpp"; exit 1; else echo "logs.cpp stamps messages with libretro-common's clock"; fi
 	@# cellSearch's shuffled playlist is seeded from libretro-common's entropy source (crypto_random_bytes), not a std::chrono clock read
 	@if grep -n "chrono\|steady_clock" ../../util/media_utils.cpp; then echo "std::chrono is back in media_utils.cpp"; exit 1; else echo "media_utils.cpp seeds its shuffle without a clock"; fi
+	@# cellGameCreateGameData names its temporary directory from libretro-common's entropy source, not a std::chrono clock read
+	@if grep -n "chrono\|steady_clock" ../../Emu/Cell/Modules/cellGame.cpp; then echo "std::chrono is back in cellGame.cpp"; exit 1; else echo "cellGame.cpp names its temporary directory without a clock"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
