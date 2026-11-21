@@ -7,7 +7,7 @@
 #include "Emu/CPU/owner_calls.h"
 #include "Emu/Cell/Modules/hle_service.h"
 #include <unordered_map>
-#include <chrono>
+#include <features/features_cpu.h>
 #include <optional>
 
 struct signaling_info
@@ -21,7 +21,8 @@ struct signaling_info
 	u16 mapped_port = 0;
 
 	// For handler
-	steady_clock::time_point time_last_msg_recvd = steady_clock::now();
+	// Microseconds on libretro-common's monotonic clock, as signaling_handler::now_us
+	u64 time_last_msg_recvd = static_cast<u64>(cpu_features_get_time_usec());
 	bool self = false;
 	SceNpId npid{};
 
@@ -86,10 +87,11 @@ public:
 	static constexpr auto thread_name = "Signaling Manager Thread"sv;
 
 private:
-	static constexpr auto REPEAT_CONNECT_DELAY = std::chrono::milliseconds(200);
-	static constexpr auto REPEAT_PING_DELAY = std::chrono::milliseconds(500);
-	static constexpr auto REPEAT_FINISHED_DELAY = std::chrono::milliseconds(500);
-	static constexpr auto REPEAT_INFO_DELAY = std::chrono::milliseconds(200);
+	// In microseconds, as the packets' times
+	static constexpr u64 REPEAT_CONNECT_DELAY = 200'000;
+	static constexpr u64 REPEAT_PING_DELAY = 500'000;
+	static constexpr u64 REPEAT_FINISHED_DELAY = 500'000;
+	static constexpr u64 REPEAT_INFO_DELAY = 200'000;
 	static constexpr be_t<u32> SIGNALING_SIGNATURE = (static_cast<u32>('S') << 24 | static_cast<u32>('I') << 16 | static_cast<u32>('G') << 8 | static_cast<u32>('N'));
 	static constexpr le_t<u32> SIGNALING_VERSION = 3;
 
@@ -114,7 +116,12 @@ private:
 	std::set<u32> sig_ctx_lst;
 	std::set<u16> match2_ctx_lst;
 
-	static u64 get_micro_timestamp(const std::chrono::steady_clock::time_point& time_point);
+	// Now, in microseconds on libretro-common's monotonic clock: the packets'
+	// timestamps and their queue's wake-up times are such readings
+	static u64 now_us()
+	{
+		return static_cast<u64>(cpu_features_get_time_usec());
+	}
 
 	u32 get_always_conn_id(const SceNpId& npid);
 	static void update_si_addr(std::shared_ptr<signaling_info>& si, u32 new_addr, u16 new_port);
@@ -126,7 +133,7 @@ private:
 	void signal_sig2_callback(u64 room_id, u16 member_id, SceNpMatching2Event event, s32 error_code) const;
 
 	static bool validate_signaling_packet(const signaling_packet* sp);
-	void reschedule_packet(std::shared_ptr<signaling_info>& si, SignalingCommand cmd, steady_clock::time_point new_timepoint);
+	void reschedule_packet(std::shared_ptr<signaling_info>& si, SignalingCommand cmd, u64 new_timepoint);
 	void retire_packet(std::shared_ptr<signaling_info>& si, SignalingCommand cmd);
 	void retire_all_packets(std::shared_ptr<signaling_info>& si);
 	void stop_sig_nl(u32 conn_id, bool forceful);
@@ -148,7 +155,7 @@ private:
 
 	signaling_packet sig_packet{};
 
-	std::multimap<steady_clock::time_point, queued_packet> qpackets; // (wakeup time, packet)
+	std::multimap<u64, queued_packet> qpackets; // (wakeup time, packet)
 
 	u32 cur_conn_id = 1;
 	std::unordered_map<std::string, u32> npid_to_conn_id;               // (npid, conn_id)
@@ -157,5 +164,5 @@ private:
 	void process_incoming_messages();
 	std::shared_ptr<signaling_info> get_signaling_ptr(const signaling_packet* sp);
 	void send_signaling_packet(signaling_packet& sp, u32 addr, u16 port) const;
-	void queue_signaling_packet(signaling_packet& sp, std::shared_ptr<signaling_info> si, steady_clock::time_point wakeup_time);
+	void queue_signaling_packet(signaling_packet& sp, std::shared_ptr<signaling_info> si, u64 wakeup_time);
 };

@@ -19,6 +19,7 @@
 #include "pb_helpers.h"
 #include "Emu/NP/signaling_handler.h"
 #include "Emu/NP/ip_address.h"
+#include <features/features_cpu.h>
 
 LOG_CHANNEL(rpcn_log, "rpcn");
 
@@ -57,7 +58,7 @@ namespace np
 		// If network time hasn't been set we need to sync time with the rpcn server
 		auto get_local_timestamp = []() -> u64
 		{
-			return std::chrono::duration_cast<std::chrono::microseconds>(steady_clock::now().time_since_epoch()).count();
+			return static_cast<u64>(cpu_features_get_time_usec()); // libretro-common's monotonic clock
 		};
 
 		if (!network_time_offset)

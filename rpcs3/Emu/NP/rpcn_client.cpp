@@ -4,7 +4,7 @@
 #include <string>
 #include <mutex>
 #include <thread>
-#include <chrono>
+#include <features/features_cpu.h>
 #include "rpcn_client.h"
 #include <net/net_socket_ssl.h>
 #include "Utilities/StrUtil.h"
@@ -507,9 +507,11 @@ namespace rpcn
 	{
 		thread_base::set_name("RPCN Client");
 
-		// UDP Signaling related
-		steady_clock::time_point last_ping_time_ipv4{}, last_pong_time_ipv4{};
-		steady_clock::time_point last_ping_time_ipv6{}, last_pong_time_ipv6{};
+		// UDP Signaling related: microseconds on libretro-common's monotonic
+		// clock (cpu_features_get_time_usec)
+		constexpr s64 pong_every_us = 5'000'000, ping_every_us = 500'000;
+		s64 last_ping_time_ipv4 = 0, last_pong_time_ipv4 = 0;
+		s64 last_ping_time_ipv6 = 0, last_pong_time_ipv6 = 0;
 
 		while (true)
 		{
@@ -559,7 +561,7 @@ namespace rpcn
 				if ((retro_atomic_load_acquire_int(&authentified) != 0) && !Emu.IsStopped())
 				{
 					// Ping the UDP Signaling Server if we're authentified & ingame
-					const auto now = steady_clock::now();
+					const s64 now = cpu_features_get_time_usec();
 					const auto rpcn_msgs = get_rpcn_msgs();
 
 					for (const auto& msg : rpcn_msgs)
@@ -606,10 +608,10 @@ namespace rpcn
 						}
 					}
 
-					const std::chrono::nanoseconds time_since_last_ipv4_ping = now - last_ping_time_ipv4;
-					const std::chrono::nanoseconds time_since_last_ipv4_pong = now - last_pong_time_ipv4;
-					const std::chrono::nanoseconds time_since_last_ipv6_ping = now - last_ping_time_ipv6;
-					const std::chrono::nanoseconds time_since_last_ipv6_pong = now - last_pong_time_ipv6;
+					const s64 time_since_last_ipv4_ping = now - last_ping_time_ipv4;
+					const s64 time_since_last_ipv4_pong = now - last_pong_time_ipv4;
+					const s64 time_since_last_ipv6_ping = now - last_ping_time_ipv6;
+					const s64 time_since_last_ipv6_pong = now - last_pong_time_ipv6;
 
 					auto forge_ping_packet = [&]() -> std::vector<u8>
 					{
@@ -621,7 +623,7 @@ namespace rpcn
 					};
 
 					// Send a packet every 5 seconds and then every 500 ms until reply is received
-					if (time_since_last_ipv4_pong >= 5s && time_since_last_ipv4_ping > 500ms)
+					if (time_since_last_ipv4_pong >= pong_every_us && time_since_last_ipv4_ping > ping_every_us)
 					{
 						const auto ping = forge_ping_packet();
 
@@ -632,7 +634,7 @@ namespace rpcn
 						continue;
 					}
 
-					if (np::is_ipv6_supported() && time_since_last_ipv6_pong >= 5s && time_since_last_ipv6_ping > 500ms)
+					if (np::is_ipv6_supported() && time_since_last_ipv6_pong >= pong_every_us && time_since_last_ipv6_ping > ping_every_us)
 					{
 						const auto ping = forge_ping_packet();
 
@@ -643,15 +645,16 @@ namespace rpcn
 						continue;
 					}
 
-					auto min_duration_for = [&](const auto last_ping_time, const auto last_pong_time) -> std::chrono::nanoseconds
+					// In microseconds
+					auto min_duration_for = [&](s64 last_ping_time, s64 last_pong_time) -> s64
 					{
-						if ((now - last_pong_time) < 5s)
+						if ((now - last_pong_time) < pong_every_us)
 						{
-							return (5s - (now - last_pong_time));
+							return (pong_every_us - (now - last_pong_time));
 						}
 						else
 						{
-							return (500ms - (now - last_ping_time));
+							return (ping_every_us - (now - last_ping_time));
 						}
 					};
 
@@ -665,7 +668,7 @@ namespace rpcn
 
 					// Expected to fail unless rpcn is terminated
 					// The check is there to nuke a msvc warning
-					if (!sem_rpcn.try_acquire_for(duration))
+					if (!sem_rpcn.try_acquire_for_us(duration))
 					{
 					}
 				}
@@ -1198,7 +1201,7 @@ namespace rpcn
 
 			// The handshake, waiting on the socket for what it needs next
 			// rather than spinning, for RPCN_TIMEOUT at most
-			const auto handshake_deadline = steady_clock::now() + std::chrono::milliseconds(RPCN_TIMEOUT);
+			const retro_time_t handshake_deadline = cpu_features_get_time_usec() + retro_time_t{RPCN_TIMEOUT} * 1000;
 			while (true)
 			{
 				bool want_read = false, want_write = false;
@@ -1206,7 +1209,7 @@ namespace rpcn
 				if (ret_connect > 0)
 					break;
 
-				if (ret_connect < 0 || (retro_atomic_load_acquire_int(&terminate) != 0) || steady_clock::now() >= handshake_deadline)
+				if (ret_connect < 0 || (retro_atomic_load_acquire_int(&terminate) != 0) || cpu_features_get_time_usec() >= handshake_deadline)
 				{
 					retro_atomic_store_release_int(&state, static_cast<int>(rpcn_state::failure_tls));
 					rpcn_log.error("connect: Handshake failed with RPCN Server: %s (TLS error %d)", ret_connect < 0 ? "error" : "timeout", ssl_socket_last_error(tls));

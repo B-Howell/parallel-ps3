@@ -2,7 +2,6 @@
 
 #include <optional>
 #include <unordered_map>
-#include <chrono>
 #include <thread>
 #include "rpcn_signal.h"
 #include "rpcn_reply_slots.h"
@@ -254,9 +253,10 @@ namespace rpcn
 			void release() noexcept { rpcn_signal_give(&s); }
 			void acquire() noexcept { rpcn_signal_take(&s); }
 
-			bool try_acquire_for(std::chrono::nanoseconds duration) noexcept
+			// Waits up to @duration_us microseconds (none when not positive)
+			bool try_acquire_for_us(s64 duration_us) noexcept
 			{
-				return rpcn_signal_take_for(&s, std::max<int64_t>(0, std::chrono::duration_cast<std::chrono::microseconds>(duration).count())) != 0;
+				return rpcn_signal_take_for(&s, std::max<int64_t>(0, duration_us)) != 0;
 			}
 		};
 

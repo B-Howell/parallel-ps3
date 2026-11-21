@@ -183,7 +183,7 @@ void signaling_handler::signal_sig2_callback(u64 room_id, u16 member_id, SceNpMa
 //// SIGNALING MSGS PROCESSING ////
 ///////////////////////////////////
 
-void signaling_handler::reschedule_packet(std::shared_ptr<signaling_info>& si, SignalingCommand cmd, steady_clock::time_point new_timepoint)
+void signaling_handler::reschedule_packet(std::shared_ptr<signaling_info>& si, SignalingCommand cmd, u64 new_timepoint)
 {
 	for (auto it = qpackets.begin(); it != qpackets.end(); it++)
 	{
@@ -249,11 +249,6 @@ bool signaling_handler::validate_signaling_packet(const signaling_packet* sp)
 	return true;
 }
 
-u64 signaling_handler::get_micro_timestamp(const std::chrono::steady_clock::time_point& time_point)
-{
-	return std::chrono::duration_cast<std::chrono::microseconds>(time_point.time_since_epoch()).count();
-}
-
 void signaling_handler::process_incoming_messages()
 {
 	auto msgs = get_sign_msgs();
@@ -302,7 +297,7 @@ void signaling_handler::process_incoming_messages()
 			continue;
 		}
 
-		const auto now = steady_clock::now();
+		const u64 now = now_us();
 
 		const auto setup_ping = [&]()
 		{
@@ -315,14 +310,14 @@ void signaling_handler::process_incoming_messages()
 			}
 
 			sent_packet.command = signal_ping;
-			sent_packet.timestamp_sender = get_micro_timestamp(now);
+			sent_packet.timestamp_sender = now;
 			send_signaling_packet(sent_packet, si->addr, si->port);
 			queue_signaling_packet(sent_packet, si, now + REPEAT_PING_DELAY);
 		};
 
 		const auto update_rtt = [&](u64 rtt_timestamp) -> bool
 		{
-			const u64 timestamp_now = get_micro_timestamp(now);
+			const u64 timestamp_now = now;
 			if (rtt_timestamp > timestamp_now || timestamp_now - rtt_timestamp > std::numeric_limits<u32>::max())
 			{
 				sign_log.error("Received a signaling packet with an invalid RTT timestamp");
@@ -357,7 +352,7 @@ void signaling_handler::process_incoming_messages()
 				continue;
 			reply = false;
 			schedule_repeat = false;
-			reschedule_packet(si, signal_ping, now + 10s);
+			reschedule_packet(si, signal_ping, now + 10'000'000);
 			break;
 		case signal_info:
 			update_si_addr(si, op_addr, op_port);
@@ -369,7 +364,7 @@ void signaling_handler::process_incoming_messages()
 			schedule_repeat = true;
 			sent_packet.command = signal_connect_ack;
 			sent_packet.timestamp_sender = sp->timestamp_sender;
-			sent_packet.timestamp_receiver = get_micro_timestamp(now);
+			sent_packet.timestamp_receiver = now;
 			update_si_addr(si, op_addr, op_port);
 			break;
 		case signal_connect_ack:
@@ -456,7 +451,7 @@ void signaling_handler::operator()()
 
 		process_incoming_messages();
 
-		const auto now = steady_clock::now();
+		const u64 now = now_us();
 
 		for (auto it = qpackets.begin(); it != qpackets.end();)
 		{
@@ -467,7 +462,7 @@ void signaling_handler::operator()()
 
 			SignalingCommand cmd = sig.packet.command;
 
-			if (sig.sig_info->time_last_msg_recvd < now - 60s && cmd != signal_info)
+			if (sig.sig_info->time_last_msg_recvd + 60'000'000 < now && cmd != signal_info)
 			{
 				// We had no connection to opponent for 60 seconds, consider the connection dead
 				auto retire_info = sig.sig_info;
@@ -482,10 +477,10 @@ void signaling_handler::operator()()
 			{
 			case signal_connect:
 			case signal_ping:
-				sig.packet.timestamp_sender = get_micro_timestamp(now);
+				sig.packet.timestamp_sender = now;
 				break;
 			case signal_connect_ack:
-				sig.packet.timestamp_receiver = get_micro_timestamp(now);
+				sig.packet.timestamp_receiver = now;
 				break;
 			default:
 				break;
@@ -497,7 +492,7 @@ void signaling_handler::operator()()
 			// Reschedule another packet
 			auto& si = sig.sig_info;
 
-			std::chrono::milliseconds delay(500);
+			u64 delay = 500'000;
 			switch (cmd)
 			{
 			case signal_ping:
@@ -533,7 +528,7 @@ void signaling_handler::operator()()
 
 		if (!qpackets.empty())
 		{
-			const auto current_timepoint = steady_clock::now();
+			const auto current_timepoint = now_us();
 			const auto expected_timepoint = qpackets.begin()->first;
 			if (current_timepoint > expected_timepoint)
 			{
@@ -541,7 +536,7 @@ void signaling_handler::operator()()
 			}
 			else
 			{
-				timeout_us = std::max<u64>(1, std::chrono::duration_cast<std::chrono::microseconds>(expected_timepoint - current_timepoint).count());
+				timeout_us = std::max<u64>(1, expected_timepoint - current_timepoint);
 			}
 		}
 		else
@@ -714,7 +709,7 @@ void signaling_handler::send_signaling_packet(signaling_packet& sp, u32 addr, u1
 	}
 }
 
-void signaling_handler::queue_signaling_packet(signaling_packet& sp, std::shared_ptr<signaling_info> si, steady_clock::time_point wakeup_time)
+void signaling_handler::queue_signaling_packet(signaling_packet& sp, std::shared_ptr<signaling_info> si, u64 wakeup_time)
 {
 	queued_packet qp;
 	qp.sig_info = std::move(si);
@@ -748,11 +743,11 @@ void signaling_handler::start_sig(u32 conn_id, u32 addr, u16 port)
 	{
 		auto& sent_packet = sig_packet;
 		sent_packet.command = signal_connect;
-		sent_packet.timestamp_sender = get_micro_timestamp(steady_clock::now());
+		sent_packet.timestamp_sender = now_us();
 
 		std::shared_ptr<signaling_info> si = ::at32(sig_peers, conn_id);
 
-		const auto now = steady_clock::now();
+		const u64 now = now_us();
 
 		si->time_last_msg_recvd = now;
 
@@ -793,7 +788,7 @@ void signaling_handler::stop_sig_nl(u32 conn_id, bool forceful)
 	sent_packet.command = signal_finished;
 
 	send_signaling_packet(sent_packet, si->addr, si->port);
-	queue_signaling_packet(sent_packet, std::move(si), steady_clock::now() + REPEAT_FINISHED_DELAY);
+	queue_signaling_packet(sent_packet, std::move(si), now_us() + REPEAT_FINISHED_DELAY);
 	wake_up();
 }
 
@@ -834,7 +829,7 @@ void signaling_handler::send_information_packets(u32 addr, u16 port, const SceNp
 
 		retire_packet(si, signal_info);
 		send_signaling_packet(sent_packet, addr, port);
-		queue_signaling_packet(sent_packet, si, steady_clock::now() + REPEAT_INFO_DELAY);
+		queue_signaling_packet(sent_packet, si, now_us() + REPEAT_INFO_DELAY);
 		wake_up();
 	});
 }

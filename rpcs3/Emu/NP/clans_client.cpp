@@ -1,6 +1,6 @@
 #include "stdafx.h"
 
-#include <chrono>
+#include <features/features_cpu.h>
 #include <string_view>
 #include <util/types.hpp>
 
@@ -372,11 +372,14 @@ namespace clan
 				return;
 			}
 
-			const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(clan_timeout_ms);
+			// In microseconds on libretro-common's monotonic clock
+			const retro_time_t deadline = cpu_features_get_time_usec() + retro_time_t{clan_timeout_ms} * 1000;
 
+			// Each wait lasts until the transfer can go on or the time is up
+			// (net_http_wait knows which way it waits): no 100 ms steps
 			while (!net_http_update(http, nullptr, nullptr))
 			{
-				const auto now = std::chrono::steady_clock::now();
+				const retro_time_t now = cpu_features_get_time_usec();
 
 				if (now >= deadline)
 				{
@@ -384,8 +387,7 @@ namespace clan
 					break;
 				}
 
-				const s64 left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count() + 1;
-				net_http_wait(http, static_cast<int>(std::min<s64>(left, 100)));
+				net_http_wait(http, static_cast<int>((deadline - now + 999) / 1000));
 			}
 
 			if (failure.empty())

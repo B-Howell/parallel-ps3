@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Network (Emu/NP): its times on libretro-common's clock, off std::chrono.** Not yet run on a game.
+  - **What changed:**
+    - **Every time in Emu/NP** is a microsecond reading of `cpu_features_get_time_usec`, libretro-common's monotonic clock, where it was a std::chrono steady-clock time point or duration: RPCN's UDP pings to the signaling server (every 5 s, every 500 ms until answered) and its TLS handshake's 10 s bound; the signaling manager's packet queue (each packet's wake-up time, its resend delays of 200 and 500 ms, the 10 s ping and the 60 s timeout of a silent peer) and the timestamps it sends for round-trip times; the clan server's 30 s request bound; and the local side of the network time handed to games. These are the protocols' own timers, real time on purpose.
+    - **A silent peer's 60 s timeout** compares the last message's time plus 60 s with now, so a peer whose time was taken after the manager's `now` is not seen as timed out (as before, with the unsigned times).
+    - **A clan request** waits on its transfer (`net_http_wait`) for the time left, where it woke every 100 ms to read the clock again: `net_http_wait` returns as soon as the transfer can go on.
+    - **Flagged, not changed:** RPCN's TLS handshake still polls its socket in 50 ms steps so it can see a termination.
+  - **Tests:** none of their own; these need the RPCN and clan servers or a peer. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if std::chrono comes back to Emu/NP.
+
+
 - **RB3 MIDI drums: hit and combo times on libretro-common's clock, off std::chrono.** Not yet run on a game.
   - **What changed:**
     - **A drum hit's expiry** (each hit is held for the pulse width, 30 ms by default, so the game sees it) and **a combo's** (the window, 2 s by default, to play the notes that mean start, select or hold kick) are microsecond readings of `cpu_features_get_time_usec`, libretro-common's monotonic clock, where they were std::chrono steady-clock time points. The pulse width and window are microsecond counts from the same settings. The times are real time: a hit is held as long whatever the frame rate.
