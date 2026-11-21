@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **SPU channels and mailboxes: straight to the wait, no busy-waits first.** Not yet run on a game.
+  - **What changed:**
+    - **A channel's pop and push waits** (`spu_channel::pop_wait`/`push_wait`: the SPU reading a signal or the outbound mailbox, writing one that is full) and **the inbound mailbox's** (`spu_channel_4_t::pop_wait`) wait on the channel's word at once, where each spun ten 3000-cycle busy-waits (about 10 µs) first. The other side already clears the wait bit and wakes the word, so nothing else changes; the pending lv2 wakes are still flushed before the wait.
+    - **A stopped SPU whose pop had a value pushed to it** waits on the channel word for the pusher to finish, where it spun 500-cycle busy-waits with no bound.
+    - **Measured here:** a hand-off between two threads (one stores and wakes, the other waits, and back) took 0.6 to 0.75 µs a round trip waiting at once, and 1.7 µs with the ten busy-waits first: a busy-wait only looks again every ~1 µs, later than the reply comes. That was a two-thread microbenchmark on this 2-CPU machine, not the channels in a game.
+    - **From the council's review:** the correctness and accuracy seats rated these safe to convert (the waits were already event-driven); the performance seat asked for a measurement first, which is the one above.
+  - **Tests:** test_emu_waits' channel and mailbox cases (a push wakes a waiter marked as pop_wait marks it) pass; the waits themselves need an SPU thread, so none fails on the spins coming back. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if a busy-wait comes back to the channel waits.
+
+
 - **Waits: their records made at retro_init, so the fault handler's waits never allocate; libretro-common resynced.** Not yet run on a game.
   - **What changed:**
     - **libretro-common** is RetroArch master's again: `retro_waitaddr` with `retro_waitaddr_reserve` (a wait looks through the records already made before it makes more), and `file_path`'s `path_resolve_realpath_weak` building where realpath or Windows Vista's calls are missing.

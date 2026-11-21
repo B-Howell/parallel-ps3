@@ -7351,16 +7351,10 @@ s64 spu_channel::pop_wait(cpu_thread& spu, bool pop)
 		return static_cast<u32>(old);
 	}
 
-	for (int i = 0; i < 10; i++)
-	{
-		busy_wait();
-
-		if (!(load() & bit_wait))
-		{
-			return static_cast<u32>(pop ? take_jostling() : load());
-		}
-	}
-
+	// Straight to the wait (the pusher clears bit_wait and wakes the word),
+	// where it spun ten 3000-cycle busy-waits first: a hand-off between two
+	// threads measured 0.6-0.75 us a round trip waiting, 1.7 us spinning,
+	// as a spin only looks again every ~1 us
 	lv2_obj::notify_all();
 
 	old = (pop ? bit_occupy : 0) | bit_wait;
@@ -7383,10 +7377,12 @@ s64 spu_channel::pop_wait(cpu_thread& spu, bool pop)
 			{
 				if (u64 v = take_jostling(); !(v & bit_occupy))
 				{
-					while (load() & bit_wait)
+					// Until the notifying thread finishes its operation: it
+					// clears bit_wait and wakes the word
+					for (u64 seen = load(); seen & bit_wait; seen = load())
 					{
-						// Wait until notifying thread finishes operation
-						busy_wait(500);
+						const retro_waitaddr_t w{wait_word(), static_cast<u32>(wait_word_of(seen))};
+						retro_waitaddr_wait(&w, 1, -1);
 					}
 
 					return static_cast<u32>(v);
@@ -7429,17 +7425,7 @@ bool spu_channel::push_wait(cpu_thread& spu, u32 value, bool push)
 		return true;
 	});
 
-	for (int i = 0; i < 10; i++)
-	{
-		if (!(state & bit_wait))
-		{
-			return true;
-		}
-
-		busy_wait();
-		state = load();
-	}
-
+	// Straight to the wait, as pop_wait: no busy-waits first
 	while (true)
 	{
 		if (!(state & bit_wait))
@@ -7489,16 +7475,7 @@ std::pair<u32, u32> spu_channel_4_t::pop_wait(cpu_thread& spu, bool pop_value)
 
 	old.waiting = (pop_value ? bit_occupy : 0) | bit_wait;
 
-	for (int i = 0; i < 10; i++)
-	{
-		busy_wait();
-
-		if (!waiting())
-		{
-			return {1, static_cast<u32>(pop_value ? take_jostling() : 0)};
-		}
-	}
-
+	// Straight to the wait, as spu_channel's: no busy-waits first
 	while (true)
 	{
 		thread_ctrl::wait_on_custom<1>([&](retro_waitaddr_t* list) { list[0] = {&values, static_cast<u32>(static_cast<u32>(to_u128(old).lo))}; });

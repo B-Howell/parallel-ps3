@@ -1648,6 +1648,8 @@ check: all
 	@if grep -n "TODO: fix the workaround\|retro_waitaddr_wait(&w, 1, 10)" ../../Emu/CPU/CPUThread.cpp; then echo "the suspend wait's 10 us timer is back"; exit 1; else echo "a thread paused by suspend_all waits on events"; fi
 	@# libretro-common is RetroArch master's (retro_waitaddr_reserve), and retro_init reserves the wait records so a wait from the fault handler never allocates
 	@if ! grep -q "retro_waitaddr_reserve(" ../libretro_core.cpp; then echo "retro_init no longer reserves the wait records"; exit 1; else echo "retro_init reserves the wait records up front"; fi
+	@# The SPU channel and mailbox waits go straight to their wait on the channel word: no busy-waits before it, and none in the stop path
+	@if awk '/^s64 spu_channel::pop_wait/,/^std::pair<u32, u32> spu_channel_4_t::pop_wait/' ../../Emu/Cell/SPUThread.cpp | grep -n busy_wait; then echo "a busy-wait is back in the SPU channel waits"; exit 1; else echo "the SPU channel waits have no busy-waits"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
