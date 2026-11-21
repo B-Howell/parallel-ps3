@@ -2853,7 +2853,7 @@ void Emulator::FinalizeRunRequest()
 
 	if (m_savestate_extension_flags1 & SaveStateExtentionFlags1::ShouldCloseMenu)
 	{
-		std::thread([this, info = GetEmulationIdentifier()]()
+		thread_ctrl::spawn_detached([this, info = GetEmulationIdentifier()]()
 		{
 			thread_base::set_name("Close Home Menu");
 
@@ -2865,7 +2865,7 @@ void Emulator::FinalizeRunRequest()
 			{
 				send_close_home_menu_cmds();
 			}, info);
-		}).detach();
+		});
 	}
 }
 
@@ -3269,11 +3269,11 @@ void Emulator::GracefulShutdown(bool allow_autoexit, bool async_op, bool savesta
 
 	if (async_op)
 	{
-		std::thread{[perform_kill]()
+		thread_ctrl::spawn_detached([perform_kill]()
 		{
 			thread_base::set_name("Perform Kill");
 			perform_kill();
-		}}.detach();
+		});
 	}
 	else
 	{

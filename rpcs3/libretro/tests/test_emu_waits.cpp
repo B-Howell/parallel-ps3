@@ -117,6 +117,39 @@ error_code cellSslEnd();
 
 int main()
 {
+	// A detached thread (thread_ctrl::spawn_detached, on rthreads): it runs
+	// its callable, a move-only one too, and frees it when done
+	{
+		static retro_atomic_int_t s_ran;
+		static retro_atomic_int_t s_freed;
+		retro_atomic_store_release_int(&s_ran, 0);
+		retro_atomic_store_release_int(&s_freed, 0);
+
+		struct on_free
+		{
+			~on_free()
+			{
+				retro_atomic_store_release_int(&s_freed, 1);
+				retro_waitaddr_notify_all(&s_freed);
+			}
+		};
+
+		thread_ctrl::spawn_detached([owned = std::make_unique<on_free>()]()
+		{
+			retro_atomic_store_release_int(&s_ran, 1);
+		});
+
+		for (int i = 0; i < 500 && !retro_atomic_load_acquire_int(&s_freed); i++)
+		{
+			const retro_waitaddr_t w{&s_freed, 0};
+			retro_waitaddr_wait(&w, 1, 10'000);
+		}
+
+		CHECK(retro_atomic_load_acquire_int(&s_ran) == 1);
+		CHECK(retro_atomic_load_acquire_int(&s_freed) == 1);
+		std::printf("test_emu_waits: a detached thread: ran its callable and freed it\n");
+	}
+
 	// The host's memory use, read from /proc/meminfo with libretro-common's
 	// filestream: a total, and some of it available
 	{

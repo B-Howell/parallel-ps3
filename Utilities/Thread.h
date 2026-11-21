@@ -3,6 +3,7 @@
 #include "util/types.hpp"
 #include <retro_atomic.h>
 #include <rthreads/retro_waitaddr.h>
+#include <rthreads/rthreads.h>
 #include "util/shared_ptr.hpp"
 
 #include <thread>
@@ -322,6 +323,29 @@ public:
 
 	// Waits on @count words: untimed (@usec umax) until one of them is not
 	// what it was, through spurious wakes; timed, once (it may end early)
+	// Runs @func on a new detached thread (libretro-common's rthreads): the
+	// callable is moved to the heap, and the thread frees it when done
+	template <typename F>
+	static void spawn_detached(F&& func)
+	{
+		using func_t = std::decay_t<F>;
+		auto* const owned = new func_t(std::forward<F>(func));
+
+		sthread_t* const thread = sthread_create([](void* data)
+		{
+			const std::unique_ptr<func_t> f(static_cast<func_t*>(data));
+			(*f)();
+		}, owned);
+
+		if (!thread)
+		{
+			delete owned;
+		}
+
+		ensure(thread);
+		sthread_detach(thread);
+	}
+
 	static inline void wait_list(const retro_waitaddr_t* list, uint count, u64 usec = umax)
 	{
 		if (usec != umax)

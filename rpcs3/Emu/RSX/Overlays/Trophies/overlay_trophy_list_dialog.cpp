@@ -357,7 +357,7 @@ namespace rsx
 			const std::string tropusr_vfs_path = "/dev_hdd0/home/" + Emu.GetUsr() + "/trophy/" + trop_name + "/TROPUSR.DAT";
 			const std::string tropconf_vfs_path = "/dev_hdd0/home/" + Emu.GetUsr() + "/trophy/" + trop_name + "/TROPCONF.SFM";
 
-			std::thread([=, local_unlocked = std::move(local_unlocked)]() mutable
+			thread_ctrl::spawn_detached([=, local_unlocked = std::move(local_unlocked)]() mutable
 			{
 				g_cfg_rpcn.load();
 
@@ -412,7 +412,7 @@ namespace rsx
 				}
 
 				retro_atomic_store_release_int(sync_status, 2); // success
-			}).detach();
+			});
 		}
 
 		std::unique_ptr<trophy_data> trophy_list_dialog::load_trophies(const std::string& trop_name) const

@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Detached helper threads on libretro-common's rthreads: thread_ctrl::spawn_detached.** Not yet run on a game.
+  - **What changed:**
+    - **`thread_ctrl::spawn_detached(callable)`** (Thread.h) runs a callable on a new detached thread made with `sthread_create` and let go with `sthread_detach`: the callable is moved to the heap and the thread frees it when it returns. It fails as a std::thread did if no thread can be made.
+    - **Its three users** were detached std::threads: closing the home menu after a savestate loads (it waits 120 of the game's frames), killing the emulator when the game does not answer an exit request in time, and the trophy list's RPCN trophy sync.
+  - **Tests:** test_emu_waits hands spawn_detached a move-only callable and checks it ran and was freed; it fails on a thread that does not free it. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if a std::thread comes back to those files.
+
+
 - **RPCN: its three threads on libretro-common's rthreads, not std::thread.** Not yet run on a game.
   - **What changed:**
     - **The RPCN client's threads** (the main one, the socket reader and the socket writer) are made with `sthread_create` and joined with `sthread_join` (libretro-common's rthreads), where they were std::threads; their bodies are unchanged. A thread that failed to start is none to join.
