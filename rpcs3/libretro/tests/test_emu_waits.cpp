@@ -59,6 +59,7 @@
 #include "util/sysinfo.hpp"
 #include "Crypto/unpkg.h"
 #include <time/rtime.h>
+#include "Utilities/version.h"
 #include <sys/stat.h>
 #include <unistd.h>
 #include "util/vm.hpp"
@@ -173,6 +174,17 @@ int main()
 		CHECK(retro_atomic_load_acquire_int(&s_ran) == 1);
 		CHECK(retro_atomic_load_acquire_int(&s_freed) == 1);
 		std::printf("test_emu_waits: a detached thread: ran its callable and freed it\n");
+	}
+
+	// Version strings compared (a firmware's, a game's): digits and dots
+	// only, numbers compared one part at a time
+	{
+		bool ok = false;
+		CHECK(utils::compare_versions("1.10", "1.9", ok) > 0 && ok);
+		CHECK(utils::compare_versions("4.89", "4.89.0", ok) == 0 && ok);
+		utils::compare_versions("1.2a", "1.2", ok);
+		CHECK(!ok);
+		std::printf("test_emu_waits: version strings: compared by part, letters refused\n");
 	}
 
 	// An ISO file's date: days from 1970 by libretro-common's Gregorian

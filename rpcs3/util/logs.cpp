@@ -9,7 +9,7 @@
 #include <thread>
 #include <cstring>
 #include <cerrno>
-#include <regex>
+#include <compat/fnmatch.h>
 
 #include <retro_atomic.h>
 #include <rthreads/retro_waitaddr.h>
@@ -236,16 +236,12 @@ namespace logs
 	{
 		const level top = ceiling();
 
-		if (ch_name.find_first_of(".+*?^$()[]{}|\\") != umax)
+		if (ch_name.find_first_of("*?[") != umax)
 		{
-			const std::regex ex(ch_name);
-
-			// RegEx pattern
+			// A wildcard pattern ('*', '?', '[...]', libretro-common's rl_fnmatch)
 			for (auto& channel_pair : get_logger()->channels)
 			{
-				std::smatch sm;
-
-				if (std::regex_match(channel_pair.first, sm, ex))
+				if (rl_fnmatch(ch_name.c_str(), channel_pair.first.c_str(), 0) == 0)
 				{
 					channel_pair.second->set_enabled(std::min(value, top));
 				}

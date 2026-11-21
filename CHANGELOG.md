@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **No std::regex left: wildcards through libretro-common's rl_fnmatch.** Not yet run on a game.
+  - **What changed:**
+    - **A version string** (`utils::compare_versions`: firmware, patches) is valid when it holds only digits and dots, checked by `find_first_not_of`, where a std::regex (`[0-9.]*`) checked it.
+    - **The DNS switch list** (RPCN's host redirects, `host=ip`, where `*` stands for any run of characters) matches names with `rl_fnmatch` (libretro-common's fnmatch, compat_fnmatch.c, now built into the core), the pattern and the name both in lower case, where each pattern was turned into a case-insensitive std::regex. Only `*` was ever a wildcard there; a `?` or `[` in a pattern is now one too.
+    - **A log level set for a name with a wildcard** (the configuration's Log section) sets every channel the name matches with `rl_fnmatch` (`*`, `?`, `[...]`), where a name holding any regex character was taken as a std::regex: `sys_*` works as before written as `sys_.*` did; a name that used other regex syntax (`|`, `+`, `(...)`) now matches only as wildcards.
+  - **Tests:** test_vfs_positional sets a level for `TE?T`, `T*` and `X*` and checks the TEST channel took the first two and not the third; it fails if a `?` or `*` name is looked up as it is. test_emu_waits compares version strings by part and checks one with a letter is refused; it fails on a check that lets letters through. The DNS hook has none: it needs the RPCN configuration. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if std::regex comes back to the core.
+
+
 - **ISO dates: days counted with libretro-common's rtime_days_from_civil.** Not yet run on a game.
   - **What changed:**
     - **A file's date in an ISO** is turned into a UNIX time with `rtime_days_from_civil` (libretro-common's rtime.h, from RetroArch), where it used the core's own copy of the same count (`iso_days_from_civil` in ISO.h, with three static assertions), which goes. The two are the same algorithm, so the times are the same.

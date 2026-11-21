@@ -3,7 +3,7 @@
 #include <queues/mpsc_stack.h>
 #include <retro_atomic.h>
 #include <optional>
-#include <regex>
+#include <string>
 #include <string>
 #include <vector>
 
@@ -64,6 +64,6 @@ namespace np
 		static void drop_replies(spy_slot& slot);
 
 		// Made once, at start: read by any thread
-		std::vector<std::pair<std::regex, u32>> m_redirs;
+		std::vector<std::pair<std::string, u32>> m_redirs; // (lower-case wildcard pattern, IPv4 address)
 	};
 } // namespace np

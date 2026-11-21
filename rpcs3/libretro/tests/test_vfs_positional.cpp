@@ -559,6 +559,18 @@ int main()
 		CHECK(!test_log.error);
 		CHECK(!!test_log.fatal);
 
+		// A wildcard name ('*', '?', libretro-common's rl_fnmatch) sets every
+		// channel it matches, and no other (under a trace ceiling)
+		logs::set_ceiling(logs::level::trace);
+		logs::set_level("TE?T", logs::level::warning);
+		CHECK(test_log.get_enabled() == logs::level::warning);
+		logs::set_level("T*", logs::level::error);
+		CHECK(test_log.get_enabled() == logs::level::error);
+		logs::set_level("X*", logs::level::trace);
+		CHECK(test_log.get_enabled() == logs::level::error);
+		logs::set_ceiling(logs::level::fatal);
+		logs::set_level("TEST", logs::level::trace);
+
 		// An error a game's call returns is not written up either: no
 		// string made of it, nothing kept for it, however many there are
 		{

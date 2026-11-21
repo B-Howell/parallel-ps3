@@ -5,7 +5,7 @@
 #include "Utilities/StrUtil.h"
 #include "util/logs.hpp"
 
-#include <regex>
+#include <compat/fnmatch.h>
 
 #ifdef _WIN32
 #include <WS2tcpip.h>
@@ -46,8 +46,8 @@ namespace np
 			}
 			else
 			{
-				// The pattern made once, not at every query
-				m_redirs.push_back({std::regex(fmt::replace_all(host_and_ip[0], {{".", "\\."}, {"*", ".*"}}), std::regex_constants::icase), conv.s_addr});
+				// The pattern in lower case once, not at every query: names match whatever their case
+				m_redirs.push_back({fmt::to_lower(host_and_ip[0]), conv.s_addr});
 			}
 		}
 	}
@@ -171,9 +171,12 @@ namespace np
 
 	std::optional<u32> dnshook::get_redir(const std::string& hostname) const
 	{
-		for (const auto& [regex_pattern, ip] : m_redirs)
+		const std::string lower = fmt::to_lower(hostname);
+
+		// '*' any run of characters, as the switch list writes it (libretro-common's rl_fnmatch)
+		for (const auto& [pattern, ip] : m_redirs)
 		{
-			if (std::regex_match(hostname, regex_pattern))
+			if (rl_fnmatch(pattern.c_str(), lower.c_str(), 0) == 0)
 			{
 				dnshook_log.trace("Matched '%s'", hostname);
 				return ip;
