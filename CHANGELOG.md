@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Access violations: a paused thread waits on the emulator's state, no timer or yield loop.** Not yet run on a game.
+  - **What changed:**
+    - **Every change of the emulator's state wakes its waiters:** `set_state` and a successful `state_cas` wake whoever waits on the state word, where only Run and Kill did. `Emu.wait_state_change(old)` waits until the state is no longer `old`; WaitReady is that wait on ready.
+    - **A thread whose access violation pauses the emulator** (the handler waits while it is paused or ready, then pauses it and waits while paused) waits on the state word and, for a guest thread, on its own state, where it woke every 1 ms (a host thread) or yielded in a loop until the emulator updated its state (a guest thread not yet paused). Each change of either wakes it; it looks again.
+    - **On Windows,** a fault outside guest memory is handed on to the next handler at once, where it was handed on after a 1 ms sleep.
+    - **Flagged, not changed:** when the emulator is stopping, the handler still retries mapping the faulting page every 1 ms until it can, so the thread can see its exit flag; nothing signals that memory has been freed.
+  - **Tests:** test_emu_waits waits on the state word while the emulator is stopped and checks the change to running wakes it; it fails if a state change wakes no one. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if a yield or sleep comes back to Thread.cpp.
+
+
 - **Temporary file names without the TSC.** Not yet run on a game.
   - **What changed:**
     - **The number in a temporary file's name** (the file replaced in one step by fs, a VFS temporary path, the trophy loader's temporary copy, and the prefix of a virtual device) comes from `fs::unique_id` in File.h: one past the last number given, counting from 64 bits of `crypto_random_bytes`, libretro-common's entropy source, taken on the first call. It was `utils::get_unique_tsc`, which read the CPU's timestamp counter on each call; that goes from tsc.hpp. Names stay unique within a run (a counter, a compare-and-swap only the first time) and differ between runs (the random start). If no entropy source answers, the count starts at 1.

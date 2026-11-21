@@ -2707,7 +2707,6 @@ void Emulator::Run(bool start_playtime)
 
 	set_state(system_state::starting);
 	state_changed();
-	retro_waitaddr_notify_all(&m_state);
 
 	if (g_cfg.misc.prevent_display_sleep)
 	{

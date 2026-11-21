@@ -120,13 +120,27 @@ inline void libretro_wait_on(retro_atomic_int_t& word, u32 old)
 
 class Emulator final
 {
-	// The emulator's state (system_state). WaitReady waits on it; Run and
-	// Kill wake it
+	// The emulator's state (system_state). WaitReady and wait_state_change
+	// wait on it; every change wakes them
 	mutable retro_atomic_int_t m_state{static_cast<int>(system_state::stopped)};
 
 	system_state state() const { return static_cast<system_state>(retro_atomic_load_acquire_int(&m_state)); }
-	void set_state(system_state to) { retro_atomic_store_release_int(&m_state, static_cast<int>(to)); }
-	bool state_cas(system_state from, system_state to) { return retro_atomic_cas_int(&m_state, static_cast<int>(from), static_cast<int>(to)) != 0; }
+	void set_state(system_state to)
+	{
+		retro_atomic_store_release_int(&m_state, static_cast<int>(to));
+		retro_waitaddr_notify_all(&m_state);
+	}
+
+	bool state_cas(system_state from, system_state to)
+	{
+		if (!retro_atomic_cas_int(&m_state, static_cast<int>(from), static_cast<int>(to)))
+		{
+			return false;
+		}
+
+		retro_waitaddr_notify_all(&m_state);
+		return true;
+	}
 
 	retro_atomic_64_t m_pause_start_time{0}; // set when paused
 	mutable retro_atomic_64_t m_pause_amend_time{0}; // increased when resumed
@@ -472,8 +486,20 @@ public:
 	// Until the state leaves ready (a wake may be spurious: the caller looks again)
 	void WaitReady() const
 	{
-		const retro_waitaddr_t w{&m_state, static_cast<u32>(system_state::ready)};
+		wait_state_change(system_state::ready);
+	}
+
+	// Until the state is no longer @old (a wake may be spurious: the caller looks again)
+	void wait_state_change(system_state old) const
+	{
+		const retro_waitaddr_t w{&m_state, static_cast<u32>(old)};
 		retro_waitaddr_wait(&w, 1, -1);
+	}
+
+	// A wait list entry for the state, seen as @old
+	retro_waitaddr_t state_waitaddr(system_state old) const
+	{
+		return {&m_state, static_cast<u32>(old)};
 	}
 	auto GetStatus(bool fixup = true) const { const system_state s = state(); return fixup && s == system_state::frozen ? system_state::paused : fixup && s == system_state::stopping ? system_state::stopped : s; }
 

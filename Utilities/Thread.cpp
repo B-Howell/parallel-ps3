@@ -2245,50 +2245,39 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
 		vm_log.fatal("Access violation %s location 0x%x (%s)", is_writing ? "writing" : (is_exec ? "executing" : "reading"), addr, (is_writing && vm::check_addr(addr)) ? "read-only memory" : "unmapped memory");
 	}
 
-	while (Emu.IsPausedOrReady())
+	// Waits for the emulator's state (@emu, as seen) or the thread's to
+	// change: every change of either wakes it
+	const auto wait_emu_or_cpu = [cpu](system_state emu)
 	{
-		if (cpu)
+		if (!cpu)
 		{
-			auto state = +cpu->state;
+			Emu.wait_state_change(emu);
+			return;
+		}
 
-			if (::is_paused(state) && !::is_stopped(state))
-			{
-				thread_ctrl::wait_on(cpu->state, state);
-			}
-			else
-			{
-				// Temporary until Emulator updates state
-				std::this_thread::yield();
-			}
-		}
-		else
+		const auto state = +cpu->state;
+
+		if (::is_paused(state) && !::is_stopped(state))
 		{
-			thread_ctrl::wait_for(1000);
+			thread_ctrl::wait_on(cpu->state, state);
+			return;
 		}
+
+		// Until the emulator updates its state (or the thread's changes)
+		const retro_waitaddr_t list[2]{Emu.state_waitaddr(emu), thread_ctrl::waitaddr(cpu->state, state)};
+		retro_waitaddr_wait(list, 2, -1);
+	};
+
+	for (system_state emu = Emu.GetStatus(false); emu >= system_state::paused; emu = Emu.GetStatus(false))
+	{
+		wait_emu_or_cpu(emu);
 	}
 
 	Emu.Pause(true);
 
-	while (Emu.IsPaused())
+	for (system_state emu = Emu.GetStatus(false); emu >= system_state::paused && emu <= system_state::frozen; emu = Emu.GetStatus(false))
 	{
-		if (cpu)
-		{
-			auto state = +cpu->state;
-
-			if (::is_paused(state) && !::is_stopped(state))
-			{
-				thread_ctrl::wait_on(cpu->state, state);
-			}
-			else
-			{
-				// Temporary until Emulator updates state
-				std::this_thread::yield();
-			}
-		}
-		else
-		{
-			thread_ctrl::wait_for(1000);
-		}
+		wait_emu_or_cpu(emu);
 	}
 
 	if (Emu.IsStopped())
@@ -2353,9 +2342,9 @@ static LONG exception_handler(PEXCEPTION_POINTERS pExp) noexcept
 			is_exec = true;
 			addr = static_cast<u32>(seg_off * 2);
 		}
-		else 
+		else
 		{
-			std::this_thread::sleep_for(1ms);
+			// Not guest memory: the next handler's, with no wait first
 			return EXCEPTION_CONTINUE_SEARCH;
 		}
 

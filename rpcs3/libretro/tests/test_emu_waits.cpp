@@ -282,24 +282,38 @@ int main()
 		std::printf("test_emu_waits: %d look(s) while nothing happened, done after %d retro_runs\n", idle, runs);
 	}
 
-	// A wait for the emulator's state: woken by the change itself
+	// A wait for the emulator's state: woken by the change itself, both
+	// through the frontend's events and on the state word (wait_state_change,
+	// as a thread paused by an access violation waits)
 	{
 		std::atomic<bool> done{false};
+		std::atomic<bool> state_done{false};
 		std::thread waiter([&]
 		{
 			qt_events_aware_op(5, [] { return Emu.IsRunning(); });
 			done = true;
 		});
+		std::thread state_waiter([&]
+		{
+			while (Emu.GetStatus(false) == system_state::stopped)
+				Emu.wait_state_change(system_state::stopped);
+			state_done = true;
+		});
 		for (int i = 0; i < 200000; i++)
 			std::this_thread::yield();
-		CHECK(!done);
+		CHECK(!done && !state_done);
 		Emu.SetTestMode(); // stopped to running
-		for (int i = 0; i < 5'000'000 && !done; i++)
+		for (int i = 0; i < 5'000'000 && !(done && state_done); i++)
 			std::this_thread::yield();
 		CHECK(done);
+		CHECK(state_done);
 		if (!done)
 			libretro_event(); // so a failure ends
+		if (!state_done)
+			retro_waitaddr_notify_all(Emu.state_waitaddr(system_state::running).addr); // so a failure ends
 		waiter.join();
+		state_waiter.join();
+		std::printf("test_emu_waits: a wait on the emulator's state: woken by the change\n");
 	}
 
 	// A host thread waiting on a word (libretro_wait_on): woken by the word
