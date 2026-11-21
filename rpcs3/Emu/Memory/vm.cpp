@@ -2106,11 +2106,17 @@ namespace vm
 				{
 					switch (size)
 					{
-					case 1: atomic_storage<u8>::release(*static_cast<u8*>(dst), *static_cast<u8*>(src)); break;
-					case 2: atomic_storage<u16>::release(*static_cast<u16*>(dst), *static_cast<u16*>(src)); break;
-					case 4: atomic_storage<u32>::release(*static_cast<u32*>(dst), *static_cast<u32*>(src)); break;
-					case 8: atomic_storage<u64>::release(*static_cast<u64*>(dst), *static_cast<u64*>(src)); break;
-					case 16: atomic_storage<u128>::release(*static_cast<u128*>(dst), *static_cast<u128*>(src)); break;
+					case 1: retro_atomic_store_release_8(static_cast<retro_atomic_8_t*>(dst), *static_cast<const u8*>(src)); break;
+					case 2: retro_atomic_store_release_16(static_cast<retro_atomic_16_t*>(dst), *static_cast<const u16*>(src)); break;
+					case 4: retro_atomic_store_release_int(static_cast<retro_atomic_int_t*>(dst), *static_cast<const s32*>(src)); break;
+					case 8: retro_atomic_store_release_64(static_cast<retro_atomic_64_t*>(dst), *static_cast<const s64*>(src)); break;
+					case 16:
+					{
+						retro_u128_t value;
+						std::memcpy(&value, src, sizeof(value));
+						retro_atomic_store_release_128(static_cast<retro_atomic_128_t*>(dst), value);
+						break;
+					}
 					}
 
 					return true;

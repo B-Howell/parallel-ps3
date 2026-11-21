@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **vm::try_access's narrow guest writes on retro_atomic.** Not yet run on a game.
+  - **What changed:**
+    - **An aligned write of 1, 2, 4, 8 or 16 bytes** to guest memory through `vm::try_access` (the debugger's and patches' way in) is a retro_atomic release store of that width: the new 8- and 16-bit words for a byte or halfword, the 32- and 64-bit words, and the 128-bit word for 16 bytes. Each is one access of its width, as atomic_storage's release was; on x86 the code is the same (plain moves, movdqa for 16 bytes, no locked instruction).
+  - **Tests:** none of its own; try_access needs guest memory mapped. The 8- and 16-bit words are tested in RetroArch's retro_atomic_test (a byte store leaves its neighbours as they were, under four threads too). The full build and suites pass. A check fails if atomic_storage comes back to vm.cpp.
+
+
 - **libretro-common resynced from RetroArch master again: retro_atomic.h.** Not yet run on a game.
   - **What changed:**
     - **retro_atomic.h** is RetroArch's again, with its new 8- and 16-bit words (`retro_atomic_8_t`, `retro_atomic_16_t`: acquire load, release store, relaxed load and store, exchange, each one access of its width), for vm.cpp's narrow guest writes and the page flags. The core builds against it as it is.
