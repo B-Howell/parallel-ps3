@@ -207,7 +207,8 @@ namespace vm
 			const u64 is_share = shmem_of(begin >> 16);
 
 			// TODO (currently not possible): handle 2 64K pages (inverse range), or more pages
-			const u64 busy = vm_range_locks_busy_reader(load_range_lock_bits(true), g_range_lock_set, g_shmem, begin, size, is_share);
+			const u64 writers = load_range_lock_bits(true);
+			const u64 busy = vm_range_locks_busy_reader(writers, g_range_lock_set, g_shmem, begin, size, is_share);
 
 			if (!busy) [[likely]]
 			{
@@ -241,7 +242,10 @@ namespace vm
 			// Wait a bit before accessing global lock
 			range_lock_release(range_lock);
 
-			busy_wait(200);
+			if (i < 100)
+				busy_wait(200);
+			else
+				wait_for_writers(writers, _cpu); // until a writer leaves (or this thread's state changes), where it spun on
 
 			if (i >= 2 && !_cpu)
 			{

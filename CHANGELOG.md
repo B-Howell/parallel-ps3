@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Memory reads and PPU thread exit: waiting for writers no longer spins forever.** Not yet run on a game.
+  - **What changed:**
+    - **A thread reading guest memory that a writer holds** (`vm::range_lock_internal`) and **a PPU thread exiting** (`_sys_ppu_thread_exit`, which waits for the writers it saw) spun 200 cycles at a time for as long as the writers stayed. After 100 such spins they now sleep on the writers' wake word (`vm::wait_for_writers`) until a writer leaves; the reader also wakes on its own thread's state, as `passive_lock` does.
+    - **The 100 spins before the sleep stay, measured:** on this sandbox (2 vCPUs, virtualised), one writer handing a line to one reader, against sleeping at once. With the writer holding 0.5 or 2 µs, spinning first sees the release in 0.5 µs and costs the writer 0.15-0.18 µs to release; sleeping at once takes 0.8 µs and 0.37-0.51 µs. Held 10 µs, the spin sees it in 0.8 µs and sleeping at once in 12.8 µs, as the wake costs the writer 7.9 µs. At 50 µs both sleep and match (14.7 µs). Dropping the spins would slow the common short hold, so they stay; past them nothing spins.
+    - **Flagged:** a memory-layout change waiting for readers to leave (`_lock_main_range_lock`) still spins with no end, and `vm::try_access` spins on it while it is held. Readers leave with a plain store on their hot path, so waking a sleeper there would put a fence on every read lock's release.
+    - **Also:** the check added with the writer-lock change never looked for a yield: make took a `$` in its pattern, and awk failed on what was left. It now reads the code as meant.
+  - **Tests:** the wake itself is tested in `test_vm_range_locks` (it fails without the wake). These two callers need running guest threads. The Windows (MinGW) syntax check, the full build and suites pass.
+
+
 - **Reservation locks and the HLE SPU-signal wait: no more yields.** Not yet run on a game.
   - **What changed:**
     - **Waiting for a locked reservation** (`vm::reservation_lock_internal`, `vm::reservation_shared_lock_internal`, the SPU's GET of a locked line, GETLLAR's retry, and the unconditional put's two waits in `SPUThread.cpp`) yielded the host's thread in a loop after its short spins. It now waits until the reservation word changes, through `utils::spin_on_cacheline_once`, the line watch RSX's FIFO already uses on these words: UMWAIT or MWAITX on x86 and WFE on ARM wake on the unlock's store, with a 50 µs bound. Without them it is a timed wait of 50 µs on the word.

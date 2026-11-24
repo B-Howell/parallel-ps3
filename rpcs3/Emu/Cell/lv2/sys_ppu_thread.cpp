@@ -164,9 +164,12 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 	// Need to wait until the current writers finish
 	if (ppu.state & cpu_flag::memory)
 	{
-		for (; writer_mask; writer_mask &= vm::range_lock_writers())
+		for (u32 i = 0; writer_mask; writer_mask &= vm::range_lock_writers(), i++)
 		{
-			busy_wait(200);
+			if (i < 100)
+				busy_wait(200);
+			else
+				vm::wait_for_writers(vm::range_lock_writers()); // until a writer leaves, where it spun on
 		}
 	}
 }
