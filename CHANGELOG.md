@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Guest memory faults reach the renderer through an atomic pointer, not a std::function.** Not yet run on a game.
+  - **What changed:**
+    - The fault handler (`handle_access_violation`, Utilities/Thread.cpp) handed a fault on memory the renderer may hold to `rsx::g_access_violation_handler`. That was a global `std::function` the renderer assigned as it started and cleared as it stopped. Any thread's fault handler read it with no lock while it was being assigned, which is a data race on an object that is not atomic. Each call also went through the `std::function`'s thunk and a lambda before the renderer's virtual `on_access_violation`.
+    - It is now an atomic pointer to the renderer (`retro_atomic_ptr_t`), stored with release as the renderer starts and stops. The handler reads it with acquire through `rsx::has_access_violation_target` and `rsx::access_violation`, which call `on_access_violation` directly.
+  - **Tests:** `test_emu_waits`: with no renderer running there is no target, and a fault is handed back as not handled. A renderer can't be made in the test, so the hand-over to one is not tested. The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **Texture cache: no std::function through invalidate and flush calls.** Not yet run on a game.
   - **What changed:**
     - `invalidate_address`, `invalidate_range`, `invalidate_range_impl_base`, `flush_all` and `flush_set` each took an `on_data_transfer_completed` callback as a `std::function` by value. They are behind every guest write to protected memory and every deferred flush.

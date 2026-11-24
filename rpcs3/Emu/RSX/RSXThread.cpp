@@ -102,7 +102,20 @@ bool serialize<rsx::rsx_iomap_table>(utils::serial& ar, rsx::rsx_iomap_table& o)
 
 namespace rsx
 {
-	std::function<bool(u32 addr, bool is_writing)> g_access_violation_handler;
+	// The renderer a guest fault on its memory goes to: set as it starts, cleared as it stops, read by any thread's
+	// fault handler with no lock. It was a std::function, assigned while others read it, called through its thunk
+	static retro_atomic_ptr_t s_access_violation_target{nullptr};
+
+	bool has_access_violation_target()
+	{
+		return retro_atomic_load_acquire_ptr(&s_access_violation_target) != nullptr;
+	}
+
+	bool access_violation(u32 addr, bool is_writing)
+	{
+		auto* const rsxthr = static_cast<thread*>(retro_atomic_load_acquire_ptr(&s_access_violation_target));
+		return rsxthr && rsxthr->on_access_violation(addr, is_writing);
+	}
 
 	// TODO: Proper context manager
 	static rsx::context s_ctx{ .rsxthr = nullptr, .register_state = &method_registers };
@@ -741,7 +754,7 @@ namespace rsx
 		rsx_fifo_recoveries_free(&recovered_fifo_cmds_history);
 		rsx_frame_times_free(&frame_times);
 		flip_buffers_free(&m_queued_flip_buffers);
-		g_access_violation_handler = nullptr;
+		retro_atomic_store_release_ptr(&s_access_violation_target, nullptr);
 	}
 
 	void thread::save(utils::serial& ar)
@@ -842,10 +855,7 @@ namespace rsx
 		ensure(rsx_frame_times_init(&frame_times, 64));
 		ensure(flip_buffers_init(&m_queued_flip_buffers, 8));
 
-		g_access_violation_handler = [this](u32 address, bool is_writing)
-		{
-			return on_access_violation(address, is_writing);
-		};
+		retro_atomic_store_release_ptr(&s_access_violation_target, static_cast<void*>(this));
 
 		m_textures_dirty.fill(true);
 		m_vertex_textures_dirty.fill(true);
@@ -1292,7 +1302,7 @@ namespace rsx
 		}
 
 		// Deregister violation handler
-		g_access_violation_handler = nullptr;
+		retro_atomic_store_release_ptr(&s_access_violation_target, nullptr);
 
 		// The threads that wait for this one are answered, and nothing more
 		// can be asked: a thread that comes now is told so at once. (This

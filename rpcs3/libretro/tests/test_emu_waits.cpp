@@ -122,8 +122,24 @@ error_code sceNpSnsFbTerm();
 error_code cellSslInit(vm::ptr<void> pool, u32 poolSize);
 error_code cellSslEnd();
 
+namespace rsx
+{
+	bool has_access_violation_target();
+	bool access_violation(u32 addr, bool is_writing);
+}
+
 int main()
 {
+	// A guest fault on memory with no renderer running: none to take it,
+	// and handed on as not handled (the fault handler, Utilities/Thread.cpp,
+	// goes through these; the renderer is the one they hand it to, set as it
+	// starts, an atomic pointer where it was a std::function)
+	{
+		CHECK(!rsx::has_access_violation_target());
+		CHECK(!rsx::access_violation(0x30000000, true));
+		CHECK(!rsx::access_violation(0x30000000, false));
+	}
+
 	// The shader decompilers' text (fmt::text_writer): what a default
 	// std::ostringstream writes for every type they hand it, byte for byte
 	{

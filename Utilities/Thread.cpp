@@ -1543,7 +1543,8 @@ u64 get_a64_reg_value(ucontext_t* context, u32 reg_index, u32 reg_size)
 
 namespace rsx
 {
-	extern std::function<bool(u32 addr, bool is_writing)> g_access_violation_handler;
+	bool has_access_violation_target();
+	bool access_violation(u32 addr, bool is_writing);
 }
 
 bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t* context) noexcept
@@ -1582,7 +1583,7 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
 		}
 	} spu_protection{cpu};
 
-	if (!is_exec && addr < RAW_SPU_BASE_ADDR && vm::check_addr(addr) && rsx::g_access_violation_handler)
+	if (!is_exec && addr < RAW_SPU_BASE_ADDR && vm::check_addr(addr) && rsx::has_access_violation_target())
 	{
 		bool state_changed = false;
 
@@ -1591,7 +1592,7 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
 			state_changed = vm::temporary_unlock(*cpu);
 		}
 
-		bool handled = rsx::g_access_violation_handler(addr, is_writing);
+		bool handled = rsx::access_violation(addr, is_writing);
 
 		if (state_changed && (cpu->state += cpu_flag::temp, cpu->test_stopped()))
 		{
