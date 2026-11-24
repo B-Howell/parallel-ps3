@@ -226,7 +226,7 @@ namespace rsx
 		{
 			retro_atomic_int_t processed{0}; // u32
 
-			std::function<void(u32)> shader_load_worker = [&](u32 stop_at)
+			auto shader_load_worker = [&](u32 stop_at)
 			{
 				u32 pos;
 				// Processed is incremented before work starts in order to avoid two workers working on the same shader
@@ -257,7 +257,7 @@ namespace rsx
 				retro_waitaddr_notify_all(&processed); // await_workers looks
 			};
 
-			await_workers(nb_workers, 0, shader_load_worker, processed, entry_count, dlg);
+			await_workers(nb_workers, 0, make_worker_ref(shader_load_worker), processed, entry_count, dlg);
 		}
 
 		template <typename... Args>
@@ -265,7 +265,7 @@ namespace rsx
 		{
 			retro_atomic_int_t processed{0}; // u32
 
-			std::function<void(u32)> shader_comp_worker = [&](u32 stop_at)
+			auto shader_comp_worker = [&](u32 stop_at)
 			{
 				u32 pos;
 				// Processed is incremented before work starts in order to avoid two workers working on the same shader
@@ -279,10 +279,26 @@ namespace rsx
 				retro_waitaddr_notify_all(&processed); // await_workers looks
 			};
 
-			await_workers(nb_workers, 1, shader_comp_worker, processed, entry_count, dlg);
+			await_workers(nb_workers, 1, make_worker_ref(shader_comp_worker), processed, entry_count, dlg);
 		}
 
-		void await_workers(uint nb_workers, u8 step, std::function<void(u32)>& worker, retro_atomic_int_t& processed, u32 entry_count, shader_loading_dialog* dlg)
+		// A worker lambda by reference: its address and a plain function calling it, nothing allocated. It was a
+		// std::function, whose capture of five references it made on the heap
+		struct worker_ref
+		{
+			void (*call)(void* ctx, u32 stop_at);
+			void* ctx;
+
+			void operator()(u32 stop_at) const { call(ctx, stop_at); }
+		};
+
+		template <typename F>
+		static worker_ref make_worker_ref(F& f)
+		{
+			return { [](void* ctx, u32 stop_at) { (*static_cast<F*>(ctx))(stop_at); }, &f };
+		}
+
+		void await_workers(uint nb_workers, u8 step, worker_ref worker, retro_atomic_int_t& processed, u32 entry_count, shader_loading_dialog* dlg)
 		{
 			if (nb_workers == 1)
 			{

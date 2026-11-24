@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Shader cache loading: the workers are no longer std::functions.** Not yet run on a game.
+  - **What changed:**
+    - Loading the shader cache, as a game boots, runs two worker lambdas (`load_shaders`, `compile_shaders`) on worker threads or on this one through `await_workers`. Each was put in a `std::function`. The load worker captures five references, more than `std::function` keeps inline, so that also made a heap allocation per load.
+    - The workers now go to `await_workers` as a reference: the lambda's address and a plain function that calls it (`worker_ref`, made by `make_worker_ref`). Nothing is allocated, and there is no `std::function` thunk.
+    - Making `await_workers` a template on the lambda instead was measured and rejected: it copied the workers into every call and made the renderers' code 1.1 to 1.6 KB bigger. The reference makes it smaller: VKGSRender 1215 bytes less, GLGSRender 948.
+  - **Tests:** `test_shader_corpus`: a worker capturing five references, called twice through its reference, runs with the stop points given, and the reference points at the lambda. The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **Vulkan descriptor pools: a subpool's release no longer allocates a std::function.** Not yet run on a game.
   - **What changed:**
     - **A descriptor pool moving to its next subpool** (`descriptor_pool::next_subpool`, during gameplay whenever one fills up) handed the old subpool's reset to the GC. It did so as a heap-made `gc_callback_t` holding a `std::function` of a lambda.

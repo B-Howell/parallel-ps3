@@ -1488,6 +1488,22 @@ namespace shaders_cache_test
 		using base::read_pipeline;
 		using base::unpack;
 		using base::pack;
+
+		// The loading workers are handed on as a reference to the lambda (its
+		// address and a plain function calling it), where they were a
+		// std::function that made their five-reference capture on the heap:
+		// called through it, the lambda itself runs, with the stop point given
+		static void worker_ref()
+		{
+			u32 a = 0, b = 0, c = 0, d = 0, e = 0;
+			auto worker = [&](u32 stop_at) { a += stop_at; b++; c = a + b; d = c * 2; e = d + 1; };
+			const auto ref = base::make_worker_ref(worker);
+			ref(10);
+			ref(20);
+			CHECK(a == 30 && b == 2 && c == 32 && d == 64 && e == 65);
+			CHECK(ref.ctx == &worker);
+			std::printf("test_shader_corpus: the shader cache's loading workers called through a plain reference; ok\n");
+		}
 		using base::import_files;
 		using base::pipelines_path;
 
@@ -1563,6 +1579,8 @@ namespace shaders_cache_test
 		const std::string root = fmt::format("%s/test_shaders_cache_%u", std::filesystem::temp_directory_path().string(), static_cast<u32>(getpid()));
 		std::filesystem::remove_all(root);
 		std::filesystem::create_directories(root);
+
+		cache::worker_ref();
 
 		std::vector<cache::pipeline_data> stored;
 		{
