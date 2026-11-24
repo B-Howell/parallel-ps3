@@ -1826,6 +1826,63 @@ namespace disposal_test
 	}
 }
 
+// A texture readback waits for the DMA event its copy signals. Vulkan has
+// no host wait on an event, so the flush waits in the driver on the fence of
+// the submit that carries it (command_buffer::wait_last_submit); it polled
+// the event with no end. A submit held on an event the host sets: the wait
+// for it times out, then ends once it is set, and the copy's event is set by
+// then. Submitted here directly, as the tests have no renderer for
+// vk::queue_submit; the submit count it records is kept by a guard
+struct held_command_buffer : vk::command_buffer
+{
+	void submitted_to(VkQueue queue)
+	{
+		VkSubmitInfo si{};
+		si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+		si.commandBufferCount = 1;
+		si.pCommandBuffers = &commands;
+		retro_atomic_store_release_int(&is_pending, 1);
+		CHECK(vkQueueSubmit(queue, 1, &si, m_submit_fence->handle) == VK_SUCCESS);
+		m_submit_fence->signal_flushed();
+	}
+};
+
+static void submit_wait(vk::render_device& device, u32 graphics)
+{
+	vk::command_pool pool;
+	pool.create(device, graphics);
+	held_command_buffer cmd;
+	cmd.create(pool);
+
+	VkEventCreateInfo ei{};
+	ei.sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO;
+	VkEvent hold = VK_NULL_HANDLE, copied = VK_NULL_HANDLE;
+	CHECK(vkCreateEvent(device, &ei, nullptr, &hold) == VK_SUCCESS);
+	CHECK(vkCreateEvent(device, &ei, nullptr, &copied) == VK_SUCCESS);
+
+	CHECK(cmd.wait_last_submit(1000) == VK_SUCCESS); // nothing submitted: at once
+
+	cmd.begin();
+	vkCmdWaitEvents(cmd, 1, &hold, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, nullptr, 0, nullptr, 0, nullptr);
+	vkCmdSetEvent(cmd, copied, VK_PIPELINE_STAGE_TRANSFER_BIT);
+	cmd.end();
+	cmd.submitted_to(device.get_graphics_queue());
+
+	CHECK(cmd.wait_last_submit(20000) == VK_TIMEOUT); // held
+	CHECK(vkGetEventStatus(device, copied) == VK_EVENT_RESET);
+
+	CHECK(vkSetEvent(device, hold) == VK_SUCCESS);
+	CHECK(cmd.wait_last_submit(2000000) == VK_SUCCESS);
+	CHECK(vkGetEventStatus(device, copied) == VK_EVENT_SET);
+	std::printf("test_shader_corpus: a readback waits in the driver on the submit that signals its copy; ok\n");
+
+	vkQueueWaitIdle(device.get_graphics_queue());
+	vkDestroyEvent(device, hold, nullptr);
+	vkDestroyEvent(device, copied, nullptr);
+	cmd.destroy();
+	pool.destroy();
+}
+
 int main()
 {
 	shaders_cache_test::run();
@@ -1870,6 +1927,8 @@ int main()
 	vk::render_device device;
 	device.create(gpu, graphics, umax, umax);
 	vk::set_current_renderer(device);
+
+	submit_wait(device, graphics);
 
 	const bool can_run = shader_run_start(gpu, graphics) != 0;
 	shader_corpus_test::interpreter(device);

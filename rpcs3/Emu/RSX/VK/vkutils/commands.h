@@ -71,6 +71,8 @@ namespace vk
 		// buffer, with no lock (command_buffer_chunk).
 		retro_atomic_int_t is_pending{};
 		fence* m_submit_fence = nullptr;
+		// Submits made, counted as each is made (by the renderer). Read with no lock by a flush that waits for one
+		retro_atomic_64_t submits{};
 
 		command_pool* pool = nullptr;
 		VkCommandBuffer commands = nullptr;
@@ -116,6 +118,7 @@ namespace vk
 		{
 			is_open = other.is_open;
 			retro_atomic_store_release_int(&is_pending, retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&other.is_pending)));
+			retro_atomic_store_release_64(&submits, retro_atomic_load_acquire_64(const_cast<retro_atomic_64_t*>(&other.submits)));
 			m_submit_fence = other.m_submit_fence;
 			pool = other.pool;
 			commands = other.commands;
@@ -133,6 +136,12 @@ namespace vk
 		void begin();
 		void end();
 		void submit(queue_submit_t& submit_info, VkBool32 flush = VK_FALSE);
+
+		u64 submit_count() const { return static_cast<u64>(retro_atomic_load_acquire_64(const_cast<retro_atomic_64_t*>(&submits))); }
+
+		// Waits in the driver, at most timeout_us, for the fence of the latest submit, if it is still pending. The
+		// fence is left to whoever sees it done
+		VkResult wait_last_submit(u64 timeout_us) const;
 
 		// Abstractions with caching
 		void bind_pipeline(VkPipeline pipeline, VkPipelineBindPoint bind_point) const;

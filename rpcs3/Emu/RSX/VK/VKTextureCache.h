@@ -41,6 +41,9 @@ namespace vk
 
 		// DMA relevant data
 		std::unique_ptr<vk::event> dma_fence;
+		// The buffer that signals dma_fence, and which of its submits carries it
+		const vk::command_buffer* dma_cmd = nullptr;
+		u64 dma_submit = 0;
 		vk::render_device* m_device = nullptr;
 		vk::viewable_image* vram_texture = nullptr;
 
@@ -300,6 +303,13 @@ namespace vk
 		void imp_flush() override
 		{
 			AUDIT(synchronized);
+
+			// Vulkan has no host wait on an event: waited for in the driver on the fence of the submit that carries
+			// it. That submit not made yet, or a later one made (it was done first), leaves only the check below
+			if (dma_cmd && dma_fence->status() != VK_EVENT_SET && dma_cmd->submit_count() == dma_submit)
+			{
+				dma_cmd->wait_last_submit(GENERAL_WAIT_TIMEOUT);
+			}
 
 			// Synchronize, reset dma_fence after waiting
 			vk::wait_for_event(dma_fence.get(), GENERAL_WAIT_TIMEOUT);

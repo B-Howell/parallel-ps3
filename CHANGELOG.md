@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Vulkan: a texture readback no longer spins on its copy's event.** Not yet run on a game.
+  - **What changed:**
+    - **A texture-cache readback** (`cached_texture_section::imp_flush`) waits for the DMA copy that its section queued. The copy signals a VkEvent, and Vulkan has no host wait on an event, so `vk::wait_for_event` polled it on a pause until it was set, for up to 2 seconds.
+    - Each command buffer now counts its submits (`command_buffer::submit_count`). When the copy signals its event, the section records the buffer and which submit carries the signal. The flush waits in the driver on that submit's fence (`command_buffer::wait_last_submit`), so the thread sleeps until the GPU is done. A later submit already made means that one waited for it first.
+    - The event check after the wait stays, and it ends at once. It still polls only if the submit has not been made: the renderer submits its queue before it flushes, so that should not happen.
+    - **Flagged:** the fence is left to whoever sees it done. A flush on a thread other than the renderer's could, rarely, wait on a fence the renderer has just reset for its next use. The wait is then bounded at 2 seconds, as the poll was, and the event check ends it.
+  - **Tests:** `test_shader_corpus` (a real Vulkan device, lavapipe here) holds a submit on an event the host sets: the wait for it times out while held, ends once set, and the copy's event is set by then. A wait that does not wait fails it. It submits directly, as the tests have no renderer for `vk::queue_submit`; the guard keeps the submit count. The Windows (MinGW) syntax check, the full build and suites pass.
+
+
 - **OpenGL: waiting for the GPU no longer spins forever.** Not yet run on a game.
   - **What changed:**
     - **`gl::fence::wait_for_signal`**, behind the ring buffers' waits and texture readbacks, polled the fence's status with `glGetSynciv` in a loop with no end and no pause. It now makes one `glClientWaitSync` with no time limit, so the driver sleeps the thread until the GPU passes the fence. The old poll also returned "not signalled" when it had seen the fence pass; that is fixed as well.

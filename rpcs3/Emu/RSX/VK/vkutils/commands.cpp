@@ -143,7 +143,19 @@ namespace vk
 
 		submit_info.commands = this->commands;
 		queue_submit(submit_info, flush);
+		retro_atomic_fetch_add_64(&submits, 1);
 		clear_flags();
+	}
+
+	VkResult command_buffer::wait_last_submit(u64 timeout_us) const
+	{
+		if (!m_submit_fence || !retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&is_pending)))
+		{
+			return VK_SUCCESS;
+		}
+
+		// Not yet handed to the driver (asynchronous submit): the driver waits for that too
+		return vkWaitForFences(pool->get_owner(), 1, &m_submit_fence->handle, VK_FALSE, timeout_us * 1000ull);
 	}
 
 	void command_buffer::bind_pipeline(VkPipeline pipeline, VkPipelineBindPoint bind_point) const

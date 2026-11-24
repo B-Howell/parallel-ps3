@@ -366,6 +366,10 @@ namespace vk
 			.pBufferMemoryBarriers = &mem_barrier
 		});
 
+		// Its next submit carries the signal
+		dma_cmd = &cmd;
+		dma_submit = cmd.submit_count() + 1;
+
 		// Set cb flag for queued dma operations
 		cmd.set_flag(vk::command_buffer::cb_has_dma_transfer);
 
