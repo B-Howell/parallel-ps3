@@ -1731,6 +1731,8 @@ check: all
 	@if grep -q "std::function<" ../../Emu/Cell/lv2/sys_rsxaudio.h ../../Emu/Cell/lv2/sys_rsxaudio.cpp; then echo "the RSX audio timer or parameter update goes through a std::function again"; exit 1; else echo "the RSX audio timer and parameter updates take no std::function"; fi
 	@# suspend_all and the threads entering and leaving its list keep to a lock-free guard (cpu_guard.c), not the s_cpu_lock shared_mutex
 	@if grep -q "s_cpu_lock" ../../Emu/CPU/CPUThread.cpp || ! grep -q "cpu_guard_suspend_begin" ../../Emu/CPU/CPUThread.cpp; then echo "suspend_all goes through the s_cpu_lock shared_mutex again"; exit 1; else echo "suspend_all keeps to a lock-free guard"; fi
+	@# The emulator's callbacks to the core are plain functions, as each the core sets captures nothing: no std::function apiece
+	@if grep -qE "^[[:space:]]*std::function<" ../../Emu/emu_callbacks.h; then echo "the emulator's callbacks to the core are std::functions again"; exit 1; else echo "the emulator's callbacks to the core are plain functions"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

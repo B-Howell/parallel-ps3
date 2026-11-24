@@ -900,11 +900,16 @@ int main()
 		const auto saved = g_emu_callbacks.call_from_main_thread;
 		std::thread main_thread;
 		std::atomic<bool> handed{false};
-		g_emu_callbacks.call_from_main_thread = [&](std::function<void()> func, retro_atomic_int_t* wake_up)
+		// A plain function, as the core's callbacks are: what it needs through statics
+		static std::thread* s_main_thread;
+		static std::atomic<bool>* s_handed;
+		s_main_thread = &main_thread;
+		s_handed = &handed;
+		g_emu_callbacks.call_from_main_thread = [](std::function<void()> func, retro_atomic_int_t* wake_up)
 		{
-			main_thread = std::thread([func = std::move(func), wake_up, &handed]
+			*s_main_thread = std::thread([func = std::move(func), wake_up]
 			{
-				while (!handed)
+				while (!*s_handed)
 					std::this_thread::yield();
 				for (int i = 0; i < 200000; i++)
 					std::this_thread::yield();
@@ -947,9 +952,11 @@ int main()
 		extern emu_callbacks g_emu_callbacks;
 		const auto saved = g_emu_callbacks.call_from_main_thread;
 		std::vector<std::function<void()>> queued;
-		g_emu_callbacks.call_from_main_thread = [&](std::function<void()> func, retro_atomic_int_t*)
+		static std::vector<std::function<void()>>* s_queued;
+		s_queued = &queued;
+		g_emu_callbacks.call_from_main_thread = [](std::function<void()> func, retro_atomic_int_t*)
 		{
-			queued.push_back(std::move(func));
+			s_queued->push_back(std::move(func));
 		};
 
 		auto stub = std::make_shared<stub_dialog>();

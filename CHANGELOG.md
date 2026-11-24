@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Emulator callbacks: plain functions, not 47 std::functions.** Not yet run on a game.
+  - **What changed:**
+    - `emu_callbacks` is the table the emulator calls the core through: dialogs, the renderer's frame, audio, input handlers, paths, localized strings and the rest. It held 47 `std::function`s. Every one the core sets is a lambda that captures nothing.
+    - They are now plain function pointers, null where unset. Each call goes straight to the function rather than through a `std::function`, and every call site reads the same.
+    - `call_from_main_thread` and `try_to_quit` still take a `std::function` argument: the work handed over, owned by whoever runs it.
+    - Smaller code: libretro_core.o, System.o, VFS.o and localized_string.o together 29.9 KB less.
+  - **Tests:** `test_emu_waits`' two stand-ins for `call_from_main_thread` are now plain functions as well, reaching their state through statics. The blocking call still returns only after the call has run, and the shader loading dialog still closes after its last queued call. The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **suspend_all: no lock.** The `s_cpu_lock` shared_mutex is replaced by a lock-free guard in a new C89 module (`rpcs3/Emu/CPU/cpu_guard.c`). Not yet run on a game.
   - **What the lock did, and what does it now:**
     - **One suspend at a time.** The owner held the lock for the whole of a suspend. The guard keeps an epoch, odd while a suspend runs. The next owner waits for it to be even, then makes it odd with a compare-and-swap, and makes it even again on the way out, by any path.
