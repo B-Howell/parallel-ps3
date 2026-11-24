@@ -59,7 +59,8 @@ namespace rsx
 			wait_gpu(ctx);
 		}
 
-		// OpenGL only: polls the counter the GPU writes
+		// The GPU has passed the wait above, so this ends at once: kept for a counter written after the newest
+		// fence, or a write not yet seen through OpenGL's non-coherent mapping
 		while (!m_host_context_ptr->in_flight_commands_completed())
 		{
 			utils::pause();

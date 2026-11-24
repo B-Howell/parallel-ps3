@@ -109,6 +109,9 @@ namespace gl
 		u32 alloc(u32 size, u32 alignment);
 		void push_barrier(u32 start, u32 length);
 
+		// Waits in the driver for the GPU to pass the newest barrier, the last write queued
+		void wait_last_barrier() const;
+
 		buffer& get() { return m_storage; }
 		u64 size() const { return m_storage.size(); }
 	};

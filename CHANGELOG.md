@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **OpenGL: waiting for the GPU no longer spins forever.** Not yet run on a game.
+  - **What changed:**
+    - **`gl::fence::wait_for_signal`**, behind the ring buffers' waits and texture readbacks, polled the fence's status with `glGetSynciv` in a loop with no end and no pause. It now makes one `glClientWaitSync` with no time limit, so the driver sleeps the thread until the GPU passes the fence. The old poll also returned "not signalled" when it had seen the fence pass; that is fixed as well.
+    - **The host label drain** (`RSXDMAWriter::drain_label_queue`, on a texture-read semaphore release) polled the counter the GPU writes, on OpenGL only; Vulkan already waited on its command buffers. OpenGL now first waits in the driver on the ring buffer's newest fence, the one after the last label write (`scratch_ring_buffer::wait_last_barrier`, through the new `gl::fence::client_wait`, which keeps the sync for the ring's own later use).
+    - The counter check after the wait stays. It ends at once unless a write came after the newest fence, or the mapping, which is not coherent, has not shown the write yet.
+    - **Flagged, left as it is:** Vulkan's `vk::wait_for_event`, behind texture-cache readbacks, still polls the VkEvent, because Vulkan has no host wait on an event. Making it block means waiting on the fence of the command buffer that signals it.
+  - **Tests:** none of their own: the waits need a running OpenGL renderer, and the tests' surfaceless EGL contexts drive only the frame hand-over. The Windows (MinGW) syntax check, the full build and suites pass.
+
+
 - **SPU byte locks and event reads: waiting for another thread no longer spins forever.** Not yet run on a game.
   - **What changed:**
     - **With accurate DMA on**, a transfer locks the bytes it writes in a 128-bit mask beside the reservation line. A transfer finding some of them held spun on `busy_wait(500)` for as long as they stayed held: a forced `true ||` had cut out the old wait branch, which was left half-written. After 100 tries it now waits until the 32-bit word holding the first held byte changes, through `utils::spin_on_cacheline_once`, bounded at 50 µs. The dead branch is gone.

@@ -1490,7 +1490,8 @@ bool GLGSRender::release_GCM_label(u32 type, u32 address, u32 args)
 
 		// All texture loads already seen by the host GPU
 		// Wait for all previously submitted labels to be flushed
-		m_host_dma_ctrl->drain_label_queue();
+		// Waited for in the driver on the fence after the newest label write
+		m_host_dma_ctrl->drain_label_queue([](void* self) { static_cast<GLGSRender*>(self)->m_enqueued_host_write_buffer->wait_last_barrier(); }, this);
 		return false;
 	}
 

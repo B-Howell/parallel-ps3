@@ -307,4 +307,12 @@ namespace gl
 		barrier_->signal.create();
 		m_barriers.emplace_back(std::move(barrier_));
 	}
+
+	void scratch_ring_buffer::wait_last_barrier() const
+	{
+		if (!m_barriers.empty())
+		{
+			m_barriers.back()->signal.client_wait();
+		}
+	}
 }

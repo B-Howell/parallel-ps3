@@ -76,49 +76,37 @@ namespace gl
 			return true;
 		}
 
-		bool wait_for_signal()
+		// Waited for in the driver, which wakes this as the GPU passes the fence; the sync is kept. It polled the
+		// status in a loop with no end, and when the poll saw it pass it still called it not signalled
+		bool client_wait() const
 		{
 			ensure(m_value);
 
-			if (signaled == GL_FALSE)
+			if (!signaled)
 			{
-				GLenum err = GL_WAIT_FAILED;
-				bool done = false;
+				GLenum err;
 
-				while (!done)
+				do
 				{
-					if (flags)
-					{
-						err = glClientWaitSync(m_value, flags, 0);
-						flags = 0;
-
-						switch (err)
-						{
-						default:
-							rsx_log.error("gl::fence sync returned unknown error 0x%X", err);
-							[[fallthrough]];
-						case GL_ALREADY_SIGNALED:
-						case GL_CONDITION_SATISFIED:
-							done = true;
-							break;
-						case GL_TIMEOUT_EXPIRED:
-							continue;
-						}
-					}
-					else
-					{
-						GLint status = GL_UNSIGNALED;
-						GLint tmp;
-
-						glGetSynciv(m_value, GL_SYNC_STATUS, 4, &tmp, &status);
-
-						if (status == GL_SIGNALED)
-							break;
-					}
+					err = glClientWaitSync(m_value, GL_SYNC_FLUSH_COMMANDS_BIT, ~0ull);
 				}
+				while (err == GL_TIMEOUT_EXPIRED);
 
+				flags = 0;
 				signaled = (err == GL_ALREADY_SIGNALED || err == GL_CONDITION_SATISFIED);
+
+				if (!signaled)
+				{
+					rsx_log.error("gl::fence sync returned unknown error 0x%X", err);
+				}
 			}
+
+			return signaled;
+		}
+
+		bool wait_for_signal()
+		{
+			client_wait();
 
 			glDeleteSync(m_value);
 			m_value = nullptr;
