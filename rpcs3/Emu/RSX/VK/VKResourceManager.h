@@ -51,7 +51,7 @@ namespace vk
 		static constexpr usz held_events = 4096;
 		retro_atomic_64_t m_held_events[held_events]{};
 
-		std::vector<std::function<void()>> m_exit_handlers;
+		std::vector<void (*)()> m_exit_handlers;
 
 		void push(void* object, void (*deleter)(void*), const gpu_debug_marker* marker)
 		{
@@ -229,7 +229,7 @@ namespace vk
 			return ret;
 		}
 
-		void add_exit_callback(std::function<void()> callback) override
+		void add_exit_callback(void (*callback)()) override
 		{
 			m_exit_handlers.push_back(callback);
 		}

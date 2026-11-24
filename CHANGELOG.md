@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Vulkan descriptor pools: a subpool's release no longer allocates a std::function.** Not yet run on a game.
+  - **What changed:**
+    - **A descriptor pool moving to its next subpool** (`descriptor_pool::next_subpool`, during gameplay whenever one fills up) handed the old subpool's reset to the GC. It did so as a heap-made `gc_callback_t` holding a `std::function` of a lambda.
+    - Each subpool now keeps its device. The GC is handed the subpool's own address with a plain function that resets it and gives it back (`descriptor_pool::release_subpool`, through the new `vk::disposable_t::call`), so nothing is allocated. `gc_callback_t` and the pool's `reset`, now unused, are gone.
+    - **The GC's exit callbacks** (`add_exit_callback`, the two shared pools let go of as the device goes) are plain function pointers rather than `std::function`, as neither captures anything.
+    - Smaller code: descriptors.o 551 bytes less, VKResourceManager.o 270, sync.o 266.
+  - **Tests:** `test_shader_corpus`: a `disposable_t::call` makes its call once, as it goes, on the pointer it was given, and not when the GC takes it over (`take`). The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **Guest memory faults reach the renderer through an atomic pointer, not a std::function.** Not yet run on a game.
   - **What changed:**
     - The fault handler (`handle_access_violation`, Utilities/Thread.cpp) handed a fault on memory the renderer may hold to `rsx::g_access_violation_handler`. That was a global `std::function` the renderer assigned as it started and cleared as it stopped. Any thread's fault handler read it with no lock while it was being assigned, which is a data race on an object that is not atomic. Each call also went through the `std::function`'s thunk and a lambda before the renderer's virtual `on_access_violation`.

@@ -14,23 +14,6 @@
 
 namespace vk
 {
-	struct gc_callback_t
-	{
-		std::function<void()> m_callback;
-
-		gc_callback_t(std::function<void()> callback)
-			: m_callback(callback)
-		{}
-
-		~gc_callback_t()
-		{
-			if (m_callback)
-			{
-				m_callback();
-			}
-		}
-	};
-
 	struct descriptor_set_dynamic_offset_t
 	{
 		int location;
@@ -54,7 +37,6 @@ namespace vk
 
 	private:
 		FORCE_INLINE bool can_allocate(u32 required_count, u32 already_used_count = 0) const { return (required_count + already_used_count) <= max_sets(); };
-		void reset(u32 subpool_id, VkDescriptorPoolResetFlags flags);
 		void next_subpool();
 
 		std::pair<VkResult, VkDescriptorPool> new_subpool();
@@ -67,7 +49,12 @@ namespace vk
 			VkDescriptorPool handle = VK_NULL_HANDLE;
 			u32 size = 0;
 			retro_atomic_int_t busy{1};
+			const vk::render_device* owner = nullptr;
 		};
+
+		// Handed to the GC as a subpool is left: reset and given back once the GPU is done with it. It was a
+		// heap-made std::function each time
+		static void release_subpool(void* subpool);
 
 		static constexpr u32 max_subpools = 256;
 

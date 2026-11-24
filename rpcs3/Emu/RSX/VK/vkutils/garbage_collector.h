@@ -1,6 +1,5 @@
 #include <util/types.hpp>
 
-#include <functional>
 #include <utility>
 
 namespace vk
@@ -43,6 +42,12 @@ namespace vk
 			return std::exchange(ptr, nullptr);
 		}
 
+		// A call to make once the GPU is done: f(ptr), nothing allocated
+		static disposable_t call(void* ptr_, deleter_t f)
+		{
+			return disposable_t(ptr_, f);
+		}
+
 		template <typename T>
 		static disposable_t make(T* raw)
 		{
@@ -57,7 +62,8 @@ namespace vk
 	{
 		virtual void dispose(vk::disposable_t& object) = 0;
 
-		virtual void add_exit_callback(std::function<void()> callback) = 0;
+		// Called as the device goes away: a plain function, as each one is (it was a std::function)
+		virtual void add_exit_callback(void (*callback)()) = 0;
 
 		template<typename T>
 		void dispose(std::unique_ptr<T>& object)

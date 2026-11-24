@@ -1847,6 +1847,39 @@ struct held_command_buffer : vk::command_buffer
 	}
 };
 
+// A descriptor subpool left is handed to the GC as a plain call on it
+// (disposable_t::call), nothing allocated, where it was a heap-made
+// std::function each time: the call made once, as the disposable goes, on
+// the pointer it was given; not made when the GC takes it over
+static int s_released = 0;
+static void* s_released_on = nullptr;
+
+static void count_release(void* p)
+{
+	s_released++;
+	s_released_on = p;
+}
+
+static void disposable_call()
+{
+	int subpool = 0;
+	{
+		auto d = vk::disposable_t::call(&subpool, &count_release);
+		CHECK(s_released == 0);
+	}
+	CHECK(s_released == 1 && s_released_on == &subpool);
+
+	void (*deleter)(void*) = nullptr;
+	{
+		auto d = vk::disposable_t::call(&subpool, &count_release);
+		CHECK(d.take(deleter) == &subpool && deleter == &count_release);
+	}
+	CHECK(s_released == 1);
+	deleter(&subpool);
+	CHECK(s_released == 2);
+	std::printf("test_shader_corpus: a subpool's release handed to the GC as a plain call, made once; ok\n");
+}
+
 static void submit_wait(vk::render_device& device, u32 graphics)
 {
 	vk::command_pool pool;
@@ -1929,6 +1962,7 @@ int main()
 	vk::set_current_renderer(device);
 
 	submit_wait(device, graphics);
+	disposable_call();
 
 	const bool can_run = shader_run_start(gpu, graphics) != 0;
 	shader_corpus_test::interpreter(device);

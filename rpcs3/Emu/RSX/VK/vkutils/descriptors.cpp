@@ -182,11 +182,12 @@ namespace vk
 		m_owner = nullptr;
 	}
 
-	void descriptor_pool::reset(u32 subpool_id, VkDescriptorPoolResetFlags flags)
+	void descriptor_pool::release_subpool(void* subpool)
 	{
 		// Whoever had the subpool is done with it; free once it is reset
-		CHECK_RESULT(vkResetDescriptorPool(*m_owner, m_device_subpools[subpool_id].handle, flags));
-		retro_atomic_store_release_int(&m_device_subpools[subpool_id].busy, 0);
+		auto* const s = static_cast<logical_subpool_t*>(subpool);
+		CHECK_RESULT(vkResetDescriptorPool(*s->owner, s->handle, 0));
+		retro_atomic_store_release_int(&s->busy, 0);
 	}
 
 	VkDescriptorSet descriptor_pool::allocate(VkDescriptorSetLayout layout, VkBool32 use_cache)
@@ -253,13 +254,8 @@ namespace vk
 		if (m_current_subpool_index != umax)
 		{
 			// Enqueue release using gc
-			auto release_func = [subpool_index=m_current_subpool_index, this]()
-			{
-				this->reset(subpool_index, 0);
-			};
-
-			auto cleanup_obj = std::make_unique<gc_callback_t>(release_func);
-			vk::get_gc()->dispose(cleanup_obj);
+			auto release = vk::disposable_t::call(&m_device_subpools[m_current_subpool_index], &release_subpool);
+			vk::get_gc()->dispose(release);
 		}
 
 		m_current_subpool_offset = 0;
@@ -310,6 +306,7 @@ namespace vk
 
 			m_device_subpools[index].handle = subpool;
 			m_device_subpools[index].size = m_autoscaling_config.current_size;
+			m_device_subpools[index].owner = m_owner;
 
 			m_current_subpool_index = index;
 			m_current_pool_handle = subpool;
