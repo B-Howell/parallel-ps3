@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Savestates: locking the SPUs waits on their states, no yields, sleeps or host clock.** Not yet run on a game.
+  - **What changed:**
+    - **Bringing the SPUs to a point where they can be saved** (`try_lock_spu_threads_in_a_state_compatible_with_savestates`, before a savestate is written) waits, when no SPU is savable yet or the suspend that would stop them failed, on the emulator's state and the first seven SPUs' states for up to 1 ms (50 ms when the SPUs could not be collected), where it yielded the host's thread in a loop, slept 1 ms after every 150 ms of the host's clock, and slept 50 ms. It gives up after about 2.25 s of such waits, as before: a wait that runs out counts its bound, one a change ends counts 10 µs.
+    - **Flagged:** an SPU leaving the code it cannot be saved in (an MFC command, a channel read, a state check) is not an event: its `unsavable` byte is a plain store from the SPU recompiler. A wake on it would put a locked operation on every such exit, the SPU's hot path; the 1 ms bound is what ends most of these waits. It runs only while a savestate is being made.
+  - **Tests:** none of their own: the lock needs running SPU threads. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if a yield, sleep or host clock comes back to the lock.
+
+
 - **RSX FIFO: waits for put and for locked lines by watching their words, no yields or busy-waits.** Not yet run on a game.
   - **What changed:**
     - **An empty FIFO** (the guest has not moved put since the RSX caught up), **a command waiting for its argument** (`inc_get`) and **a semaphore wait's fallback** wait for the guest's put pointer to change with `FIFO_control::wait_for_put`: the processor watches its cache line (UMWAIT, MWAITX or WFE), else a timed wait of 100 µs, as the semaphore acquire already waits on the semaphore. They yielded the host's thread and came straight back. The guest writes put with a plain store, so a line watch is the only event there is for it.

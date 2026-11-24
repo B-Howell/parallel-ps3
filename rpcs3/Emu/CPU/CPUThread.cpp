@@ -1239,25 +1239,40 @@ extern bool try_lock_spu_threads_in_a_state_compatible_with_savestates(bool reve
 		return &spu_list;
 	};
 
-	// Attempt to lock for a second, if somehow takes longer abort it
-	for (u64 start = 0, passed_count = 0; passed_count < 15;)
+	// Waits up to @usec for one of the SPUs' states (the first seven) or the emulator's to change: what an SPU does
+	// when it leaves the code it cannot be saved in is not an event, so the bound is what ends most of these. Where
+	// it yielded, and slept 1 ms and 50 ms. What it counts against the budget: the bound when it ran out, 10 us when
+	// a change woke it (SPUs busy changing state do not use the budget up at once, nor keep it forever)
+	const auto wait_for_spus = [](const std::vector<shared_ptr<named_thread<spu_thread>>>* list, s64 usec) -> u64
+	{
+		retro_waitaddr_t words[RETRO_WAITADDR_MAX];
+		unsigned count = 0;
+		words[count++] = Emu.state_waitaddr(Emu.GetStatus(false));
+
+		if (list)
+		{
+			for (auto& spu : *list)
+			{
+				if (count == RETRO_WAITADDR_MAX)
+				{
+					break;
+				}
+
+				words[count++] = thread_ctrl::waitaddr(spu->state, +spu->state);
+			}
+		}
+
+		return retro_waitaddr_wait(words, count, usec) ? 10 : static_cast<u64>(usec);
+	};
+
+	// Attempt to lock for about two seconds of waits (each up to 1 ms, 50 ms when the SPUs could not be collected),
+	// counted as wait_for_spus says, without the host's clock; if it takes longer abort it
+	for (u64 waited_us = 0; waited_us < 2'250'000;)
 	{
 		if (revert_lock)
 		{
 			// Revert the operation of this function
 			break;
-		}
-
-		if (!start)
-		{
-			start = get_system_time();
-		}
-		else if (get_system_time() - start >= 150'000)
-		{
-			std::this_thread::sleep_for(1ms);
-			passed_count++;
-			start = 0;
-			continue;
 		}
 
 		// Try to fetch SPUs out of critical section
@@ -1266,9 +1281,7 @@ extern bool try_lock_spu_threads_in_a_state_compatible_with_savestates(bool reve
 		if (!spu_list)
 		{
 			// Give up for now
-			std::this_thread::sleep_for(50ms);
-			passed_count++;
-			start = 0;
+			waited_us += wait_for_spus(nullptr, 50'000);
 			continue;
 		}
 
@@ -1285,7 +1298,7 @@ extern bool try_lock_spu_threads_in_a_state_compatible_with_savestates(bool reve
 
 		if (!savable_threads)
 		{
-			std::this_thread::yield();
+			waited_us += wait_for_spus(spu_list, 1000);
 			continue;
 		}
 
@@ -1343,7 +1356,7 @@ extern bool try_lock_spu_threads_in_a_state_compatible_with_savestates(bool reve
 				}
 			}
 
-			std::this_thread::yield();
+			waited_us += wait_for_spus(spu_list, 1000);
 			continue;
 		}
 
