@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Pipeline compilers: a deferred compile's callbacks are moved into its job, not copied.** Not yet run on a game.
+  - **What changed:**
+    - A deferred compile hands a worker its callbacks: Vulkan's completion callback and, from the shader interpreter, its create-info function; OpenGL's post-create and completion callbacks. These are `std::function`s owning what they captured, and they stay so. But each was copied on the way in: into the work queue's push, then again into the job's members. A capture too big to keep inline (the interpreter's, the program cache's cloned programs) was allocated again at each copy.
+    - They are now moved at the push and into the job. The inline path's create-info function is taken by reference rather than copied.
+    - The program buffers' own callback is still copied into the compile, because they call it again after the compile returns.
+    - Smaller code: VKPipelineCompiler 608 bytes less, GLPipelineCompiler 304.
+  - **Tests:** none of their own: a move in place of a copy changes no behaviour, and a deferred compile needs a running renderer's compiler threads. The guard keeps the moves. The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **OpenGL pipeline compiler: no std::function for its contexts and post-link.** Not yet run on a game.
   - **What changed:**
     - **The worker contexts:** each compiler thread made, bound and let go of its context through three `std::function`s. Each wrapped a lambda calling the frame. The compiler now keeps the frame itself (`GSFrameBase*`, none where the shaders compile inline) and calls its `make_context`, `set_current` and `delete_context`.

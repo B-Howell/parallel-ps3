@@ -136,7 +136,7 @@ namespace vk
 				op_flags flags_,
 				callback_t func)
 			{
-				callback_func = func;
+				callback_func = std::move(func);
 				graphics_data = props;
 				graphics_modules[0] = modules[0];
 				graphics_modules[1] = modules[1];
@@ -155,8 +155,8 @@ namespace vk
 				op_flags flags_,
 				callback_t func)
 			{
-				callback_func = func;
-				create_info_func = pipe_info_create_fn;
+				callback_func = std::move(func);
+				create_info_func = std::move(pipe_info_create_fn);
 				is_graphics_job = true;
 				flags = flags_;
 
@@ -174,7 +174,7 @@ namespace vk
 				op_flags flags_,
 				callback_t func)
 			{
-				callback_func = func;
+				callback_func = std::move(func);
 				compute_data = props;
 				is_graphics_job = false;
 				flags = flags_;
@@ -209,7 +209,7 @@ namespace vk
 			op_flags flags);
 
 		std::unique_ptr<glsl::program> int_compile_graphics_pipe(
-			graphics_pipe_create_callback_t pipe_info_create_fn,
+			const graphics_pipe_create_callback_t& pipe_info_create_fn,
 			const std::vector<glsl::program_input>& vs_inputs,
 			const std::vector<glsl::program_input>& fs_inputs,
 			op_flags flags);

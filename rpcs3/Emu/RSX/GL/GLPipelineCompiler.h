@@ -46,7 +46,7 @@ namespace gl
 			storage_callback_t completion_callback;
 
 			pipe_compiler_job(build_callback_t post_create, link_callback_t post_link, storage_callback_t completion)
-				: post_create_func(post_create), post_link_func(post_link), completion_callback(completion)
+				: post_create_func(std::move(post_create)), post_link_func(post_link), completion_callback(std::move(completion))
 			{}
 		};
 

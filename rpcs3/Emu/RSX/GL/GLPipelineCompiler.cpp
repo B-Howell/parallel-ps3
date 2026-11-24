@@ -62,7 +62,8 @@ namespace gl
 			return int_compile_graphics_pipe(post_create_func, post_link_func);
 		}
 
-		m_work_queue.push(post_create_func, post_link_func, completion_callback_func);
+		// Moved into the job: a copy made the captures again
+		m_work_queue.push(std::move(post_create_func), post_link_func, std::move(completion_callback_func));
 		return {};
 	}
 
