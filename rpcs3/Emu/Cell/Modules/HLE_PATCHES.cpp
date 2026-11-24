@@ -5,7 +5,7 @@
 
 #include "Emu/Cell/lv2/sys_spu.h"
 
-#include <thread>
+#include "util/asm.hpp"
 
 // SONIC THE HEDGEDOG: a fix for a race condition between SPUs and PPUs causing missing graphics (SNR is overriden when non-empty)
 void WaitForSPUsToEmptySNRs(ppu_thread& ppu, u32 spu_id, u32 snr_mask)
@@ -20,21 +20,44 @@ void WaitForSPUsToEmptySNRs(ppu_thread& ppu, u32 spu_id, u32 snr_mask)
 	}
 
 	// Wait until specified SNRs are reported empty at least once
-	for (bool has_busy = true; has_busy && !ppu.is_stopped(); std::this_thread::yield())
+	// Between looks: until the first busy SNR's word changes (the SPU's read of it is a store the line watch sees:
+	// UMWAIT, MWAITX or WFE), else a timed wait of 100 us; where it yielded the host's thread
+	const retro_atomic_64_t* busy_word = nullptr;
+	u64 busy_seen = 0;
+
+	for (bool has_busy = true; has_busy && !ppu.is_stopped();)
 	{
+		if (busy_word)
+		{
+			utils::spin_on_cacheline_once(*reinterpret_cast<const u64*>(busy_word), busy_seen, 100);
+		}
+
 		has_busy = false;
+		busy_word = nullptr;
 
 		auto for_one = [&](u32, spu_thread& spu)
 		{
-			if ((snr_mask & 1) && spu.ch_snr1.get_count())
+			if (has_busy)
 			{
-				has_busy = true;
 				return;
 			}
 
-			if ((snr_mask & 2) && spu.ch_snr2.get_count())
+			for (auto* ch : {(snr_mask & 1) ? &spu.ch_snr1 : nullptr, (snr_mask & 2) ? &spu.ch_snr2 : nullptr})
 			{
-				has_busy = true;
+				if (!ch)
+				{
+					continue;
+				}
+
+				const u64 seen = ch->load();
+
+				if (ch->get_count())
+				{
+					has_busy = true;
+					busy_word = &ch->data;
+					busy_seen = seen;
+					return;
+				}
 			}
 		};
 

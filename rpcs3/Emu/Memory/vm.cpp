@@ -572,7 +572,9 @@ namespace vm
 					return -1;
 				}
 
-				std::this_thread::yield();
+				// Until the reservation word changes (its holder's unlock is a store the line watch sees: UMWAIT,
+				// MWAITX or WFE), else a timed wait of 50 us; where it yielded
+				utils::spin_on_cacheline_once(*static_cast<const u64*>(static_cast<const void*>(res)), vm::reservation_load(res), 50);
 			}
 		}
 	}
@@ -607,7 +609,8 @@ namespace vm
 			}
 			else
 			{
-				std::this_thread::yield();
+				// Until the unique holder's unlock changes the word, as above; where it yielded
+				utils::spin_on_cacheline_once(*static_cast<const u64*>(static_cast<const void*>(res)), vm::reservation_load(res), 50);
 			}
 		}
 	}

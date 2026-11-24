@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Reservation locks and the HLE SPU-signal wait: no more yields.** Not yet run on a game.
+  - **What changed:**
+    - **Waiting for a locked reservation** (`vm::reservation_lock_internal`, `vm::reservation_shared_lock_internal`, the SPU's GET of a locked line, GETLLAR's retry, and the unconditional put's two waits in `SPUThread.cpp`) yielded the host's thread in a loop after its short spins. It now waits until the reservation word changes, through `utils::spin_on_cacheline_once`, the line watch RSX's FIFO already uses on these words: UMWAIT or MWAITX on x86 and WFE on ARM wake on the unlock's store, with a 50 µs bound. Without them it is a timed wait of 50 µs on the word.
+    - **The Sonic HLE patch** (`WaitForSPUsToEmptySNRs`) yielded between looks at the SPUs' signal channels. It now waits on the first busy channel's word in the same way, with a 100 µs bound.
+    - **This was the last `std::this_thread::yield` in the emulator.** A check keeps it that way.
+    - **Flagged:** these unlocks and signal reads are plain stores from the recompiled code, so nothing wakes the word. Where the processor cannot watch the line (no WAITPKG or MWAITX, as on this sandbox's Xeon), the waits end on their bound, a timed wait where it yielded. Waking them would take a notify in the JIT's unlock path, its hot path. The short spins before the waits stay.
+  - **Tests:** no new test: these waits need running SPU threads. `spin_on_cacheline_once` has its own tests in `test_emu_waits`. The Windows (MinGW) syntax check, the full build and suites pass.
+
+
 - **Memory locks: waiting for a writer to leave sleeps, no yields.** Not yet run on a game.
   - **What changed:**
     - **A thread taking the memory lock while a writer holds part of memory** (`vm::passive_lock`, and a new writer in `vm::writer_lock`) spun 100 short pauses, then yielded the host's thread in a loop until the writers left. After the spin it now sleeps on a wake word (`vm_writer_wake_t` in `vm_range_locks.c`, C89) until the writers' bits change, or, in `passive_lock`, until its own thread's state does (a pause or exit still reaches it).

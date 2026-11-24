@@ -2277,7 +2277,10 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 				else
 				{
 					_cpu->state += cpu_flag::wait + cpu_flag::temp;
-					std::this_thread::yield();
+					// Until the line's reservation word changes (an unlock is a store the line watch sees), else 50 us;
+					// where it yielded
+					const auto res0 = vm::reservation_word(eal);
+					utils::spin_on_cacheline_once(*static_cast<const u64*>(static_cast<const void*>(res0)), vm::reservation_load(res0), 50);
 					_cpu->check_state();
 				}
 			}())
@@ -3714,7 +3717,8 @@ void do_cell_atomic_128_store(u32 addr, const void* to_write)
 					}
 					else
 					{
-						std::this_thread::yield();
+						// Until the reservation's line is written (the line watch; else 50 us on its time word); where it yielded
+						utils::spin_on_cacheline_once(*static_cast<const u64*>(static_cast<const void*>(res)), static_cast<u64>(_oldd), 50);
 					}
 				}
 
@@ -3731,7 +3735,8 @@ void do_cell_atomic_128_store(u32 addr, const void* to_write)
 			}
 			else
 			{
-				std::this_thread::yield();
+				// Until the locked reservation's word changes (its unlock), as above; where it yielded
+				utils::spin_on_cacheline_once(*static_cast<const u64*>(static_cast<const void*>(res)), static_cast<u64>(_oldd), 50);
 			}
 		}
 
@@ -4643,7 +4648,9 @@ bool spu_thread::process_mfc_cmd()
 			else
 			{
 				state += cpu_flag::wait + cpu_flag::temp;
-				std::this_thread::yield();
+				// Until the reservation word changes, as in do_dma_transfer; where it yielded
+				const auto res0 = vm::reservation_word(addr);
+				utils::spin_on_cacheline_once(*static_cast<const u64*>(static_cast<const void*>(res0)), vm::reservation_load(res0), 50);
 				static_cast<void>(check_state());
 			}
 		}())
