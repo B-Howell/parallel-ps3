@@ -1060,14 +1060,25 @@ bool cpu_thread::suspend_work::push(cpu_thread* _this) noexcept
 			return true;
 		});
 
-		while (copy)
+		for (u32 spins = 0; copy; spins++)
 		{
+			const void* running = nullptr;
+			u32 running_state = 0;
+
 			// Check only CPUs which haven't acknowledged their waiting state yet
 			copy = cpu_counter::for_all_cpu(copy, [&](cpu_thread* cpu, u32 /*index*/)
 			{
-				if (cpu->state & cpu_flag::wait)
+				const auto state = +cpu->state;
+
+				if (state & cpu_flag::wait)
 				{
 					return false;
+				}
+
+				if (!running)
+				{
+					running = &cpu->state;
+					running_state = std::bit_cast<u32>(state);
 				}
 
 				return true;
@@ -1078,7 +1089,16 @@ bool cpu_thread::suspend_work::push(cpu_thread* _this) noexcept
 				break;
 			}
 
-			utils::pause();
+			if (spins < 100)
+			{
+				utils::pause();
+			}
+			else
+			{
+				// Until the first thread still running changes its state (setting its wait flag is a plain store
+				// the line watch sees: UMWAIT, MWAITX or WFE), else a timed wait of 50 us; where it spun with no end
+				utils::spin_on_cacheline_once(*static_cast<const u32*>(running), running_state, 50);
+			}
 		}
 
 		// Second increment: all threads paused

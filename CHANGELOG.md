@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Writer locks and suspend_all: waiting for other threads no longer spins forever.** Not yet run on a game.
+  - **What changed:**
+    - **A writer taking a reservation line** (`vm::writer_lock`) waits for readers holding that line, then for each PPU holding a passive lock to reach a wait. Both spun on a pause for as long as it took. **Suspending all threads** (`cpu_thread::suspend_work::push`, behind `suspend_all`) spun on a pause until every thread had set its wait flag.
+    - After 100 pauses they now wait until the word changes, the reader's slot or the first running thread's state, through `utils::spin_on_cacheline_once`. UMWAIT, MWAITX or WFE wake on the other thread's store, with a 50 µs bound.
+    - **Flagged:** a reader's release and a thread setting its wait flag are plain stores (the wait flag also from the recompiled code), so nothing wakes the word. Where the processor cannot watch the line (this sandbox's Xeon) the wait ends on its bound, a timed wait where it spun. The 100 pauses first keep the usual short waits as they were.
+  - **Tests:** none of their own: the waits need running guest threads. `spin_on_cacheline_once` has its own tests in `test_emu_waits`. The Windows (MinGW) syntax check, the full build and suites pass.
+
+
 - **Memory-layout changes: waiting for readers no longer spins forever.** Not yet run on a game.
   - **What changed:**
     - **A change to guest memory's layout** (allocating, freeing or protecting pages, `_lock_main_range_lock`) waits for the readers holding the range to leave. It spun on a pause for as long as they stayed. After 100 pauses it now waits until the first busy reader's slot changes, through `utils::spin_on_cacheline_once`: UMWAIT, MWAITX or WFE wake on the reader's release, with a 50 µs bound.

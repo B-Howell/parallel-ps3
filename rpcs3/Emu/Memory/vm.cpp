@@ -503,7 +503,7 @@ namespace vm
 
 			u64 point = addr1 / 128;
 
-			while (true)
+			for (u32 i = 0;; i++)
 			{
 				// Split and check every 64K page separately
 				to_clear = vm_range_locks_busy_point(to_clear & ~range_lock_writers(), g_range_lock_set, g_shmem, point);
@@ -513,16 +513,41 @@ namespace vm
 					break;
 				}
 
-				utils::pause();
+				if (i < 100)
+				{
+					utils::pause();
+				}
+				else
+				{
+					// Until the first busy reader's slot changes, as in _lock_main_range_lock; where it spun with no end
+					auto* const slot = &g_range_lock_set[std::countr_zero(to_clear)];
+					utils::spin_on_cacheline_once(*static_cast<const u64*>(static_cast<const void*>(&slot->word)), range_lock_value(slot), 50);
+				}
 			}
 
 			for (auto lock = g_locks.cbegin(), end = lock + g_cfg.core.ppu_threads; lock != end; lock++)
 			{
 				if (auto ptr = passive_lock_owner(const_cast<passive_lock_t*>(&*lock)))
 				{
-					while (!(ptr->state & cpu_flag::wait))
+					for (u32 i = 0;; i++)
 					{
-						utils::pause();
+						const auto state = +ptr->state;
+
+						if (state & cpu_flag::wait)
+						{
+							break;
+						}
+
+						if (i < 100)
+						{
+							utils::pause();
+						}
+						else
+						{
+							// Until the owner's state changes (its wait flag is a plain store the line watch sees), else 50 us;
+							// where it spun with no end
+							utils::spin_on_cacheline_once(*reinterpret_cast<const u32*>(&ptr->state), std::bit_cast<u32>(state), 50);
+						}
 					}
 				}
 			}
