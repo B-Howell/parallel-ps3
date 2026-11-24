@@ -1438,8 +1438,8 @@ void spu_recompiler::RDCH(spu_opcode_t op)
 
 			if (out > 1500)
 			{
+				// Marked as waiting and checked, as before, with no host yield between
 				_spu->state += cpu_flag::wait;
-				std::this_thread::yield();
 
 				if (_spu->test_stopped())
 				{

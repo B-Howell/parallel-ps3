@@ -4993,8 +4993,8 @@ public:
 
 		if (res > 1500 && g_cfg.core.spu_loop_detection)
 		{
+			// Marked as waiting and checked, as before, with no host yield between
 			_spu->state += cpu_flag::wait;
-			std::this_thread::yield();
 			static_cast<void>(_spu->test_stopped());
 		}
 

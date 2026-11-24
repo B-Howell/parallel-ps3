@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **SPU: a polled decrementer no longer yields the host's thread.** Not yet run on a game.
+  - **What changed:**
+    - **An SPU reading its decrementer while it counts down** (SPU Loop Detection on, more than a scheduler jiffy left: the guest is using it as a timer) is marked as waiting so a suspend need not wait for it, and the recompilers' read checks for a stop, as before; the host yield each read made between the two goes, in the interpreter (`read_channel`), the LLVM recompiler and the ASMJIT recompiler.
+  - **Tests:** none of their own: the yield changed nothing the guest sees, only how the host's thread spent the read. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if a host yield comes back to the decrementer read.
+
+
 - **lv2: no host yields or pauses in sleeps; usleep(0) yields to the guest's threads.** Not yet run on a game.
   - **What changed:**
     - **A game's sleep** (`lv2_obj::wait_timeout`) waits for what is left with one timed wait on the thread's state and the guest clock, on every host and at every Sleep Timers Accuracy. libretro-common's timed waits end when they should (1 µs timer slack on Linux, a high-resolution waitable timer on Windows, which its eventcount already uses), so there is no host quantum to finish by hand. Before, the accurate settings finished the last 10 µs (500 µs on Windows) with a WAITPKG/MWAITX pause or, on CPUs without them (Intel before Alder Lake), a yield loop, and Windows waited in 500 µs steps. This takes back the last patch's Windows exception: its premise, that Windows timed waits round up to 1 ms, was wrong for these waits. Sleep Timers Accuracy still decides whether a usleep marks the thread asleep for the scheduler.
