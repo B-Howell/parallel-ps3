@@ -1656,6 +1656,8 @@ check: all
 	@if awk '/case SPU_RdDec:/{f=1} /case SPU_RdEventMask:/{f=0} f' ../../Emu/Cell/SPUThread.cpp | grep -q this_thread::yield || grep -q this_thread::yield ../../Emu/Cell/SPULLVMRecompiler.cpp ../../Emu/Cell/SPUASMJITRecompiler.cpp; then echo "a host yield is back in the SPU decrementer read"; exit 1; else echo "the SPU decrementer read does not yield the host"; fi
 	@# utils::spin_on_cacheline_once never yields the host: where the processor cannot watch a line it makes a timed wait on the word; the TSC calibration takes no yields
 	@if grep -n "this_thread::yield" ../../util/asm.hpp ../../util/sysinfo.cpp; then echo "a host yield is back in asm.hpp or sysinfo.cpp"; exit 1; else echo "asm.hpp and sysinfo.cpp do not yield the host"; fi
+	@# The RSX FIFO waits for the guest's put and for a locked reservation line by watching their words, not with yields, busy-waits or the host's clock
+	@if grep -n "this_thread::yield\|busy_wait(200)" ../../Emu/RSX/RSXFIFO.cpp ../../Emu/RSX/RSXThread.cpp; then echo "a yield or busy-wait is back in the RSX FIFO"; exit 1; else echo "the RSX FIFO waits by watching its words"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

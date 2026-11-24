@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **RSX FIFO: waits for put and for locked lines by watching their words, no yields or busy-waits.** Not yet run on a game.
+  - **What changed:**
+    - **An empty FIFO** (the guest has not moved put since the RSX caught up), **a command waiting for its argument** (`inc_get`) and **a semaphore wait's fallback** wait for the guest's put pointer to change with `FIFO_control::wait_for_put`: the processor watches its cache line (UMWAIT, MWAITX or WFE), else a timed wait of 100 µs, as the semaphore acquire already waits on the semaphore. They yielded the host's thread and came straight back. The guest writes put with a plain store, so a line watch is the only event there is for it.
+    - **Fetching FIFO commands over a cache line someone is writing** (its reservation locked) waits for that line's reservation word to change, watched the same way (the writer's unlock is a store), else for 50 µs, where it spun 200-cycle busy-waits for 50 µs of the host's clock and then yielded. The host clock reads and the idle time they added to the performance counters go with it.
+  - **Tests:** none fail on these waits coming back: they need an RSX thread and a guest FIFO. The line watch's timed fallback is tested in test_emu_waits (the semaphore wait). The Windows (MinGW) syntax check, the full build and suites pass. A check fails if a yield or busy-wait comes back to the FIFO.
+
+
 - **util: no host yields: a line watch falls back to a timed wait; TSC calibration without yields.** Not yet run on a game.
   - **What changed:**
     - **`utils::spin_on_cacheline_once`** (the RSX semaphore acquire's wait) waits, where the processor cannot watch the cache line (no UMWAIT/WAITPKG, no MWAITX, not ARM), with one timed wait of the given bound on the word itself through libretro-common's `retro_waitaddr` (the low half of an 8-byte word), where it yielded the host's thread and came straight back. A writer that wakes the word ends it at once; a guest's plain store is seen when it times out, and the caller looks again. Intel before Alder Lake has neither instruction; AMD has MWAITX and ARM has WFE.

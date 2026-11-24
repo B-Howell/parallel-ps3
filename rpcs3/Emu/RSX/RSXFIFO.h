@@ -164,6 +164,10 @@ namespace rsx
 			u32 get_pos() const { return m_fifo_pos; }
 			u32 last_cmd() const { return m_cmd; }
 			void sync_get() const;
+
+			// Until the guest moves the put pointer, or 100 us: the processor watches its cache line (UMWAIT,
+			// MWAITX or WFE), else a timed wait. Its write is a plain store, so there is no other event for it
+			void wait_for_put() const;
 			std::span<const u32> get_current_arg_ptr(u32 length_in_words) const;
 			u32 get_remaining_args_count() const { return m_remaining_commands; }
 			void restore_state(u32 cmd, u32 count, u32 position);

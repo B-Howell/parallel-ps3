@@ -1037,8 +1037,10 @@ namespace rsx
 		}
 		else
 		{
+			// Its callers wait for the guest to move put: until it does (a store the processor's line watch sees), not
+			// a host yield
 			on_semaphore_acquire_wait();
-			std::this_thread::yield();
+			fifo_ctrl->wait_for_put();
 		}
 	}
 

@@ -69,6 +69,13 @@ namespace rsx
 			m_command_reg = (m_cmd & 0xffff) + m_command_inc * (((m_cmd >> 18) - count) & 0x7ff) - m_command_inc;
 		}
 
+		void FIFO_control::wait_for_put() const
+		{
+			void* const word = static_cast<void*>(&m_ctrl->put);
+			const u32 seen = static_cast<u32>(retro_atomic_load_acquire_int(static_cast<retro_atomic_int_t*>(word)));
+			utils::spin_on_cacheline_once(*static_cast<const u32*>(word), seen, 100);
+		}
+
 		void FIFO_control::inc_get(bool wait)
 		{
 			m_fifo_pos += 4;
@@ -154,7 +161,7 @@ namespace rsx
 				rsx::reservation_lock<true, 1> rsx_lock(addr1, m_cache_size, true);
 				const auto src = vm::_ptr<spu_rdata_t>(addr1);
 
-				u64 start_time = 0;
+				bool waited = false;
 				u32 bytes_read = 0;
 
 				// Find the next set bit after every iteration
@@ -183,7 +190,7 @@ namespace rsx
 						}
 					}
 
-					if (!start_time)
+					if (!waited)
 					{
 						if (bytes_read >= 256 && !force_cache_fill)
 						{
@@ -193,26 +200,24 @@ namespace rsx
 							break;
 						}
 
-						start_time = get_system_time();
+						waited = true;
 					}
 
-					auto now = get_system_time();
-					if (now - start_time >= 50u)
+					if (m_thread->is_stopped())
 					{
-						if (m_thread->is_stopped())
-						{
-							return {};
-						}
+						return {};
+					}
 
+					if (m_thread->pause_asked())
+					{
 						m_thread->cpu_wait({});
-
-						const auto then = std::exchange(now, get_system_time());
-						start_time = now;
-						retro_atomic_fetch_add_64(&m_thread->performance_counters.idle_time, static_cast<s64>(now - then));
 					}
 					else
 					{
-						busy_wait(200);
+						// Until the line's reservation word changes (its writer's unlock is a store the processor's
+						// line watch sees: UMWAIT, MWAITX or WFE), else a timed wait of 50 us; where it spun 200
+						// cycles at a time for 50 us of the host's clock, then yielded
+						utils::spin_on_cacheline_once(*static_cast<const u64*>(static_cast<const void*>(res)), vm::reservation_load(res), 50);
 					}
 
 					if (strict_fetch_ordering)
@@ -709,7 +714,8 @@ namespace rsx
 				}
 				else
 				{
-					std::this_thread::yield();
+					// Until the guest writes put again (a store the processor's line watch sees), not a host yield
+					fifo_ctrl->wait_for_put();
 				}
 
 				return;
