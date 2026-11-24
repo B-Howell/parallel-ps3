@@ -39,6 +39,7 @@ DYNAMIC_IMPORT("ntdll.dll", RtlGetVersion, NTSTATUS(OSVERSIONINFOW* lpVersionInf
 #include "util/asm.hpp"
 #include "util/fence.hpp"
 #include "util/tsc_cpuid.h"
+#include "util/tsc_perf.h"
 
 #if defined(_M_X64) && defined(_MSC_VER)
 extern "C" u64 _xgetbv(u32);
@@ -1073,6 +1074,16 @@ static const bool s_tsc_freq_evaluated = []() -> bool
 				printf("[TSC calibration] Stated by the processor: %llu Hz\n", static_cast<ullong>(stated));
 				return stated;
 			}
+		}
+#endif
+
+#if defined(ARCH_X64) && defined(__linux__) && !defined(__ANDROID__)
+		// Not stated (AMD): as Linux has it, from a perf event's page (tsc_perf.c), where the kernel reads time from
+		// the TSC itself and lets this thread watch itself
+		if (const u64 kernel = tsc_perf_freq())
+		{
+			printf("[TSC calibration] As the kernel has it: %llu Hz\n", static_cast<ullong>(kernel));
+			return kernel;
 		}
 #endif
 

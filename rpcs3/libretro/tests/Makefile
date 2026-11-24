@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_DYLIB -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_vm_range_locks test_vm_range_locks_tsan test_spu_pc_table test_spu_pc_table_tsan test_jit_bump test_jit_bump_tsan test_rw_word test_rw_word_tsan test_yaml_value test_patch_db test_patch_options test_guest_atomic test_guest_atomic_tsan test_init_word test_init_word_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_jit_cores test_rpcn_signal test_rsx_wake test_rsx_wake_tsan test_rsx_hold test_rsx_hold_tsan test_rsx_timestamp test_rpcn_reply_slots test_rpcn_reply_slots_tsan test_osk_text test_osk_text_tsan test_game_text_patch test_net_wake test_vk_loader test_tsc_cpuid
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_vm_range_locks test_vm_range_locks_tsan test_spu_pc_table test_spu_pc_table_tsan test_jit_bump test_jit_bump_tsan test_rw_word test_rw_word_tsan test_yaml_value test_patch_db test_patch_options test_guest_atomic test_guest_atomic_tsan test_init_word test_init_word_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_jit_cores test_rpcn_signal test_rsx_wake test_rsx_wake_tsan test_rsx_hold test_rsx_hold_tsan test_rsx_timestamp test_rpcn_reply_slots test_rpcn_reply_slots_tsan test_osk_text test_osk_text_tsan test_game_text_patch test_net_wake test_vk_loader test_tsc_cpuid test_tsc_perf
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -610,6 +610,10 @@ test_guest_atomic_tsan: test_guest_atomic.c test_common.h ../../Emu/Memory/guest
 test_tsc_cpuid: test_tsc_cpuid.c test_common.h ../../util/tsc_cpuid.c ../../util/tsc_cpuid.h
 	$(CC) $(CFLAGS) $(TEST_STD) -pedantic $(SANITIZE) -o $@ test_tsc_cpuid.c ../../util/tsc_cpuid.c $(LDFLAGS) $(LDLIBS)
 
+# The TSC's frequency from a perf event's page: the module and the test as C89
+test_tsc_perf: test_tsc_perf.c test_common.h ../../util/tsc_perf.c ../../util/tsc_perf.h
+	$(CC) $(CFLAGS) $(TEST_STD) -pedantic -I$(LRC)/include $(SANITIZE) -o $@ test_tsc_perf.c ../../util/tsc_perf.c $(LDFLAGS) $(LDLIBS)
+
 # The word behind init_mutex: the module and the test as C89
 INIT_WORD_DEPS := test_init_word.c test_common.h ../../util/init_word.c ../../util/init_word.h
 INIT_WORD_LRC  := $(LRC)/rthreads/retro_waitaddr.c $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
@@ -1089,6 +1093,7 @@ check: all
 	./test_guest_atomic_tsan
 	./test_init_word
 	./test_tsc_cpuid
+	./test_tsc_perf
 	./test_init_word_tsan
 	./test_owner_calls
 	./test_owner_calls_tsan
@@ -1686,6 +1691,8 @@ check: all
 	@if ! grep -q "tsc_cpuid_freq(&leaves)" ../../util/sysinfo.cpp; then echo "the TSC's frequency is always measured with a 50 ms sleep on load again"; exit 1; else echo "the TSC's frequency is read from CPUID where stated, not measured"; fi
 	@# A leaf 0x15 that leaves the crystal unnamed is read as Linux reads it (Denverton's 25 MHz, else leaf 0x16's base), not measured
 	@if ! grep -q "0x5Fu" ../../util/tsc_cpuid.c || ! grep -q "base_mhz" ../../util/tsc_cpuid.c || ! grep -q "get_cpuid(0x16, 0)" ../../util/sysinfo.cpp; then echo "a CPU whose leaf 0x15 leaves the crystal unnamed has its TSC measured with the 50 ms sleep again"; exit 1; else echo "an unnamed crystal in leaf 0x15 is taken as Linux takes it"; fi
+	@# Where CPUID does not state the TSC's frequency, Linux's own is read from a perf event's page before the calibration that sleeps 50 ms
+	@if ! grep -q "tsc_perf_freq()" ../../util/sysinfo.cpp; then echo "on Linux without a stated TSC frequency (AMD) the TSC is always measured with the 50 ms sleep again"; exit 1; else echo "where CPUID does not state the TSC's frequency, Linux's is read from a perf page"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

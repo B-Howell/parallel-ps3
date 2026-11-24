@@ -520,6 +520,7 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/rpcs3/libretro/libretro_patch_options.c \
 	$(CORE_DIR)/rpcs3/util/init_word.c \
 	$(CORE_DIR)/rpcs3/util/tsc_cpuid.c \
+	$(CORE_DIR)/rpcs3/util/tsc_perf.c \
 	$(CORE_DIR)/rpcs3/Emu/CPU/owner_calls.c \
 	$(CORE_DIR)/rpcs3/Emu/Cell/Modules/hle_service.c \
 	$(CORE_DIR)/rpcs3/Emu/Cell/Modules/osk_text.c \

@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **On Linux, AMD processors no longer sleep 50 ms on load to measure the TSC, where the kernel will say it.** Not yet run on a game.
+  - **What changed:**
+    - **Where CPUID does not state the TSC's frequency** (AMD), it is now taken from the kernel before measuring, through a new C89 module (`rpcs3/util/tsc_perf.c`). The module opens a perf event on its own thread, maps the event's page, and reads the kernel's TSC-to-ns conversion, `time_mult` and `time_shift`, under the page's sequence count. The frequency is 10^9 << shift / mult, rounded. The event and the page are let go of at once.
+    - The kernel fills the page in only where it reads time from the TSC itself (`cap_user_time`: a native, stable sched_clock). It gives the page only where `perf_event_paranoid` lets a thread watch itself, which some distributions forbid. Otherwise it measures as before.
+    - Not on Android: its app filter kills a process making a system call it does not allow, rather than failing the call.
+    - **Flagged:** this is untested live here. This sandbox is a VM, where the kernel leaves the page empty, so it still measures. AMD on Windows still measures with the sleep: Windows has no such page.
+  - **Tests:** `test_tsc_perf`: the kernel's mult for 2.1 and 3.7 GHz at a shift of 31, 4.012345 GHz at 30, 1 GHz at 10 and the widest shift that fits all give the frequency to the hertz; a mult of 0 or a shift too wide gives none; read here it gives none, or a frequency between 100 MHz and 10 GHz. A mutant without the rounding fails it. The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **Skylake and Kaby Lake desktop parts, and Denverton, no longer sleep 50 ms on load to measure the TSC.** Not yet run on a game.
   - **What changed:**
     - These CPUs give the TSC's ratio to the crystal in leaf 0x15 but leave the crystal's frequency at 0, so they still measured with the sleep. The crystal is now taken as Linux takes it (`native_calibrate_tsc`). Denverton (family 6, model 0x5F) gets 25 MHz. Others derive it from leaf 0x16's base frequency: an i7-6700K at 4000 MHz with a ratio of 334/2 gives a 23952 kHz crystal and 3999984 kHz.
