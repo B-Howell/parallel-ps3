@@ -576,7 +576,12 @@ error_code sys_timer_usleep(ppu_thread& ppu, u64 sleep_time)
 	}
 	else
 	{
-		std::this_thread::yield();
+		// A sleep of 0: a yield to the guest's other threads, as sys_ppu_thread_yield yields (the lv2 scheduler
+		// puts this one behind the others ready to run), where it yielded the host's thread
+		if (!lv2_obj::yield(ppu))
+		{
+			lv2_obj::notify_all();
+		}
 	}
 
 	return CELL_OK;

@@ -2186,35 +2186,6 @@ void lv2_obj::set_yield_frequency(u64 freq, u64 max_allowed_tsc)
 	retro_atomic_store_release_int(&g_lv2_preempts_taken, 0);
 }
 
-#if defined(_MSC_VER)
-#define mwaitx_func
-#define waitpkg_func
-#else
-#define mwaitx_func __attribute__((__target__("mwaitx")))
-#define waitpkg_func __attribute__((__target__("waitpkg")))
-#endif
-
-#if defined(ARCH_X64)
-// Waits for a number of TSC clock cycles in power optimized state
-// Cstate is represented in bits [7:4]+1 cstate. So C0 requires bits [7:4] to be set to 0xf, C1 requires bits [7:4] to be set to 0.
-mwaitx_func static void __mwaitx(u32 cycles, u32 cstate)
-{
-	constexpr u32 timer_enable = 0x2;
-
-	// monitorx will wake if the cache line is written to. We don't want this, so place the monitor value on it's own cache line.
-	alignas(64) u64 monitor_var{};
-	_mm_monitorx(&monitor_var, 0, 0);
-	_mm_mwaitx(timer_enable, cstate, cycles);
-}
-
-// First bit indicates cstate, 0x0 for C.02 state (lower power) or 0x1 for C.01 state (higher power)
-waitpkg_func static void __tpause(u32 cycles, u32 cstate)
-{
-	const u64 tsc = utils::get_tsc() + cycles;
-	_tpause(cstate, tsc);
-}
-#endif
-
 u64 lv2_obj::deadline_left(u64 end_time)
 {
 	// The guest's clock itself, not the host's time taken as it
@@ -2222,7 +2193,7 @@ u64 lv2_obj::deadline_left(u64 end_time)
 	return end_time > now ? end_time - now : 0;
 }
 
-bool lv2_obj::wait_timeout(u64 usec, ppu_thread* cpu, bool scale, bool is_usleep)
+bool lv2_obj::wait_timeout(u64 usec, ppu_thread* cpu, bool scale, [[maybe_unused]] bool is_usleep)
 {
 	static_assert(u64{umax} / max_timeout >= 100, "max timeout is not valid for scaling");
 
@@ -2298,62 +2269,11 @@ bool lv2_obj::wait_timeout(u64 usec, ppu_thread* cpu, bool scale, bool is_usleep
 		u64 remaining = usec - passed;
 		// Left of the guest's time: waited for at the pace retro_run comes
 		remaining = libretro_guest_wait_as_host(remaining);
-#ifdef __linux__
-		// NOTE: Assumption that timer initialization has succeeded
-		constexpr u64 host_min_quantum = 10;
-#else
-		// Host scheduler quantum for windows (worst case)
-		// NOTE: On ps3 this function has very high accuracy
-		constexpr u64 host_min_quantum = 500;
-#endif
-		// TODO: Tune for other non windows operating sytems
-
-		if (g_cfg.core.sleep_timers_accuracy < (is_usleep ? sleep_timers_accuracy_level::_usleep : sleep_timers_accuracy_level::_all_timers))
-		{
-			wait_for(remaining);
-		}
-		else
-		{
-			if (remaining > host_min_quantum)
-			{
-#ifdef __linux__
-				// With timerslack set low, Linux is precise for all values above
-				wait_for(remaining);
-#else
-				// Wait on multiple of min quantum for large durations to avoid overloading low thread cpus
-				wait_for(remaining - (remaining % host_min_quantum));
-#endif
-			}
-			// TODO: Determine best value for yield delay
-#if defined(ARCH_X64)
-			else if (utils::has_appropriate_um_wait())
-			{
-				const u32 us_in_tsc_clocks = ::narrow<u32>(remaining * (utils::get_tsc_freq() / 1000000ULL));
-
-				if (utils::has_waitpkg())
-				{
-					__tpause(us_in_tsc_clocks, 0x1);
-				}
-				else
-				{
-					__mwaitx(us_in_tsc_clocks, 0xf0);
-				}
-			}
-#endif
-			else
-			{
-#ifdef _WIN32
-				// Try yielding. May cause long wake latency but helps weaker CPUs a lot by alleviating resource pressure.
-				// Windows only: its timed waits round up to the timer period (1 ms here), far past a sleep this short
-				std::this_thread::yield();
-#else
-				// The few microseconds left as one timed wait on the same words (state and the guest clock), where it
-				// yielded in a loop until they had passed: a timed wait here is precise to the microsecond (1 us timer
-				// slack on Linux)
-				wait_for(remaining);
-#endif
-			}
-		}
+		// One timed wait on the thread's state and the guest clock for what is left, on every host and at every
+		// Sleep Timers Accuracy: libretro-common's timed waits end when they should (1 us timer slack on Linux, a high
+		// resolution waitable timer on Windows), so there is no host quantum to finish by hand. It finished the last
+		// of a sleep with a WAITPKG/MWAITX pause or a yield loop, and on Windows waited in 500 us steps
+		wait_for(remaining);
 
 		clock_seen = static_cast<u32>(retro_atomic_load_acquire_int(const_cast<retro_atomic_int_t*>(&clock_word)));
 		passed = get_slaved_system_time() - slaved_start;
