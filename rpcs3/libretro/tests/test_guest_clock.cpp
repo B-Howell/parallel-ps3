@@ -267,11 +267,12 @@ int main()
 		{
 			while (!stop)
 			{
-				timer.wait([&]
+				// SUCCESS: a period is up, the data thread's to take
+				if (timer.wait() == rsxaudio_periodic_tmr::wait_result::SUCCESS)
 				{
 					periods++;
 					timer.vtimer_incr(0, get_hw_clock_time());
-				});
+				}
 			}
 		});
 		sleep_ms(20);

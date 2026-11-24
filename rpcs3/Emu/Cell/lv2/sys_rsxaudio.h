@@ -199,7 +199,9 @@ public:
 	// the virtual timers are its, and what is below is for it and for the
 	// callback it runs.
 	// @also: a word of the caller's own to wake on as well (cancelled then)
-	wait_result wait(const std::function<void()> &callback, const retro_waitaddr_t* also = nullptr);
+	// SUCCESS: a period is up, for the caller to take the audio of. It called a std::function for that, which
+	// the data thread kept in a static, so it held the first data thread's this for good
+	wait_result wait(const retro_waitaddr_t* also = nullptr);
 
 	// Cancel wait() call. Any thread.
 	void cancel_wait();
@@ -630,7 +632,15 @@ public:
 
 	rsxaudio_data_thread();
 
-	void update_hw_param(std::function<void(rsxaudio_hw_param_t&)> update_callback);
+	// The change, run on the HLE thread before update_hw_param returns: by reference, as a plain function and the
+	// lambda it calls (it was a std::function)
+	template <typename F>
+	void update_hw_param(F&& update_callback)
+	{
+		update_hw_param_by([](void* ctx, rsxaudio_hw_param_t& param) { (*static_cast<std::remove_reference_t<F>*>(ctx))(param); }, &update_callback);
+	}
+
+	void update_hw_param_by(void (*update_callback)(void* ctx, rsxaudio_hw_param_t& param), void* ctx);
 	void update_mute_state(RsxaudioPort port, bool muted);
 	void update_av_mute_state(RsxaudioAvportIdx avport, bool muted, bool force_mute, bool set = true);
 	void reset_hw();

@@ -821,14 +821,19 @@ void rsxaudio_data_thread::operator()()
 
 	while (thread_ctrl::state() != thread_state::aborting)
 	{
-		static const std::function<void()> tmr_callback = [this]() { extract_audio_data(); };
-
 		// The game's calls first, then the periods; a call made meanwhile
 		// wakes the wait
 		const retro_waitaddr_t calls_word = {owner_calls_wake_word(&calls), static_cast<u32>(retro_atomic_load_acquire_int(owner_calls_wake_word(&calls)))};
 		owner_calls_run(&calls);
 
-		switch (timer.wait(tmr_callback, &calls_word))
+		const auto result = timer.wait(&calls_word);
+
+		if (result == rsxaudio_periodic_tmr::wait_result::SUCCESS)
+		{
+			extract_audio_data();
+		}
+
+		switch (result)
 		{
 		case rsxaudio_periodic_tmr::wait_result::SUCCESS:
 		case rsxaudio_periodic_tmr::wait_result::TIMEOUT:
@@ -976,7 +981,7 @@ void rsxaudio_data_thread::reset_hw()
 	});
 }
 
-void rsxaudio_data_thread::update_hw_param(std::function<void(rsxaudio_hw_param_t&)> update_callback)
+void rsxaudio_data_thread::update_hw_param_by(void (*update_callback)(void* ctx, rsxaudio_hw_param_t& param), void* ctx)
 {
 	ensure(update_callback);
 
@@ -984,7 +989,7 @@ void rsxaudio_data_thread::update_hw_param(std::function<void(rsxaudio_hw_param_
 	{
 		rsxaudio_hw_param_t new_hw_param = hw_param;
 
-		update_callback(new_hw_param);
+		update_callback(ctx, new_hw_param);
 
 		const bool serial_active = calc_port_active_state(RsxaudioPort::SERIAL, new_hw_param);
 		const bool spdif_active[SYS_RSXAUDIO_SPDIF_CNT] =
@@ -2155,13 +2160,8 @@ void rsxaudio_periodic_tmr::take_up_requests()
 	}
 }
 
-rsxaudio_periodic_tmr::wait_result rsxaudio_periodic_tmr::wait(const std::function<void()> &callback, const retro_waitaddr_t* also)
+rsxaudio_periodic_tmr::wait_result rsxaudio_periodic_tmr::wait(const retro_waitaddr_t* also)
 {
-	if (!callback)
-	{
-		return wait_result::INVALID_PARAM;
-	}
-
 	// Before the requests are taken up: one made after is a change of it
 	const int wake = retro_atomic_load_acquire_int(&wake_word);
 	take_up_requests();
@@ -2197,7 +2197,6 @@ rsxaudio_periodic_tmr::wait_result rsxaudio_periodic_tmr::wait(const std::functi
 		}
 	}
 
-	callback();
 	return wait_result::SUCCESS;
 }
 

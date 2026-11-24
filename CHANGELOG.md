@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **RSX audio: the period timer no longer calls a static std::function holding the first data thread's `this`.** Not yet run on a game.
+  - **What changed:**
+    - **The data thread's period wait** (`rsxaudio_periodic_tmr::wait`) took a `std::function` to call when a period was up. The data thread kept the one it passed in a function-local `static`: `[this]() { extract_audio_data(); }`, made once, with the first data thread's `this`. A data thread made again later, as on a second boot, would have had the timer extract audio through the first one, already freed.
+    - `wait` now returns `SUCCESS` when a period is up, and the data thread calls its own `extract_audio_data`. The callback was the last thing `wait` did, so the order is unchanged.
+    - **The hardware-parameter update** (`update_hw_param`, a change run on the HLE thread before it returns) took a `std::function` of each caller's lambda. It now takes the lambda by reference, as a plain function and the lambda's address. A thin template forwards to the one body (`update_hw_param_by`), so the body is not made again for each caller.
+    - Smaller code: sys_rsxaudio.o 778 bytes less.
+  - **Tests:** `test_guest_clock`'s period test now counts the periods `wait` returns as up: one for each period of guest time, none while `retro_run` does not come. A second data thread can't be made in the tests, so the stale `this` itself is not tested. The Windows (MinGW) syntax check, the full build and suites pass.
+
+
 - **Index buffers: whether to expand a draw's indices is a bool, not a std::function.** Not yet run on a game.
   - **What changed:**
     - `write_index_array_data_to_buffer`, behind every indexed draw on both renderers, took a `std::function<bool(primitive_type)>` asking whether to expand the indices: quads, fans and polygons to triangles, line loops closed. Both renderers passed a lambda that captured nothing and asked `is_primitive_native` of the one primitive the call was for. So a `std::function` was built per draw, to be asked once.
