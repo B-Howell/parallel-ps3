@@ -53,6 +53,9 @@ static u32 produce(u32 bytes, void* out)
 	return bytes;
 }
 
+// As a backend takes it: a plain function and its object (none here)
+static const audio_write_cb produce_cb{[](void*, u32 bytes, void* out) { return produce(bytes, out); }, nullptr};
+
 static std::vector<float> s_got_f32;
 static std::vector<s16> s_got_s16;
 static usz s_got_channels = 0;
@@ -110,14 +113,39 @@ static void run_for(int runs, double fps = 60.0)
 		libretro_audio_process(take_s16, fps);
 }
 
+// A member function as the backend takes it (audio_write_cb::of,
+// audio_state_cb::of): the member called on that object, with what it was
+// given, nothing allocated; it was a std::function around std::bind
+struct bound_writer
+{
+	u32 bytes = 0;
+	void* buf = nullptr;
+	AudioStateEvent event{};
+
+	u32 write(u32 b, void* p) { bytes = b; buf = p; return b / 2; }
+	void state(AudioStateEvent e) { event = e; }
+};
+
 int main()
 {
+	{
+		bound_writer w;
+		int dummy = 0;
+		const audio_write_cb wcb = audio_write_cb::of<&bound_writer::write>(&w);
+		const audio_state_cb scb = audio_state_cb::of<&bound_writer::state>(&w);
+		CHECK(static_cast<bool>(wcb) && static_cast<bool>(scb) && !audio_write_cb{} && !audio_state_cb{nullptr});
+		CHECK(wcb(96, &dummy) == 48 && w.bytes == 96 && w.buf == &dummy);
+		scb(AudioStateEvent::DEFAULT_DEVICE_MAYBE_CHANGED);
+		CHECK(w.event == AudioStateEvent::DEFAULT_DEVICE_MAYBE_CHANGED);
+		std::printf("test_audio_frontend: a member function bound as a plain write and state callback; ok\n");
+	}
+
 	// Floats to a frontend that takes them
 	{
 		CHECK(libretro_audio_negotiate_multi(environ_multi));
 		LibretroAudioBackend backend;
 		CHECK(backend.Open("", AudioFreq::FREQ_48K, AudioSampleSize::FLOAT, AudioChannelCnt::STEREO, audio_channel_layout::automatic));
-		backend.SetWriteCallback(produce);
+		backend.SetWriteCallback(produce_cb);
 		backend.Play();
 		s_produced = 0;
 		run_for(10);
@@ -139,7 +167,7 @@ int main()
 		CHECK(libretro_audio_negotiate_multi(environ_multi));
 		LibretroAudioBackend backend;
 		CHECK(backend.Open("", AudioFreq::FREQ_48K, AudioSampleSize::FLOAT, AudioChannelCnt::STEREO, audio_channel_layout::automatic));
-		backend.SetWriteCallback(produce);
+		backend.SetWriteCallback(produce_cb);
 		backend.Play();
 		s_produced = 0;
 		run_for(10);
@@ -158,7 +186,7 @@ int main()
 		CHECK(!libretro_audio_negotiate_multi(environ_none));
 		LibretroAudioBackend backend;
 		CHECK(backend.Open("", AudioFreq::FREQ_48K, AudioSampleSize::FLOAT, AudioChannelCnt::STEREO, audio_channel_layout::automatic));
-		backend.SetWriteCallback(produce);
+		backend.SetWriteCallback(produce_cb);
 		backend.Play();
 		s_produced = 0;
 		run_for(5);
@@ -174,7 +202,7 @@ int main()
 		CHECK(!libretro_audio_negotiate_multi(environ_none));
 		LibretroAudioBackend backend;
 		CHECK(backend.Open("", AudioFreq::FREQ_48K, AudioSampleSize::FLOAT, AudioChannelCnt::STEREO, audio_channel_layout::automatic));
-		backend.SetWriteCallback(produce);
+		backend.SetWriteCallback(produce_cb);
 		backend.Play();
 		const double ntsc = 60.0 * 1000.0 / 1001.0;
 		// 5005 runs of 800.8: 4008004 frames, give or take the fraction
@@ -290,7 +318,7 @@ int main()
 		CHECK(libretro_audio_negotiate_multi(environ_multi));
 		LibretroAudioBackend backend;
 		CHECK(backend.Open("", AudioFreq::FREQ_48K, AudioSampleSize::FLOAT, AudioChannelCnt::STEREO, audio_channel_layout::automatic));
-		backend.SetWriteCallback(produce);
+		backend.SetWriteCallback(produce_cb);
 		backend.Play();
 
 		std::atomic<bool> stop{false};
@@ -298,7 +326,7 @@ int main()
 		{
 			while (!stop)
 			{
-				backend.SetWriteCallback(produce);
+				backend.SetWriteCallback(produce_cb);
 				backend.Open("", AudioFreq::FREQ_48K, AudioSampleSize::FLOAT, AudioChannelCnt::STEREO, audio_channel_layout::automatic);
 				backend.Play();
 			}
@@ -344,7 +372,7 @@ int main()
 			const auto t0 = std::chrono::steady_clock::now();
 			backend.EndLend();
 			backend.Close();
-			backend.SetWriteCallback(produce);
+			backend.SetWriteCallback(produce_cb);
 			backend.Open("", AudioFreq::FREQ_48K, AudioSampleSize::FLOAT, AudioChannelCnt::STEREO, audio_channel_layout::automatic);
 			backend.SetWriteCallback(nullptr);
 			ring = backend.LendRing(4800 * 2 * sizeof(float));

@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Audio: the backend's write callback, called on every pull, is a plain call, not a std::function.** Not yet run on a game.
+  - **What changed:**
+    - **The write callback**, which the libretro backend calls on every pull of `retro_run`'s audio, and **the state callback**, were `std::function`s. `sys_rsxaudio` and cellAudio set them with `std::bind` of a member function. The bound object (the member pointer and `this`, 24 bytes) is more than `std::function` keeps inline, so setting one allocated it on the heap. Each call then went through the `std::function` and the bind to reach the member.
+    - They are now `audio_write_cb` and `audio_state_cb`: a plain function and the object it is called for. `audio_write_cb::of<&T::member>(obj)` makes one from a member function, called straight through. Nothing is allocated, and there is no thunk between.
+    - The libretro backend's three lock-free callback slots hold these as they held the `std::function`s, so setting one is now a plain copy.
+    - Smaller code: sys_rsxaudio.o 1039 bytes less, libretro_audio.o 723, cellAudio.o 600, AudioBackend.o 320.
+  - **Tests:** `test_audio_frontend`: a member function bound as a write and a state callback is called on that object with what it was given, and an empty callback reads as none. Its pull tests now set the producer as an `audio_write_cb`. The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **Pipeline compilers: a deferred compile's callbacks are moved into its job, not copied.** Not yet run on a game.
   - **What changed:**
     - A deferred compile hands a worker its callbacks: Vulkan's completion callback and, from the shader interpreter, its create-info function; OpenGL's post-create and completion callbacks. These are `std::function`s owning what they captured, and they stay so. But each was copied on the way in: into the work queue's push, then again into the job's members. A capture too big to keep inline (the interpreter's, the program cache's cloned programs) was allocated again at each copy.

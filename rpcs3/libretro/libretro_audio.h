@@ -47,7 +47,7 @@ private:
     // The write callbacks, in three slots: the one published (m_callback,
     // 3 for none), the one a pull of retro_run's is in (m_callback_in_use,
     // 3 for none) and one to set the next in - never one of the other two
-    std::function<u32(u32, void*)> m_callbacks[3];
+    audio_write_cb m_callbacks[3];
     retro_atomic_int_t m_callback;
     retro_atomic_int_t m_callback_in_use;
 
@@ -66,8 +66,8 @@ public:
     bool Open(std::string_view dev_id, AudioFreq freq, AudioSampleSize sample_size, AudioChannelCnt ch_cnt, audio_channel_layout layout) override;
     void Close() override;
 
-    void SetWriteCallback(std::function<u32(u32, void*)> cb) override;
-    void SetStateCallback(std::function<void(AudioStateEvent)> cb) override;
+    void SetWriteCallback(audio_write_cb cb) override;
+    void SetStateCallback(audio_state_cb cb) override;
     lr_audio_ring* LendRing(usz bytes) override;
     void EndLend() override;
 

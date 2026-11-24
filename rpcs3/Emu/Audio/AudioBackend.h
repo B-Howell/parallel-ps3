@@ -46,6 +46,50 @@ enum class AudioStateEvent : u32
 	DEFAULT_DEVICE_MAYBE_CHANGED,
 };
 
+// The write and state callbacks: a plain function and the object it is
+// called for, nothing allocated, called with no thunk between. They were
+// std::functions around std::bind of a member function, which made the
+// bound object on the heap and went through both to call it, on every pull
+struct audio_write_cb
+{
+	u32 (*call)(void* ctx, u32 bytes, void* buf) = nullptr;
+	void* ctx = nullptr;
+
+	audio_write_cb() = default;
+	audio_write_cb(std::nullptr_t) {}
+	audio_write_cb(u32 (*f)(void*, u32, void*), void* c) : call(f), ctx(c) {}
+
+	explicit operator bool() const { return call != nullptr; }
+	u32 operator()(u32 bytes, void* buf) const { return call(ctx, bytes, buf); }
+
+	// obj->*Member(bytes, buf)
+	template <auto Member, typename T>
+	static audio_write_cb of(T* obj)
+	{
+		return { [](void* c, u32 bytes, void* buf) -> u32 { return (static_cast<T*>(c)->*Member)(bytes, buf); }, obj };
+	}
+};
+
+
+struct audio_state_cb
+{
+	void (*call)(void* ctx, AudioStateEvent event) = nullptr;
+	void* ctx = nullptr;
+
+	audio_state_cb() = default;
+	audio_state_cb(std::nullptr_t) {}
+	audio_state_cb(void (*f)(void*, AudioStateEvent), void* c) : call(f), ctx(c) {}
+
+	explicit operator bool() const { return call != nullptr; }
+	void operator()(AudioStateEvent event) const { call(ctx, event); }
+
+	template <auto Member, typename T>
+	static audio_state_cb of(T* obj)
+	{
+		return { [](void* c, AudioStateEvent event) { (static_cast<T*>(c)->*Member)(event); }, obj };
+	}
+};
+
 class AudioBackend
 {
 public:
@@ -78,7 +122,7 @@ public:
 
 	// Sets write callback. It's called when backend requests new data to be sent.
 	// Callback should return number of submitted bytes. Calling other backend functions from callback is unsafe.
-	virtual void SetWriteCallback(std::function<u32(u32 /* byte_cnt */, void* /* buffer */)> cb);
+	virtual void SetWriteCallback(audio_write_cb cb);
 
 	// The backend's own ring, which it takes the game's audio from where it
 	// lies, in place of the write callback: holding @bytes from now on and
@@ -90,7 +134,7 @@ public:
 
 	// Sets error callback. It's called when backend detects event in audio chain that needs immediate attention.
 	// Calling other backend functions from callback is unsafe.
-	virtual void SetStateCallback(std::function<void(AudioStateEvent)> cb);
+	virtual void SetStateCallback(audio_state_cb cb);
 
 	/*
 	 * All functions below require that Open() was called prior.
@@ -399,8 +443,8 @@ protected:
 	// The setting thread's: no backend here calls them from another (the
 	// Null one never calls them, the libretro one keeps its own write
 	// callback, taken with no lock) - no lock
-	std::function<u32(u32, void*)> m_write_callback{};
-	std::function<void(AudioStateEvent)> m_state_callback{};
+	audio_write_cb m_write_callback{};
+	audio_state_cb m_state_callback{};
 
 	bool m_playing = false;
 

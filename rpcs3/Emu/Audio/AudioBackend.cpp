@@ -7,14 +7,14 @@
 
 AudioBackend::AudioBackend() {}
 
-void AudioBackend::SetWriteCallback(std::function<u32(u32 /* byte_cnt */, void* /* buffer */)> cb)
+void AudioBackend::SetWriteCallback(audio_write_cb cb)
 {
-	m_write_callback = std::move(cb);
+	m_write_callback = cb;
 }
 
-void AudioBackend::SetStateCallback(std::function<void(AudioStateEvent)> cb)
+void AudioBackend::SetStateCallback(audio_state_cb cb)
 {
-	m_state_callback = std::move(cb);
+	m_state_callback = cb;
 }
 
 /*

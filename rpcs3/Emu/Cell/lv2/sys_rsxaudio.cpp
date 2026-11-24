@@ -1834,8 +1834,8 @@ void rsxaudio_backend_thread::backend_init(const rsxaudio_state& ra_state, const
 	{
 		backend = nullptr;
 		backend = g_emu_callbacks.get_audio();
-		backend->SetWriteCallback(std::bind(&rsxaudio_backend_thread::write_data_callback, this, std::placeholders::_1, std::placeholders::_2));
-		backend->SetStateCallback(std::bind(&rsxaudio_backend_thread::state_changed_callback, this, std::placeholders::_1));
+		backend->SetWriteCallback(audio_write_cb::of<&rsxaudio_backend_thread::write_data_callback>(this));
+		backend->SetStateCallback(audio_state_cb::of<&rsxaudio_backend_thread::state_changed_callback>(this));
 	}
 
 	const port_config& port_cfg = ra_state.port[static_cast<u8>(emu_cfg.avport)];

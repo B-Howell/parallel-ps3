@@ -155,7 +155,7 @@ void LibretroAudioBackend::Close()
 // is published, and takes it only if that has not changed; this looks at
 // which it is in after the last publish (fences between, on both sides).
 // So a pull never calls a callback being set, and nobody waits.
-void LibretroAudioBackend::SetWriteCallback(std::function<u32(u32, void*)> cb)
+void LibretroAudioBackend::SetWriteCallback(audio_write_cb cb)
 {
     const int published = retro_atomic_load_acquire_int(&m_callback);
     retro_atomic_thread_fence_seq_cst();
@@ -170,7 +170,7 @@ void LibretroAudioBackend::SetWriteCallback(std::function<u32(u32, void*)> cb)
     int slot = 0;
     while (slot == published || slot == in_use)
         slot++;
-    m_callbacks[slot] = std::move(cb);
+    m_callbacks[slot] = cb;
     retro_atomic_store_release_int(&m_callback, slot);
 }
 
@@ -198,10 +198,10 @@ void LibretroAudioBackend::EndLend()
     lr_audio_ring_flush(&m_ring);
 }
 
-void LibretroAudioBackend::SetStateCallback(std::function<void(AudioStateEvent)> cb)
+void LibretroAudioBackend::SetStateCallback(audio_state_cb cb)
 {
     // The setting thread's alone: nothing of retro_run's calls it
-    m_state_callback = std::move(cb);
+    m_state_callback = cb;
 }
 
 f64 LibretroAudioBackend::GetCallbackFrameLen()

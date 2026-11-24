@@ -160,7 +160,7 @@ audio_ringbuffer::audio_ringbuffer(cell_audio_config& _cfg)
 		ring = lent;
 	else
 		ensure(lr_audio_ring_init(&cb_ringbuf, ring_bytes));
-	backend->SetStateCallback(std::bind(&audio_ringbuffer::backend_state_callback, this, std::placeholders::_1));
+	backend->SetStateCallback(audio_state_cb::of<&audio_ringbuffer::backend_state_callback>(this));
 }
 
 audio_ringbuffer::~audio_ringbuffer()
