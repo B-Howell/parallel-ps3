@@ -57,6 +57,7 @@
 
 #define private public
 #define protected public
+#include "Emu/RSX/Common/BufferUtils.h"
 #include "Emu/RSX/VK/VKRenderPass.h"
 #include "Emu/RSX/VK/VKShaderInterpreter.h"
 #include "Emu/RSX/VK/VKCompute.h"
@@ -1898,6 +1899,32 @@ static void disposable_call()
 	std::printf("test_shader_corpus: a subpool's release handed to the GC as a plain call, made once; ok\n");
 }
 
+// An indexed draw's indices written out (write_index_array_data_to_buffer),
+// expanded where the renderer does not draw the primitive natively: the
+// caller's answer as a bool, where it was a std::function asked on every
+// indexed draw. Four quad indices left as they are, or made two triangles
+// (six); a line loop closed with its first index again
+static void index_expand()
+{
+	const be_t<u16> src[4] = { 10, 11, 12, 13 };
+	u16 dst[8] = {};
+	const std::span<const std::byte> in{ reinterpret_cast<const std::byte*>(src), sizeof(src) };
+	const std::span<std::byte> out{ reinterpret_cast<std::byte*>(dst), sizeof(dst) };
+
+	auto [lo, hi, n] = write_index_array_data_to_buffer(out, in, rsx::index_array_type::u16, rsx::primitive_type::quads, false, 0, false);
+	CHECK(n == 4 && lo == 10 && hi == 13 && dst[0] == 10 && dst[3] == 13);
+
+	std::fill(std::begin(dst), std::end(dst), u16{0});
+	std::tie(lo, hi, n) = write_index_array_data_to_buffer(out, in, rsx::index_array_type::u16, rsx::primitive_type::quads, false, 0, true);
+	CHECK(n == 6 && lo == 10 && hi == 13);
+
+	std::fill(std::begin(dst), std::end(dst), u16{0});
+	const std::span<std::byte> loop{ reinterpret_cast<std::byte*>(dst), sizeof(src) };
+	std::tie(lo, hi, n) = write_index_array_data_to_buffer(loop, in, rsx::index_array_type::u16, rsx::primitive_type::line_loop, false, 0, true);
+	CHECK(dst[0] == 10 && dst[3] == 13 && dst[4] == 10);
+	std::printf("test_shader_corpus: indexed draws expanded where the renderer asks, as a bool; ok\n");
+}
+
 static void submit_wait(vk::render_device& device, u32 graphics)
 {
 	vk::command_pool pool;
@@ -1979,6 +2006,7 @@ int main()
 	device.create(gpu, graphics, umax, umax);
 	vk::set_current_renderer(device);
 
+	index_expand();
 	submit_wait(device, graphics);
 	disposable_call();
 

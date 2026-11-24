@@ -159,7 +159,7 @@ namespace
 				rsx::method_registers.current_draw_clause.primitive,
 				rsx::method_registers.restart_index_enabled(),
 				rsx::method_registers.restart_index(),
-				[](auto prim) { return !vk::is_primitive_native(prim); });
+				!vk::is_primitive_native(rsx::method_registers.current_draw_clause.primitive));
 
 			if (min_index > max_index ||
 				(min_index == max_index && primitive != rsx::primitive_type::points))

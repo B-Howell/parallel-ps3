@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Index buffers: whether to expand a draw's indices is a bool, not a std::function.** Not yet run on a game.
+  - **What changed:**
+    - `write_index_array_data_to_buffer`, behind every indexed draw on both renderers, took a `std::function<bool(primitive_type)>` asking whether to expand the indices: quads, fans and polygons to triangles, line loops closed. Both renderers passed a lambda that captured nothing and asked `is_primitive_native` of the one primitive the call was for. So a `std::function` was built per draw, to be asked once.
+    - The renderer now asks that itself and passes the answer as a bool. Smaller code: VKVertexBuffers.o 459 bytes less, GLVertexBuffers.o 307, BufferUtils.o 216.
+  - **Tests:** `test_shader_corpus`: four quad indices are left as four, or made six when told to expand, and a line loop is closed with its first index again. One that ignored the bool fails it. The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **Audio: the backend's write callback, called on every pull, is a plain call, not a std::function.** Not yet run on a game.
   - **What changed:**
     - **The write callback**, which the libretro backend calls on every pull of `retro_run`'s audio, and **the state callback**, were `std::function`s. `sys_rsxaudio` and cellAudio set them with `std::bind` of a member function. The bound object (the member pointer and `this`, 24 bytes) is more than `std::function` keeps inline, so setting one allocated it on the heap. Each call then went through the `std::function` and the bind to reach the member.

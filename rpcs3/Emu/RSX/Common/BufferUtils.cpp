@@ -881,9 +881,9 @@ namespace
 	std::tuple<T, T, u32> write_index_array_data_to_buffer_impl(std::span<T> dst,
 		std::span<const be_t<T>> src,
 		rsx::primitive_type draw_mode, bool restart_index_enabled, u32 restart_index,
-		const std::function<bool(rsx::primitive_type)>& expands)
+		bool expand)
 	{
-		if (!expands(draw_mode)) [[likely]]
+		if (!expand) [[likely]]
 		{
 			return upload_untouched<T>(src, dst, draw_mode, restart_index_enabled, restart_index);
 		}
@@ -915,19 +915,19 @@ namespace
 std::tuple<u32, u32, u32> write_index_array_data_to_buffer(std::span<std::byte> dst_ptr,
 	std::span<const std::byte> src_ptr,
 	rsx::index_array_type type, rsx::primitive_type draw_mode, bool restart_index_enabled, u32 restart_index,
-	const std::function<bool(rsx::primitive_type)>& expands)
+	bool expand)
 {
 	switch (type)
 	{
 	case rsx::index_array_type::u16:
 	{
 		return write_index_array_data_to_buffer_impl<u16>(utils::bless<u16>(dst_ptr), utils::bless<const be_t<u16>>(src_ptr),
-			draw_mode, restart_index_enabled, restart_index, expands);
+			draw_mode, restart_index_enabled, restart_index, expand);
 	}
 	case rsx::index_array_type::u32:
 	{
 		return write_index_array_data_to_buffer_impl<u32>(utils::bless<u32>(dst_ptr), utils::bless<const be_t<u32>>(src_ptr),
-			draw_mode, restart_index_enabled, restart_index, expands);
+			draw_mode, restart_index_enabled, restart_index, expand);
 	}
 	default:
 		fmt::throw_exception("Unreachable");

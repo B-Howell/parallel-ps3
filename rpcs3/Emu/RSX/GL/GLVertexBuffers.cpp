@@ -111,7 +111,7 @@ namespace
 				primitive,
 				rsx::method_registers.restart_index_enabled(),
 				rsx::method_registers.restart_index(),
-				[](auto prim) { return !gl::is_primitive_native(prim); });
+				!gl::is_primitive_native(primitive));
 
 			if (min_index > max_index ||
 				(min_index == max_index && primitive != rsx::primitive_type::points))

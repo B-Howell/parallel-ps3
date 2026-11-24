@@ -27,11 +27,12 @@ u32 get_index_type_size(rsx::index_array_type type);
 /**
  * Write count indexes using (first, first + count) ranges.
  * Returns min/max index found during the process and the number of valid indices written to the buffer.
- * The function expands index buffer for non native primitive type if expands(draw_mode) return true.
+ * The function expands index buffer for non native primitive type if expand is set: the caller's own answer for
+ * draw_mode (it was a std::function asked it on every indexed draw).
  */
 std::tuple<u32, u32, u32> write_index_array_data_to_buffer(std::span<std::byte> dst, std::span<const std::byte> src,
 	rsx::index_array_type, rsx::primitive_type draw_mode, bool restart_index_enabled, u32 restart_index,
-	const std::function<bool(rsx::primitive_type)>& expands);
+	bool expand);
 
 /**
  * Write index data needed to emulate non indexed non native primitive mode.
