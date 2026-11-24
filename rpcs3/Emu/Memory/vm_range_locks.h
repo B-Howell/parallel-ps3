@@ -81,6 +81,28 @@ uint64_t vm_range_locks_busy_overlap(uint64_t mask, vm_range_lock_slot_t *set,
 uint64_t vm_range_locks_busy_point(uint64_t mask, vm_range_lock_slot_t *set,
       retro_atomic_64_t *shmem, uint64_t point);
 
+/* Waiting for the writers' bits to change, with no spin or yield: a
+ * waiter counts itself in @waiters, takes @epoch, looks again, and waits
+ * on @epoch (and whatever else it waits for); a writer that has cleared
+ * its bit bumps @epoch and wakes it, only when someone waits. On a line of
+ * its own, read-mostly: a release with no waiter pays one load of it */
+typedef struct vm_writer_wake
+{
+   retro_atomic_int_t waiters;
+   retro_atomic_int_t epoch;
+   unsigned char pad[128 - 2 * sizeof(retro_atomic_int_t)];
+} vm_writer_wake_t;
+
+/* A waiter: counted, and the epoch to wait on from here (look at the bits
+ * after this, then wait if they have not changed) */
+uint32_t vm_writer_wait_begin(vm_writer_wake_t *wake);
+
+/* A waiter no more */
+void vm_writer_wait_end(vm_writer_wake_t *wake);
+
+/* After a writer clears its bit: wakes the waiters, if there are any */
+void vm_writer_released(vm_writer_wake_t *wake);
+
 #ifdef __cplusplus
 }
 #endif

@@ -499,18 +499,19 @@ test_cpu_slots_tsan: $(CPU_SLOTS_DEPS)
 
 # The memory range locks: the module and the test as C89
 VM_RANGE_LOCKS_DEPS := test_vm_range_locks.c test_common.h ../../Emu/Memory/vm_range_locks.c ../../Emu/Memory/vm_range_locks.h
+VM_RANGE_LOCKS_LRC  := $(LRC)/rthreads/retro_waitaddr.c $(LRC)/rthreads/retro_eventcount.c $(LRC)/rthreads/rthreads.c
 
 test_vm_range_locks: $(VM_RANGE_LOCKS_DEPS)
 	@mkdir -p obj
 	$(CC) $(CFLAGS) $(TEST_STD) $(SANITIZE) -c -o obj/test_vm_range_locks.o test_vm_range_locks.c
 	$(CC) $(CFLAGS) $(TEST_STD) -pedantic $(SANITIZE) -c -o obj/vm_range_locks.o ../../Emu/Memory/vm_range_locks.c
-	$(CC) $(CFLAGS) -std=gnu99 $(SANITIZE) -o $@ obj/test_vm_range_locks.o obj/vm_range_locks.o $(LDFLAGS) $(LDLIBS) -lpthread
+	$(CC) $(CFLAGS) -std=gnu99 $(SANITIZE) -o $@ obj/test_vm_range_locks.o obj/vm_range_locks.o -DHAVE_THREADS $(VM_RANGE_LOCKS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
 
 test_vm_range_locks_tsan: $(VM_RANGE_LOCKS_DEPS)
 	@mkdir -p obj
 	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/test_vm_range_locks_tsan.o test_vm_range_locks.c
 	$(CC) $(CFLAGS) $(TEST_STD) -pedantic -fsanitize=thread -c -o obj/vm_range_locks_tsan.o ../../Emu/Memory/vm_range_locks.c
-	$(CC) $(CFLAGS) -std=gnu99 -fsanitize=thread -o $@ obj/test_vm_range_locks_tsan.o obj/vm_range_locks_tsan.o $(LDFLAGS) $(LDLIBS) -lpthread
+	$(CC) $(CFLAGS) -std=gnu99 -fsanitize=thread -o $@ obj/test_vm_range_locks_tsan.o obj/vm_range_locks_tsan.o -DHAVE_THREADS $(VM_RANGE_LOCKS_LRC) $(LDFLAGS) $(LDLIBS) -lpthread
 
 # The SPU instruction slot counts: the module and the test as C89
 SPU_PC_TABLE_DEPS := test_spu_pc_table.c test_common.h ../../Emu/Cell/spu_pc_table.c ../../Emu/Cell/spu_pc_table.h
@@ -1660,6 +1661,8 @@ check: all
 	@if grep -n "this_thread::yield\|busy_wait(200)" ../../Emu/RSX/RSXFIFO.cpp ../../Emu/RSX/RSXThread.cpp; then echo "a yield or busy-wait is back in the RSX FIFO"; exit 1; else echo "the RSX FIFO waits by watching its words"; fi
 	@# Locking the SPUs for a savestate waits on their states and the emulator's, with a budget of waits, not yields, sleeps or the host's clock
 	@if awk '/try_lock_spu_threads_in_a_state_compatible_with_savestates\(bool revert_lock/{f=1} f&&/^}/{f=0} f' ../../Emu/CPU/CPUThread.cpp | grep -n "this_thread\|sleep_for\|get_system_time() - start"; then echo "a yield, sleep or clock is back in the savestate SPU lock"; exit 1; else echo "the savestate SPU lock waits on the SPUs' states"; fi
+	@# Memory writer locks wait on a wake word that a leaving writer bumps, not with yields
+	@if awk '/void passive_lock\(cpu_thread& cpu\)/{f=1} /writer_lock::writer_lock\(u32 const addr/{g=1} f{print} g&&/^\t}$/{exit}' ../../Emu/Memory/vm.cpp | grep -q "this_thread::yield" || ! grep -q "vm_writer_released(&g_writer_wake)" ../../Emu/Cell/SPUThread.cpp; then echo "a yield is back in the memory writer-lock waits, or a writer leaves without waking them"; exit 1; else echo "memory writer-lock waits sleep on the writers' wake word"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

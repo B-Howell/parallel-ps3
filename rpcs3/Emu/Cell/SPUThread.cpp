@@ -589,10 +589,12 @@ namespace vm
 		{
 			retro_atomic_fetch_and_64(&g_range_lock_bits[1].word, static_cast<s64>(~(1ull << (range_lock - g_range_lock_set))));
 			range_lock_release(range_lock);
+			vm_writer_released(&g_writer_wake);
 			return;
 		}
 
 		range_lock_release(&g_range_lock_bits[1]);
+		vm_writer_released(&g_writer_wake);
 	}
 }
 

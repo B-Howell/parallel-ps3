@@ -60,6 +60,13 @@ namespace vm
 
 	inline u64 range_lock_writers() { return range_lock_value(&g_range_lock_bits[1]); }
 
+	// Woken when a writer clears its bit (vm_range_locks.h), only while someone waits
+	extern vm_writer_wake_t g_writer_wake;
+
+	// Until the writers' bits are no longer @seen, or (given) @cpu's state changes: a wait, with no spin or yield.
+	// May return early; the caller looks again
+	void wait_for_writers(u64 seen, cpu_thread* cpu = nullptr) noexcept;
+
 	// The memory setting change's own slot
 	inline u64 range_lock_main() { return range_lock_value(&g_range_lock_set[VM_RANGE_LOCKS - 1]); }
 

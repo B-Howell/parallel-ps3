@@ -75,6 +75,28 @@ namespace vm
 	// Range lock slot allocation bits
 	alignas(128) range_lock_t g_range_lock_bits[2]{};
 
+	alignas(128) vm_writer_wake_t g_writer_wake{};
+
+	void wait_for_writers(u64 seen, cpu_thread* cpu) noexcept
+	{
+		const u32 epoch = vm_writer_wait_begin(&g_writer_wake);
+
+		if (range_lock_writers() == seen)
+		{
+			retro_waitaddr_t list[2]{{&g_writer_wake.epoch, epoch}};
+			unsigned count = 1;
+
+			if (cpu)
+			{
+				list[count++] = thread_ctrl::waitaddr(cpu->state, +cpu->state);
+			}
+
+			retro_waitaddr_wait(list, count, -1);
+		}
+
+		vm_writer_wait_end(&g_writer_wake);
+	}
+
 	static retro_atomic_64_t* get_range_lock_bits(bool is_exclusive_range)
 	{
 		return &g_range_lock_bits[+is_exclusive_range].word;
@@ -322,7 +344,9 @@ namespace vm
 					return;
 				}
 
-				if (!range_lock_writers()) [[likely]]
+				const u64 writers = range_lock_writers();
+
+				if (!writers) [[likely]]
 				{
 					return;
 				}
@@ -330,7 +354,7 @@ namespace vm
 				if (i < 100)
 					busy_wait(200);
 				else
-					std::this_thread::yield();
+					wait_for_writers(writers, &cpu); // until a writer leaves or this thread's state changes, where it yielded
 
 				if (cpu_flag::wait - cpu.state)
 				{
@@ -433,7 +457,8 @@ namespace vm
 			}
 			else
 			{
-				std::this_thread::yield();
+				// Until the writers change (another writer leaves), where it yielded
+				wait_for_writers(range_lock_writers());
 			}
 		}
 

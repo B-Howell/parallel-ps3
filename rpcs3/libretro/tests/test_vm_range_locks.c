@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
 
 static retro_atomic_64_t bits;
 static vm_range_lock_slot_t set[VM_RANGE_LOCKS];
@@ -445,6 +446,72 @@ static void both_see(void)
       fprintf(stderr, "rounds where neither saw the other: %d\n", missed);
 }
 
+/* A thread waiting for the writers' bits to change sleeps on the wake
+ * epoch; the writer clearing its bit must wake it. Each round the waiter
+ * waits with a 1 s bound, so a release that forgets to wake it shows as an
+ * expired wait (and not a hang) */
+#define WAKE_ROUNDS 3000
+static vm_writer_wake_t wake;
+static retro_atomic_64_t wake_bits;
+static retro_atomic_int_t wake_round, wake_done, wake_missed;
+
+static void *wake_waiter(void *arg)
+{
+   int r;
+   (void)arg;
+   for (r = 1; r <= WAKE_ROUNDS; r++)
+   {
+      while (retro_atomic_load_acquire_int(&wake_round) != r)
+         sched_yield();
+      while (retro_atomic_load_acquire_64(&wake_bits))
+      {
+         const uint32_t e = vm_writer_wait_begin(&wake);
+         if (retro_atomic_load_acquire_64(&wake_bits))
+         {
+            retro_waitaddr_t w;
+            w.addr = &wake.epoch;
+            w.old  = e;
+            if (!retro_waitaddr_wait(&w, 1, 1000000))
+            {
+               retro_atomic_inc_int(&wake_missed);
+               vm_writer_wait_end(&wake);
+               retro_atomic_store_release_int(&wake_done, r);
+               return NULL;
+            }
+         }
+         vm_writer_wait_end(&wake);
+      }
+      retro_atomic_store_release_int(&wake_done, r);
+   }
+   return NULL;
+}
+
+static void woken(void)
+{
+   pthread_t t;
+   int r;
+
+   pthread_create(&t, NULL, wake_waiter, NULL);
+   for (r = 1; r <= WAKE_ROUNDS && !retro_atomic_load_acquire_int(&wake_missed); r++)
+   {
+      retro_atomic_store_release_64(&wake_bits, 1);
+      retro_atomic_store_release_int(&wake_round, r);
+      /* Mostly release while it sleeps; sometimes right away */
+      if (r & 1)
+         while (!retro_atomic_load_acquire_int(&wake.waiters)
+               && retro_atomic_load_acquire_int(&wake_done) != r)
+            sched_yield();
+      retro_atomic_fetch_and_64(&wake_bits, 0);
+      vm_writer_released(&wake);
+      while (retro_atomic_load_acquire_int(&wake_done) != r)
+         sched_yield();
+   }
+   pthread_join(t, NULL);
+
+   TEST_CHECK(retro_atomic_load_acquire_int(&wake_missed) == 0);
+   TEST_CHECK(retro_atomic_load_acquire_int(&wake.waiters) == 0);
+}
+
 int main(void)
 {
    alarm(600);
@@ -453,6 +520,7 @@ int main(void)
    random_sets();
    together();
    both_see();
+   woken();
    printf("test_vm_range_locks: %s\n", test_failures ? "FAIL" : "ok");
    return test_failures ? 1 : 0;
 }

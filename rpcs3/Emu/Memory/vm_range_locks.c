@@ -1,5 +1,7 @@
 #include "vm_range_locks.h"
 
+#include <rthreads/retro_waitaddr.h>
+
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif
@@ -169,4 +171,30 @@ uint64_t vm_range_locks_busy_point(uint64_t mask, vm_range_lock_slot_t *set,
    }
 
    return busy;
+}
+
+uint32_t vm_writer_wait_begin(vm_writer_wake_t *wake)
+{
+   /* A read-modify-write, a full barrier: a writer releasing after this
+    * sees the count, and one that released before it is seen in the bits
+    * the waiter looks at next */
+   retro_atomic_inc_int(&wake->waiters);
+   return (uint32_t)retro_atomic_load_acquire_int(&wake->epoch);
+}
+
+void vm_writer_wait_end(vm_writer_wake_t *wake)
+{
+   retro_atomic_dec_int(&wake->waiters);
+}
+
+void vm_writer_released(vm_writer_wake_t *wake)
+{
+   /* The bit's release before the look at the count (a store and a load:
+    * the one order only a full fence keeps) */
+   retro_atomic_thread_fence_seq_cst();
+   if (retro_atomic_load_acquire_int(&wake->waiters))
+   {
+      retro_atomic_inc_int(&wake->epoch);
+      retro_waitaddr_notify_all(&wake->epoch);
+   }
 }

@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Memory locks: waiting for a writer to leave sleeps, no yields.** Not yet run on a game.
+  - **What changed:**
+    - **A thread taking the memory lock while a writer holds part of memory** (`vm::passive_lock`, and a new writer in `vm::writer_lock`) spun 100 short pauses, then yielded the host's thread in a loop until the writers left. After the spin it now sleeps on a wake word (`vm_writer_wake_t` in `vm_range_locks.c`, C89) until the writers' bits change, or, in `passive_lock`, until its own thread's state does (a pause or exit still reaches it).
+    - **A writer leaving** (`~writer_lock`) wakes the sleepers only when there are some: a fence and a load of the waiter count when no one waits, a bump and a wake when someone does. A sleeper counts itself before it looks at the bits again, so a writer leaving between the two is seen either way.
+    - **Flagged:** the 100 short spins before the sleep stay, unmeasured on a game. The reservation locks' yields (`vm.cpp`, `SPUThread.cpp`) and the HLE SPU-signal wait remain: their release is a store from the recompiled code, which would need a wake added in the JIT.
+  - **Tests:** `test_vm_range_locks` gains a round-trip test, 3000 rounds of a waiter sleeping on the word while a writer clears its bit and wakes it, each with a 1 s bound. It fails when the wake is left out. The Windows (MinGW) syntax check, the full build and suites pass.
+
+
 - **Savestates: locking the SPUs waits on their states, no yields, sleeps or host clock.** Not yet run on a game.
   - **What changed:**
     - **Bringing the SPUs to a point where they can be saved** (`try_lock_spu_threads_in_a_state_compatible_with_savestates`, before a savestate is written) waits, when no SPU is savable yet or the suspend that would stop them failed, on the emulator's state and the first seven SPUs' states for up to 1 ms (50 ms when the SPUs could not be collected), where it yielded the host's thread in a loop, slept 1 ms after every 150 ms of the host's clock, and slept 50 ms. It gives up after about 2.25 s of such waits, as before: a wait that runs out counts its bound, one a change ends counts 10 µs.
