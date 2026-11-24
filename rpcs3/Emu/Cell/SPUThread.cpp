@@ -2438,16 +2438,16 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 						}
 					}
 
-					if (true || ++i < 10)
+					if (++i < 100)
 					{
 						busy_wait(500);
 					}
 					else
 					{
-						// Wait
-						_cpu->state += cpu_flag::wait + cpu_flag::temp;
-						// bits->wait(old, wmask);
-						_cpu->check_state();
+						// Another DMA holds some of these bytes and frees them with a plain compare-and-swap: watch the
+						// 32-bit word holding the first byte it holds, bounded, then look again
+						const u32 k = utils::ctz128(old & wmask) / 32;
+						utils::spin_on_cacheline_once(reinterpret_cast<const u32*>(bits)[k], static_cast<u32>(old >> (k * 32)), 50);
 					}
 				}())
 				{
@@ -5328,6 +5328,8 @@ spu_thread::ch_events_t spu_thread::get_events(u64 mask_hint, bool waiting, bool
 		fmt::throw_exception("SPU Events not implemented (mask=0x%x)", mask1);
 	}
 
+	u32 lock_spins = 0;
+
 retry:
 	u32 collect = 0;
 
@@ -5370,7 +5372,17 @@ retry:
 
 	if (reading && res.locks && mask_hint & (SPU_EVENT_S1 | SPU_EVENT_S2))
 	{
-		busy_wait(100);
+		if (++lock_spins < 100)
+		{
+			busy_wait(100);
+		}
+		else if (const ch_events_t now = load_events(); now.locks)
+		{
+			// push_snr holds the channel and frees it with a plain compare-and-swap: watch the word holding the
+			// lock count (the low half), bounded, then look again
+			utils::spin_on_cacheline_once(*reinterpret_cast<const u32*>(&ch_events), static_cast<u32>(now.all), 50);
+		}
+
 		goto retry;
 	}
 

@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **SPU byte locks and event reads: waiting for another thread no longer spins forever.** Not yet run on a game.
+  - **What changed:**
+    - **With accurate DMA on**, a transfer locks the bytes it writes in a 128-bit mask beside the reservation line. A transfer finding some of them held spun on `busy_wait(500)` for as long as they stayed held: a forced `true ||` had cut out the old wait branch, which was left half-written. After 100 tries it now waits until the 32-bit word holding the first held byte changes, through `utils::spin_on_cacheline_once`, bounded at 50 µs. The dead branch is gone.
+    - **Reading SPU events** (`get_events`) while `push_snr` holds the event channel retried on `busy_wait(100)` with no end. After 100 tries it now waits the same way on the word holding the lock count.
+    - **Flagged:** both locks are freed with a plain compare-and-swap that wakes no one. Where the processor cannot watch the line (this sandbox's Xeon) the wait ends on its bound, a timed wait where it spun. The 100 tries first keep the usual short waits as they were.
+  - **Tests:** none of their own: both waits need running SPU threads. `spin_on_cacheline_once` has its own tests in `test_emu_waits`. The Windows (MinGW) syntax check, the full build and suites pass.
+
+
 - **Writer locks and suspend_all: waiting for other threads no longer spins forever.** Not yet run on a game.
   - **What changed:**
     - **A writer taking a reservation line** (`vm::writer_lock`) waits for readers holding that line, then for each PPU holding a passive lock to reach a wait. Both spun on a pause for as long as it took. **Suspending all threads** (`cpu_thread::suspend_work::push`, behind `suspend_all`) spun on a pause until every thread had set its wait flag.
