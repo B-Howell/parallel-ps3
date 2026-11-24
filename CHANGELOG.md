@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Texture cache: no std::function through invalidate and flush calls.** Not yet run on a game.
+  - **What changed:**
+    - `invalidate_address`, `invalidate_range`, `invalidate_range_impl_base`, `flush_all` and `flush_set` each took an `on_data_transfer_completed` callback as a `std::function` by value. They are behind every guest write to protected memory and every deferred flush.
+    - No caller ever gave one: the renderers called without it, and the texture cache's own calls passed `{}`. So an empty `std::function` was built at the outer call, copied into each layer, and tested before its call. The parameter, the `{}` arguments and the call are gone; nothing else changes.
+    - Smaller code: GLGSRender 1294 bytes less, GLPresent 1383, VKGSRender 1189, VKTextureCache 861 (VKPresent 53 more, from different inlining).
+  - **Tests:** none of their own: nothing ran through the callback, so there is no behaviour to test. The guard keeps the parameter out. The Windows (MinGW) syntax check, the full build and suites pass.
+
+
 - **On Linux, AMD processors no longer sleep 50 ms on load to measure the TSC, where the kernel will say it.** Not yet run on a game.
   - **What changed:**
     - **Where CPUID does not state the TSC's frequency** (AMD), it is now taken from the kernel before measuring, through a new C89 module (`rpcs3/util/tsc_perf.c`). The module opens a perf event on its own thread, maps the event's page, and reads the kernel's TSC-to-ns conversion, `time_mult` and `time_shift`, under the page's sequence count. The frequency is 10^9 << shift / mult, rounded. The event and the page are let go of at once.

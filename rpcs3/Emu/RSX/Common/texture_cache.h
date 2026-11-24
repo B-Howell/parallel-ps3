@@ -806,7 +806,7 @@ namespace rsx
 		 */
 	private:
 		template <typename ...Args>
-		void flush_set(commandbuffer_type& cmd, thrashed_set& data, std::function<void()> on_data_transfer_completed, Args&&... extras)
+		void flush_set(commandbuffer_type& cmd, thrashed_set& data, Args&&... extras)
 		{
 			AUDIT(!data.flushed);
 
@@ -846,11 +846,6 @@ namespace rsx
 				}
 
 				cleanup_after_dma_transfers(cmd);
-			}
-
-			if (on_data_transfer_completed)
-			{
-				on_data_transfer_completed();
 			}
 
 			for (auto &surface : data.sections_to_flush)
@@ -1149,7 +1144,6 @@ namespace rsx
 			commandbuffer_type& cmd,
 			const address_range32 &fault_range_in,
 			invalidation_cause cause,
-			std::function<void()> on_data_transfer_completed = {},
 			Args&&... extras)
 		{
 #ifdef TEXTURE_CACHE_DEBUG
@@ -1356,7 +1350,7 @@ namespace rsx
 				// or there is nothing to flush but we have something to unprotect
 				if (has_flushables && !cause.skip_flush())
 				{
-					flush_set(cmd, result, on_data_transfer_completed, std::forward<Args>(extras)...);
+					flush_set(cmd, result, std::forward<Args>(extras)...);
 				}
 
 				unprotect_set(result);
@@ -1655,7 +1649,7 @@ namespace rsx
 					const u32 gcm_format = helpers::get_sized_blit_format(src_is_argb8, dst_is_depth_surface, is_format_convert);
 					const auto rsx_range = address_range32::start_length(image_base, src.pitch * image_height);
 
-					cache->invalidate_range_impl_base(cmd, rsx_range, invalidation_cause::read, {}, std::forward<Args>(extras)...);
+					cache->invalidate_range_impl_base(cmd, rsx_range, invalidation_cause::read, std::forward<Args>(extras)...);
 
 					cached_src = cache->upload_image_from_cpu(cmd, rsx_range, image_width, image_height, 1, 1, src.pitch, gcm_format, texture_upload_context::blit_engine_src,
 						subresource_layout, rsx::texture_dimension_extended::texture_dimension_2d, dst.swizzled);
@@ -1742,7 +1736,7 @@ namespace rsx
 				{
 					// NOTE: Write flag set to remove all other overlapping regions (e.g shader_read or blit_src)
 					// NOTE: This step can potentially invalidate the newly created src image as well.
-					cache->invalidate_range_impl_base(cmd, rsx_range, invalidation_cause::cause_is_write | invalidation_cause::cause_uses_strict_data_bounds, {}, std::forward<Args>(extras)...);
+					cache->invalidate_range_impl_base(cmd, rsx_range, invalidation_cause::cause_is_write | invalidation_cause::cause_uses_strict_data_bounds, std::forward<Args>(extras)...);
 
 					bool force_dma_load = false;
 					if ((dst_w * dst_bpp) != dst.pitch)
@@ -2062,7 +2056,7 @@ namespace rsx
 				return;
 
 			cache_scope in_cache(m_cache_depth);
-			invalidate_range_impl_base(cmd, rsx_range, invalidation_cause::committed_as_fbo, {}, std::forward<Args>(extras)...);
+			invalidate_range_impl_base(cmd, rsx_range, invalidation_cause::committed_as_fbo, std::forward<Args>(extras)...);
 		}
 
 		template <typename ...Args>
@@ -2230,7 +2224,7 @@ namespace rsx
 			u32 page_address;
 			while (rsx_page_locks_take(&page_address))
 			{
-				invalidate_range_impl_base(cmd, page_for(page_address), invalidation_cause::write, {}, extras...);
+				invalidate_range_impl_base(cmd, page_for(page_address), invalidation_cause::write, extras...);
 			}
 		}
 
@@ -2239,7 +2233,6 @@ namespace rsx
 			commandbuffer_type& cmd,
 			u32 address,
 			invalidation_cause cause,
-			std::function<void()> on_data_transfer_completed = {},
 			Args&&... extras)
 		{
 			sync_guest_writes(cmd, extras...);
@@ -2250,7 +2243,7 @@ namespace rsx
 				return{};
 
 			cache_scope in_cache(m_cache_depth);
-			return invalidate_range_impl_base(cmd, range, cause, on_data_transfer_completed, std::forward<Args>(extras)...);
+			return invalidate_range_impl_base(cmd, range, cause, std::forward<Args>(extras)...);
 		}
 
 		template <typename ...Args>
@@ -2258,7 +2251,6 @@ namespace rsx
 			commandbuffer_type& cmd,
 			const address_range32 &range,
 			invalidation_cause cause,
-			std::function<void()> on_data_transfer_completed = {},
 			Args&&... extras)
 		{
 			sync_guest_writes(cmd, extras...);
@@ -2268,11 +2260,11 @@ namespace rsx
 				return {};
 
 			cache_scope in_cache(m_cache_depth);
-			return invalidate_range_impl_base(cmd, range, cause, on_data_transfer_completed, std::forward<Args>(extras)...);
+			return invalidate_range_impl_base(cmd, range, cause, std::forward<Args>(extras)...);
 		}
 
 		template <typename ...Args>
-		bool flush_all(commandbuffer_type& cmd, thrashed_set& data, std::function<void()> on_data_transfer_completed = {}, Args&&... extras)
+		bool flush_all(commandbuffer_type& cmd, thrashed_set& data, Args&&... extras)
 		{
 			cache_scope in_cache(m_cache_depth);
 
@@ -2282,7 +2274,7 @@ namespace rsx
 			if (static_cast<u64>(retro_atomic_load_acquire_64(&m_cache_update_tag)) == data.cache_tag)
 			{
 				//1. Write memory to cpu side
-				flush_set(cmd, data, on_data_transfer_completed, std::forward<Args>(extras)...);
+				flush_set(cmd, data, std::forward<Args>(extras)...);
 
 				//2. Release all obsolete sections
 				unprotect_set(data);
@@ -2290,7 +2282,7 @@ namespace rsx
 			else
 			{
 				// The cache contents have changed between the two readings. This means the data held is useless
-				invalidate_range_impl_base(cmd, data.fault_range, data.cause.undefer(), on_data_transfer_completed, std::forward<Args>(extras)...);
+				invalidate_range_impl_base(cmd, data.fault_range, data.cause.undefer(), std::forward<Args>(extras)...);
 			}
 
 			return true;
@@ -3438,7 +3430,7 @@ namespace rsx
 
 			// Invalidate
 			const address_range32 tex_range = address_range32::start_length(attributes.address, tex_size);
-			invalidate_range_impl_base(cmd, tex_range, invalidation_cause::read, {}, std::forward<Args>(extras)...);
+			invalidate_range_impl_base(cmd, tex_range, invalidation_cause::read, std::forward<Args>(extras)...);
 
 			// Upload from CPU. Note that sRGB conversion is handled in the FS
 			auto uploaded = upload_image_from_cpu(cmd, tex_range, attributes.width, attributes.height, attributes.depth, tex.get_exact_mipmap_count(), attributes.pitch, attributes.gcm_format,
@@ -3842,7 +3834,6 @@ namespace rsx
 							cmd,
 							dst_subres.surface->get_memory_range(),
 							invalidation_cause::cause_is_write | invalidation_cause::cause_uses_strict_data_bounds,
-							{},
 							std::forward<Args>(extras)...);
 					}
 
