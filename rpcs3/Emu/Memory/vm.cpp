@@ -302,7 +302,7 @@ namespace vm
 
 		u64 to_clear = load_range_lock_bits(false);
 
-		while (to_clear)
+		for (u32 i = 0; to_clear; i++)
 		{
 			to_clear = vm_range_locks_busy_overlap(to_clear, g_range_lock_set, addr, size);
 
@@ -311,7 +311,17 @@ namespace vm
 				break;
 			}
 
-			utils::pause();
+			if (i < 100)
+			{
+				utils::pause();
+			}
+			else
+			{
+				// Until the first busy reader's slot changes (its release is a plain store the line watch sees: UMWAIT,
+				// MWAITX or WFE), else a timed wait of 50 us; where it spun with no end
+				auto* const slot = &g_range_lock_set[std::countr_zero(to_clear)];
+				utils::spin_on_cacheline_once(*static_cast<const u64*>(static_cast<const void*>(&slot->word)), range_lock_value(slot), 50);
+			}
 		}
 
 		return range_lock;
@@ -2168,7 +2178,7 @@ namespace vm
 
 		auto mem_lock = &*std::prev(std::end(vm::g_range_lock_set));
 
-		while (true)
+		for (u32 spins = 0;;)
 		{
 			range_lock_publish(range_lock, begin | (u64{size} << 32));
 
@@ -2227,7 +2237,15 @@ namespace vm
 			// Wait a bit before accessing global lock
 			range_lock_release(range_lock);
 
-			busy_wait(200);
+			if (++spins < 100)
+			{
+				busy_wait(200);
+			}
+			else
+			{
+				// Until the memory-layout lock's slot changes, as in _lock_main_range_lock; where it spun with no end
+				utils::spin_on_cacheline_once(*static_cast<const u64*>(static_cast<const void*>(&mem_lock->word)), lock_val, 50);
+			}
 		}
 
 		const bool result = try_access_internal(begin, ptr, size, is_write);

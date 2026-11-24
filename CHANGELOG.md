@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Memory-layout changes: waiting for readers no longer spins forever.** Not yet run on a game.
+  - **What changed:**
+    - **A change to guest memory's layout** (allocating, freeing or protecting pages, `_lock_main_range_lock`) waits for the readers holding the range to leave. It spun on a pause for as long as they stayed. After 100 pauses it now waits until the first busy reader's slot changes, through `utils::spin_on_cacheline_once`: UMWAIT, MWAITX or WFE wake on the reader's release, with a 50 µs bound.
+    - **`vm::try_access`** (the debugger's and HLE's guarded memory access) spun 200 cycles at a time while such a change held its range. After 100 spins it waits on that lock's slot in the same way.
+    - **Flagged:** readers release with a plain store on their hot path (every guest memory access under a range lock), and nothing wakes the slot. Where the processor cannot watch the line (this sandbox's Xeon) the wait ends on its bound, a timed wait where it spun. A wake there would put a fence on every read lock's release. Layout changes are rare next to reads.
+  - **Tests:** none of their own: the waits need guest threads holding range locks. `spin_on_cacheline_once` has its own tests in `test_emu_waits`. The Windows (MinGW) syntax check, the full build and suites pass.
+
+
 - **Memory reads and PPU thread exit: waiting for writers no longer spins forever.** Not yet run on a game.
   - **What changed:**
     - **A thread reading guest memory that a writer holds** (`vm::range_lock_internal`) and **a PPU thread exiting** (`_sys_ppu_thread_exit`, which waits for the writers it saw) spun 200 cycles at a time for as long as the writers stayed. After 100 such spins they now sleep on the writers' wake word (`vm::wait_for_writers`) until a writer leaves; the reader also wakes on its own thread's state, as `passive_lock` does.
