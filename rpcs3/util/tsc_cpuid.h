@@ -10,6 +10,10 @@
  *   It comes first, as a guest's TSC may be scaled from the host's.
  * - Leaf 0x15 (Intel, from Goldmont and Skylake on): EBX/EAX the TSC's
  *   ratio to the crystal, ECX the crystal in Hz, 0 where not named.
+ *   Unnamed, as Linux takes it (native_calibrate_tsc): 25 MHz on
+ *   Denverton (family 6, model 0x5F), else from leaf 0x16's base
+ *   frequency in MHz (Skylake and Kaby Lake desktop parts). In kHz, as
+ *   Linux works it out. Not on other vendors, as Linux.
  *
  * The caller reads the leaves; 0 where none of them states it. */
 
@@ -22,6 +26,10 @@ extern "C" {
 typedef struct tsc_cpuid_leaves
 {
    unsigned max_leaf;      /* leaf 0, EAX */
+   unsigned intel;         /* leaf 0's vendor GenuineIntel */
+   unsigned family;        /* leaf 1's display family */
+   unsigned model;         /* leaf 1's display model */
+   unsigned base_mhz;      /* leaf 0x16, EAX bits 0-15 (read where max_leaf allows) */
    unsigned hypervisor;    /* leaf 1, ECX bit 31 */
    unsigned hv_max_leaf;   /* leaf 0x40000000, EAX (read only under a hypervisor) */
    unsigned hv_tsc_khz;    /* leaf 0x40000010, EAX (read only where hv_max_leaf allows) */

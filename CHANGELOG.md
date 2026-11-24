@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Skylake and Kaby Lake desktop parts, and Denverton, no longer sleep 50 ms on load to measure the TSC.** Not yet run on a game.
+  - **What changed:**
+    - These CPUs give the TSC's ratio to the crystal in leaf 0x15 but leave the crystal's frequency at 0, so they still measured with the sleep. The crystal is now taken as Linux takes it (`native_calibrate_tsc`). Denverton (family 6, model 0x5F) gets 25 MHz. Others derive it from leaf 0x16's base frequency: an i7-6700K at 4000 MHz with a ratio of 334/2 gives a 23952 kHz crystal and 3999984 kHz.
+    - The arithmetic is in kHz, as Linux's is, and leaf 0x15 is read on Intel only, also as Linux.
+    - **Flagged:** AMD processors, which state neither leaf, and this sandbox under KVM still measure with the sleep.
+  - **Tests:** `test_tsc_cpuid` now also covers Denverton's 25 MHz (not on another family), the i7-6700K from its base frequency, none without leaf 0x16 or its base, and none from a vendor not Intel. Mutants without the model check, the vendor check or the leaf 0x16 bound fail it. The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **Loading the core no longer sleeps 50 ms to measure the TSC, where the processor states its frequency.** Not yet run on a game.
   - **What changed:**
     - **The TSC's frequency** (`utils::get_tsc_freq`, behind the line-watch wait bounds and other cycle timeouts) was measured during static initialisation, so while the core loads. It read the TSC and the wall clock, slept 50 ms, and read both again. This is the pre-existing sleep and wall clock flagged earlier.

@@ -1037,8 +1037,13 @@ static const bool s_tsc_freq_evaluated = []() -> bool
 		// thread, 50 ms between two reads of the wall clock
 		{
 			tsc_cpuid_leaves_t leaves{};
-			leaves.max_leaf = get_cpuid(0, 0)[0];
-			leaves.hypervisor = (get_cpuid(1, 0)[2] >> 31) & 1;
+			const auto l0 = get_cpuid(0, 0);
+			const auto l1 = get_cpuid(1, 0);
+			leaves.max_leaf = l0[0];
+			leaves.intel = l0[1] == 0x756e6547 && l0[3] == 0x49656e69 && l0[2] == 0x6c65746e; // "GenuineIntel"
+			leaves.family = (l1[0] >> 8) & 0xf;
+			leaves.model = ((l1[0] >> 4) & 0xf) | ((leaves.family == 6 || leaves.family == 15) ? ((l1[0] >> 12) & 0xf0) : 0);
+			leaves.hypervisor = (l1[2] >> 31) & 1;
 
 			if (leaves.hypervisor)
 			{
@@ -1056,6 +1061,11 @@ static const bool s_tsc_freq_evaluated = []() -> bool
 				leaves.den = l15[0];
 				leaves.num = l15[1];
 				leaves.crystal_hz = l15[2];
+			}
+
+			if (leaves.max_leaf >= 0x16)
+			{
+				leaves.base_mhz = get_cpuid(0x16, 0)[0] & 0xffff;
 			}
 
 			if (const u64 stated = tsc_cpuid_freq(&leaves))
