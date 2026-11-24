@@ -175,7 +175,8 @@ namespace gl
 				uniforms.clear();
 			}
 
-			void link(std::function<void(program*)> init_func = {});
+			// init_func, capturing nothing, a plain function (it was a std::function)
+			void link(void (*init_func)(program*) = nullptr);
 
 			void validate();
 

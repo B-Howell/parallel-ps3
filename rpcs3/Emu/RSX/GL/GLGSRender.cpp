@@ -135,31 +135,11 @@ void GLGSRender::on_init_thread()
 	const auto shadermode = g_cfg.video.shadermode.get();
 	if (shadermode != shader_mode::recompiler)
 	{
-		auto context_create_func = [m_frame = m_frame]()
-		{
-			return m_frame->make_context();
-		};
-
-		auto context_bind_func = [m_frame = m_frame](draw_context_t ctx)
-		{
-			m_frame->set_current(ctx);
-		};
-
-		auto context_destroy_func = [m_frame = m_frame](draw_context_t ctx)
-		{
-			m_frame->delete_context(ctx);
-		};
-
-		gl::initialize_pipe_compiler(context_create_func, context_bind_func, context_destroy_func, g_cfg.video.shader_compiler_threads_count);
+		gl::initialize_pipe_compiler(m_frame, g_cfg.video.shader_compiler_threads_count);
 	}
 	else
 	{
-		auto null_context_create_func = []() -> draw_context_t
-		{
-			return nullptr;
-		};
-
-		gl::initialize_pipe_compiler(null_context_create_func, {}, {}, 1);
+		gl::initialize_pipe_compiler(nullptr, 1);
 	}
 
 	// Bind primary context to main RSX thread

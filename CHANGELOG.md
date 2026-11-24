@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **OpenGL pipeline compiler: no std::function for its contexts and post-link.** Not yet run on a game.
+  - **What changed:**
+    - **The worker contexts:** each compiler thread made, bound and let go of its context through three `std::function`s. Each wrapped a lambda calling the frame. The compiler now keeps the frame itself (`GSFrameBase*`, none where the shaders compile inline) and calls its `make_context`, `set_current` and `delete_context`.
+    - **The post-link step** (`program::link`'s `init_func`, and the job's `post_link_func`): the one given, binding the texture units, captures nothing, so it is a plain function pointer. Before, a `std::function` was copied into every compile job and its call.
+    - **Kept as std::function:** the post-create and completion callbacks. A deferred job owns them, with what they captured, until a worker runs it. A hand-made pointer-and-context in their place would still allocate per compile, so there would be nothing to gain.
+    - Smaller code: GLGSRender 1598 bytes less, GLPipelineCompiler 1438, program.o 16; GLShaderInterpreter 238 more, from different inlining.
+  - **Tests:** none of their own: the compiler needs a running OpenGL renderer and context, which the tests do not have. The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **Shader cache loading: the workers are no longer std::functions.** Not yet run on a game.
   - **What changed:**
     - Loading the shader cache, as a game boots, runs two worker lambdas (`load_shaders`, `compile_shaders`) on worker threads or on this one through `await_workers`. Each was put in a `std::function`. The load worker captures five references, more than `std::function` keeps inline, so that also made a heap allocation per load.

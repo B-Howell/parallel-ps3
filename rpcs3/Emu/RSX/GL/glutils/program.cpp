@@ -267,7 +267,7 @@ namespace gl
 			return result;
 		}
 
-		void program::link(std::function<void(program*)> init_func)
+		void program::link(void (*init_func)(program*))
 		{
 			glLinkProgram(m_id);
 

@@ -531,7 +531,7 @@ namespace gl
 		compiler->compile(
 			gl::pipe_compiler::COMPILE_DEFERRED,
 			post_create_hook,
-			{},
+			nullptr,
 			storage_hook
 		);
 	}

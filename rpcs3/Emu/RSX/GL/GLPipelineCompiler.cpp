@@ -16,21 +16,16 @@ namespace gl
 
 	pipe_compiler::~pipe_compiler()
 	{
-		if (m_context_destroy_func)
+		if (m_frame)
 		{
-			m_context_destroy_func(m_context);
+			m_frame->delete_context(m_context);
 		}
 	}
 
-	void pipe_compiler::initialize(
-		std::function<draw_context_t()> context_create_func,
-		std::function<void(draw_context_t)> context_bind_func,
-		std::function<void(draw_context_t)> context_destroy_func)
+	void pipe_compiler::initialize(GSFrameBase* frame)
 	{
-		m_context_bind_func = context_bind_func;
-		m_context_destroy_func = context_destroy_func;
-
-		m_context = context_create_func();
+		m_frame = frame;
+		m_context = frame ? frame->make_context() : nullptr;
 	}
 
 	void pipe_compiler::operator()()
@@ -39,10 +34,10 @@ namespace gl
 		{
 			for (auto&& job : m_work_queue.pop_all())
 			{
-				if (!retro_atomic_exchange_int(&m_context_ready, 1))
+				if (!retro_atomic_exchange_int(&m_context_ready, 1) && m_frame)
 				{
 					// Bind context on first use
-					m_context_bind_func(m_context);
+					m_frame->set_current(m_context);
 				}
 
 				auto result = int_compile_graphics_pipe(
@@ -59,7 +54,7 @@ namespace gl
 	std::unique_ptr<glsl::program> pipe_compiler::compile(
 		op_flags flags,
 		build_callback_t post_create_func,
-		build_callback_t post_link_func,
+		link_callback_t post_link_func,
 		storage_callback_t completion_callback_func)
 	{
 		if (flags == COMPILE_INLINE)
@@ -72,8 +67,8 @@ namespace gl
 	}
 
 	std::unique_ptr<glsl::program> pipe_compiler::int_compile_graphics_pipe(
-		build_callback_t post_create_func,
-		build_callback_t post_link_func)
+		const build_callback_t& post_create_func,
+		link_callback_t post_link_func)
 	{
 		auto result = std::make_unique<glsl::program>();
 		result->create();
@@ -87,11 +82,7 @@ namespace gl
 		return result;
 	}
 
-	void initialize_pipe_compiler(
-		std::function<draw_context_t()> context_create_func,
-		std::function<void(draw_context_t)> context_bind_func,
-		std::function<void(draw_context_t)> context_destroy_func,
-		int num_worker_threads)
+	void initialize_pipe_compiler(GSFrameBase* frame, int num_worker_threads)
 	{
 		if (num_worker_threads == 0)
 		{
@@ -124,7 +115,7 @@ namespace gl
 		// Initialize the workers. At least one inline compiler shall exist (doesn't actually run)
 		for (pipe_compiler& compiler : *g_pipe_compilers.get())
 		{
-			compiler.initialize(context_create_func, context_bind_func, context_destroy_func);
+			compiler.initialize(frame);
 		}
 	}
 
