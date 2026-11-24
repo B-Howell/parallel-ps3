@@ -2326,8 +2326,12 @@ int main()
 		}
 		releaser.join();
 		CHECK(vm::guest_load(sema) == 2u && looks < 1'000'000);
+		// Each look waits (the line watched, or a timed wait of up to 100 us
+		// where the processor cannot watch it): about 200 in 20 ms, where a
+		// host yield came straight back, tens of thousands of times
+		CHECK(looks > 0 && looks < 5000);
 		utils::spin_on_cacheline_once(sema, 1u, 100); // differs already: back at once
-		std::printf("test_emu_waits: 16-byte reports stored whole under a reader; a semaphore wait woken\n");
+		std::printf("test_emu_waits: 16-byte reports stored whole under a reader; a semaphore wait woken after %u looks\n", looks);
 	}
 
 	// A message dialog's state, a retro_atomic word: a blocking open asleep

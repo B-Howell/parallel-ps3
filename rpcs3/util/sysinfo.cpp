@@ -1085,18 +1085,8 @@ static const bool s_tsc_freq_evaluated = []() -> bool
 					break;
 				}
 
-				// 8 yields seems to reduce significantly thread contention, improving accuracy
-				// Even 3 seem to do the job though, but just in case
-				if (i % 128 == 64)
-				{
-					std::this_thread::yield();
-				}
-
-				// Take 50% more yields with the last sample because it helps accuracy additionally the more time that passes
-				if (sample == sample_count - 1 && i % 256 == 128)
-				{
-					std::this_thread::yield();
-				}
+				// The tightest of up to 1024 paired reads is kept (see above): no host yields between them, where it
+				// yielded every 128 reads to make another thread's interruption less likely
 			}
 
 			if (sample < sample_count - 1)

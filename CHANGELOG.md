@@ -4,6 +4,13 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **util: no host yields: a line watch falls back to a timed wait; TSC calibration without yields.** Not yet run on a game.
+  - **What changed:**
+    - **`utils::spin_on_cacheline_once`** (the RSX semaphore acquire's wait) waits, where the processor cannot watch the cache line (no UMWAIT/WAITPKG, no MWAITX, not ARM), with one timed wait of the given bound on the word itself through libretro-common's `retro_waitaddr` (the low half of an 8-byte word), where it yielded the host's thread and came straight back. A writer that wakes the word ends it at once; a guest's plain store is seen when it times out, and the caller looks again. Intel before Alder Lake has neither instruction; AMD has MWAITX and ARM has WFE.
+    - **The TSC frequency calibration** (once, at load) keeps the tightest of up to 1024 paired TSC and clock reads without the host yields it took every 128 reads. Flagged, not changed: it still sleeps 50 ms between its two samples.
+  - **Tests:** test_emu_waits' semaphore wait (a value stored after 20 ms) now also checks it looked fewer than 5000 times: 102 to 120 here, on a processor with no line watch, where it looked 102169 times with the yield. The Windows (MinGW) syntax check, the full build and suites pass. A check fails if a host yield comes back to asm.hpp or sysinfo.cpp.
+
+
 - **SPU: a polled decrementer no longer yields the host's thread.** Not yet run on a game.
   - **What changed:**
     - **An SPU reading its decrementer while it counts down** (SPU Loop Detection on, more than a scheduler jiffy left: the guest is using it as a timer) is marked as waiting so a suspend need not wait for it, and the recompilers' read checks for a stop, as before; the host yield each read made between the two goes, in the interpreter (`read_channel`), the LLVM recompiler and the ASMJIT recompiler.

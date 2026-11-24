@@ -3,6 +3,8 @@
 #include "util/types.hpp"
 #include "util/tsc.hpp"
 #include <retro_atomic.h>
+#include <rthreads/retro_waitaddr.h>
+#include <cstring>
 #include "util/sysinfo.hpp"
 #include <functional>
 #include <thread>
@@ -267,6 +269,17 @@ namespace utils
 		static_assert(sizeof(T) == 4 || sizeof(T) == 8, "Unsupported size for spin_on_cacheline_once");
 		const void* addr = &var;
 
+		// With no instruction that watches a cache line: a timed wait on the word (its low half for 8 bytes) through
+		// libretro-common, where it yielded the host's thread. A writer that wakes the word ends it early; a plain store
+		// (the guest's) is seen when it times out, as the caller looks again
+		[[maybe_unused]] const auto os_wait = [addr, old_value, timeout_us]()
+		{
+			u32 low;
+			std::memcpy(&low, &old_value, sizeof(low));
+			const retro_waitaddr_t w{const_cast<void*>(addr), low};
+			retro_waitaddr_wait(&w, 1, static_cast<s64>(timeout_us ? timeout_us : 1));
+		};
+
 		const auto now_value = [addr]() -> T
 		{
 			void* const p = const_cast<void*>(addr);
@@ -342,14 +355,10 @@ namespace utils
 		}
 		else
 		{
-			std::this_thread::yield();
+			os_wait();
 		}
 #else
-		(void)addr;
-		(void)old_value;
-		(void)timeout_us;
-
-		std::this_thread::yield();
+		os_wait();
 #endif
 	}
 
