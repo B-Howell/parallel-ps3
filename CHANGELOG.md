@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Loading the core no longer sleeps 50 ms to measure the TSC, where the processor states its frequency.** Not yet run on a game.
+  - **What changed:**
+    - **The TSC's frequency** (`utils::get_tsc_freq`, behind the line-watch wait bounds and other cycle timeouts) was measured during static initialisation, so while the core loads. It read the TSC and the wall clock, slept 50 ms, and read both again. This is the pre-existing sleep and wall clock flagged earlier.
+    - It is now read from CPUID first, by a new C89 module (`rpcs3/util/tsc_cpuid.c`), and nothing is measured where the processor states it. Under a hypervisor that has it, that is leaf 0x40000010, the TSC in kHz (VMware, and KVM where enabled). It comes first, because a guest's TSC may be scaled from the host's. Otherwise it is leaf 0x15 (Intel, Goldmont and Skylake on), the crystal's frequency times the TSC's ratio to it, where the leaf names the crystal.
+    - **Flagged:** processors that state neither still measure as before, with the sleep. That covers AMD before Zen 4's leaf 0x15, Skylake desktop parts that leave the crystal unnamed, and this sandbox (KVM hides both leaves). A Skylake crystal table, as Linux keeps, would cover those desktop parts.
+  - **Tests:** `test_tsc_cpuid`: an Alder Lake's leaf 0x15 gives 3.6096 GHz; a leaf 0x15 with no crystal, a ratio of 0, or beyond the processor's last leaf gives none; a hypervisor's leaf comes before leaf 0x15, and is not used with the hypervisor bit clear or a leaf 0x40000000 out of range. The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **Vulkan: a texture readback no longer spins on its copy's event.** Not yet run on a game.
   - **What changed:**
     - **A texture-cache readback** (`cached_texture_section::imp_flush`) waits for the DMA copy that its section queued. The copy signals a VkEvent, and Vulkan has no host wait on an event, so `vk::wait_for_event` polled it on a pause until it was set, for up to 2 seconds.

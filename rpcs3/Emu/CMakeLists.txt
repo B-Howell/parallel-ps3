@@ -77,6 +77,7 @@ target_sources(rpcs3_emu PRIVATE
     ../util/yaml.cpp
     ../util/yaml_value.c
     ../util/init_word.c
+    ../util/tsc_cpuid.c
     ../util/vm_native.cpp
     ../util/dyn_lib.cpp
     ../util/sysinfo.cpp

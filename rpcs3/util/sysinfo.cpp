@@ -38,6 +38,7 @@ DYNAMIC_IMPORT("ntdll.dll", RtlGetVersion, NTSTATUS(OSVERSIONINFOW* lpVersionInf
 
 #include "util/asm.hpp"
 #include "util/fence.hpp"
+#include "util/tsc_cpuid.h"
 
 #if defined(_M_X64) && defined(_MSC_VER)
 extern "C" u64 _xgetbv(u32);
@@ -1029,6 +1030,40 @@ static const bool s_tsc_freq_evaluated = []() -> bool
 #endif
 
 		constexpr ullong timer_freq = 1'000'000'000;
+#endif
+
+#if defined(ARCH_X64)
+		// Where the processor states it (tsc_cpuid.c), nothing is measured: measuring sleeps this, the loading
+		// thread, 50 ms between two reads of the wall clock
+		{
+			tsc_cpuid_leaves_t leaves{};
+			leaves.max_leaf = get_cpuid(0, 0)[0];
+			leaves.hypervisor = (get_cpuid(1, 0)[2] >> 31) & 1;
+
+			if (leaves.hypervisor)
+			{
+				leaves.hv_max_leaf = get_cpuid(0x40000000, 0)[0];
+
+				if (leaves.hv_max_leaf >= 0x40000010 && leaves.hv_max_leaf < 0x50000000)
+				{
+					leaves.hv_tsc_khz = get_cpuid(0x40000010, 0)[0];
+				}
+			}
+
+			if (leaves.max_leaf >= 0x15)
+			{
+				const auto l15 = get_cpuid(0x15, 0);
+				leaves.den = l15[0];
+				leaves.num = l15[1];
+				leaves.crystal_hz = l15[2];
+			}
+
+			if (const u64 stated = tsc_cpuid_freq(&leaves))
+			{
+				printf("[TSC calibration] Stated by the processor: %llu Hz\n", static_cast<ullong>(stated));
+				return stated;
+			}
+		}
 #endif
 
 		constexpr u64 retry_count = 1024;
