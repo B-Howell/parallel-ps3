@@ -511,6 +511,7 @@ SOURCES_RPCS3 := \
 	$(CORE_DIR)/rpcs3/Emu/RSX/Common/rsx_timestamp.c \
 	$(CORE_DIR)/rpcs3/Emu/CPU/jit_host_symbols.c \
 	$(CORE_DIR)/rpcs3/Emu/CPU/cpu_slots.c \
+	$(CORE_DIR)/rpcs3/Emu/CPU/cpu_guard.c \
 	$(CORE_DIR)/rpcs3/Emu/Memory/vm_range_locks.c \
 	$(CORE_DIR)/rpcs3/Emu/Cell/spu_pc_table.c \
 	$(CORE_DIR)/Utilities/jit_bump.c \

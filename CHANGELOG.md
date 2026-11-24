@@ -4,6 +4,26 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **suspend_all: no lock.** The `s_cpu_lock` shared_mutex is replaced by a lock-free guard in a new C89 module (`rpcs3/Emu/CPU/cpu_guard.c`). Not yet run on a game.
+  - **What the lock did, and what does it now:**
+    - **One suspend at a time.** The owner held the lock for the whole of a suspend. The guard keeps an epoch, odd while a suspend runs. The next owner waits for it to be even, then makes it odd with a compare-and-swap, and makes it even again on the way out, by any path.
+    - **A thread entering the list** (`cpu_counter::add`, as a thread starts and as one comes back from waiting) took the lock and blocked for the whole of a suspend. It now publishes itself, then waits out a suspend running then (`cpu_guard_wait_suspend`). That suspend either saw it, already marked waiting, or began before it was there and must not have it run meanwhile. A suspend beginning after sees it. Each side stores before it loads, with a full fence between, so the one or the other sees the other.
+    - **A thread leaving** locked and unlocked it at exit, so a suspend reading it before could finish. After taking itself out it now waits out the suspend running then, and the walkers in the list then (`cpu_guard_retire`).
+    - **The preempt path**, setting yield on every thread, took it shared. It now counts itself in as a walker (`cpu_guard_read_begin`, `_end`), which a thread leaving waits for.
+    - **A push from outside a CPU thread**, finding work queued already, locked and unlocked it to wait out the suspend. It now waits on the epoch.
+    - Every wait is on one of the guard's words changing, woken by whoever changes it where someone waits: no spin, no clock.
+    - A thread can now take a slot freed during a suspend (the lock had stopped it). It enters marked waiting, so the suspend takes it as waiting, and clearing its pause on the way out is harmless.
+    - Code size: CPUThread.o 620 bytes less, and the guard 876.
+    - With these two gone, no `std::lock_guard` is left in the core. The ratchet on them, `LOCK_GUARD_MAX` in the tests' makefile, is now 0.
+  - **Flagged:** a thread leaving waits until no walker is in the list. Walkers coming one after another without a gap could keep it waiting, where the lock let it in ahead of new readers. Walkers come only on a scheduler preempt and are short, so this has not been seen.
+  - **Tests:** `test_cpu_guard` (plain and under TSan):
+    - Three threads suspend 60000 times and never overlap.
+    - Four threads enter and leave the list meanwhile, and none runs in a suspend that did not take it.
+    - An object is swapped out 20000 times under two walkers and the suspends, and is never seen after it is freed.
+    - Mutants fail it: entering without waiting (10 of 10 runs), retiring without waiting for walkers (9 of 10 on this two-core sandbox), suspends not excluding each other (5 of 5).
+    - The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **RSX audio: the period timer no longer calls a static std::function holding the first data thread's `this`.** Not yet run on a game.
   - **What changed:**
     - **The data thread's period wait** (`rsxaudio_periodic_tmr::wait`) took a `std::function` to call when a period was up. The data thread kept the one it passed in a function-local `static`: `[this]() { extract_audio_data(); }`, made once, with the first data thread's `this`. A data thread made again later, as on a second boot, would have had the timer extract audio through the first one, already freed.

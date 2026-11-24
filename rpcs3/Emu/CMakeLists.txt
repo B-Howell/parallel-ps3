@@ -407,6 +407,7 @@ target_sources(rpcs3_emu PRIVATE
     CPU/CPUTranslator.cpp
     CPU/jit_host_symbols.c
     CPU/cpu_slots.c
+    CPU/cpu_guard.c
     CPU/owner_calls.c
 )
 

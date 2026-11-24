@@ -18,6 +18,7 @@
 #include <rthreads/retro_waitaddr.h>
 
 #include "cpu_slots.h"
+#include "cpu_guard.h"
 #include <thread>
 #include <unordered_map>
 #include <map>
@@ -157,8 +158,9 @@ alignas(128) static retro_atomic_64_t s_cpu_counter{0};
 // Linked list of pushed tasks for suspend_all (a cpu_thread::suspend_work*)
 static retro_atomic_ptr_t s_pushed{};
 
-// Lock for suspend_all operations
-static shared_mutex s_cpu_lock;
+// suspend_all's guard: one suspend at a time, and the threads entering and leaving the list, with no lock
+// (cpu_guard.c). It was a shared_mutex, which they blocked on
+alignas(128) static cpu_guard_t s_cpu_guard{};
 
 // Bit allocator for threads which need to be suspended (cpu_slots.c)
 static retro_atomic_128_t s_cpu_bits{};
@@ -183,8 +185,6 @@ namespace cpu_counter
 			break;
 		default: return;
 		}
-
-		std::lock_guard lock(s_cpu_lock);
 
 		u32 id = -1;
 
@@ -218,6 +218,10 @@ namespace cpu_counter
 		}
 
 		s_tls_thread_slot = id;
+
+		// In the list now: a suspend running began before, and may not have it, so this waits it out (it
+		// blocked on the lock for the whole of the suspend). One beginning after sees it
+		cpu_guard_wait_suspend(&s_cpu_guard);
 	}
 
 	static void remove_cpu_bit(u32 bit)
@@ -327,7 +331,8 @@ void cpu_thread::operator()()
 				cpu_counter::remove(_this);
 			}
 
-			s_cpu_lock.lock_unlock();
+			// Out of the list: until no suspend or walker read it before
+			cpu_guard_retire(&s_cpu_guard);
 
 			retro_atomic_fetch_add_64(&s_cpu_counter, -1);
 
@@ -562,7 +567,8 @@ bool cpu_thread::check_state() noexcept
 				{
 					if (cpu_flag::wait - this->state.load())
 					{
-						// Force wait flag (must be set during ownership of s_cpu_lock), this makes the atomic op fail as a side effect
+						// Force wait flag (set before it is in the list, so a suspend seeing it there takes it as waiting),
+						// this makes the atomic op fail as a side effect
 						this->state += cpu_flag::wait;
 						store = true;
 					}
@@ -603,7 +609,8 @@ bool cpu_thread::check_state() noexcept
 
 			if (const u128 bits = load_cpu_bits())
 			{
-				reader_lock lock(s_cpu_lock);
+				// A walker: a thread leaving waits for it to be out
+				cpu_guard_read_begin(&s_cpu_guard);
 
 				cpu_counter::for_all_cpu(bits & load_cpu_bits(), [](cpu_thread* cpu)
 				{
@@ -614,6 +621,8 @@ bool cpu_thread::check_state() noexcept
 
 					return true;
 				});
+
+				cpu_guard_read_end(&s_cpu_guard);
 			}
 		}
 
@@ -1015,8 +1024,8 @@ bool cpu_thread::suspend_work::push(cpu_thread* _this) noexcept
 
 		if (!_this && next)
 		{
-			// If _this == nullptr, it only works if this is the first workload pushed
-			s_cpu_lock.lock_unlock();
+			// If _this == nullptr, it only works if this is the first workload pushed: the suspend running out first
+			cpu_guard_wait_suspend(&s_cpu_guard);
 			continue;
 		}
 	}
@@ -1026,8 +1035,14 @@ bool cpu_thread::suspend_work::push(cpu_thread* _this) noexcept
 	{
 		// Monitor the performance only of the actual suspend processing owner
 
-		// First thread to push the work to the workload list pauses all threads and processes it
-		std::lock_guard lock(s_cpu_lock);
+		// First thread to push the work to the workload list pauses all threads and processes it: after the last
+		// suspend is over, and until this one is (on the way out by any path)
+		cpu_guard_suspend_begin(&s_cpu_guard);
+
+		struct suspend_end_t
+		{
+			~suspend_end_t() { cpu_guard_suspend_end(&s_cpu_guard); }
+		} suspend_end;
 
 		u128 copy = load_cpu_bits();
 
