@@ -4,6 +4,16 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Vulkan: an image's views are a short C89 list, not a hash map.** Not yet run on a game.
+  - **What changed:**
+    - A texture's view is asked of its image on each bind (`viewable_image::get_view`), by its channel remap and aspect. An image view's per-format subviews (`image_view::as`) work the same way. Both were kept in `std::unordered_map`s of `unique_ptr`s, hashed on each look, with a node allocated per view. An image has only a few views.
+    - They are now a short list searched in turn, in a new C89 module (`rpcs3/util/key_list.c`). The first four are kept in the list itself, so nothing is allocated, and more go on the heap as it grows.
+    - A small owner, `vk::view_list` in `vkutils/image.h`, deletes the views as the maps' `unique_ptr`s did. It hands them to the GC when the image's component layout changes, and moves them with the image when it is cloned.
+    - **Measured:** a look at 1 to 4 views takes 3.7 to 4.7 ns, where the map took 7.1 to 7.3 ns.
+    - **Smaller code:** image.o 287 bytes less; the module is 957 bytes.
+  - **Tests:** `test_key_list`: found by key (a 0 key, and keys differing only in their top half, kept apart); four kept in the list with nothing allocated, more on the heap and all still found after it grows twice; moved, with the old list empty and usable; freed and usable again. Mutants fail it: growth copying only half the keys, and a move leaving the source as it was. The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **Vulkan: the sampler pool is C89, in a fixed table.** Not yet run on a game.
   - **What changed:**
     - `vk::sampler_pool_t` holds the renderer's samplers by their key. It is looked up on each texture bind that changes its sampler, and a sampler is made on a key not yet seen. It kept them in two `std::unordered_map`s of `unique_ptr`s, one for samplers with no custom border colour and one for the rest. Both were hashed on each lookup, and each new sampler allocated a node.

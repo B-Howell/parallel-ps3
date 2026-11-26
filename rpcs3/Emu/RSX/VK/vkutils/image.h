@@ -8,6 +8,7 @@
 #include "ex.h"
 #include "memory.h"
 #include "unique_resource.h"
+#include "util/key_list.h"
 
 #include <stack>
 
@@ -104,6 +105,33 @@ namespace vk
 		VkDevice m_device = VK_NULL_HANDLE;
 	};
 
+	struct image_view;
+
+	// Image views by key, owned: a short list searched in turn, the first four kept in it (util/key_list.c), where
+	// it was an STL hash map of unique_ptrs
+	class view_list
+	{
+		key_list_t m_list{};
+
+	public:
+		view_list() = default;
+		view_list(const view_list&) = delete;
+		view_list& operator=(const view_list&) = delete;
+		view_list(view_list&& other) noexcept { key_list_move(&m_list, &other.m_list); }
+		view_list& operator=(view_list&& other) noexcept;
+		~view_list();
+
+		image_view* find(u64 key) const { return static_cast<image_view*>(key_list_find(&m_list, key)); }
+		image_view* add(u64 key, std::unique_ptr<image_view>&& view);
+		bool empty() const { return m_list.count == 0; }
+
+		// Each one handed over to @take, as its owner now; the list empty after
+		template <typename F>
+		void take_all(F&& take);
+
+		void clear();
+	};
+
 	struct image_view
 	{
 		VkImageView value = VK_NULL_HANDLE;
@@ -131,7 +159,7 @@ namespace vk
 		VkFormat format() const { return info.format; }
 
 	private:
-		std::unordered_map<VkFormat, std::unique_ptr<vk::image_view>> m_subviews;
+		view_list m_subviews;
 
 		VkDevice m_device;
 		vk::image* m_resource = nullptr;
@@ -141,10 +169,21 @@ namespace vk
 		void set_debug_name(std::string_view name);
 	};
 
+	template <typename F>
+	void view_list::take_all(F&& take)
+	{
+		for (u32 i = 0; i < m_list.count; i++)
+		{
+			take(std::unique_ptr<image_view>(static_cast<image_view*>(key_list_at(&m_list, i))));
+		}
+
+		key_list_free(&m_list);
+	}
+
 	class viewable_image : public image
 	{
 	protected:
-		std::unordered_map<u64, std::unique_ptr<vk::image_view>> views;
+		view_list views;
 		viewable_image* clone();
 
 	public:

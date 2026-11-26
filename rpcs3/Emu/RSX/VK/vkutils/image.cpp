@@ -401,10 +401,9 @@ namespace vk
 			? this->m_root_view
 			: this;
 
-		if (auto found = self->m_subviews.find(format);
-			found != self->m_subviews.end())
+		if (auto found = self->m_subviews.find(format))
 		{
-			return found->second.get();
+			return found;
 		}
 
 		// Create a derived
@@ -412,9 +411,7 @@ namespace vk
 		view->m_resource = self->m_resource;
 		view->m_root_view = self;
 
-		auto ret = view.get();
-		self->m_subviews.emplace(format, std::move(view));
-		return ret;
+		return self->m_subviews.add(format, std::move(view));
 	}
 
 	u32 image_view::encoded_component_map() const
@@ -460,6 +457,40 @@ namespace vk
 		}
 	}
 
+	view_list& view_list::operator=(view_list&& other) noexcept
+	{
+		if (this != &other)
+		{
+			clear();
+			key_list_move(&m_list, &other.m_list);
+		}
+
+		return *this;
+	}
+
+	view_list::~view_list()
+	{
+		clear();
+	}
+
+	image_view* view_list::add(u64 key, std::unique_ptr<image_view>&& view)
+	{
+		image_view* const p = view.get();
+		ensure(key_list_add(&m_list, key, p));
+		view.release();
+		return p;
+	}
+
+	void view_list::clear()
+	{
+		for (u32 i = 0; i < m_list.count; i++)
+		{
+			delete static_cast<image_view*>(key_list_at(&m_list, i));
+		}
+
+		key_list_free(&m_list);
+	}
+
 	viewable_image* viewable_image::clone()
 	{
 		// Destructive cloning. The clone grabs the GPU objects owned by this instance.
@@ -489,11 +520,10 @@ namespace vk
 		}
 
 		const u64 storage_key = remap_encoding | (static_cast<u64>(mask) << 32);
-		auto found = views.find(storage_key);
-		if (found != views.end())
+		if (auto found = views.find(storage_key))
 		{
-			ensure(found->second->info.subresourceRange.aspectMask & mask);
-			return found->second.get();
+			ensure(found->info.subresourceRange.aspectMask & mask);
+			return found;
 		}
 
 		VkComponentMapping real_mapping;
@@ -518,9 +548,7 @@ namespace vk
 		ensure(range.aspectMask);
 
 		auto view = std::make_unique<vk::image_view>(*g_render_device, this, format(), VK_IMAGE_VIEW_TYPE_MAX_ENUM, real_mapping, range);
-		auto result = view.get();
-		views.emplace(storage_key, std::move(view));
-		return result;
+		return views.add(storage_key, std::move(view));
 	}
 
 	void viewable_image::set_native_component_layout(VkComponentMapping new_layout)
@@ -534,11 +562,10 @@ namespace vk
 
 			// Safely discard existing views
 			auto gc = vk::get_resource_manager();
-			for (auto& p : views)
+			views.take_all([gc](std::unique_ptr<image_view> view)
 			{
-				gc->dispose(p.second);
-			}
-			views.clear();
+				gc->dispose(view);
+			});
 		}
 	}
 
