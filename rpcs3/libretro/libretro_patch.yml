@@ -7,8 +7,8 @@ Version: 1.2
 # its executable with this core's patch parser, with the patches it names
 # (Unlock FPS), and its code read back.
 
-# Demon's Souls (US, disc 1.00): debug title menu, fixed exposure and fixed
-# frame pacing
+# Demon's Souls (US, disc 1.00): debug title and in-game menus, fixed exposure
+# and fixed frame pacing
 
 PPU-83681f6110d33442329073b72b8dc88a2f677172:
   "Title Debug Menu":
@@ -160,3 +160,154 @@ PPU-83681f6110d33442329073b72b8dc88a2f677172:
       - [ be32, 0x016C7C68, 0xFFE0E090 ] # fmr f31,f28 // Unlock FPS's timestep: its constant, not host clock ticks
       - [ bef32, 0x016C7C88, "Frame Rate" ] # the constant (Unlock FPS's 50 ms limit), now the frame time
       - [ be32, 0x0002B8F8, 0x20A50001 ] # subfic r5,r5,1 // vblanks per flip: 1 in the 60 FPS mode Unlock FPS sets (it was 0, no wait), 2 in the retail 30 FPS one, as before
+  "In-Game Debug Menu":
+    Games:
+      "Demon's Souls":
+        BLUS30443: [ 01.00 ]
+    Author: "gibbed (debug menu), LibretroAdmin"
+    Notes: >-
+      Select opens and closes the developers' debug menu in game: its pages (HG MAN graphics, MEM MAN, PERF MAN,
+      Param Man, the character and camera pages and more) are built at boot in the retail game, but never drawn
+      nor read. While it is open, the game does not take the pad. From gibbed's DemonsSoulsDebug, with stack frames
+      of its own and absolute calls, in two code caves the patch engine allocates.
+    Patch Version: 1.0
+    Patch:
+      # The menu built with a root node: in place of the call to create_debug_menu at 0x00020F44
+      - [ calloc, 0x00020F46, 11 ] # Hook 0x00020F44 // Original bl 0x00015A58; returns to 0x00020F48
+      - [ be32, 0x00000000, 0xF821FF81 ] # stdu r1, -0x80(r1)
+      - [ be32, 0x00000000, 0xFBC10070 ] # std r30, 0x70(r1)
+      - [ be32, 0x00000000, 0x48015A5B ] # bla 0x15a58
+      - [ be32, 0x00000000, 0x7C7E1B78 ] # mr r30, r3
+      - [ be32, 0x00000000, 0x8062948C ] # lwz r3, -0x6b74(r2)
+      - [ be32, 0x00000000, 0x80638094 ] # lwz r3, -0x7f6c(r3)
+      - [ be32, 0x00000000, 0x48406F0B ] # bla 0x406f08
+      - [ be32, 0x00000000, 0x907E0004 ] # stw r3, 4(r30)
+      - [ be32, 0x00000000, 0x7FC3F378 ] # mr r3, r30
+      - [ be32, 0x00000000, 0xEBC10070 ] # ld r30, 0x70(r1)
+      - [ be32, 0x00000000, 0x38210080 ] # addi r1, r1, 0x80
+      # Drawn and read each frame: in place of the empty function at 0x00015A50 (a lone blr), called from 0x0001BB38
+      - [ calloc, 0x00015A52, 124 ] # Hook 0x00015A50 // Original blr; returns with its own blr
+      - [ be32, 0x00000000, 0x7C0802A6 ] # mflr r0
+      - [ be32, 0x00000000, 0xF821FF41 ] # stdu r1, -0xc0(r1)
+      - [ be32, 0x00000000, 0xF80100D0 ] # std r0, 0xd0(r1)
+      - [ be32, 0x00000000, 0xFB810090 ] # std r28, 0x90(r1)
+      - [ be32, 0x00000000, 0xFBA10098 ] # std r29, 0x98(r1)
+      - [ be32, 0x00000000, 0xFBC100A0 ] # std r30, 0xa0(r1)
+      - [ be32, 0x00000000, 0xFBE100A8 ] # std r31, 0xa8(r1)
+      - [ be32, 0x00000000, 0x80628068 ] # lwz r3, -0x7f98(r2)
+      - [ be32, 0x00000000, 0x80638004 ] # lwz r3, -0x7ffc(r3)
+      - [ be32, 0x00000000, 0x83830000 ] # lwz r28, 0(r3)
+      - [ be32, 0x00000000, 0x2B1C0000 ] # cmplwi cr6, r28, 0
+      - [ be32, 0x00000000, 0x419A01A4 ] # beq cr6, 0x1d0
+      - [ be32, 0x00000000, 0x83BC000C ] # lwz r29, 0xc(r28)
+      - [ be32, 0x00000000, 0x2B1D0000 ] # cmplwi cr6, r29, 0
+      - [ be32, 0x00000000, 0x419A0198 ] # beq cr6, 0x1d0
+      - [ be32, 0x00000000, 0x83DC0004 ] # lwz r30, 4(r28)
+      - [ be32, 0x00000000, 0x2B1E0000 ] # cmplwi cr6, r30, 0
+      - [ be32, 0x00000000, 0x419A018C ] # beq cr6, 0x1d0
+      - [ be32, 0x00000000, 0x807C0008 ] # lwz r3, 8(r28)
+      - [ be32, 0x00000000, 0x2B030000 ] # cmplwi cr6, r3, 0
+      - [ be32, 0x00000000, 0x419A0120 ] # beq cr6, 0x170
+      - [ be32, 0x00000000, 0x48400193 ] # bla 0x400190
+      - [ be32, 0x00000000, 0x817C0008 ] # lwz r11, 8(r28)
+      - [ be32, 0x00000000, 0xA16B000C ] # lhz r11, 0xc(r11)
+      - [ be32, 0x00000000, 0x556B07FF ] # clrlwi. r11, r11, 0x1f
+      - [ be32, 0x00000000, 0x418200C8 ] # beq 0x12c
+      - [ be32, 0x00000000, 0x817C0010 ] # lwz r11, 0x10(r28)
+      - [ be32, 0x00000000, 0x39200003 ] # li r9, 3
+      - [ be32, 0x00000000, 0x39400001 ] # li r10, 1
+      - [ be32, 0x00000000, 0x390B0004 ] # addi r8, r11, 4
+      - [ be32, 0x00000000, 0x396BFFFF ] # addi r11, r11, -1
+      - [ be32, 0x00000000, 0x7D284BD6 ] # divw r9, r8, r9
+      - [ be32, 0x00000000, 0x316BFFFF ] # addic r11, r11, -1
+      - [ be32, 0x00000000, 0x1D690003 ] # mulli r11, r9, 3
+      - [ be32, 0x00000000, 0x7D6B4050 ] # subf r11, r11, r8
+      - [ be32, 0x00000000, 0x7D273910 ] # subfe r9, r7, r7
+      - [ be32, 0x00000000, 0x390BFFFF ] # addi r8, r11, -1
+      - [ be32, 0x00000000, 0x917C0010 ] # stw r11, 0x10(r28)
+      - [ be32, 0x00000000, 0x2B0B0001 ] # cmplwi cr6, r11, 1
+      - [ be32, 0x00000000, 0x419A0010 ] # beq cr6, 0xac
+      - [ be32, 0x00000000, 0x39600000 ] # li r11, 0
+      - [ be32, 0x00000000, 0x997D0060 ] # stb r11, 0x60(r29)
+      - [ be32, 0x00000000, 0x4800000C ] # b 0xb4
+      - [ be32, 0x00000000, 0x39600001 ] # li r11, 1
+      - [ be32, 0x00000000, 0x997D0060 ] # stb r11, 0x60(r29)
+      - [ be32, 0x00000000, 0x7D2A5038 ] # and r10, r9, r10
+      - [ be32, 0x00000000, 0x3108FFFF ] # addic r8, r8, -1
+      - [ be32, 0x00000000, 0x39600001 ] # li r11, 1
+      - [ be32, 0x00000000, 0x7D284110 ] # subfe r9, r8, r8
+      - [ be32, 0x00000000, 0x554A063E ] # clrlwi r10, r10, 0x18
+      - [ be32, 0x00000000, 0x7D2B5838 ] # and r11, r9, r11
+      - [ be32, 0x00000000, 0x556B063E ] # clrlwi r11, r11, 0x18
+      - [ be32, 0x00000000, 0x7F0A5840 ] # cmplw cr6, r10, r11
+      - [ be32, 0x00000000, 0x419A0058 ] # beq cr6, 0x12c
+      - [ be32, 0x00000000, 0x2B0B0000 ] # cmplwi cr6, r11, 0
+      - [ be32, 0x00000000, 0x419A002C ] # beq cr6, 0x108
+      - [ be32, 0x00000000, 0x38800000 ] # li r4, 0
+      - [ be32, 0x00000000, 0x38600000 ] # li r3, 0
+      - [ be32, 0x00000000, 0x481C67AB ] # bla 0x1c67a8
+      - [ be32, 0x00000000, 0x38800001 ] # li r4, 1
+      - [ be32, 0x00000000, 0x38600000 ] # li r3, 0
+      - [ be32, 0x00000000, 0x481C67AB ] # bla 0x1c67a8
+      - [ be32, 0x00000000, 0x38800003 ] # li r4, 3
+      - [ be32, 0x00000000, 0x38600000 ] # li r3, 0
+      - [ be32, 0x00000000, 0x481C67AB ] # bla 0x1c67a8
+      - [ be32, 0x00000000, 0x48000028 ] # b 0x12c
+      - [ be32, 0x00000000, 0x38800000 ] # li r4, 0
+      - [ be32, 0x00000000, 0x38600000 ] # li r3, 0
+      - [ be32, 0x00000000, 0x481C6763 ] # bla 0x1c6760
+      - [ be32, 0x00000000, 0x38800001 ] # li r4, 1
+      - [ be32, 0x00000000, 0x38600000 ] # li r3, 0
+      - [ be32, 0x00000000, 0x481C6763 ] # bla 0x1c6760
+      - [ be32, 0x00000000, 0x38800003 ] # li r4, 3
+      - [ be32, 0x00000000, 0x38600000 ] # li r3, 0
+      - [ be32, 0x00000000, 0x481C6763 ] # bla 0x1c6760
+      - [ be32, 0x00000000, 0x807C0010 ] # lwz r3, 0x10(r28)
+      - [ be32, 0x00000000, 0x2B030001 ] # cmplwi cr6, r3, 1
+      - [ be32, 0x00000000, 0x409A003C ] # bne cr6, 0x170
+      - [ be32, 0x00000000, 0x3860FFFF ] # li r3, -1
+      - [ be32, 0x00000000, 0x809C0008 ] # lwz r4, 8(r28)
+      - [ be32, 0x00000000, 0x90640004 ] # stw r3, 4(r4)
+      - [ be32, 0x00000000, 0x7C5F1378 ] # mr r31, r2
+      - [ be32, 0x00000000, 0x807E0000 ] # lwz r3, 0(r30)
+      - [ be32, 0x00000000, 0x80630008 ] # lwz r3, 8(r3)
+      - [ be32, 0x00000000, 0x80430004 ] # lwz r2, 4(r3)
+      - [ be32, 0x00000000, 0x80630000 ] # lwz r3, 0(r3)
+      - [ be32, 0x00000000, 0x7C6903A6 ] # mtctr r3
+      - [ be32, 0x00000000, 0x38A00001 ] # li r5, 1
+      - [ be32, 0x00000000, 0x809C0008 ] # lwz r4, 8(r28)
+      - [ be32, 0x00000000, 0x7FC3F378 ] # mr r3, r30
+      - [ be32, 0x00000000, 0x4E800421 ] # bctrl 
+      - [ be32, 0x00000000, 0x7FE2FB78 ] # mr r2, r31
+      - [ be32, 0x00000000, 0x7FA3EB78 ] # mr r3, r29
+      - [ be32, 0x00000000, 0x48400F33 ] # bla 0x400f30
+      - [ be32, 0x00000000, 0x80628560 ] # lwz r3, -0x7aa0(r2)
+      - [ be32, 0x00000000, 0xC02382B0 ] # lfs f1, -0x7d50(r3)
+      - [ be32, 0x00000000, 0x7FA3EB78 ] # mr r3, r29
+      - [ be32, 0x00000000, 0x484008A3 ] # bla 0x4008a0
+      - [ be32, 0x00000000, 0x807C0010 ] # lwz r3, 0x10(r28)
+      - [ be32, 0x00000000, 0x2B030000 ] # cmplwi cr6, r3, 0
+      - [ be32, 0x00000000, 0x419A0040 ] # beq cr6, 0x1d0
+      - [ be32, 0x00000000, 0x7FA3EB78 ] # mr r3, r29
+      - [ be32, 0x00000000, 0x48401C63 ] # bla 0x401c60
+      - [ be32, 0x00000000, 0x3860FFFF ] # li r3, -1
+      - [ be32, 0x00000000, 0x907D0004 ] # stw r3, 4(r29)
+      - [ be32, 0x00000000, 0x7C5F1378 ] # mr r31, r2
+      - [ be32, 0x00000000, 0x807E0000 ] # lwz r3, 0(r30)
+      - [ be32, 0x00000000, 0x8063000C ] # lwz r3, 0xc(r3)
+      - [ be32, 0x00000000, 0x80430004 ] # lwz r2, 4(r3)
+      - [ be32, 0x00000000, 0x80630000 ] # lwz r3, 0(r3)
+      - [ be32, 0x00000000, 0x7C6903A6 ] # mtctr r3
+      - [ be32, 0x00000000, 0x38A00001 ] # li r5, 1
+      - [ be32, 0x00000000, 0x7FA4EB78 ] # mr r4, r29
+      - [ be32, 0x00000000, 0x7FC3F378 ] # mr r3, r30
+      - [ be32, 0x00000000, 0x4E800421 ] # bctrl 
+      - [ be32, 0x00000000, 0x7FE2FB78 ] # mr r2, r31
+      - [ be32, 0x00000000, 0xEB810090 ] # ld r28, 0x90(r1)
+      - [ be32, 0x00000000, 0xEBA10098 ] # ld r29, 0x98(r1)
+      - [ be32, 0x00000000, 0xEBC100A0 ] # ld r30, 0xa0(r1)
+      - [ be32, 0x00000000, 0xEBE100A8 ] # ld r31, 0xa8(r1)
+      - [ be32, 0x00000000, 0xE80100D0 ] # ld r0, 0xd0(r1)
+      - [ be32, 0x00000000, 0x7C0803A6 ] # mtlr r0
+      - [ be32, 0x00000000, 0x382100C0 ] # addi r1, r1, 0xc0
+      - [ be32, 0x00000000, 0x4E800020 ] # blr 

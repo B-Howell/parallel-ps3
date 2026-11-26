@@ -4,6 +4,20 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Patch Manager: Demon's Souls' in-game debug menu.** Not yet run on a game.
+  - **What changed:** a fourth Demon's Souls (US 1.00) patch in the core's own patch file, `libretro_patch.yml`: **In-Game Debug Menu**.
+    - Select opens and closes the developers' debug menu in game. The retail game builds all its pages at boot but never draws them or reads input for them: HG MAN (graphics), MEM MAN, PERF MAN, Param Man, the character and camera pages and more.
+    - While it is open, the game does not take the pad.
+    - It is a port of gibbed's DemonsSoulsDebug runtime menu into two code caves the patch engine allocates:
+      - **Building the menu:** one cave takes the place of the call at `0x00020F44` that builds the menu, and gives it its root node.
+      - **Each frame:** the other takes the place of the empty function at `0x00015A50`, a lone `blr` the game calls every frame. It draws the menu and reads its input.
+    - **Changes from gibbed's code:**
+      - Each cave keeps a proper stack frame of its own. gibbed's wrapper wrote over its stack back-chain.
+      - Calls into the game are absolute (`bla`), so they hold wherever the engine puts the cave.
+  - **How it was checked:** the core's patch parser applied it alongside the other Demon's Souls patches and RPCS3's Unlock FPS, with no overlap. The caves were disassembled, and every branch inside them was checked to stay inside. Every call target was checked to be a function's start, and the menu's root label ("ROOT") and menu pointer were read from the executable.
+  - **Tests:** `test_game_patches` reads every patch in the core's file, this one included. The full build and suites pass.
+
+
 - **Patch Manager: the core's own game patches, starting with Demon's Souls.** Not yet run on a game.
   - **What changed:**
     - **A patch file of the core's own** (`rpcs3/libretro/libretro_patch.yml`) is compiled in, by both the Makefile and the CMake build. Like RPCS3's `patch.yml`, it is written to `patches/libretro_patch.yml` in the config folder when missing or different. The patch engine loads it after `patch.yml` (`append_global_patches`), and the Patch Manager lists its patches with the rest.
