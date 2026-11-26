@@ -1,0 +1,162 @@
+Version: 1.2
+
+# The core's own game patches, beside RPCS3's patch.yml: compiled into the core
+# and written to patches/libretro_patch.yml in the config dir as patch.yml is
+# (install_patches in libretro_core.cpp), read by the patch engine after it
+# (append_global_patches) and listed in the Patch Manager. Each was applied to
+# its executable with this core's patch parser, with the patches it names
+# (Unlock FPS), and its code read back.
+
+# Demon's Souls (US, disc 1.00): debug title menu, fixed exposure and fixed
+# frame pacing
+
+PPU-83681f6110d33442329073b72b8dc88a2f677172:
+  "Title Debug Menu":
+    Games:
+      "Demon's Souls":
+        BLUS30443: [ 01.00 ]
+    Author: "gibbed (title menu), LibretroAdmin"
+    Notes: >-
+      The title screen offers the developers' menu: Model Viewer, Map Select, FaceGen, SFX Test, Title List and the
+      two Title entries. Its labels are written in English, and kept clear of the code "Unlock FPS" stores in the
+      same space, so both can be on. From gibbed's DemonsSoulsDebug; its in-game debug menu (Select) needs more code
+      and is not in this patch. Some entries may need developer files the retail disc lacks.
+    Patch Version: 1.0
+    Patch:
+      - [ be32, 0x0016F444, 0x4BFED435 ] # bl 0x0015C878 // build the debug title menu, not the retail one (0x0018B7D0)
+      # Model Viewer at 0x016C7C00
+      - [ be16, 0x016C7C00, 0x004D ]
+      - [ be16, 0x016C7C02, 0x006F ]
+      - [ be16, 0x016C7C04, 0x0064 ]
+      - [ be16, 0x016C7C06, 0x0065 ]
+      - [ be16, 0x016C7C08, 0x006C ]
+      - [ be16, 0x016C7C0A, 0x0020 ]
+      - [ be16, 0x016C7C0C, 0x0056 ]
+      - [ be16, 0x016C7C0E, 0x0069 ]
+      - [ be16, 0x016C7C10, 0x0065 ]
+      - [ be16, 0x016C7C12, 0x0077 ]
+      - [ be16, 0x016C7C14, 0x0065 ]
+      - [ be16, 0x016C7C16, 0x0072 ]
+      - [ be16, 0x016C7C18, 0x0000 ]
+      - [ bd32, 0x01857100, 0x016C7C00 ] # its entry in the menu's label table
+      # Map Select at 0x016C7C1A
+      - [ be16, 0x016C7C1A, 0x004D ]
+      - [ be16, 0x016C7C1C, 0x0061 ]
+      - [ be16, 0x016C7C1E, 0x0070 ]
+      - [ be16, 0x016C7C20, 0x0020 ]
+      - [ be16, 0x016C7C22, 0x0053 ]
+      - [ be16, 0x016C7C24, 0x0065 ]
+      - [ be16, 0x016C7C26, 0x006C ]
+      - [ be16, 0x016C7C28, 0x0065 ]
+      - [ be16, 0x016C7C2A, 0x0063 ]
+      - [ be16, 0x016C7C2C, 0x0074 ]
+      - [ be16, 0x016C7C2E, 0x0000 ]
+      - [ bd32, 0x01857108, 0x016C7C1A ] # its entry in the menu's label table
+      # Title List at 0x016C7C90
+      - [ be16, 0x016C7C90, 0x0054 ]
+      - [ be16, 0x016C7C92, 0x0069 ]
+      - [ be16, 0x016C7C94, 0x0074 ]
+      - [ be16, 0x016C7C96, 0x006C ]
+      - [ be16, 0x016C7C98, 0x0065 ]
+      - [ be16, 0x016C7C9A, 0x0020 ]
+      - [ be16, 0x016C7C9C, 0x004C ]
+      - [ be16, 0x016C7C9E, 0x0069 ]
+      - [ be16, 0x016C7CA0, 0x0073 ]
+      - [ be16, 0x016C7CA2, 0x0074 ]
+      - [ be16, 0x016C7CA4, 0x0000 ]
+      - [ bd32, 0x01857124, 0x016C7C90 ] # its entry in the menu's label table
+      # FaceGen at 0x016C7CA6
+      - [ be16, 0x016C7CA6, 0x0046 ]
+      - [ be16, 0x016C7CA8, 0x0061 ]
+      - [ be16, 0x016C7CAA, 0x0063 ]
+      - [ be16, 0x016C7CAC, 0x0065 ]
+      - [ be16, 0x016C7CAE, 0x0047 ]
+      - [ be16, 0x016C7CB0, 0x0065 ]
+      - [ be16, 0x016C7CB2, 0x006E ]
+      - [ be16, 0x016C7CB4, 0x0000 ]
+      - [ bd32, 0x01857120, 0x016C7CA6 ] # its entry in the menu's label table
+      # Title (FS server) at 0x016C7CB8
+      - [ be16, 0x016C7CB8, 0x0054 ]
+      - [ be16, 0x016C7CBA, 0x0069 ]
+      - [ be16, 0x016C7CBC, 0x0074 ]
+      - [ be16, 0x016C7CBE, 0x006C ]
+      - [ be16, 0x016C7CC0, 0x0065 ]
+      - [ be16, 0x016C7CC2, 0x0020 ]
+      - [ be16, 0x016C7CC4, 0x0028 ]
+      - [ be16, 0x016C7CC6, 0x0046 ]
+      - [ be16, 0x016C7CC8, 0x0053 ]
+      - [ be16, 0x016C7CCA, 0x0020 ]
+      - [ be16, 0x016C7CCC, 0x0073 ]
+      - [ be16, 0x016C7CCE, 0x0065 ]
+      - [ be16, 0x016C7CD0, 0x0072 ]
+      - [ be16, 0x016C7CD2, 0x0076 ]
+      - [ be16, 0x016C7CD4, 0x0065 ]
+      - [ be16, 0x016C7CD6, 0x0072 ]
+      - [ be16, 0x016C7CD8, 0x0029 ]
+      - [ be16, 0x016C7CDA, 0x0000 ]
+      - [ bd32, 0x01857128, 0x016C7CB8 ] # its entry in the menu's label table
+      # SFX Test at 0x016C7CDC
+      - [ be16, 0x016C7CDC, 0x0053 ]
+      - [ be16, 0x016C7CDE, 0x0046 ]
+      - [ be16, 0x016C7CE0, 0x0058 ]
+      - [ be16, 0x016C7CE2, 0x0020 ]
+      - [ be16, 0x016C7CE4, 0x0054 ]
+      - [ be16, 0x016C7CE6, 0x0065 ]
+      - [ be16, 0x016C7CE8, 0x0073 ]
+      - [ be16, 0x016C7CEA, 0x0074 ]
+      - [ be16, 0x016C7CEC, 0x0000 ]
+      - [ bd32, 0x01857114, 0x016C7CDC ] # its entry in the menu's label table
+      # Title (SCE server) at 0x016C7CF0
+      - [ be16, 0x016C7CF0, 0x0054 ]
+      - [ be16, 0x016C7CF2, 0x0069 ]
+      - [ be16, 0x016C7CF4, 0x0074 ]
+      - [ be16, 0x016C7CF6, 0x006C ]
+      - [ be16, 0x016C7CF8, 0x0065 ]
+      - [ be16, 0x016C7CFA, 0x0020 ]
+      - [ be16, 0x016C7CFC, 0x0028 ]
+      - [ be16, 0x016C7CFE, 0x0053 ]
+      - [ be16, 0x016C7D00, 0x0043 ]
+      - [ be16, 0x016C7D02, 0x0045 ]
+      - [ be16, 0x016C7D04, 0x0020 ]
+      - [ be16, 0x016C7D06, 0x0073 ]
+      - [ be16, 0x016C7D08, 0x0065 ]
+      - [ be16, 0x016C7D0A, 0x0072 ]
+      - [ be16, 0x016C7D0C, 0x0076 ]
+      - [ be16, 0x016C7D0E, 0x0065 ]
+      - [ be16, 0x016C7D10, 0x0072 ]
+      - [ be16, 0x016C7D12, 0x0029 ]
+      - [ be16, 0x016C7D14, 0x0000 ]
+      - [ bd32, 0x0185712C, 0x016C7CF0 ] # its entry in the menu's label table
+  "Disable Dynamic Exposure":
+    Games:
+      "Demon's Souls":
+        BLUS30443: [ 01.00 ]
+    Author: "Whatcookie (address), LibretroAdmin"
+    Notes: >-
+      Tone mapping keeps a fixed exposure instead of adapting to the scene: the debug menu's ToneMap switch
+      (graphics manager byte 0x6EE) on from the start. Stops exposure flicker, and saves the GPU the exposure pass.
+    Patch Version: 1.0
+    Patch:
+      - [ be16, 0x00025EDC, 0x981F ] # stb r0,0x6EE(r31) // r0 is 1 here; the retail code stores 0 from r29
+  "Fixed Frame Pacing":
+    Games:
+      "Demon's Souls":
+        BLUS30443: [ 01.00 ]
+    Author: "LibretroAdmin"
+    Notes: >-
+      Needs "Unlock FPS" (alone it changes nothing). The game advances a fixed time each frame and waits for one
+      vblank per frame, instead of measuring the host clock: pacing comes from the emulated vblank, the same every run, with no catch-up jumps.
+      Choose 60 FPS with a 60 Hz vblank (default), or 120 FPS with the Vblank Rate set to 120. If the game cannot
+      hold the rate it slows down, as on a console, rather than skipping time.
+    Configurable Values:
+      "Frame Rate":
+        Type: double_enum
+        Value: 0.016666668
+        Allowed Values:
+          "60 FPS": 0.016666668
+          "120 FPS (Vblank Rate 120)": 0.008333334
+    Patch Version: 1.0
+    Patch:
+      - [ be32, 0x016C7C68, 0xFFE0E090 ] # fmr f31,f28 // Unlock FPS's timestep: its constant, not host clock ticks
+      - [ bef32, 0x016C7C88, "Frame Rate" ] # the constant (Unlock FPS's 50 ms limit), now the frame time
+      - [ be32, 0x0002B8F8, 0x20A50001 ] # subfic r5,r5,1 // vblanks per flip: 1 in the 60 FPS mode Unlock FPS sets (it was 0, no wait), 2 in the retail 30 FPS one, as before

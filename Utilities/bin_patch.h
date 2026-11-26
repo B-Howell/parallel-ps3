@@ -29,6 +29,7 @@ public:
 
 	// Returns the filepath for the imported_patch.yml
 	static std::string get_imported_patch_path();
+	static std::string get_core_patch_path();
 
 	// Reads a patch file, with patch_config.yml saying which patches are on,
 	// into @db: true also when there is no such file

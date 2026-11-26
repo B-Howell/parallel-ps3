@@ -373,7 +373,7 @@ $(OBJ_LIBRETRO): FLAGS := $(FLAGS_LIBRETRO)
 
 # The core's 4 KiB stack frame, held to by the core's own code and the RPCS3
 # code reworked for it: a frame past it does not build
-STACK_CHECKED := $(filter-out %/libretro_ui_icons.o %/libretro_config_database.o %/libretro_patches.o %/libretro_vblank_unlock.o,$(OBJ_LIBRETRO)) \
+STACK_CHECKED := $(filter-out %/libretro_ui_icons.o %/libretro_config_database.o %/libretro_patches.o %/libretro_core_patches.o %/libretro_vblank_unlock.o,$(OBJ_LIBRETRO)) \
 	$(addprefix $(CORE_DIR)/rpcs3/,Emu/Cell/Modules/cellRec.o util/media_utils.o util/video_provider.o Emu/RSX/VK/VKLibretro.o Emu/Io/MouseHandler.o)
 $(STACK_CHECKED): FLAGS += -Wframe-larger-than=4096 -Werror=frame-larger-than=4096
 $(call objs,$(filter %.c,$(SOURCES_LIBRETRO) $(OS_LIBRETRO))): FLAGS := $(FLAGS_RPCS3_C)
@@ -609,7 +609,7 @@ ICON_NAMES := $(sort $(patsubst $(ICON_DIR)/%,%,$(wildcard $(ICON_DIR)/*.png $(I
 # stay older than embed and its inputs; a stamp beside it records the run, and
 # the source follows the stamp. Without it each of these ran on every build -
 # the game patches fetched from rpcs3.net every time.
-EMBED_STAMPS := $(addprefix $(GEN_DIR)/,libretro_ui_icons.stamp libretro_config_database.stamp libretro_vblank_unlock.stamp libretro_patches.stamp)
+EMBED_STAMPS := $(addprefix $(GEN_DIR)/,libretro_ui_icons.stamp libretro_config_database.stamp libretro_vblank_unlock.stamp libretro_patches.stamp libretro_core_patches.stamp)
 
 $(GEN_DIR)/%.cpp: $(GEN_DIR)/%.stamp
 	@[ -f $@ ] || { rm -f $<; $(MAKE) $<; }
@@ -625,6 +625,12 @@ $(GEN_DIR)/libretro_ui_icons.stamp: $(EMBED) $(addprefix $(ICON_DIR)/,$(ICON_NAM
 
 $(GEN_DIR)/libretro_config_database.stamp: $(EMBED) $(CORE_DIR)/rpcs3/libretro/config_database.dat
 	$(EMBED) bytes $(GEN_DIR)/libretro_config_database.cpp g_libretro_config_database g_libretro_config_database_size config_database.dat $(CORE_DIR)/rpcs3/libretro/config_database.dat
+	@touch $@
+
+# The core's own game patches (rpcs3/libretro/libretro_patch.yml), written
+# beside patch.yml by install_patches
+$(GEN_DIR)/libretro_core_patches.stamp: $(EMBED) $(CORE_DIR)/rpcs3/libretro/libretro_patch.yml
+	$(EMBED) bytes $(GEN_DIR)/libretro_core_patches.cpp g_libretro_core_patch_yml g_libretro_core_patch_yml_size libretro_patch.yml $(CORE_DIR)/rpcs3/libretro/libretro_patch.yml
 	@touch $@
 
 $(GEN_DIR)/libretro_vblank_unlock.stamp: $(EMBED) $(CORE_DIR)/rpcs3/libretro/vblank_unlock.txt

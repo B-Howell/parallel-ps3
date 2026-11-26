@@ -4,6 +4,22 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Patch Manager: the core's own game patches, starting with Demon's Souls.** Not yet run on a game.
+  - **What changed:**
+    - **A patch file of the core's own** (`rpcs3/libretro/libretro_patch.yml`) is compiled in, by both the Makefile and the CMake build. Like RPCS3's `patch.yml`, it is written to `patches/libretro_patch.yml` in the config folder when missing or different. The patch engine loads it after `patch.yml` (`append_global_patches`), and the Patch Manager lists its patches with the rest.
+    - **Demon's Souls (US disc 1.00, BLUS30443)** gets three new patches:
+      - **Title Debug Menu:** the title screen builds the developers' menu: Model Viewer, Map Select, FaceGen, SFX Test, Title List and two Title entries.
+        - The address comes from gibbed's DemonsSoulsDebug.
+        - The labels are rewritten in English and moved clear of the space where RPCS3's "Unlock FPS" keeps its timing code. With both on, three labels would otherwise have been overwritten with code.
+      - **Disable Dynamic Exposure:** the debug menu's ToneMap switch is on from the start, so tone mapping keeps a fixed exposure instead of adapting each frame. This stops exposure flicker.
+      - **Fixed Frame Pacing:** an add-on to "Unlock FPS"; on its own it changes nothing.
+        - The game advances a fixed time per frame (60 or 120 FPS, a choice in the Patch Manager) instead of the measured host clock time, and waits one vblank per frame.
+        - Pacing comes from the emulated vblank; a frame that runs late slows the game rather than skipping time.
+        - That the game's wait value counts vblanks (2 at retail 30 FPS) is inferred, not confirmed.
+  - **How the patches were checked:** they were applied to the decrypted executable with this core's patch parser (`Utilities/patch_db.c`), together with RPCS3's current "Unlock FPS". Nothing overlapped. The patched code was disassembled and the menu's labels read back. They have not run in the game.
+  - **Tests:** `test_game_patches` now loads the core's file, checks every patch in it is read, and checks Demon's Souls (US) is offered Title Debug Menu and the Frame Rate choice. Leaving the file out of the Patch Manager's list fails it. The Windows (MinGW) syntax checks of the changed files, the full build and suites pass.
+
+
 - **Texture cache: flush-always sections in a short list, not a hash map.** Not yet run on a game.
   - **What changed:**
     - **The flush-always sections** are framebuffers the CPU reads back every frame, normally a few. They were kept in an `std::unordered_map` by address range, a node allocated for each.

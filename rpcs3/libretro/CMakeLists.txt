@@ -17,6 +17,8 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/embed_config_database.cmake)
 libretro_embed_config_database(${CMAKE_CURRENT_BINARY_DIR}/libretro_config_database.cpp)
 include(${CMAKE_CURRENT_SOURCE_DIR}/embed_patches.cmake)
 libretro_embed_patches(${CMAKE_CURRENT_BINARY_DIR}/libretro_patches.cpp)
+include(${CMAKE_CURRENT_SOURCE_DIR}/embed_core_patches.cmake)
+libretro_embed_core_patches(${CMAKE_CURRENT_BINARY_DIR}/libretro_core_patches.cpp)
 include(${CMAKE_CURRENT_SOURCE_DIR}/embed_vblank_unlock.cmake)
 libretro_embed_vblank_unlock(${CMAKE_CURRENT_BINARY_DIR}/libretro_vblank_unlock.cpp)
 
@@ -31,6 +33,7 @@ add_library(rpcs3_libretro SHARED
     ${CMAKE_CURRENT_BINARY_DIR}/libretro_ui_icons.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/libretro_config_database.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/libretro_patches.cpp
+    ${CMAKE_CURRENT_BINARY_DIR}/libretro_core_patches.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/libretro_vblank_unlock.cpp
     ${LIBRETRO_VIDEO_SRC}
     libretro_audio.cpp

@@ -44,6 +44,11 @@ std::string patch_engine::get_patches_path()
 	return fs::get_config_dir() + "patches/";
 }
 
+std::string patch_engine::get_core_patch_path()
+{
+	return get_patches_path() + "libretro_patch.yml";
+}
+
 std::string patch_engine::get_imported_patch_path()
 {
 	return get_patches_path() + "imported_patch.yml";
@@ -135,6 +140,9 @@ void patch_engine::append_global_patches()
 
 	// Imported patch.yml
 	load(m_db, get_imported_patch_path());
+
+	// The libretro core's own patches (rpcs3/libretro/libretro_patch.yml)
+	load(m_db, get_core_patch_path());
 }
 
 void patch_engine::append_title_patches(std::string_view title_id)

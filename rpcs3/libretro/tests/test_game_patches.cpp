@@ -4,6 +4,9 @@
 //
 // - the file reads without an error, and every executable (a top-level key)
 //   and every patch under one that a plain scan of the text finds is there;
+// - the core's own patches (libretro_patch.yml) read without an error too,
+//   each executable and patch of theirs is there, and the games they name get
+//   them as core options, their configurable values with them;
 // - games the patches name get their patches as core options
 //   (libretro_patches::collect, the Patch Manager category): every 25th of
 //   them, as each collect reads the whole file again (a tenth of a second,
@@ -24,6 +27,8 @@
 
 extern const unsigned char g_libretro_patch_yml[];
 extern const std::size_t g_libretro_patch_yml_size;
+extern const unsigned char g_libretro_core_patch_yml[];
+extern const std::size_t g_libretro_core_patch_yml_size;
 
 static int failures = 0;
 
@@ -81,12 +86,65 @@ static void scan(const std::string& text, std::set<std::string>& hashes, std::se
 	}
 }
 
+// The core's own patches: read, every one there, and offered for their games
+static void check_core_patches(const std::string& dir)
+{
+	const std::string text(reinterpret_cast<const char*>(g_libretro_core_patch_yml), g_libretro_core_patch_yml_size);
+	CHECK(!text.empty());
+	CHECK(fs::write_file(patch_engine::get_core_patch_path(), fs::rewrite, text));
+
+	patch_db_t db;
+	patch_db_init(&db, user_log, nullptr);
+	s_user_log.clear();
+	CHECK(patch_engine::load(db, patch_engine::get_core_patch_path()));
+	CHECK(s_user_log.empty());
+	if (!s_user_log.empty())
+		std::fprintf(stderr, "%s\n", s_user_log.substr(0, 2000).c_str());
+
+	std::set<std::string> hashes;
+	std::set<std::pair<std::string, std::string>> patches;
+	scan(text, hashes, patches);
+	CHECK(!patches.empty());
+	for (const auto& [hash, description] : patches)
+	{
+		const usz found = patch_db_find(&db, hash.data(), hash.size());
+		CHECK(found != PATCH_DB_NONE);
+		if (patch_db_find_patch(&db, found, description.data(), description.size()) == PATCH_DB_NONE)
+		{
+			std::fprintf(stderr, "core patch \"%s\" of %s not read\n", description.c_str(), hash.c_str());
+			failures++;
+		}
+	}
+
+	// Demon's Souls (US) gets them as options, Fixed Frame Pacing's frame rate with it
+	libretro_patches::collect("BLUS30443");
+	std::size_t count = 0;
+	const retro_core_option_v2_definition* defs = libretro_patches::definitions(count);
+	bool title_menu = false, frame_rate = false;
+	for (std::size_t i = 0; i < count; i++)
+	{
+		const std::string desc = defs[i].desc ? defs[i].desc : "";
+		title_menu |= desc.find("Title Debug Menu") != umax;
+		frame_rate |= desc.find("Frame Rate") != umax;
+	}
+	CHECK(title_menu);
+	CHECK(frame_rate);
+	patch_db_free(&db);
+	(void)dir;
+}
+
 int main()
 {
+	{
+		const std::string dir = patch_engine::get_patches_path();
+		fs::create_path(dir);
+		check_core_patches(dir);
+	}
+
 	if (!g_libretro_patch_yml_size)
 	{
-		std::printf("test_game_patches: built without patch.yml, nothing to check\n");
-		return 0;
+		std::printf("test_game_patches: the core's own patches read and offered; built without patch.yml, nothing more to check\n");
+		return failures ? 1 : 0;
 	}
 
 	const std::string text(reinterpret_cast<const char*>(g_libretro_patch_yml), g_libretro_patch_yml_size);

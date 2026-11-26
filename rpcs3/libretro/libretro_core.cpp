@@ -1245,25 +1245,31 @@ static void install_config_database()
 }
 
 // RPCS3's game patches (embed_patches.cmake), written to patches/patch.yml in
-// the config dir as standalone's patch manager does, when missing or of
-// another size. Which patches are on is patch_config.yml's, left alone.
+// the config dir as standalone's patch manager does, and the core's own
+// (libretro_patch.yml) beside them, each when missing or different. Which
+// patches are on is patch_config.yml's, left alone.
 extern const unsigned char g_libretro_patch_yml[];
 extern const std::size_t g_libretro_patch_yml_size;
+extern const unsigned char g_libretro_core_patch_yml[];
+extern const std::size_t g_libretro_core_patch_yml_size;
 
-static void install_patches()
+static void install_patch_file(const std::string& path, const unsigned char* data, std::size_t size)
 {
-    if (!g_libretro_patch_yml_size)
-        return;
-    const std::string path = fs::get_config_dir() + "patches/patch.yml";
-    if (file_has_contents(path, g_libretro_patch_yml, g_libretro_patch_yml_size))
+    if (!size || file_has_contents(path, data, size))
         return;
     fs::create_path(fs::get_parent_dir(path));
     fs::file file(path, fs::rewrite);
-    if (!file || file.write(g_libretro_patch_yml, g_libretro_patch_yml_size) != g_libretro_patch_yml_size)
+    if (!file || file.write(data, size) != size)
     {
         if (log_cb)
             log_cb(RETRO_LOG_WARN, "RPCS3: could not write %s\n", path.c_str());
     }
+}
+
+static void install_patches()
+{
+    install_patch_file(fs::get_config_dir() + "patches/patch.yml", g_libretro_patch_yml, g_libretro_patch_yml_size);
+    install_patch_file(fs::get_config_dir() + "patches/libretro_patch.yml", g_libretro_core_patch_yml, g_libretro_core_patch_yml_size);
 }
 
 // The game's entry, as RPCS3's YAML config, or nothing (config_database.c)
@@ -1422,7 +1428,7 @@ static void publish_core_options(retro_environment_t cb)
         const retro_core_option_v2_definition* const patches = libretro_patches::definitions(count);
         if (count)
             all.insert(all.end(), patches, patches + count);
-        categories.push_back({"patches", "Patch Manager", "The game's patches from RPCS3's patch files, patch.yml and imported_patch.yml. A change applies at the next start of the game."});
+        categories.push_back({"patches", "Patch Manager", "The game's patches from RPCS3's patch files (patch.yml, imported_patch.yml) and the core's own. A change applies at the next start of the game."});
     }
     all.push_back({});
     categories.push_back({});

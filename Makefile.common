@@ -792,6 +792,7 @@ SOURCES_GENERATED := \
 	$(GEN_DIR)/libretro_ui_icons.cpp \
 	$(GEN_DIR)/libretro_config_database.cpp \
 	$(GEN_DIR)/libretro_patches.cpp \
+	$(GEN_DIR)/libretro_core_patches.cpp \
 	$(GEN_DIR)/libretro_vblank_unlock.cpp
 
 # Per-library flags, as each library's CMake target has them

@@ -1,7 +1,8 @@
 // The Patch Manager category (libretro_patch_options.c) and the files it
-// lists: patch.yml (the one the core carries), imported_patch.yml (what was
-// imported in standalone RPCS3, copied over) and the game's own
-// <serial>_patch.yml, the three RPCS3 loads itself. Before each boot
+// lists: patch.yml (RPCS3's, which the core carries), libretro_patch.yml (the
+// core's own), imported_patch.yml (what was imported in standalone RPCS3,
+// copied over) and the game's own <serial>_patch.yml, the four the patch
+// engine loads. Before each boot
 // patch_config.yml is written from the options.
 
 #include "stdafx.h"
@@ -49,7 +50,7 @@ namespace libretro_patches
 		if (!serial.empty())
 		{
 			const std::string dir = patch_engine::get_patches_path();
-			for (const std::string& path : {dir + "patch.yml", patch_engine::get_imported_patch_path(), dir + serial + "_patch.yml"})
+			for (const std::string& path : {dir + "patch.yml", patch_engine::get_core_patch_path(), patch_engine::get_imported_patch_path(), dir + serial + "_patch.yml"})
 			{
 				if (fs::is_file(path))
 					patch_engine::load(s_db, path);
