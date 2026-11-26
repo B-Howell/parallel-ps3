@@ -1,3 +1,4 @@
+#include "util/key_list.h"
 #include "stdafx.h"
 
 #include "VKResolveHelper.h"
@@ -35,8 +36,9 @@ namespace
 
 namespace vk
 {
-	std::unordered_map<VkFormat, std::unique_ptr<vk::cs_resolve_task>> g_resolve_helpers;
-	std::unordered_map<VkFormat, std::unique_ptr<vk::cs_unresolve_task>> g_unresolve_helpers;
+	// By format, the few resolved: short lists (util/key_list.c), owned, where they were STL hash maps
+	key_list_t g_resolve_helpers{};
+	key_list_t g_unresolve_helpers{};
 	std::unique_ptr<vk::depthonly_resolve> g_depth_resolver;
 	std::unique_ptr<vk::depthonly_unresolve> g_depth_unresolver;
 	std::unique_ptr<vk::stencilonly_resolve> g_stencil_resolver;
@@ -58,7 +60,7 @@ namespace vk
 	{
 		if (src->aspect() == VK_IMAGE_ASPECT_COLOR_BIT)
 		{
-			auto &job = g_resolve_helpers[src->format()];
+			auto job = static_cast<vk::cs_resolve_task*>(key_list_find(&g_resolve_helpers, src->format()));
 
 			if (!job)
 			{
@@ -72,14 +74,15 @@ namespace vk
 					require_bgra_swap = true;
 				}
 
-				job.reset(new vk::cs_resolve_task(format_prefix, require_bgra_swap));
+				job = new vk::cs_resolve_task(format_prefix, require_bgra_swap);
+				ensure(key_list_add(&g_resolve_helpers, src->format(), job));
 			}
 
 			job->run(cmd, src, dst);
 		}
 		else
 		{
-			std::vector<vk::image*> surface = { dst };
+			vk::image* const surface[] = { dst };
 			auto& dev = cmd.get_command_pool().get_owner();
 
 			const auto key = vk::get_renderpass_key(surface);
@@ -127,7 +130,7 @@ namespace vk
 	{
 		if (src->aspect() == VK_IMAGE_ASPECT_COLOR_BIT)
 		{
-			auto &job = g_unresolve_helpers[src->format()];
+			auto job = static_cast<vk::cs_unresolve_task*>(key_list_find(&g_unresolve_helpers, src->format()));
 
 			if (!job)
 			{
@@ -141,14 +144,15 @@ namespace vk
 					require_bgra_swap = true;
 				}
 
-				job.reset(new vk::cs_unresolve_task(format_prefix, require_bgra_swap));
+				job = new vk::cs_unresolve_task(format_prefix, require_bgra_swap);
+				ensure(key_list_add(&g_unresolve_helpers, src->format(), job));
 			}
 
 			job->run(cmd, dst, src);
 		}
 		else
 		{
-			std::vector<vk::image*> surface = { dst };
+			vk::image* const surface[] = { dst };
 			auto& dev = cmd.get_command_pool().get_owner();
 
 			const auto key = vk::get_renderpass_key(surface);
@@ -194,18 +198,22 @@ namespace vk
 
 	void clear_resolve_helpers()
 	{
-		for (auto &task : g_resolve_helpers)
+		for (u32 i = 0; i < g_resolve_helpers.count; i++)
 		{
-			task.second->destroy();
+			auto task = static_cast<vk::cs_resolve_task*>(key_list_at(&g_resolve_helpers, i));
+			task->destroy();
+			delete task;
 		}
 
-		for (auto &task : g_unresolve_helpers)
+		for (u32 i = 0; i < g_unresolve_helpers.count; i++)
 		{
-			task.second->destroy();
+			auto task = static_cast<vk::cs_unresolve_task*>(key_list_at(&g_unresolve_helpers, i));
+			task->destroy();
+			delete task;
 		}
 
-		g_resolve_helpers.clear();
-		g_unresolve_helpers.clear();
+		key_list_free(&g_resolve_helpers);
+		key_list_free(&g_unresolve_helpers);
 
 		if (g_depth_resolver)
 		{

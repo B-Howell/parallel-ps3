@@ -1,5 +1,6 @@
 #pragma once
 
+#include <span>
 #include "VulkanAPI.h"
 #include "Utilities/geometry.h"
 
@@ -8,8 +9,12 @@ namespace vk
 	class image;
 	class command_buffer;
 
-	u64 get_renderpass_key(const std::vector<vk::image*>& images, const std::vector<u8>& input_attachment_ids = {});
-	u64 get_renderpass_key(const std::vector<vk::image*>& images, u64 previous_key, const std::vector<u8>& input_attachment_ids = {});
+	// Spans: a one-image array or a slice of a constant list of ids, nothing made (they were vectors, built per draw)
+	u64 get_renderpass_key(std::span<vk::image* const> images, std::span<const u8> input_attachment_ids = {});
+	u64 get_renderpass_key(std::span<vk::image* const> images, u64 previous_key, std::span<const u8> input_attachment_ids = {});
+
+	// 0, 1, 2 ...: the ids of the first n attachments, for programmable blending
+	std::span<const u8> renderpass_attachment_ids(usz count);
 	u64 get_renderpass_key(VkFormat surface_format, u8 color_attachment_count = 1, u8 sample_count = 1);
 	u64 get_renderpass_key(VkFormat color_format, VkFormat depth_format, u8 color_attachment_count = 1, u8 sample_count = 1);
 	VkRenderPass get_renderpass(VkDevice dev, u64 renderpass_key);

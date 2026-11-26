@@ -193,7 +193,14 @@ namespace vk
 		}
 	};
 
-	u64 get_renderpass_key(const std::vector<vk::image*>& images, const std::vector<u8>& input_attachment_ids)
+	std::span<const u8> renderpass_attachment_ids(usz count)
+	{
+		static constexpr u8 ids[] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+		ensure(count <= std::size(ids));
+		return { ids, count };
+	}
+
+	u64 get_renderpass_key(std::span<vk::image* const> images, std::span<const u8> input_attachment_ids)
 	{
 		renderpass_key_blob key(0);
 
@@ -213,7 +220,7 @@ namespace vk
 		return key.encoded;
 	}
 
-	u64 get_renderpass_key(const std::vector<vk::image*>& images, u64 previous_key, const std::vector<u8>& input_attachment_ids)
+	u64 get_renderpass_key(std::span<vk::image* const> images, u64 previous_key, std::span<const u8> input_attachment_ids)
 	{
 		// Partial update; assumes compatible renderpass keys
 		renderpass_key_blob key(previous_key);

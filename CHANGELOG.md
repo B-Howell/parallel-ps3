@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Vulkan: render pass keys build no vectors, and the resolve helpers are a short list.** Not yet run on a game.
+  - **What changed:**
+    - **`vk::get_renderpass_key`** took its images and input attachment ids as `std::vector`s. With programmable blending on, the per-draw `invalidate_render_pass` and the framebuffer setup each built a vector of the ids 0 ... n−1, one allocation each time. The depth and stencil resolves, and the partial stencil clear, each built a vector holding one image.
+    - It now takes `std::span`s. The ids are a slice of a constant list (`vk::renderpass_attachment_ids`), and a single image is a one-element array, so nothing is built. The callers passing the framebuffer's own vector are unchanged.
+    - **The colour resolve and unresolve helpers** were found in `std::unordered_map`s by format. Only a few formats are ever resolved, so they are now short lists (`util/key_list.c`). `clear_resolve_helpers` destroys and deletes them as before.
+    - **Smaller code:** VKGSRender, VKDraw, VKResolveHelper and VKRenderPass together 3.9 KB less.
+  - **Tests:** `test_shader_corpus`: the ids for 0, 4 and 8 draw buffers are empty, 0 to 3, and 0 to 7, from one constant list. The keys and resolves themselves need a running renderer's images. The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **Vulkan: scratch resources in arrays and a short list, not three hash maps.** Not yet run on a game.
   - **What changed:**
     - **The scratch buffer** (`get_scratch_buffer`, asked for on every compute conversion and texture upload conversion) was found in an `std::unordered_map` by queue family. The device's queue families are small indices, so it is now an array of 16, checked.

@@ -1544,7 +1544,8 @@ void VKGSRender::clear_surface(u32 mask)
 		{
 			// Partial stencil clear. Disables fast stencil clear
 			auto ds = std::get<1>(m_rtts.m_bound_depth_stencil);
-			auto key = vk::get_renderpass_key({ ds });
+			vk::image* const ds_only[] = { ds };
+			auto key = vk::get_renderpass_key(ds_only);
 			auto renderpass = vk::get_renderpass(*m_device, key);
 
 			vk::get_overlay_pass<vk::stencil_clear_pass>()->run(
@@ -2767,13 +2768,11 @@ void VKGSRender::prepare_rtts(rsx::framebuffer_creation_context context)
 		}
 	}
 
-	std::vector<u8> input_attachments{};
-	if ((current_fragment_program.ctrl & RSX_SHADER_CONTROL_PROGRAMMABLE_BLENDING) &&
+	// A slice of a constant list, nothing made (it was a vector)
+	const std::span<const u8> input_attachments = ((current_fragment_program.ctrl & RSX_SHADER_CONTROL_PROGRAMMABLE_BLENDING) &&
 		!m_graphics_state.test(rsx::pipeline_state::fragment_program_state_dirty))
-	{
-		input_attachments.resize(m_draw_buffers.size());
-		std::iota(input_attachments.begin(), input_attachments.end(), 0);
-	}
+		? vk::renderpass_attachment_ids(m_draw_buffers.size())
+		: std::span<const u8>{};
 
 	m_current_renderpass_key = vk::get_renderpass_key(m_fbo_images, input_attachments);
 	m_cached_renderpass = vk::get_renderpass(*m_device, m_current_renderpass_key);

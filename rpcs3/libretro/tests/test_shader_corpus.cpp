@@ -1904,6 +1904,20 @@ static void disposable_call()
 // caller's answer as a bool, where it was a std::function asked on every
 // indexed draw. Four quad indices left as they are, or made two triangles
 // (six); a line loop closed with its first index again
+// A render pass key's input attachment ids, for programmable blending, are a
+// slice of a constant list (vk::renderpass_attachment_ids), nothing made,
+// where each draw built a vector of them: 0 ... n-1 for n draw buffers, and
+// none for 0
+static void renderpass_ids()
+{
+	CHECK(vk::renderpass_attachment_ids(0).empty());
+	const auto four = vk::renderpass_attachment_ids(4);
+	CHECK(four.size() == 4 && four[0] == 0 && four[1] == 1 && four[2] == 2 && four[3] == 3);
+	const auto eight = vk::renderpass_attachment_ids(8);
+	CHECK(eight.size() == 8 && eight[7] == 7 && eight.data() == four.data());
+	std::printf("test_shader_corpus: a render pass key's attachment ids are a slice of a constant list; ok\n");
+}
+
 static void index_expand()
 {
 	const be_t<u16> src[4] = { 10, 11, 12, 13 };
@@ -2006,6 +2020,7 @@ int main()
 	device.create(gpu, graphics, umax, umax);
 	vk::set_current_renderer(device);
 
+	renderpass_ids();
 	index_expand();
 	submit_wait(device, graphics);
 	disposable_call();
