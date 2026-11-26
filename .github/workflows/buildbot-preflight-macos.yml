@@ -5,14 +5,16 @@ name: Buildbot preflight (macOS)
 # Homebrew. The runner here has Homebrew, which the script keeps out of the
 # build (CMAKE_IGNORE_PREFIX_PATH) and the final check would catch.
 
-# Also on a change to what builds LLVM from the tree: its Makefile rules
-# and their CMake wrapper met make 3.81, Apple's ar and a clang with no SDK
-# of its own only here.
+# Also on a change to what builds LLVM from the tree, or to the third-party
+# targets: the Makefile rules and their CMake wrapper met make 3.81 and a
+# clang with no SDK of its own only here, and the Vulkan target MoltenVK's
+# headers.
 on:
   push:
     paths: &paths
       - '.ci/build-macos-libretro.sh'
       - '3rdparty/llvm/CMakeLists.txt'
+      - '3rdparty/CMakeLists.txt'
       - 'Makefile'
       - 'rpcs3/libretro/make/llvm/**'
       - '.github/workflows/buildbot-preflight-macos.yml'
