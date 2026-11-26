@@ -62,11 +62,14 @@ if(WITH_LLVM)
 			endif()
 		endif()
 
-		# TableGen runs on the machine that builds
+		# TableGen runs on the machine that builds. When that is the machine
+		# the core is for, it is the compiler as CMake calls it, sysroot and
+		# all: the clang a macOS build is given finds the C++ library only in
+		# the SDK it is pointed at.
 		if(CMAKE_CROSSCOMPILING)
 			find_program(LLVM_TREE_HOST_CXX NAMES c++ g++ clang++ REQUIRED)
 		else()
-			set(LLVM_TREE_HOST_CXX "${CMAKE_CXX_COMPILER}")
+			set(LLVM_TREE_HOST_CXX "${CMAKE_CXX_COMPILER}${LLVM_TREE_TARGET_FLAGS}")
 		endif()
 
 		add_custom_target(llvm_from_tree
