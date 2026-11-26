@@ -4,6 +4,24 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **RSX: render targets found without a hash map per 4 MB block.** Not yet run on a game.
+  - **What changed:**
+    - **The render target and depth stores** (`Common/ranged_map.hpp`, used by `surface_store.h` on every draw) split guest memory into 1024 blocks of 4 MB. Each block kept the surfaces starting in it in its own `std::unordered_map`. Each is now a short C89 list (`util/pair_list.c`).
+      - The first two entries are kept in the list itself; more go on the heap.
+      - A key is found by selects, with no branch on where it is, so its place does not have to be guessed.
+      - Each surface's `unique_ptr` is kept in its entry and moved with it, with a compile-time check that it is pointer-sized.
+    - **The iterator** now hands out the address and a reference to the surface, as the map's pairs did, so `surface_store.h` is unchanged. Taking an entry out moves the last one into its place, which the iterator looks at next, so every surface is still visited once.
+    - **`ranged_map.hpp`** no longer uses `std::min` or `std::for_each`, so it no longer depends on `<algorithm>` coming in from elsewhere (the MinGW break 0623 fixed).
+  - **Speed (this machine, finding a surface among 1024 blocks, random hits and misses):**
+    - **1 surface per block:** 2.3–2.7 ns, where the map took 12–15 ns.
+    - **2 per block:** 5.2–5.4 ns against 8.1–9.3 ns.
+    - **3 to 4 per block:** about even (5–9 ns each).
+    - **6 or 8 per block:** slower, 6.8 and 8.1 ns against 5.0 and 5.2 ns. A 4 MB block holds that many only with many small targets.
+    - **Going through every block:** about the same or faster.
+  - **Smaller code:** the ten Vulkan and OpenGL objects using the store are 12.9 KB smaller together.
+  - **Tests:** `test_pair_list` covers two entries inline and more on the heap. It checks each entry's contents survive moves and that a reused slot comes back zeroed, then runs 20,000 random adds and removes against a plain array. Unmasked old slots, a lost move and an unzeroed slot each fail it. The surfaces themselves need a running renderer, which the tests do not have. The Windows (MinGW) syntax checks of the Vulkan and OpenGL render target code, the full build and suites pass.
+
+
 - **Build: no more `std::copy_n` or `std::fill_n`.** Not yet run on a game.
   - **Why:** a newer MinGW GCC stopped at `Utilities/StrUtil.h` with "'copy_n' is not a member of 'std'". `<algorithm>` was not included there, and that GCC no longer pulls it in through other headers. All 15 uses in the core are replaced.
   - **What took their place:**
