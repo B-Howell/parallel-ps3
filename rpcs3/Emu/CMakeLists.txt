@@ -649,6 +649,7 @@ if(TARGET 3rdparty_vulkan)
         RSX/VK/vkutils/vk_heap.c
         RSX/VK/vkutils/device.cpp
         RSX/VK/vkutils/sampler.cpp
+        RSX/VK/vkutils/vk_sampler_table.c
         RSX/VK/vkutils/shared.cpp
         RSX/VK/vkutils/unique_resource.cpp
         RSX/VK/VKAsyncScheduler.cpp

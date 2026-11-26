@@ -170,58 +170,43 @@ namespace vk
 
 	void sampler_pool_t::clear()
 	{
-		m_generic_sampler_pool.clear();
-		m_custom_color_sampler_pool.clear();
+		vk_sampler_table_collect(m_table.get(), nullptr, [](void* obj, void*) { delete static_cast<cached_sampler_object_t*>(obj); }, nullptr);
 	}
 
 	cached_sampler_object_t* sampler_pool_t::find(const sampler_pool_key_t& key) const
 	{
-		if (!key.border_color_key) [[ likely ]]
-		{
-			const auto found = m_generic_sampler_pool.find(key.base_key);
-			return found == m_generic_sampler_pool.end() ? nullptr : found->second.get();
-		}
-
-		const auto found = m_custom_color_sampler_pool.find(key);
-		return found == m_custom_color_sampler_pool.end() ? nullptr : found->second.get();
+		return static_cast<cached_sampler_object_t*>(vk_sampler_table_find(m_table.get(), key.base_key, key.border_color_key));
 	}
 
 	cached_sampler_object_t* sampler_pool_t::emplace(const sampler_pool_key_t& key, std::unique_ptr<cached_sampler_object_t>& object)
 	{
 		object->key = key;
 
-		if (!key.border_color_key) [[ likely ]]
+		if (const auto found = find(key))
 		{
-			const auto [iterator, _unused] = m_generic_sampler_pool.emplace(key.base_key, std::move(object));
-			return iterator->second.get();
+			// As the maps' emplace: the one there kept, this one not
+			object.reset();
+			return found;
 		}
 
-		const auto [iterator, _unused] = m_custom_color_sampler_pool.emplace(key, std::move(object));
-		return iterator->second.get();
+		// Full only past four times the samplers the resource manager keeps (VKResourceManager.cpp)
+		ensure(vk_sampler_table_insert(m_table.get(), key.base_key, key.border_color_key, object.get()));
+		return object.release();
 	}
 
-	std::vector<std::unique_ptr<cached_sampler_object_t>> sampler_pool_t::collect(std::function<bool(const cached_sampler_object_t&)> predicate)
+	std::vector<std::unique_ptr<cached_sampler_object_t>> sampler_pool_t::collect(bool (*predicate)(const cached_sampler_object_t&))
 	{
-		std::vector<std::unique_ptr<cached_sampler_object_t>> result;
-
-		const auto collect_fn = [&](auto& container)
+		struct ctx_t
 		{
-			for (auto it = container.begin(); it != container.end();)
-			{
-				if (!predicate(*it->second))
-				{
-					it++;
-					continue;
-				}
+			bool (*predicate)(const cached_sampler_object_t&);
+			std::vector<std::unique_ptr<cached_sampler_object_t>> result;
+		} ctx{predicate, {}};
 
-				result.emplace_back(std::move(it->second));
-				it = container.erase(it);
-			}
-		};
+		vk_sampler_table_collect(m_table.get(),
+			[](void* obj, void* c) -> int { return static_cast<ctx_t*>(c)->predicate(*static_cast<const cached_sampler_object_t*>(obj)) ? 1 : 0; },
+			[](void* obj, void* c) { static_cast<ctx_t*>(c)->result.emplace_back(static_cast<cached_sampler_object_t*>(obj)); },
+			&ctx);
 
-		collect_fn(m_generic_sampler_pool);
-		collect_fn(m_custom_color_sampler_pool);
-
-		return result;
+		return std::move(ctx.result);
 	}
 }

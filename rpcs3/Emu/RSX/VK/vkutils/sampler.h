@@ -1,5 +1,6 @@
 #pragma once
 
+#include "vk_sampler_table.h"
 #include "device.h"
 #include "shared.h"
 #include <functional>
@@ -73,16 +74,6 @@ namespace vk
 		}
 	};
 
-	struct sampler_pool_key_hash
-	{
-		size_t operator()(const vk::sampler_pool_key_t& k) const noexcept
-		{
-			usz result = k.base_key;
-			result ^= k.border_color_key + 0x9e3779b97f4a7c15ULL + (result << 6) + (result >> 2);
-			return result;
-		}
-	};
-
 	struct cached_sampler_object_t : public vk::sampler, public rsx::ref_counted
 	{
 		sampler_pool_key_t key;
@@ -91,10 +82,15 @@ namespace vk
 
 	class sampler_pool_t
 	{
-		std::unordered_map<u64, std::unique_ptr<cached_sampler_object_t>> m_generic_sampler_pool;
-		std::unordered_map<sampler_pool_key_t, std::unique_ptr<cached_sampler_object_t>, sampler_pool_key_hash> m_custom_color_sampler_pool;
+		// By key, owned: a fixed table made once (vk_sampler_table.c), where it was two STL hash maps of
+		// unique_ptrs, hashed and grown on each new sampler
+		std::unique_ptr<vk_sampler_table_t> m_table = std::make_unique<vk_sampler_table_t>();
 
 	public:
+		sampler_pool_t() = default;
+		sampler_pool_t(const sampler_pool_t&) = delete;
+		sampler_pool_t& operator=(const sampler_pool_t&) = delete;
+		~sampler_pool_t() { clear(); }
 
 		sampler_pool_key_t compute_storage_key(
 			VkSamplerAddressMode clamp_u, VkSamplerAddressMode clamp_v, VkSamplerAddressMode clamp_w,
@@ -108,6 +104,7 @@ namespace vk
 
 		cached_sampler_object_t* emplace(const sampler_pool_key_t& key, std::unique_ptr<cached_sampler_object_t>& object);
 
-		std::vector<std::unique_ptr<cached_sampler_object_t>> collect(std::function<bool(const cached_sampler_object_t&)> predicate);
+		// predicate captures nothing: a plain function (it was a std::function)
+		std::vector<std::unique_ptr<cached_sampler_object_t>> collect(bool (*predicate)(const cached_sampler_object_t&));
 	};
 }

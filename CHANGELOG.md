@@ -4,6 +4,22 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Vulkan: the sampler pool is C89, in a fixed table.** Not yet run on a game.
+  - **What changed:**
+    - `vk::sampler_pool_t` holds the renderer's samplers by their key. It is looked up on each texture bind that changes its sampler, and a sampler is made on a key not yet seen. It kept them in two `std::unordered_map`s of `unique_ptr`s, one for samplers with no custom border colour and one for the rest. Both were hashed on each lookup, and each new sampler allocated a node.
+    - They are now one fixed table in a new C89 module (`rpcs3/Emu/RSX/VK/vkutils/vk_sampler_table.c`), made once with the renderer and never grown. It holds 8192 slots, open-addressed by both halves of the key with linear probing. A sampler taken out has the run after it shifted back, so no slot is left marked deleted.
+    - The resource manager trims the samplers no texture holds once there are more than 2048 (`VKResourceManager.cpp`), so the table holds four times what it keeps. The pool owns the samplers it holds and deletes them on `clear` and as it goes, as the `unique_ptr`s did.
+    - The trim's predicate captured nothing, so it is a plain function (it was a `std::function`).
+    - **Measured:** a find among 300 samplers takes 3.8 to 4.8 ns, where the map took 4.6 to 5.2 ns, and a new sampler no longer allocates a node.
+  - **Tests:** `test_vk_sampler_table`:
+    - Found by both halves of the key, and a key there already is not replaced.
+    - Three quarters full with every other sampler taken out: every one left is still found, and none taken out is.
+    - A run of 40 colliding keys that wraps past the table's end, taken out every other one, the rest still found.
+    - A full table keeps no more, and collecting with no pick takes them all.
+    - Mutants fail it: shifting every sampler back on a removal, and shifting none back.
+    - The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **OpenGL: the driver state tracker is C89, in fixed tables.** Not yet run on a game.
   - **What changed:**
     - `gl::driver_state` remembers what the renderer last set of the driver's state, so a GL call setting the same again is not made. That covers caps, depth, stencil and blend state, indexed caps, and the texture each unit has bound, behind every draw's state setup. It kept these in `std::unordered_map`s: two for properties, and one per texture unit (48 of them). Each call hashed into one, and grew it on a first key.
