@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **macOS: the core builds again, LLVM included.** Built on GitHub's macOS 15 runners for arm64 (natively and from an Intel Mac) and x86_64; not yet run on a game on a Mac.
+  - **What was wrong:** LLVM is built from the tree by the core's Makefile, and on macOS that failed twice over.
+    - **TableGen's compiler had no SDK.** For a build that is not a cross build, the CMake wrapper (`3rdparty/llvm/CMakeLists.txt`) handed the Makefile the bare compiler as `HOST_CXX`. The clang the macOS script builds finds the C++ library only in the SDK it is pointed at, so `llvm-min-tblgen` stopped at `'type_traits' file not found`. It is now given the same target and sysroot flags as `CXX`, the same machine's.
+    - **The archive's list was never written.** `libllvm.a` took its objects through a list made with `$(file)`, which GNU make 3.81, the one macOS comes with, does not have, so `ar` failed on `@libllvm.a.list`. The list is kept for Windows, whose command line is too short for the objects; elsewhere they go on `ar`'s command line.
+  - **Tests:** the macOS preflight (`buildbot-preflight-macos.yml`) asked for `macos-14`, which GitHub has retired, so it could not run. It runs on `macos-15` with Xcode 16.0, the buildbot's, and now also on a change to the LLVM build's Makefile rules or wrapper. It failed on the old code and passes on this one.
+
 - **Vulkan and OpenGL: overlay programs, fonts and images, no hash maps.** Not yet run on a game.
   - **What changed:**
     - **A new C89 table** (`util/ptr_table.c`): pointers by a 64-bit key, open-addressed with linear probing, entries taken out by shifting the ones after back, grown to stay at most half full. Keys are mixed before use, so addresses a fixed stride apart do not bunch up.
