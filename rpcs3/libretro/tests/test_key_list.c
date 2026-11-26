@@ -51,6 +51,16 @@ int main(void)
    TEST_CHECK(key_list_replace(&a, 7, &vals[7]) == &vals[50]);
    TEST_CHECK(key_list_replace(&a, 1000, &vals[1]) == NULL && a.count == 40 && key_list_find(&a, 1000) == NULL);
 
+   /* Taken out by key: the last moves into the gap, the rest still found;
+    * one not there leaves the list alone */
+   TEST_CHECK(key_list_remove(&a, 1000) == NULL && a.count == 40);
+   TEST_CHECK(key_list_remove(&a, 7) == &vals[7] && a.count == 39 && key_list_find(&a, 7) == NULL);
+   TEST_CHECK(key_list_at(&a, 7) == &vals[39] && key_list_find(&a, 39) == &vals[39]);
+   TEST_CHECK(key_list_remove(&a, 39) == &vals[39] && a.count == 38 && key_list_find(&a, 39) == NULL);
+   for (i = 8; i < 39; i++)
+      TEST_CHECK(key_list_find(&a, (uint64_t)i) == &vals[i]);
+   TEST_CHECK(key_list_add(&a, 7, &vals[7]) == 1 && key_list_add(&a, 39, &vals[39]) == 1 && a.count == 40);
+
    /* Moved */
    key_list_move(&b, &a);
    TEST_CHECK(a.count == 0 && a.cap == 0 && key_list_find(&a, 7) == NULL);
@@ -69,6 +79,6 @@ int main(void)
    TEST_CHECK(key_list_add(&b, 5, &vals[5]) == 1 && key_list_find(&b, 5) == &vals[5]);
    key_list_free(&b);
 
-   printf("test_key_list: pointers by key, four kept in the list, more on the heap, replaced, moved and freed; %s\n", test_failures ? "FAIL" : "ok");
+   printf("test_key_list: pointers by key, four kept in the list, more on the heap, replaced, removed, moved and freed; %s\n", test_failures ? "FAIL" : "ok");
    return test_failures ? 1 : 0;
 }

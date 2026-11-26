@@ -4,6 +4,22 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Texture cache: flush-always sections in a short list, not a hash map.** Not yet run on a game.
+  - **What changed:**
+    - **The flush-always sections** are framebuffers the CPU reads back every frame, normally a few. They were kept in an `std::unordered_map` by address range, a node allocated for each.
+    - **They are now in `util/key_list.c`:** the range's start and end are packed into one 64-bit key, and up to four are kept in the list itself with no allocation.
+      - The per-frame update walks the pointers in one array.
+      - Invalidation takes a section out by key: the last one moves into its place.
+      - `key_list_remove` is new.
+  - **Speed (this machine):**
+    - **With 4 sections:** a lookup takes 3.0–3.3 ns, where the map took 5.0–5.3 ns. Taking one out and adding it back takes 3.9–4.7 ns, against 31–34 ns. A walk takes about the same, 1.5 ns.
+    - **With 16:** walks take 5.4 ns against 10 ns, and taking out and adding back is 20 ns against 25 ns. A lookup is slower, 14 ns against 4.5 ns.
+    - **With 64:** walks take 32–40 ns against 104–110 ns, and taking out and adding back is about even (28–33 ns against 20–25 ns). A lookup is slower, 24–26 ns against 5 ns.
+    - An open-addressed table (`util/ptr_table.c`) was tried first. Its lookups were faster with many sections, but its walk took 10 ns against 1.3 ns with four.
+  - **Smaller code:** 6.7 KB less over the Vulkan and OpenGL objects that build the texture cache.
+  - **Tests:** `test_key_list` now takes entries out by key, from the middle and the end, and checks a missing key leaves the list alone. Dropping the move into the gap or the count decrement fails it. The flush-always sections themselves need a running renderer, which the tests do not have. The full build, the suites and the Windows (MinGW) syntax checks pass.
+
+
 - **Texture cache: blocks in use kept as bits, not a hash set.** Not yet run on a game.
   - **What changed:**
     - **The texture cache** splits guest memory into 4096 blocks of 1 MB. It kept the blocks holding a texture section in an `std::unordered_set` of pointers. A block goes in when its first section is made and comes out when its last is destroyed.

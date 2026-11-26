@@ -1812,6 +1812,8 @@ check: all
 	@if grep -q "unordered_map<VkFormat" ../../Emu/RSX/VK/vkutils/device.h || grep -q "unordered_map<GLenum" ../../Emu/RSX/GL/GLGSRender.h; then echo "Vulkan format properties or OpenGL null textures are in hash maps again"; exit 1; else echo "Vulkan format properties and OpenGL null textures are found by index"; fi
 	@# The texture cache keeps its blocks in use in a C89 bit set with a summary word, not an STL hash set of pointers
 	@if grep -q "unordered_set<block_type\*>" ../../Emu/RSX/Common/texture_cache_utils.h; then echo "the texture cache's blocks in use are an STL hash set again"; exit 1; else echo "the texture cache's blocks in use are a C89 bit set"; fi
+	@# The texture cache's flush-always sections are a short C89 list keyed by their packed range, not an STL hash map
+	@if grep -q "unordered_map<address_range32, section_storage_type\*>" ../../Emu/RSX/Common/texture_cache.h; then echo "the texture cache's flush-always sections are in an STL hash map again"; exit 1; else echo "the texture cache's flush-always sections are a C89 short list"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

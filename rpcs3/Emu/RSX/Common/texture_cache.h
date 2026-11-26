@@ -11,6 +11,9 @@
 
 #include <unordered_map>
 
+#include "util/key_list.h"
+
+
 #define RSX_GCM_FORMAT_IGNORED 0
 
 namespace rsx
@@ -683,7 +686,20 @@ namespace rsx
 		bool read_only_tex_invalidate = false;
 
 		//Store of all objects in a flush_always state. A lazy readback is attempted every draw call
-		std::unordered_map<address_range32, section_storage_type*> m_flush_always_cache;
+		// The flush-always sections (framebuffers the CPU reads back each frame: a few) by their range, its start
+		// and end packed into one 64-bit key, in a short C89 list (util/key_list.c) where an STL hash map hashed
+		// the range and allocated a node for each
+		key_list_t m_flush_always_cache{};
+
+		static u64 flush_always_key(const address_range32& range)
+		{
+			return (u64{range.start} << 32) | range.end;
+		}
+
+		section_storage_type* find_flush_always(const address_range32& range) const
+		{
+			return static_cast<section_storage_type*>(key_list_find(&m_flush_always_cache, flush_always_key(range)));
+		}
 		u64 m_flush_always_update_timestamp = 0;
 
 		//Memory usage
@@ -1215,7 +1231,7 @@ namespace rsx
 						if (tex.is_dirty() && tex.get_context() == rsx::texture_upload_context::framebuffer_storage)
 						{
 							// Make sure the region is not going to get immediately reprotected
-							m_flush_always_cache.erase(tex.get_section_range());
+							key_list_remove(&m_flush_always_cache, flush_always_key(tex.get_section_range()));
 						}
 					}
 				}
@@ -1432,7 +1448,7 @@ namespace rsx
 				}
 				else
 				{
-					AUDIT(m_flush_always_cache.find(region.get_section_range()) != m_flush_always_cache.end());
+					AUDIT(find_flush_always(region.get_section_range()) != nullptr);
 				}
 			}
 
@@ -1846,7 +1862,10 @@ namespace rsx
 	public:
 
 		texture_cache() : m_storage(this), m_predictor(this) {}
-		~texture_cache() = default;
+		~texture_cache()
+		{
+			key_list_free(&m_flush_always_cache);
+		}
 
 		void clear()
 		{
@@ -2077,7 +2096,7 @@ namespace rsx
 			auto* region_ptr = find_cached_texture(memory_range, { .gcm_format = RSX_GCM_FORMAT_IGNORED }, false, false, true);
 			if (region_ptr == nullptr)
 			{
-				AUDIT(m_flush_always_cache.find(memory_range) == m_flush_always_cache.end());
+				AUDIT(find_flush_always(memory_range) == nullptr);
 				rsx_log.error("set_memory_flags(0x%x, 0x%x, %d): region_ptr == nullptr", memory_range.start, memory_range.end, static_cast<u32>(flags));
 				return;
 			}
@@ -2096,9 +2115,9 @@ namespace rsx
 				if (!region.is_dirty())
 				{
 					if (flags == memory_read_flags::flush_once)
-						ensure(m_flush_always_cache.find(memory_range) == m_flush_always_cache.end());
+						ensure(find_flush_always(memory_range) == nullptr);
 					else
-						ensure(m_flush_always_cache[memory_range] == &region);
+						ensure(find_flush_always(memory_range) == &region);
 				}
 #endif // TEXTURE_CACHE_DEBUG
 				return;
@@ -2113,9 +2132,9 @@ namespace rsx
 #ifdef TEXTURE_CACHE_DEBUG
 			const auto &memory_range = section.get_section_range();
 			if (flags == memory_read_flags::flush_once)
-				ensure(m_flush_always_cache[memory_range] == &section);
+				ensure(find_flush_always(memory_range) == &section);
 			else
-				ensure(m_flush_always_cache.find(memory_range) == m_flush_always_cache.end());
+				ensure(find_flush_always(memory_range) == nullptr);
 #endif
 			update_flush_always_cache(section, flags == memory_read_flags::flush_always);
 		}
@@ -2127,14 +2146,14 @@ namespace rsx
 			if (add)
 			{
 				// Add to m_flush_always_cache
-				AUDIT(m_flush_always_cache.find(range) == m_flush_always_cache.end());
-				m_flush_always_cache[range] = &section;
+				AUDIT(find_flush_always(range) == nullptr);
+				ensure(key_list_add(&m_flush_always_cache, flush_always_key(range), &section));
 			}
 			else
 			{
 				// Remove from m_flush_always_cache
-				AUDIT(m_flush_always_cache[range] == &section);
-				m_flush_always_cache.erase(range);
+				AUDIT(find_flush_always(range) == &section);
+				key_list_remove(&m_flush_always_cache, flush_always_key(range));
 			}
 		}
 
@@ -3935,7 +3954,7 @@ namespace rsx
 
 		void do_update()
 		{
-			if (m_flush_always_cache.empty())
+			if (!m_flush_always_cache.count)
 			{
 				return;
 			}
@@ -3948,9 +3967,11 @@ namespace rsx
 			cache_scope in_cache(m_cache_depth);
 			bool update_tag = false;
 
-			for (const auto &It : m_flush_always_cache)
+			void* const* const sections = m_flush_always_cache.cap ? m_flush_always_cache.vals : m_flush_always_cache.ivals;
+
+			for (u32 i = 0; i < m_flush_always_cache.count; i++)
 			{
-				auto& section = *(It.second);
+				auto& section = *static_cast<section_storage_type*>(sections[i]);
 				if (section.get_protection() == utils::protection::no)
 				{
 					continue;

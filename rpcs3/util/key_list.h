@@ -4,7 +4,8 @@
 /* A short list of pointers by a 64-bit key, searched in turn: the first
  * four kept in the list itself, more on the heap as it grows. For a few
  * entries a look through them is quicker than a hash, and a list of four
- * or fewer allocates nothing (an image's views, vkutils/image.h). C89.
+ * or fewer allocates nothing (an image's views, vkutils/image.h; the
+ * texture cache's flush-always sections, texture_cache.h). C89.
  *
  * Plain data: a list is moved by key_list_move, and once moved from, or
  * freed, it is empty. */
@@ -38,6 +39,10 @@ int key_list_add(key_list_t *l, uint64_t key, void *val);
 void *key_list_replace(key_list_t *l, uint64_t key, void *val);
 
 void *key_list_at(const key_list_t *l, uint32_t index);
+
+/* @key's entry taken out, the last moved into its place (order is not
+ * kept): its pointer, or NULL where the key is not there */
+void *key_list_remove(key_list_t *l, uint64_t key);
 
 /* Its storage freed, the list empty (what it pointed to is the caller's) */
 void key_list_free(key_list_t *l);

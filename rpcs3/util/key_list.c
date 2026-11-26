@@ -82,6 +82,27 @@ void *key_list_at(const key_list_t *l, uint32_t index)
    return index < l->count ? vals_of(l)[index] : NULL;
 }
 
+void *key_list_remove(key_list_t *l, uint64_t key)
+{
+   uint64_t *keys = l->cap ? l->keys : l->ikeys;
+   void    **vals = l->cap ? l->vals : l->ivals;
+   uint32_t  i;
+
+   for (i = 0; i < l->count; i++)
+   {
+      if (keys[i] == key)
+      {
+         void *val = vals[i];
+
+         l->count--;
+         keys[i] = keys[l->count];
+         vals[i] = vals[l->count];
+         return val;
+      }
+   }
+   return NULL;
+}
+
 void key_list_free(key_list_t *l)
 {
    if (l->cap)
