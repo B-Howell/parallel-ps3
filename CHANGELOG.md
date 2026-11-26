@@ -4,6 +4,21 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **sys_io: no lock.** The game's `sys_config_start` and `sys_config_stop` make and take down the config event queue and its handler thread with no lock, through a new C89 module (`rpcs3/util/build_word.c`). Not yet run on a game.
+  - **What changed:**
+    - The first start made the queue and the thread, and the last stop took them down. Both happened behind `mtx`, a `shared_mutex` the game's threads waited on one at a time (`lock_lv2_mutex_alike`, putting the PPU to sleep while another held it).
+    - It is now one word: the starts not yet stopped (bits 0-31), whether the queue is made (bit 32), and whether a call is making or taking it down (bit 33, the builder). A call changes the count, and one finding no builder becomes it. The builder makes or takes down the queue until that matches the count, then stops being the builder unless the count changed meanwhile. A call finding a builder only changes the count, for the builder to see, and returns: no call waits for another.
+    - A game starting and stopping on one thread, as games do, is always its own builder, so it makes and takes down the queue in the call as before. Only when another thread's call is already building does a call return before the queue is made or taken down.
+    - The savestate keeps the count as before. On load it is made where the count is not 0, with no builder.
+    - The one `shared_mutex` left in the core is now `g_submit_mutex`. It covers Vulkan submits, and only for a frontend that lends no queue lock; RetroArch lends one.
+  - **Tests:** `test_build_word` (plain and under TSan):
+    - On one thread, as a game calls them: the start makes it, a second start and its stop do nothing, the last stop takes it down, a stop with no start is refused, and a restored count is made where it is not 0.
+    - On four threads each starting and stopping 50000 times at once: it is made and taken down only in turn, never by two builders at once, and at the end it is made exactly when the count is not 0, with no builder left.
+    - Mutants fail it: a start always taking the builder (10 of 10 runs), and the builder stepping down without looking at the count (9 of 10).
+    - `test_sys_io_gate` now starts from the word, and its case of a send while the game's call holds things up is a builder at work (it was the mutex held). The send still goes through.
+    - The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **The last timed sleeps are gone.** Each now waits on the event it was waiting for, or on the guest's time where the delay is the game's. Not yet run on a game.
   - **What changed:**
     - **The PAMF demuxer** delayed a new stream by sleeping 1.5 ms of the host's time, so White Knight Chronicles II finishes setting up FMV playback first. It now waits 1.5 ms of the guest's time (`lv2_obj::wait_timeout`), which goes at `retro_run`'s pace, woken by each frame of it.

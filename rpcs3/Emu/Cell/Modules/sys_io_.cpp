@@ -4,6 +4,7 @@
 #include "Emu/Cell/PPUModule.h"
 
 #include "Emu/Cell/lv2/sys_event.h"
+#include "util/build_word.h"
 #include "Emu/Cell/lv2/sys_ppu_thread.h"
 #include "Emu/Cell/Modules/sysPrxForUser.h"
 
@@ -18,13 +19,18 @@ extern void cellKb_init();
 extern void cellMouse_init();
 
 // sys_config_start and sys_config_stop are the game's calls: they make and
-// take down the event queue and its thread with lv2 calls that put the
-// calling thread to sleep, one at a time, behind mtx - a mutex as the PS3's
-// own would be, which only the game's threads wait on.
+// take down the event queue and its thread with lv2 calls. They keep to one
+// word, state (util/build_word.c), with no lock (it was a mutex, mtx, which
+// the game's threads waited on one at a time): a call changes the count of
+// starts; one finding no builder becomes it, and makes or takes down the
+// queue until that matches the count. A call finding a builder only changes
+// the count, for the builder to see, and returns: none waits for another. A
+// game starting and stopping on one thread is always its own builder, as
+// before.
 //
-// retro_run does not: a pad connected or disconnected is sent to the queue
-// from the frontend's thread, and sys_config_stop holds mtx while it waits
-// for the game's handler thread to end. The queue is behind a gate instead,
+// retro_run does not take part: a pad connected or disconnected is sent to
+// the queue from the frontend's thread, and the builder taking the queue
+// down waits for the game's handler thread to end. The queue is behind a gate instead,
 // one word: the queue's id (bits 32-63), a count of changes (1-31) and
 // whether it is open (bit 0). A send reads it, takes hold of the queue by
 // that id, and sends only if the word is still the same: then the queue it
@@ -40,7 +46,7 @@ static inline u64 sys_io_gate_word(retro_atomic_64_t* gate)
 	return static_cast<u64>(retro_atomic_load_acquire_64(gate));
 }
 
-// The game's threads, under mtx: open for @queue_id, or closed
+// The builder: open for @queue_id, or closed
 static inline void sys_io_gate_open(retro_atomic_64_t* gate, u32 queue_id)
 {
 	const u64 changes = (sys_io_gate_word(gate) + 2) & 0xffff'fffeull;
@@ -55,8 +61,8 @@ static inline void sys_io_gate_close(retro_atomic_64_t* gate)
 
 struct libio_sys_config
 {
-	shared_mutex mtx;
-	s32 init_ctr = 0;
+	retro_atomic_64_t state{0};
+	// The builder's alone
 	u32 ppu_id = 0;
 	u32 queue_id = 0;
 	retro_atomic_64_t gate{0};
@@ -67,10 +73,14 @@ struct libio_sys_config
 
 	void save_or_load(utils::serial& ar)
 	{
+		// The count, as the starts not yet stopped were saved
+		s32 init_ctr = static_cast<s32>(build_word_count(&state));
 		ar(init_ctr, ppu_id, queue_id);
 
 		if (!ar.is_writing())
 		{
+			build_word_restore(&state, static_cast<u32>(init_ctr));
+
 			// As it was saved: started, with its queue, or not
 			if (init_ctr)
 				sys_io_gate_open(&gate, queue_id);
@@ -134,31 +144,6 @@ void config_event_entry(ppu_thread& ppu)
 	ppu_execute<&sys_ppu_thread_exit>(ppu, 0);
 }
 
-std::unique_lock<shared_mutex> lock_lv2_mutex_alike(shared_mutex& mtx, ppu_thread* ppu)
-{
-	std::unique_lock<shared_mutex> lock(mtx, std::defer_lock);
-
-	while (!lock.try_lock())
-	{
-		if (ppu)
-		{
-			// Could not be acquired, put PPU to sleep
-			lv2_obj::sleep(*ppu);
-		}
-
-		// Wait for unlock without owning the lock
-		mtx.lock_unlock();
-
-		if (ppu)
-		{
-			// Awake, still not owning
-			ppu->check_state();
-		}
-	}
-
-	return lock;
-}
-
 extern void send_sys_io_connect_event(usz index, u32 state)
 {
 	if (Emu.IsStarting() || Emu.IsReady())
@@ -182,37 +167,59 @@ extern void send_sys_io_connect_event(usz index, u32 state)
 	}
 }
 
+// The builder: the queue and its thread made or taken down until they match
+// the count of starts
+static void sys_io_build(ppu_thread& ppu, libio_sys_config& cfg)
+{
+	for (build_word_action action; (action = build_word_next(&cfg.state)) != BUILD_WORD_NONE; build_word_done(&cfg.state))
+	{
+		if (action == BUILD_WORD_MAKE)
+		{
+			// Run thread
+			vm::var<u64> _tid;
+			vm::var<u32> queue_id;
+			vm::var<char[]> _name = vm::make_str("_cfg_evt_hndlr");
+
+			vm::var<sys_event_queue_attribute_t> attr;
+			attr->protocol = SYS_SYNC_PRIORITY;
+			attr->type = SYS_PPU_QUEUE;
+			attr->name_u64 = 0;
+
+			ensure(CELL_OK == sys_event_queue_create(ppu, queue_id, attr, 0, 0x20));
+			ppu.check_state();
+			cfg.queue_id = *queue_id;
+
+			ensure(CELL_OK == ppu_execute<&sys_ppu_thread_create>(ppu, +_tid, g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(config_event_entry)), 0, 512, 0x2000, SYS_PPU_THREAD_CREATE_JOINABLE, +_name));
+			ppu.check_state();
+
+			cfg.ppu_id = static_cast<u32>(*_tid);
+
+			// The queue is there for retro_run's events
+			sys_io_gate_open(&cfg.gate, cfg.queue_id);
+		}
+		else
+		{
+			// No more of retro_run's events: one still under way finds the
+			// queue gone
+			sys_io_gate_close(&cfg.gate);
+
+			ensure(CELL_OK == sys_event_queue_destroy(ppu, cfg.queue_id, SYS_EVENT_QUEUE_DESTROY_FORCE));
+			ppu.check_state();
+			ensure(CELL_OK == sys_ppu_thread_join(ppu, cfg.ppu_id, +vm::var<u64>{}));
+		}
+
+	}
+}
+
 error_code sys_config_start(ppu_thread& ppu)
 {
 	sys_io.warning("sys_config_start()");
 
 	auto& cfg = g_fxo->get<libio_sys_config>();
 
-	auto lock = lock_lv2_mutex_alike(cfg.mtx, &ppu);
-
-	if (cfg.init_ctr++ == 0)
+	if (build_word_start(&cfg.state) == 1)
 	{
-		// Run thread
-		vm::var<u64> _tid;
-		vm::var<u32> queue_id;
-		vm::var<char[]> _name = vm::make_str("_cfg_evt_hndlr");
-
-		vm::var<sys_event_queue_attribute_t> attr;
-		attr->protocol = SYS_SYNC_PRIORITY;
-		attr->type = SYS_PPU_QUEUE;
-		attr->name_u64 = 0;
-
-		ensure(CELL_OK == sys_event_queue_create(ppu, queue_id, attr, 0, 0x20));
-		ppu.check_state();
-		cfg.queue_id = *queue_id;
-
-		ensure(CELL_OK == ppu_execute<&sys_ppu_thread_create>(ppu, +_tid, g_fxo->get<ppu_function_manager>().func_addr(FIND_FUNC(config_event_entry)), 0, 512, 0x2000, SYS_PPU_THREAD_CREATE_JOINABLE, +_name));
-		ppu.check_state();
-
-		cfg.ppu_id = static_cast<u32>(*_tid);
-
-		// The queue is there for retro_run's events
-		sys_io_gate_open(&cfg.gate, cfg.queue_id);
+		sys_io_build(ppu, cfg);
 	}
 
 	return CELL_OK;
@@ -224,21 +231,16 @@ error_code sys_config_stop(ppu_thread& ppu)
 
 	auto& cfg = g_fxo->get<libio_sys_config>();
 
-	auto lock = lock_lv2_mutex_alike(cfg.mtx, &ppu);
-
-	if (cfg.init_ctr && cfg.init_ctr-- == 1)
+	switch (build_word_stop(&cfg.state))
 	{
-		// No more of retro_run's events: one still under way finds the
-		// queue gone
-		sys_io_gate_close(&cfg.gate);
-
-		ensure(CELL_OK == sys_event_queue_destroy(ppu, cfg.queue_id, SYS_EVENT_QUEUE_DESTROY_FORCE));
-		ppu.check_state();
-		ensure(CELL_OK == sys_ppu_thread_join(ppu, cfg.ppu_id, +vm::var<u64>{}));
-	}
-	else
-	{
+	case 1:
+		sys_io_build(ppu, cfg);
+		break;
+	case -1:
 		// TODO: Unknown error
+		break;
+	default:
+		break;
 	}
 
 	return CELL_OK;

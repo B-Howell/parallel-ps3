@@ -2,9 +2,10 @@
 // queue, Emu/Cell/Modules/sys_io_.cpp): retro_run sends it, and must not
 // wait for the game's threads to do so.
 //
-// - sys_config_stop holds sys_io's mutex while it waits for the game's
-//   handler thread to end. A send from the frontend's thread meanwhile
-//   returns, with the event in the queue: it does not wait for that mutex.
+// - A game's call building (util/build_word.c: taking the queue down, and
+//   waiting for the game's handler thread to end) holds no lock; a send
+//   from the frontend's thread meanwhile returns, with the event in the
+//   queue. (It was sys_io's mutex, which the send did not wait for either.)
 // - Not started, or stopped: nothing is sent, and nothing waits.
 // - sys_config_stop does not wait for a send under way: it closes the gate
 //   and goes on, and the send, holding the queue it found, sends nothing.
@@ -50,37 +51,24 @@ int main()
 	CHECK(lv2_evq_count(&queue->q) == 0);
 
 	// Started, as sys_config_start leaves it
-	cfg.init_ctr = 1;
+	build_word_restore(&cfg.state, 1);
 	sys_io_gate_open(&cfg.gate, queue_id);
 
-	// A game's thread in sys_config_stop, waiting for the handler thread
-	// with the mutex held: retro_run's send goes through
+	// A game's call building (as sys_config_stop taking the queue down, the
+	// handler thread not yet ended): retro_run's send goes through
 	{
-		std::atomic<bool> held{false}, release{false}, sent{false};
-		std::thread game([&]
-		{
-			std::lock_guard lock(cfg.mtx);
-			held = true;
-			while (!release)
-				std::this_thread::yield();
-		});
+		retro_atomic_store_release_64(&cfg.state, static_cast<s64>(BUILD_WORD_MADE | BUILD_WORD_BUILDER));
 
-		while (!held)
-			std::this_thread::yield();
-
+		std::atomic<bool> sent{false};
 		std::thread run([&]
 		{
 			send_sys_io_connect_event(2, 1);
 			sent = true;
 		});
-
-		for (int i = 0; i < 20'000'000 && !sent; i++)
-			std::this_thread::yield();
-
-		CHECK(sent);
-		release = true;
 		run.join();
-		game.join();
+		CHECK(sent);
+
+		build_word_restore(&cfg.state, 1);
 
 		CHECK(lv2_evq_count(&queue->q) == 1);
 		u64 first[4]{};
