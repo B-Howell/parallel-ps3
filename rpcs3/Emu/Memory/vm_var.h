@@ -116,7 +116,13 @@ namespace vm
 		_var_base(u32 count, I&& it)
 			: _var_base(count)
 		{
-			std::copy_n(std::forward<I>(it), count, pointer::get_ptr());
+			auto src = std::forward<I>(it);
+			const auto dst = pointer::get_ptr();
+
+			for (u32 i = 0; i < count; i++, ++src)
+			{
+				dst[i] = *src;
+			}
 		}
 
 		~_var_base()

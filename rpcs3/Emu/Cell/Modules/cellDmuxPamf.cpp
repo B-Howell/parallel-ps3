@@ -299,7 +299,7 @@ u32 dmux_pamf_base::video_stream<avc>::parse_stream(std::span<const u8> stream)
 	std::array<u8, 8> buf{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }; // Prevent false positives (M2V pic start code ends with 0x00)
 	ensure(cache.size() <= 3, "The size of the cache should never exceed three bytes");
 	std::ranges::copy(cache, buf.begin());
-	std::copy_n(stream.begin(), std::min(sizeof(u32) - 1, stream.size()), buf.begin() + cache.size()); // Not entirely accurate: LLE always reads three bytes from the stream, even if it is smaller than that
+	std::memcpy(buf.data() + cache.size(), stream.data(), std::min(sizeof(u32) - 1, stream.size())); // Not entirely accurate: LLE always reads three bytes from the stream, even if it is smaller than that
 
 	auto au_chunk_begin = stream.begin();
 	s32 cache_idx = 0;
@@ -354,7 +354,7 @@ u32 dmux_pamf_base::video_stream<avc>::parse_stream(std::span<const u8> stream)
 	if (current_au.state != access_unit::state::none)
 	{
 		au_chunk.data = { au_chunk_begin, stream_it };
-		std::copy_n(cache.begin(), cache_idx, std::back_inserter(au_chunk.cached_data));
+		au_chunk.cached_data.insert(au_chunk.cached_data.end(), cache.begin(), cache.begin() + cache_idx);
 	}
 
 	cache.erase(cache.begin(), cache.begin() + cache_idx);
@@ -430,7 +430,7 @@ u32 dmux_pamf_base::audio_stream<ac3>::parse_stream(std::span<const u8> stream)
 	std::array<u8, 8> buf{};
 	ensure(cache.size() <= 3, "The size of the cache should never exceed three bytes");
 	std::ranges::copy(cache, buf.begin());
-	std::copy_n(stream.begin(), std::min(sizeof(u16) - 1, stream.size()), buf.begin() + cache.size());
+	std::memcpy(buf.data() + cache.size(), stream.data(), std::min(sizeof(u16) - 1, stream.size()));
 
 	auto au_chunk_begin = stream.begin();
 	s32 cache_idx = 0;
@@ -500,7 +500,7 @@ u32 dmux_pamf_base::audio_stream<ac3>::parse_stream(std::span<const u8> stream)
 	if (current_au.state != access_unit::state::none)
 	{
 		au_chunk.data = { au_chunk_begin, stream_it };
-		std::copy_n(cache.begin(), cache_idx, std::back_inserter(au_chunk.cached_data));
+		au_chunk.cached_data.insert(au_chunk.cached_data.end(), cache.begin(), cache.begin() + cache_idx);
 	}
 
 	cache.erase(cache.begin(), cache.begin() + cache_idx);

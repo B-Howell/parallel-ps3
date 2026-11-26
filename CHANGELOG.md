@@ -4,6 +4,16 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Build: no more `std::copy_n` or `std::fill_n`.** Not yet run on a game.
+  - **Why:** a newer MinGW GCC stopped at `Utilities/StrUtil.h` with "'copy_n' is not a member of 'std'". `<algorithm>` was not included there, and that GCC no longer pulls it in through other headers. All 15 uses in the core are replaced.
+  - **What took their place:**
+    - **`strcpy_trunc`** (`StrUtil.h`, used for every fixed-size string the core fills in) now zeroes the whole array, then copies the text over it. For a 32-byte array that is two vector stores and an inline copy, with no call. It used to call `memmove` and then zero the rest by a length known only at run time.
+    - **Copies of the same plain type** now use `memcpy`, where `copy_n` called `memmove`. This covers the texture upload fast path for unswizzled formats (`TextureUtils.cpp`), the syscall argument history, and `sys_event_queue_tryreceive`'s events.
+    - **Fills of a big-endian word** (patch NOP fills in `bin_patch.cpp`, SPU image fill segments in `sys_spu.cpp`) now swap the value once, then store it. `fill_n` converted it on every store.
+    - **The rest** became plain loops, or one `insert` into the vector in place of a `back_inserter` (`cellDmuxPamf.cpp`).
+  - **Tests:** no new unit test; the build is the test. This guard fails if either function comes back. The Windows (MinGW) syntax checks of each changed file, the full build and suites pass.
+
+
 - **Guest memory: a block's allocations in a sorted C89 array, not an `std::map`.** Not yet run on a game.
   - **What changed:**
     - **A new C89 module** (`util/addr_map.c`) keeps ranges sorted by start address:

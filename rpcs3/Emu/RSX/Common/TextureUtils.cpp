@@ -187,6 +187,24 @@ struct convert_16_block_32_swizzled
 
 struct copy_unmodified_block
 {
+	// The same type is copied as bytes (memcpy: the spans do not overlap, where copy_n used memmove); a byte
+	// swapped one (be_t) word by word, which the compiler vectorises
+	template <typename T, typename U>
+	static void copy_words(T* dst, const U* src, usz count)
+	{
+		if constexpr (std::is_same_v<std::remove_cv_t<T>, std::remove_cv_t<U>> && std::is_trivially_copyable_v<T>)
+		{
+			std::memcpy(dst, src, count * sizeof(T));
+		}
+		else
+		{
+			for (usz i = 0; i < count; i++)
+			{
+				dst[i] = src[i];
+			}
+		}
+	}
+
 	template<typename T, typename U>
 	static void copy_mipmap_level(std::span<T> dst, std::span<const U> src, u16 words_per_block, u16 width_in_block, u16 row_count, u16 depth, u8 border, u32 dst_pitch_in_block, u32 src_pitch_in_block)
 	{
@@ -196,7 +214,7 @@ struct copy_unmodified_block
 		{
 			// Fast copy
 			const auto data_length = src_pitch_in_block * words_per_block * row_count * depth;
-			std::copy_n(src.begin(), std::min<usz>({data_length, src.size(), dst.size()}), dst.begin());
+			copy_words(dst.data(), src.data(), std::min<usz>({data_length, src.size(), dst.size()}));
 			return;
 		}
 
@@ -216,7 +234,7 @@ struct copy_unmodified_block
 			for (int row = 0; row < row_count; ++row)
 			{
 				// NOTE: src_offset is already shifted along the border at initialization
-				std::copy_n(src.begin() + src_offset, width_in_words, dst.begin() + dst_offset);
+				copy_words(dst.data() + dst_offset, src.data() + src_offset, width_in_words);
 
 				src_offset += src_pitch_in_words;
 				dst_offset += dst_pitch_in_words;

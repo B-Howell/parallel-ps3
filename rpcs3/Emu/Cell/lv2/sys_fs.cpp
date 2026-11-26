@@ -2976,7 +2976,12 @@ error_code sys_fs_fcntl(ppu_thread& ppu, u32 fd, u32 op, vm::ptr<void> _arg, u32
 				{
 					const auto arg_c000001c = vm::static_ptr_cast<lv2_file_c000001c>(_arg);
 					const std::u16string serial = utf8_to_utf16(device.serial); // Serial needs to be encoded to utf-16 BE
-					std::copy_n(serial.begin(), std::min(serial.size(), sizeof(arg_c000001c->serial) / sizeof(u16)), arg_c000001c->serial);
+					const usz count = std::min(serial.size(), std::size(arg_c000001c->serial));
+
+					for (usz i = 0; i < count; i++)
+					{
+						arg_c000001c->serial[i] = serial[i];
+					}
 				}
 
 				arg->out_code = CELL_OK;

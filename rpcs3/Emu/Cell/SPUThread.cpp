@@ -4183,12 +4183,13 @@ u32 evaluate_spin_optimization(std::span<u8> stats, u64 evaluate_time, const cfg
 
 	// Predict whether or not to use operating system sleep based on history
 
+	// The history before, still read below
 	std::array<u8, 16> old_stats{};
-	std::copy_n(stats.data(), stats.size(), old_stats.data());
+	std::memcpy(old_stats.data(), stats.data(), stats.size());
 
 	// Rotate history (prepare newest entry)
 	stats[0] = 0;
-	std::copy_n(old_stats.data(), stats.size() - 1, stats.data() + 1);
+	std::memcpy(stats.data() + 1, old_stats.data(), stats.size() - 1);
 
 	u32 total_wait = 0;
 	u32 zero_count = 0; // Try to ignore major inconsistencies

@@ -384,7 +384,12 @@ error_code sys_storage_report_devices(u32 storages, u32 start, u32 devices, vm::
 		return CELL_EINVAL;
 	}
 
-	std::copy_n(all_devs.begin() + start, devices, device_ids.get_ptr());
+	const auto out = device_ids.get_ptr();
+
+	for (u32 i = 0; i < devices; i++)
+	{
+		out[i] = all_devs[start + i];
+	}
 
 	return CELL_OK;
 }

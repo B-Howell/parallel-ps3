@@ -189,7 +189,16 @@ void sys_spu_image::deploy(u8* loc, std::span<const sys_spu_segment> segs, bool 
 				spu_log.error("Illegal SPU FILL type segment (ls=0x%x, size=0x%x)", seg.ls, seg.size);
 			}
 
-			std::fill_n(reinterpret_cast<be_t<u32>*>(loc + masked_ls), masked_size / 4, seg.addr);
+			{
+				// The value swapped once, not for each word
+				const be_t<u32> fill = seg.addr;
+				be_t<u32>* const words = reinterpret_cast<be_t<u32>*>(loc + masked_ls);
+
+				for (u32 i = 0; i < masked_size / 4; i++)
+				{
+					words[i] = fill;
+				}
+			}
 			sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&seg.size), sizeof(seg.size));
 			sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&seg.ls), sizeof(seg.ls));
 			sha1_stream_update(&sha, reinterpret_cast<const uchar*>(&seg.addr), sizeof(seg.addr));

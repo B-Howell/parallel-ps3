@@ -1794,6 +1794,8 @@ check: all
 	@if grep -q "unordered_map" ../../Emu/RSX/VK/VKOverlays.h ../../Emu/RSX/GL/GLOverlays.h; then echo "the overlay programs, fonts or images are in std::unordered_maps again"; exit 1; else echo "the overlay programs, fonts and images take no STL hash map"; fi
 	@# A guest memory block keeps its allocations in a C89 sorted address map, each shm handle in its entry, not a std::map node each
 	@if grep -q "block_map\|auto_typemap<block_t>" ../../Emu/Memory/vm.cpp ../../Emu/Memory/vm.h || grep -q "unordered_map<const utils::shm" ../../Emu/Memory/vm.cpp; then echo "a guest memory block's allocations are in a std::map again"; exit 1; else echo "guest memory blocks keep their allocations in a sorted C89 address map"; fi
+	@# std::copy_n and std::fill_n are gone: newer MinGW GCC no longer brings them in without <algorithm>, and plain memcpy, memset and loops make the same or better code
+	@if grep -rq --include=*.cpp --include=*.h --include=*.hpp "std::copy_n\|std::fill_n" ../.. ../../../Utilities; then echo "std::copy_n or std::fill_n is used again"; exit 1; else echo "no std::copy_n or std::fill_n in the core"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

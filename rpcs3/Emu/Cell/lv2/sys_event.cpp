@@ -568,7 +568,7 @@ error_code sys_event_queue_tryreceive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sy
 
 	ppu.check_state();
 
-	std::copy_n(events.begin(), count, event_array.get_ptr());
+	std::memcpy(event_array.get_ptr(), events.data(), count * sizeof(sys_event_t));
 	*number = count;
 
 	return CELL_OK;

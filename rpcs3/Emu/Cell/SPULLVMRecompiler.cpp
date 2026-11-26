@@ -2674,7 +2674,10 @@ public:
 				else
 				{
 					u16 expected_words[8];
-					std::fill_n(expected_words, 8, static_cast<u16>(expected_hits));
+					for (u16& word : expected_words)
+					{
+						word = static_cast<u16>(expected_hits);
+					}
 					const auto expected = ConstantDataVector::get(m_context, llvm::ArrayRef(expected_words, 8));
 
 					llvm::Value* acc = m_ir->CreateAdd(m_ir->CreateAdd(acc0, acc1), m_ir->CreateAdd(acc2, acc3));

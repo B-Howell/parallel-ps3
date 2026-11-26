@@ -17,9 +17,15 @@ std::u16string utf8_to_utf16(std::string_view src);
 template <typename D, typename T> requires requires (D& d, T& t) { std::declval<decltype(&t[0])&>() = &d[0]; }
 inline void strcpy_trunc(D&& dst, const T& src)
 {
-	const usz count = std::size(src) >= std::size(dst) ? std::max<usz>(std::size(dst), 1) - 1 : std::size(src);
-	std::copy_n(std::data(src), count, std::data(dst));
-	std::fill_n(std::data(dst) + count, std::size(dst) - count, std::remove_cvref_t<decltype(dst[0])>{});
+	// Characters, so zeroed and copied as bytes. The whole of a fixed array is zeroed first (a few stores of a
+	// size known at compile time), then the text copied over it, both inline for a short one, where copy_n
+	// called memmove and fill_n zeroed the rest by a size known only at run time
+	using C = std::remove_cvref_t<decltype(dst[0])>;
+	static_assert(std::is_trivially_copyable_v<C> && sizeof(C) == sizeof(*std::data(src)));
+	const usz cap = std::size(dst) ? std::size(dst) - 1 : 0;
+	const usz count = std::size(src) >= std::size(dst) ? cap : std::size(src);
+	std::memset(std::data(dst), 0, std::size(dst) * sizeof(C));
+	std::memcpy(std::data(dst), std::data(src), count * sizeof(C));
 }
 
 // Convert string to signed integer

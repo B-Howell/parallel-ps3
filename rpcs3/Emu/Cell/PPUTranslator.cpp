@@ -3174,8 +3174,11 @@ void PPUTranslator::MTOCRF(ppu_opcode_t op)
 		if (op.crm & (128 >> i))
 		{
 			// Discard pending values
-			std::fill_n(m_cr + i * 4, 4, nullptr);
-			std::fill_n(m_g_cr + i * 4, 4, nullptr);
+			for (u32 j = i * 4; j < i * 4 + 4; j++)
+			{
+				m_cr[j] = nullptr;
+				m_g_cr[j] = nullptr;
+			}
 
 			const auto index = m_ir->CreateAnd(m_ir->CreateLShr(value, 28 - i * 4), 15);
 			const auto src = m_ir->CreateGEP(m_mtocr_table->getValueType(), m_mtocr_table, {m_ir->getInt32(0), m_ir->CreateShl(index, 2)});

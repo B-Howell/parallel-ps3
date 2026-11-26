@@ -78,7 +78,7 @@ int main()
 			auto& out = *static_cast<std::pair<u64*, bool*>*>(ctx);
 			if (!*out.second)
 			{
-				std::copy_n(ev, 4, out.first);
+				std::memcpy(out.first, ev, 4 * sizeof(u64));
 				*out.second = true;
 			}
 		}, std::make_unique<std::pair<u64*, bool*>>(first, &found).get());

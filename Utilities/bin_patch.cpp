@@ -299,7 +299,13 @@ namespace
 		patch_log.success("Allocated 0x%x for code at 0x%x (entry=0x%x)", alloc_size, addr, out_branch);
 
 		// NOP filled
-		std::fill_n(vm::get_super_ptr<u32>(addr), value, 0x60000000);
+		// The word swapped once, not for each one
+		const be_t<u32> nop_word = 0x60000000;
+
+		for (be_t<u32>* nop = vm::get_super_ptr<u32>(addr), *end = nop + value; nop != end; nop++)
+		{
+			*nop = nop_word;
+		}
 
 		// Check if already registered by previous code allocation
 		if (*cave != addr)

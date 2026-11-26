@@ -22,7 +22,8 @@
 		history.cia = ppu.cia;\
 		history.func_name = ppu.current_function;\
 		history.error = ppu.gpr[3];\
-		std::copy_n(ppu.syscall_args, std::size(history.args), history.args.data());\
+		static_assert(sizeof(history.args) <= sizeof(ppu.syscall_args));\
+		std::memcpy(history.args.data(), ppu.syscall_args, sizeof(history.args));\
 	}\
 	ppu.current_function = old_f;\
 	ppu.cia += 4;\
