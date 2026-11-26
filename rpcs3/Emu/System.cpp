@@ -238,16 +238,30 @@ void init_fxo_for_exec(utils::serial* ar, bool full = false)
 
 	Emu.ConfigurePPUCache();
 
-	retro_atomic_store_release_int(&stx::g_launch_retainer, 1);
+	// Threads made in here wait for the retainer before they run. It is let go
+	// however this ends: a throw from the renderer's start left it held, and
+	// every thread made after it - Emulator::Kill's join thread too - waited
+	// at its first line for good, while the boot's caller waited for the stop
+	struct launch_retainer_hold
+	{
+		launch_retainer_hold() { retro_atomic_store_release_int(&stx::g_launch_retainer, 1); }
 
-	g_fxo->init(false, ar, [](){ Emu.ExecPostponedInitCode(); });
+		~launch_retainer_hold()
+		{
+			retro_atomic_store_release_int(&stx::g_launch_retainer, 0);
+			retro_waitaddr_notify_all(&stx::g_launch_retainer);
+		}
+	};
 
-	g_emu_callbacks.init_gs_render(ar);
-	g_emu_callbacks.init_kb_handler();
-	g_emu_callbacks.init_mouse_handler();
+	{
+		launch_retainer_hold hold;
 
-	retro_atomic_store_release_int(&stx::g_launch_retainer, 0);
-	retro_waitaddr_notify_all(&stx::g_launch_retainer);
+		g_fxo->init(false, ar, [](){ Emu.ExecPostponedInitCode(); });
+
+		g_emu_callbacks.init_gs_render(ar);
+		g_emu_callbacks.init_kb_handler();
+		g_emu_callbacks.init_mouse_handler();
+	}
 
 	g_emu_callbacks.init_pad_handler(Emu.GetTitleID());
 
