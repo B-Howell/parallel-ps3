@@ -4,6 +4,15 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **OpenGL: resolve helpers and overlay passes, no hash maps.** Not yet run on a game.
+  - **What changed:**
+    - **The colour resolve and unresolve helpers** were found by format in `std::unordered_map`s. Only a few formats are ever resolved, so they are now short lists (`util/key_list.c`).
+    - **The depth and stencil resolvers** were found by aspect: depth 2, stencil 4, both 6. They are now arrays of eight, indexed by aspect and checked. `clear_resolve_helpers` deletes them all as the maps' `unique_ptr`s did.
+    - **The overlay passes** (`gl::get_overlay_pass<T>()`) looked their type's index up in an `std::unordered_map` on each use. As Vulkan's do since 0617, each type now has a static slot of its own, kept in `util/slot_registry.c` for `destroy_overlay_passes`.
+    - **Smaller code:** the seven OpenGL objects using them together 1.4 KB less.
+  - **Tests:** the two modules have their own (`test_key_list`, `test_slot_registry`). The helpers themselves need a running OpenGL renderer, which the tests do not have. The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **Vulkan: render pass keys build no vectors, and the resolve helpers are a short list.** Not yet run on a game.
   - **What changed:**
     - **`vk::get_renderpass_key`** took its images and input attachment ids as `std::vector`s. With programmable blending on, the per-draw `invalidate_render_pass` and the framebuffer setup each built a vector of the ids 0 ... n−1, one allocation each time. The depth and stencil resolves, and the partial stencil clear, each built a vector holding one image.

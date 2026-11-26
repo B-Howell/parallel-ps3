@@ -1,5 +1,6 @@
 #pragma once
 
+#include "util/slot_registry.h"
 #include "Emu/system_config_types.h"
 #include "Emu/IdManager.h"
 #include "util/types.hpp"
@@ -108,22 +109,24 @@ namespace gl
 		void run(gl::command_context& cmd, const buffer* src, const texture_view* dst, const u32 src_offset, const coordu& dst_region, const pixel_buffer_layout& layout);
 	};
 
-	// TODO: Replace with a proper manager
-	extern std::unordered_map<u32, std::unique_ptr<gl::overlay_pass>> g_overlay_passes;
+	// Each made on first use into a slot of its own, one load to find, the slots kept for teardown
+	// (util/slot_registry.c). It was an STL hash map by type index, hashed on each use
+	extern slot_registry_t g_overlay_passes;
 
 	template<class T>
 	T* get_overlay_pass()
 	{
-		u32 index = stx::typeindex<id_manager::typeinfo, T>();
-		auto &e = g_overlay_passes[index];
+		static void* s_slot = nullptr;
 
-		if (!e)
+		if (!s_slot) [[unlikely]]
 		{
-			e = std::make_unique<T>();
-			e->create();
+			auto pass = new T();
+			pass->create();
+			s_slot = static_cast<gl::overlay_pass*>(pass);
+			ensure(slot_registry_add(&g_overlay_passes, &s_slot));
 		}
 
-		return static_cast<T*>(e.get());
+		return static_cast<T*>(static_cast<gl::overlay_pass*>(s_slot));
 	}
 
 	void destroy_overlay_passes();

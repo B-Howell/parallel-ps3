@@ -2,22 +2,38 @@
 #include "GLResolveHelper.h"
 #include "GLTexture.h"
 
-#include <unordered_map>
+#include "util/key_list.h"
 #include <stack>
 
 namespace gl
 {
-	std::unordered_map<texture::internal_format, std::unique_ptr<cs_resolve_task>> g_resolve_helpers;
-	std::unordered_map<texture::internal_format, std::unique_ptr<cs_unresolve_task>> g_unresolve_helpers;
-	std::unordered_map<GLuint, std::unique_ptr<ds_resolve_pass_base>> g_depth_resolvers;
-	std::unordered_map<GLuint, std::unique_ptr<ds_resolve_pass_base>> g_depth_unresolvers;
+	// The colour ones by format, the few resolved: short lists (util/key_list.c), owned. The depth and stencil
+	// ones by aspect (depth 2, stencil 4, both 6): arrays. They were STL hash maps
+	key_list_t g_resolve_helpers{};
+	key_list_t g_unresolve_helpers{};
+	std::unique_ptr<ds_resolve_pass_base> g_depth_resolvers[8];
+	std::unique_ptr<ds_resolve_pass_base> g_depth_unresolvers[8];
+
+	template <typename T>
+	static void clear_helpers(key_list_t& list)
+	{
+		for (u32 i = 0; i < list.count; i++)
+		{
+			delete static_cast<T*>(key_list_at(&list, i));
+		}
+
+		key_list_free(&list);
+	}
 
 	void clear_resolve_helpers()
 	{
-		g_resolve_helpers.clear();
-		g_unresolve_helpers.clear();
-		g_depth_resolvers.clear();
-		g_depth_unresolvers.clear();
+		clear_helpers<cs_resolve_task>(g_resolve_helpers);
+		clear_helpers<cs_unresolve_task>(g_unresolve_helpers);
+
+		for (auto& pass : g_depth_resolvers)
+			pass.reset();
+		for (auto& pass : g_depth_unresolvers)
+			pass.reset();
 	}
 
 	static const char* get_format_string(gl::texture::internal_format format)
@@ -52,11 +68,12 @@ namespace gl
 
 		if (src->aspect() == gl::image_aspect::color) [[ likely ]]
 		{
-			auto& job = g_resolve_helpers[src->get_internal_format()];
+			auto job = static_cast<cs_resolve_task*>(key_list_find(&g_resolve_helpers, static_cast<u64>(src->get_internal_format())));
 			if (!job)
 			{
 				const auto fmt = get_format_string(src->get_internal_format());
-				job.reset(new cs_resolve_task(fmt));
+				job = new cs_resolve_task(fmt);
+				ensure(key_list_add(&g_resolve_helpers, static_cast<u64>(src->get_internal_format()), job));
 			}
 
 			job->run(cmd, src, dst);
@@ -65,7 +82,7 @@ namespace gl
 
 		auto get_resolver_pass = [](GLuint aspect_bits) -> std::unique_ptr<ds_resolve_pass_base>&
 		{
-			auto& pass = g_depth_resolvers[aspect_bits];
+			auto& pass = ::at32(g_depth_resolvers, aspect_bits);
 			if (!pass)
 			{
 				ds_resolve_pass_base* ptr = nullptr;
@@ -112,11 +129,12 @@ namespace gl
 
 		if (src->aspect() == gl::image_aspect::color) [[ likely ]]
 		{
-			auto& job = g_unresolve_helpers[src->get_internal_format()];
+			auto job = static_cast<cs_unresolve_task*>(key_list_find(&g_unresolve_helpers, static_cast<u64>(src->get_internal_format())));
 			if (!job)
 			{
 				const auto fmt = get_format_string(src->get_internal_format());
-				job.reset(new cs_unresolve_task(fmt));
+				job = new cs_unresolve_task(fmt);
+				ensure(key_list_add(&g_unresolve_helpers, static_cast<u64>(src->get_internal_format()), job));
 			}
 
 			job->run(cmd, dst, src);
@@ -125,7 +143,7 @@ namespace gl
 
 		auto get_unresolver_pass = [](GLuint aspect_bits) -> std::unique_ptr<ds_resolve_pass_base>&
 		{
-			auto& pass = g_depth_unresolvers[aspect_bits];
+			auto& pass = ::at32(g_depth_unresolvers, aspect_bits);
 			if (!pass)
 			{
 				ds_resolve_pass_base* ptr = nullptr;

@@ -30,17 +30,16 @@ static inline unsigned long long lrgl_overlay_tid_hash()
 
 namespace gl
 {
-	// Lame
-	std::unordered_map<u32, std::unique_ptr<gl::overlay_pass>> g_overlay_passes;
+	slot_registry_t g_overlay_passes{};
 
 	void destroy_overlay_passes()
 	{
-		for (auto& [key, prog] : g_overlay_passes)
+		slot_registry_clear(&g_overlay_passes, [](void* p, void*)
 		{
-			prog->destroy();
-		}
-
-		g_overlay_passes.clear();
+			auto pass = static_cast<gl::overlay_pass*>(p);
+			pass->destroy();
+			delete pass;
+		}, nullptr);
 	}
 
 	void overlay_pass::create()
