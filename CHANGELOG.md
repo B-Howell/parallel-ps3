@@ -4,6 +4,20 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Texture cache: blocks in use kept as bits, not a hash set.** Not yet run on a game.
+  - **What changed:**
+    - **The texture cache** splits guest memory into 4096 blocks of 1 MB. It kept the blocks holding a texture section in an `std::unordered_set` of pointers. A block goes in when its first section is made and comes out when its last is destroyed.
+    - **A new header-only C89 set** (`util/block_bits.h`) replaces it: one bit per block, plus a summary word with a bit for every 64 blocks that has any set.
+      - Adding or taking out a block is a store or two, where the set hashed and allocated or freed a node each time.
+      - The walks (purging unreleased or unlocked sections, trimming protection) go through the summary, so they only visit 64-block words with a bit set, in address order.
+  - **Speed (this machine):**
+    - **Adding and taking out a block:** 4.3–5.5 ns, where the set took 36–52 ns.
+    - **A walk** with 126 blocks in use takes 140–160 ns against 215 ns; with 908, 750 ns against 1900 ns.
+    - **With only 16 in use**, a walk is slower: 17–35 ns against 13 ns.
+  - **Smaller code:** 2.8 KB less over the texture cache and renderer objects.
+  - **Tests:** `test_block_bits` sets, clears and tests indices, including two in one word and the first and last. It checks the summary bit stays while any bit of its word is set and goes with the last. It walks the set as the texture cache does, checking every index comes out once in rising order, over 20,000 random steps. A summary left set, dropped too soon or never set, and a wrong clear mask each fail it. The full build, the suites and the Windows (MinGW) syntax checks of the Vulkan and OpenGL texture caches pass.
+
+
 - **Vulkan and OpenGL: two per-draw hash lookups made array indexes.** Not yet run on a game.
   - **What changed:**
     - **Vulkan format properties** (`render_device::get_format_properties`): a draw asks this for each texture (whether its format can be filtered linearly), and render targets ask it when made. It used an `std::unordered_map`, filled on first use.

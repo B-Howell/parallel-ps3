@@ -9,6 +9,8 @@
 #include "guest_page_locks.h"
 #include "util/vm.hpp"
 
+#include "util/block_bits.h"
+
 #include <list>
 #include <unordered_set>
 
@@ -472,7 +474,26 @@ namespace rsx
 	private:
 		block_type blocks[num_blocks];
 		texture_cache_type *m_tex_cache;
-		std::unordered_set<block_type*> m_in_use;
+		// The blocks holding a section, a bit each (util/block_bits.h), where an STL hash set of their pointers
+		// was kept: added and taken out with a store or two, walked in address order through the words with any set
+		static_assert(num_blocks <= BLOCK_BITS_MAX);
+		block_bits_t m_in_use{};
+
+		// @f(block) for each block holding a section, in address order. A word is read before its blocks are
+		// handed out, so @f must not add or take out blocks (nor could it with the hash set: that broke the walk)
+		template <typename F>
+		void for_each_in_use(F&& f)
+		{
+			for (u64 words = m_in_use.summary; words; words &= words - 1)
+			{
+				const u32 w = compat_ctz_u64(words);
+
+				for (u64 bits = m_in_use.words[w]; bits; bits &= bits - 1)
+				{
+					f(blocks[w * 64 + compat_ctz_u64(bits)]);
+				}
+			}
+		}
 
 	public:
 		retro_atomic_int_t m_unreleased_texture_objects{0}; //Number of invalidated objects not yet freed from memory
@@ -546,7 +567,7 @@ namespace rsx
 				block.clear();
 			}
 
-			m_in_use.clear();
+			block_bits_clear_all(&m_in_use);
 
 			AUDIT(retro_atomic_load_acquire_int(&m_unreleased_texture_objects) == 0);
 			AUDIT(retro_atomic_load_acquire_64(&m_texture_memory_in_use) == 0);
@@ -558,11 +579,11 @@ namespace rsx
 
 			// Reclaims all graphics memory consumed by dirty textures
 			// Do not destroy anything while iterating or you will end up with stale iterators
-			for (auto& block : m_in_use)
+			for_each_in_use([&](block_type& block)
 			{
-				if (block->get_unreleased_count() > 0)
+				if (block.get_unreleased_count() > 0)
 				{
-					for (auto& tex : *block)
+					for (auto& tex : block)
 					{
 						if (!tex.is_unreleased())
 							continue;
@@ -571,7 +592,7 @@ namespace rsx
 						textures_to_remove.push_back(&tex);
 					}
 				}
-			}
+			});
 
 			for (auto& tex : textures_to_remove)
 			{
@@ -587,11 +608,11 @@ namespace rsx
 			// Do not destroy anything while iterating or you will end up with stale iterators
 			std::vector<section_storage_type*> textures_to_remove;
 
-			for (auto& block : m_in_use)
+			for_each_in_use([&](block_type& block)
 			{
-				if (block->get_exists_count() > block->get_locked_count())
+				if (block.get_exists_count() > block.get_locked_count())
 				{
-					for (auto& tex : *block)
+					for (auto& tex : block)
 					{
 						if (tex.get_context() == rsx::texture_upload_context::framebuffer_storage ||
 							tex.is_locked() ||
@@ -604,7 +625,7 @@ namespace rsx
 						textures_to_remove.push_back(&tex);
 					}
 				}
-			}
+			});
 
 			for (auto& tex : textures_to_remove)
 			{
@@ -616,12 +637,11 @@ namespace rsx
 
 		void trim_sections()
 		{
-			for (auto it = m_in_use.begin(); it != m_in_use.end(); it++)
+			for_each_in_use([](block_type& block)
 			{
-				auto* block = *it;
-				if (block->get_locked_count() > 256)
+				if (block.get_locked_count() > 256)
 				{
-					for (auto& tex : *block)
+					for (auto& tex : block)
 					{
 						if (tex.is_locked() && !tex.is_locked(true))
 						{
@@ -629,7 +649,7 @@ namespace rsx
 						}
 					}
 				}
-			}
+			});
 		}
 
 
@@ -661,14 +681,16 @@ namespace rsx
 
 		void on_ranged_block_first_section_created(block_type& block)
 		{
-			AUDIT(m_in_use.find(&block) == m_in_use.end());
-			m_in_use.insert(&block);
+			const u32 index = block.get_start() / block_size;
+			AUDIT(!block_bits_test(&m_in_use, index));
+			block_bits_set(&m_in_use, index);
 		}
 
 		void on_ranged_block_last_section_destroyed(block_type& block)
 		{
-			AUDIT(m_in_use.find(&block) != m_in_use.end());
-			m_in_use.erase(&block);
+			const u32 index = block.get_start() / block_size;
+			AUDIT(block_bits_test(&m_in_use, index));
+			block_bits_clear(&m_in_use, index);
 		}
 
 		/**
