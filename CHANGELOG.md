@@ -4,6 +4,20 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **The last timed sleeps are gone.** Each now waits on the event it was waiting for, or on the guest's time where the delay is the game's. Not yet run on a game.
+  - **What changed:**
+    - **The PAMF demuxer** delayed a new stream by sleeping 1.5 ms of the host's time, so White Knight Chronicles II finishes setting up FMV playback first. It now waits 1.5 ms of the guest's time (`lv2_obj::wait_timeout`), which goes at `retro_run`'s pace, woken by each frame of it.
+    - **SPU stop code 0x001** slept a millisecond of the host's ("hack"). It is now a millisecond of the guest's, the same way.
+    - **An SPU handing its SPURS slot on** slept 300 µs so another thread could take it. It now waits for the running count to change, that is for one to take it, or for its own state to change, at most the same 300 µs.
+    - **An SPU backing off** when there is more SPU work than host threads slept 200 µs, then tried its reservation again. It now waits on that reservation's notifier, at most the same 200 µs, as the wait just below it does.
+    - **The access-violation handler, while the emulator stops,** retried mapping a page every millisecond. It now waits for the memory map to change (a writer leaving, as a thread unmapping frees room) or for the thread's state to change, then tries again.
+    - **The HLE SPURS kernel's idle loop** slept a millisecond at a time, for good. It reads a local-store copy that nothing refreshes, so only a stop can end it: it now waits on the thread's state. The HLE kernel is not reached anyway: its entry is not registered.
+  - **Flagged:**
+    - In the access-violation retry, the memory map's epoch is read after the failed try, because that try's own map attempt took the writer lock. A free landing between the failure and the read is only seen at the next writer to leave, of which there are many while the emulator stops.
+    - The two guest-time waits wake on each frame of the guest's time, so they look for a stop at that pace, not on the thread's state.
+  - **Tests:** none of their own: these run in SPU, SPURS and demuxer threads of a running game. The waits they use have their own tests (`test_guest_clock` for `wait_timeout`, `test_vm_range_locks` for the writer epoch). The guard keeps timed sleeps out of the emulator. The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **Emulator callbacks: plain functions, not 47 std::functions.** Not yet run on a game.
   - **What changed:**
     - `emu_callbacks` is the table the emulator calls the core through: dialogs, the renderer's frame, audio, input handlers, paths, localized strings and the rest. It held 47 `std::function`s. Every one the core sets is a lambda that captures nothing.

@@ -1002,7 +1002,8 @@ void dmux_pamf_spu_context::operator()() // cellSpursMain()
 
 			// Delay demuxing a bit
 			// Prevents White Knight Chronicles II FMVs from freezing, since events are otherwise fired before the game has finished initializing FMV playback
-			thread_ctrl::wait_for(1'500);
+			// 1.5 ms of the guest's time, which goes at retro_run's pace (it slept 1.5 ms of the host's), woken by each frame of it and looking for a stop each time
+			lv2_obj::wait_timeout(1'500, nullptr, false);
 		}
 
 		process_next_pack();

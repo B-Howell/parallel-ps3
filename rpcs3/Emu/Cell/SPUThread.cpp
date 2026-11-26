@@ -4740,8 +4740,9 @@ bool spu_thread::process_mfc_cmd()
 
 						if (static_cast<u32>(retro_atomic_load_acquire_int(&group->spurs_running)) == max_run - 1)
 						{
-							// Try to let another thread slip in and take over execution
-							thread_ctrl::wait_for(300);
+							// Try to let another thread slip in and take over execution: until one does (the count
+							// leaves max_run - 1) or this thread's state changes, at most 300 us (it slept the 300 us)
+							thread_ctrl::wait_on_word(&group->spurs_running, max_run - 1, 300);
 
 							// Update value
 							prev_running = static_cast<u32>(retro_atomic_load_acquire_int(&group->spurs_running)) + 1;
@@ -5921,8 +5922,18 @@ s64 spu_thread::get_ch_value(u32 ch)
 
 							if (thread_count && seed % thread_count < work_count - true_free)
 							{
-								// Make the SPU wait longer for other threads to do the work
-								thread_ctrl::wait_for(200);
+								// Make the SPU wait longer for other threads to do the work: until its reservation is
+								// touched, at most 200 us (it slept the 200 us)
+								if (auto [wait_var, flag_val] = vm::reservation_notifier_begin_wait(raddr, rtime); wait_var)
+								{
+									if (cmp_rdata(rdata, *resrv_mem))
+									{
+										vm::reservation_notifier_wait(wait_var, flag_val, 200);
+									}
+
+									vm::reservation_notifier_end_wait(*wait_var);
+								}
+
 								continue;
 							}
 						}
@@ -6612,7 +6623,9 @@ bool spu_thread::stop_and_signal(u32 code)
 	case 0x001:
 	{
 		state += cpu_flag::wait;
-		std::this_thread::sleep_for(1ms); // hack
+		// A millisecond of the guest's time, at retro_run's pace, woken by each frame of it and looking for a stop
+		// each time (it slept a millisecond of the host's, a hack)
+		lv2_obj::wait_timeout(1000, nullptr, false);
 		check_state();
 		return true;
 	}

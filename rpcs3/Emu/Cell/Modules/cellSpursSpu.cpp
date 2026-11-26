@@ -853,7 +853,17 @@ void spursSysServiceIdleHandler(spu_thread& spu, SpursKernelContext* ctxt)
 		if (spuIdling && shouldExit == false && foundReadyWorkload == false)
 		{
 			// The system service blocks by making a reservation and waiting on the lock line reservation lost event.
-			thread_ctrl::wait_for(1000);
+			// Here it reads its local store's copy, which nothing refreshes (the reservation is not made), so only
+			// the thread being stopped can end it: waited for on the thread's state (it slept a millisecond at a
+			// time, for good). Not reached: the HLE kernel's entry is not registered
+			const auto old_state = +spu.state;
+
+			if (spu.check_state())
+			{
+				return;
+			}
+
+			thread_ctrl::wait_on(spu.state, old_state);
 			continue;
 		}
 

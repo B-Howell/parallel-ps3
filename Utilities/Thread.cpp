@@ -2285,9 +2285,22 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
 	{
 		// Keep retrying until the page is mapped: the thread must be able to resume so it can observe cpu_flag::exit and terminate cleanly.
 		// Reporting the violation as unhandled here would escalate a guest crash into an unhandled host exception.
+		// Until the memory map changes (a writer leaves: one thread unmapping, which frees room) or the thread's state
+		// does, then again (it slept a millisecond at a time). The epoch is read after the failed try, whose own map
+		// attempt took the writer lock too
 		while (!hack_alloc())
 		{
-			thread_ctrl::wait_for(1000);
+			const u32 epoch = vm_writer_wait_begin(&vm::g_writer_wake);
+			retro_waitaddr_t list[2]{{&vm::g_writer_wake.epoch, epoch}};
+			unsigned count = 1;
+
+			if (cpu)
+			{
+				list[count++] = thread_ctrl::waitaddr(cpu->state, +cpu->state);
+			}
+
+			retro_waitaddr_wait(list, count, -1);
+			vm_writer_wait_end(&vm::g_writer_wake);
 		}
 	}
 

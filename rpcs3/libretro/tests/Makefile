@@ -1733,6 +1733,8 @@ check: all
 	@if grep -q "s_cpu_lock" ../../Emu/CPU/CPUThread.cpp || ! grep -q "cpu_guard_suspend_begin" ../../Emu/CPU/CPUThread.cpp; then echo "suspend_all goes through the s_cpu_lock shared_mutex again"; exit 1; else echo "suspend_all keeps to a lock-free guard"; fi
 	@# The emulator's callbacks to the core are plain functions, as each the core sets captures nothing: no std::function apiece
 	@if grep -qE "^[[:space:]]*std::function<" ../../Emu/emu_callbacks.h; then echo "the emulator's callbacks to the core are std::functions again"; exit 1; else echo "the emulator's callbacks to the core are plain functions"; fi
+	@# No timed sleep is left in the emulator: each waits on its event, or on the guest's time where the delay is the game's
+	@if grep -rn --include=*.cpp --include=*.h --include=*.hpp "thread_ctrl::wait_for(\|this_thread::sleep_for(" ../../Emu ../../../Utilities | grep -v "void thread_ctrl::wait_for(" | grep -q .; then echo "a timed sleep (thread_ctrl::wait_for or std::this_thread::sleep_for) is back in the emulator"; exit 1; else echo "no timed sleep is left in the emulator"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
