@@ -4,6 +4,10 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Texture cache: a flush-always range added twice keeps one entry.** Not yet run on a game.
+  - **What changed:** when the flush-always sections moved into a short list, adding a range that was already there made a second entry. The hash map it replaced put the new section in place of the old one. With two entries, removing the range left the old section in the list, and every draw then reprotected it even after it was gone. Adding a range now replaces its section if the range is there.
+  - **Tests:** the full build passes.
+
 - **Render targets: a surface is found again after its block is split.** Not yet run on a game.
   - **What changed:** since render targets moved into short lists per 4 MB block (`util/pair_list.c`), an entry can move when its block gains or loses one. Binding a render target held a reference to its old entry while splitting the surfaces it overlaps, and that split adds to and takes from the same block. The entry was then read, released and erased at its old place: the wrong surface could be freed while still in use.
     - This is the likely cause of "Verification failed (object: 0x0)" stopping the emulation (a render target pointer that no longer points at a render target), and of the crash in `vk::surface_cache::destroy` on exit.

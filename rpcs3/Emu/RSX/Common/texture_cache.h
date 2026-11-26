@@ -2146,8 +2146,13 @@ namespace rsx
 			if (add)
 			{
 				// Add to m_flush_always_cache
+				// A range already there takes the new section, as the hash map's operator [] did: a
+				// second entry would leave the old section behind once one of them is removed
 				AUDIT(find_flush_always(range) == nullptr);
-				ensure(key_list_add(&m_flush_always_cache, flush_always_key(range), &section));
+				if (!key_list_replace(&m_flush_always_cache, flush_always_key(range), &section))
+				{
+					ensure(key_list_add(&m_flush_always_cache, flush_always_key(range), &section));
+				}
 			}
 			else
 			{
