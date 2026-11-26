@@ -4,6 +4,12 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Render targets: a surface is found again after its block is split.** Not yet run on a game.
+  - **What changed:** since render targets moved into short lists per 4 MB block (`util/pair_list.c`), an entry can move when its block gains or loses one. Binding a render target held a reference to its old entry while splitting the surfaces it overlaps, and that split adds to and takes from the same block. The entry was then read, released and erased at its old place: the wrong surface could be freed while still in use.
+    - This is the likely cause of "Verification failed (object: 0x0)" stopping the emulation (a render target pointer that no longer points at a render target), and of the crash in `vk::surface_cache::destroy` on exit.
+    - `bind_surface_address` (`Common/surface_store.h`) now looks the surface up again after each split, in both the primary and the other store.
+  - **Tests:** the full build passes.
+
 - **Patch Manager: Demon's Souls' in-game debug menu.** Not yet run on a game.
   - **What changed:** a fourth Demon's Souls (US 1.00) patch in the core's own patch file, `libretro_patch.yml`: **In-Game Debug Menu**.
     - Select opens and closes the developers' debug menu in game. The retail game builds all its pages at boot but never draws them or reads input for them: HG MAN (graphics), MEM MAN, PERF MAN, Param Man, the character and camera pages and more.

@@ -509,16 +509,24 @@ namespace rsx
 				}
 				else
 				{
+					surface_storage_type* entry = &surface;
+
 					if (pitch_compatible)
 					{
 						// Preserve memory outside the area to be inherited if needed
-						split_surface_region<depth>(command_list, address, Traits::get(surface), static_cast<u16>(width), static_cast<u16>(height), bpp, antialias);
-						old_surface = Traits::get(surface);
+						split_surface_region<depth>(command_list, address, Traits::get(*entry), static_cast<u16>(width), static_cast<u16>(height), bpp, antialias);
+
+						// The split can add surfaces to this block or take them from it, and its
+						// entries move when it does (util/pair_list.c): find this one again
+						It = primary_storage->find(address);
+						ensure(It != primary_storage->end());
+						entry = &It->second;
+						old_surface = Traits::get(*entry);
 					}
 
 					// This will be unconditionally moved to invalidated list shortly
-					free_rsx_memory(Traits::get(surface));
-					Traits::notify_surface_invalidated(surface);
+					free_rsx_memory(Traits::get(*entry));
+					Traits::notify_surface_invalidated(*entry);
 
 					if (old_surface_storage)
 					{
@@ -526,7 +534,7 @@ namespace rsx
 						invalidated_resources.push_back(std::move(old_surface_storage));
 					}
 
-					old_surface_storage = std::move(surface);
+					old_surface_storage = std::move(*entry);
 					primary_storage->erase(It);
 				}
 			}
@@ -598,6 +606,10 @@ namespace rsx
 						// TODO: This can leak data outside inherited bounds
 						old_surface = surface;
 					}
+
+					// As above: the split can move this block's entries, so find this one again
+					aliased_surface = secondary_storage->find(address);
+					ensure(aliased_surface != secondary_storage->end());
 				}
 
 				invalidate(aliased_surface->second);
