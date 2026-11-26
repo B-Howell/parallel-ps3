@@ -89,6 +89,12 @@ add_subdirectory(asmjit EXCLUDE_FROM_ALL)
 # LLVM
 add_subdirectory(llvm EXCLUDE_FROM_ALL)
 
+# RtMidi and Fusion go into the core, as every library here does: a frontend
+# has no copy of either to load beside it. Both leave the choice to
+# BUILD_SHARED_LIBS, and RtMidi declares it an option that is ON unless set,
+# which would then hold for Fusion after it too.
+set(BUILD_SHARED_LIBS OFF)
+
 # RTMIDI
 add_subdirectory(rtmidi EXCLUDE_FROM_ALL)
 
