@@ -296,6 +296,11 @@ namespace vk
 		get_physical_device_features(allow_extensions);
 		get_physical_device_properties_1(allow_extensions);
 
+		for (u32 format = 0; format < core_format_count; format++)
+		{
+			vkGetPhysicalDeviceFormatProperties(dev, static_cast<VkFormat>(format), &format_properties[format]);
+		}
+
 		rsx_log.always()("Found Vulkan-compatible GPU: '%s' running on driver %s", get_name(), get_driver_version());
 
 		if (get_driver_vendor() == driver_vendor::RADV && get_name().find("LLVM 8.0.0") != umax)
@@ -1031,13 +1036,13 @@ namespace vk
 
 	const VkFormatProperties render_device::get_format_properties(VkFormat format) const
 	{
-		auto found = pgpu->format_properties.find(format);
-		if (found != pgpu->format_properties.end())
+		if (static_cast<u32>(format) < physical_device::core_format_count) [[likely]]
 		{
-			return found->second;
+			return pgpu->format_properties[format];
 		}
 
-		auto& props = pgpu->format_properties[format];
+		// An extension format (numbered from 1000000000), which the renderer does not use: asked each time
+		VkFormatProperties props;
 		vkGetPhysicalDeviceFormatProperties(*pgpu, format, &props);
 		return props;
 	}

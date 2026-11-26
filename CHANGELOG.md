@@ -4,6 +4,18 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Vulkan and OpenGL: two per-draw hash lookups made array indexes.** Not yet run on a game.
+  - **What changed:**
+    - **Vulkan format properties** (`render_device::get_format_properties`): a draw asks this for each texture (whether its format can be filtered linearly), and render targets ask it when made. It used an `std::unordered_map`, filled on first use.
+      - Every core format's properties (185 of them) are now asked of the driver once, when the device is made, into an array indexed by format.
+      - The array is only read afterwards, so any thread may read it safely. The map was grown from whichever thread asked first, with nothing guarding it.
+      - The renderer uses no extension format. One would be asked of the driver each time.
+    - **OpenGL null textures** (the 1x1 textures bound in place of a missing one): looked up in an `std::unordered_map` by GL target for each unbound texture of a draw. They are now an array of four indexed by the texture's dimension, so the step that turned the dimension into a GL target is gone too.
+  - **Speed:** a format lookup takes 0.4–0.5 ns, where the map took 10.4 ns (this machine, loop included).
+  - **Smaller code:** 3.6 KB less over `device.o`, `GLGSRender.o` and `GLDraw.o`.
+  - **Tests:** none of its own; both need a running Vulkan or OpenGL device, which the tests do not have. The guard here fails if either map comes back. The Windows (MinGW) syntax checks of the four changed files, the full build and suites pass.
+
+
 - **RSX: render target lookups faster at every block size up to 8.** Not yet run on a game.
   - **Why:** with 0624, a 4 MB block holding 6 or 8 render targets was slower to search than the old hash map: 6.8 and 8.1 ns, against 5.0 and 5.2 ns.
   - **What changed** (`util/pair_list.c`):

@@ -7,7 +7,6 @@
 
 #include <string>
 #include <vector>
-#include <unordered_map>
 
 #define DESCRIPTOR_MAX_DRAW_CALLS 32768
 
@@ -78,7 +77,11 @@ namespace vk
 		VkPhysicalDeviceMemoryProperties memory_properties;
 		std::vector<VkQueueFamilyProperties> queue_props;
 
-		mutable std::unordered_map<VkFormat, VkFormatProperties> format_properties;
+		// Each core format's properties (VK_FORMAT_UNDEFINED to VK_FORMAT_ASTC_12x12_SRGB_BLOCK), asked of the
+		// driver once when the device is made and only read after, so any thread may read them; a draw looks its
+		// textures' formats up by index, where a hash map was searched (and grown, with no guard) each time
+		static constexpr u32 core_format_count = VK_FORMAT_ASTC_12x12_SRGB_BLOCK + 1;
+		VkFormatProperties format_properties[core_format_count]{};
 		gpu_shader_types_support shader_types_support{};
 		VkPhysicalDeviceDriverPropertiesKHR driver_properties{};
 

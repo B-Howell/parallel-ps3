@@ -306,10 +306,10 @@ void GLGSRender::on_init_thread()
 		auto texCUBE = std::make_unique<gl::viewable_image>(GL_TEXTURE_CUBE_MAP, 1, 1, 1, 1, 1, GL_RGBA8, RSX_FORMAT_CLASS_COLOR);
 		texCUBE->copy_from(src_buf, gl::texture::format::rgba, gl::texture::type::uint_8_8_8_8, {});
 
-		m_null_textures[GL_TEXTURE_1D] = std::move(tex1D);
-		m_null_textures[GL_TEXTURE_2D] = std::move(tex2D);
-		m_null_textures[GL_TEXTURE_3D] = std::move(tex3D);
-		m_null_textures[GL_TEXTURE_CUBE_MAP] = std::move(texCUBE);
+		m_null_textures[static_cast<u8>(rsx::texture_dimension_extended::texture_dimension_1d)] = std::move(tex1D);
+		m_null_textures[static_cast<u8>(rsx::texture_dimension_extended::texture_dimension_2d)] = std::move(tex2D);
+		m_null_textures[static_cast<u8>(rsx::texture_dimension_extended::texture_dimension_3d)] = std::move(tex3D);
+		m_null_textures[static_cast<u8>(rsx::texture_dimension_extended::texture_dimension_cubemap)] = std::move(texCUBE);
 		LRGL_GLGS_NOTICE("on_init_thread null textures done");
 	}
 
@@ -640,7 +640,10 @@ void GLGSRender::on_exit()
 		m_instancing_ring_buffer->remove();
 	}
 
-	m_null_textures.clear();
+	for (auto& tex : m_null_textures)
+	{
+		tex.reset();
+	}
 	m_gl_texture_cache.destroy();
 	m_ui_renderer.destroy();
 	m_video_output_pass.destroy();

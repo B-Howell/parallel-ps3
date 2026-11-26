@@ -531,8 +531,7 @@ void GLGSRender::bind_texture_env()
 		if (is_redirected && desc->image_type > rsx::texture_dimension_extended::texture_dimension_2d)
 		{
 			// Cannot handle redirect on 3D or cubemap with the interpreter.
-			const auto target = gl::get_target(desc->image_type);
-			return m_null_textures[target]->get_view(rsx::default_remap_vector);
+			return ::at32(m_null_textures, static_cast<u8>(desc->image_type))->get_view(rsx::default_remap_vector);
 		}
 
 		using deferred_subresource_t = gl::texture_cache::deferred_subresource;
@@ -595,8 +594,7 @@ void GLGSRender::bind_texture_env()
 		if (const bool is_redirected = (current_fragment_program.texture_state.redirected_textures & (1 << i));
 			!primary_view)
 		{
-			const auto target = gl::get_target(current_fragment_program.get_texture_dimension(i));
-			primary_view = m_null_textures[target]->get_view(rsx::default_remap_vector);
+			primary_view = ::at32(m_null_textures, static_cast<u8>(current_fragment_program.get_texture_dimension(i)))->get_view(rsx::default_remap_vector);
 
 			if (is_redirected)
 			{

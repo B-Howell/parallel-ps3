@@ -9,7 +9,6 @@
 #include "util/asm.hpp"
 
 #include <optional>
-#include <unordered_map>
 #include <thread>
 
 #include "glutils/ring_buffer.h"
@@ -141,7 +140,9 @@ class GLGSRender : public GSRender, public ::rsx::reports::ZCULL_control
 			retro_atomic_store_release_int(&m_samplers_reload_asked, 1);
 		}
 	}
-	std::unordered_map<GLenum, std::unique_ptr<gl::viewable_image>> m_null_textures;
+	// A 1x1 texture for each dimension (rsx::texture_dimension_extended: 1D, 2D, cube, 3D), indexed by it, where
+	// a hash map by GL target was looked up for each unbound texture of each draw
+	std::unique_ptr<gl::viewable_image> m_null_textures[4];
 	rsx::simple_array<u8> m_scratch_buffer;
 
 	// Occlusion query type, can be SAMPLES_PASSED or ANY_SAMPLES_PASSED

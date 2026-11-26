@@ -1804,6 +1804,8 @@ check: all
 	@if grep -q "unordered_map" ../../Emu/RSX/Common/ranged_map.hpp; then echo "the render target store's blocks are std::unordered_maps again"; exit 1; else echo "the render target store keeps each block's surfaces in a C89 pair list"; fi
 	@# The render target pair list keeps its keys apart and compares them four at a time, so a lookup has no branch on where the key is
 	@if grep -q "pair_list_entry_t" ../../util/pair_list.h ../../Emu/RSX/Common/ranged_map.hpp || ! grep -q "match4" ../../util/pair_list.c; then echo "the render target pair list looks along its pairs one at a time again"; exit 1; else echo "the render target pair list compares its keys four at a time"; fi
+	@# Per-draw lookups of Vulkan format properties and OpenGL null textures are array indexes, not hash maps
+	@if grep -q "unordered_map<VkFormat" ../../Emu/RSX/VK/vkutils/device.h || grep -q "unordered_map<GLenum" ../../Emu/RSX/GL/GLGSRender.h; then echo "Vulkan format properties or OpenGL null textures are in hash maps again"; exit 1; else echo "Vulkan format properties and OpenGL null textures are found by index"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
