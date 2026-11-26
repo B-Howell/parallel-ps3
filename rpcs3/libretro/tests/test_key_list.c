@@ -5,6 +5,8 @@
  *   differing only in their top half kept apart;
  * - the first four kept in the list itself (nothing allocated), more on
  *   the heap, all still found after it grows and grows again;
+ * - replaced: a key's pointer swapped, the old one given back, both inline
+ *   and on the heap; a key not there replaced as none, nothing added;
  * - moved: every entry found in the new list, the old one empty and
  *   usable; freed: empty, and usable again. */
 
@@ -44,6 +46,11 @@ int main(void)
       TEST_CHECK(key_list_at(&a, (uint32_t)i) != NULL);
    TEST_CHECK(key_list_at(&a, 40) == NULL);
 
+   /* Replaced: on the heap, then inline below */
+   TEST_CHECK(key_list_replace(&a, 7, &vals[50]) == &vals[7] && key_list_find(&a, 7) == &vals[50]);
+   TEST_CHECK(key_list_replace(&a, 7, &vals[7]) == &vals[50]);
+   TEST_CHECK(key_list_replace(&a, 1000, &vals[1]) == NULL && a.count == 40 && key_list_find(&a, 1000) == NULL);
+
    /* Moved */
    key_list_move(&b, &a);
    TEST_CHECK(a.count == 0 && a.cap == 0 && key_list_find(&a, 7) == NULL);
@@ -54,6 +61,7 @@ int main(void)
    key_list_free(&b);
    key_list_move(&b, &a);
    TEST_CHECK(b.count == 1 && b.cap == 0 && key_list_find(&b, 9) == &vals[9]);
+   TEST_CHECK(key_list_replace(&b, 9, &vals[10]) == &vals[9] && key_list_find(&b, 9) == &vals[10]);
 
    /* Freed */
    key_list_free(&b);
@@ -61,6 +69,6 @@ int main(void)
    TEST_CHECK(key_list_add(&b, 5, &vals[5]) == 1 && key_list_find(&b, 5) == &vals[5]);
    key_list_free(&b);
 
-   printf("test_key_list: pointers by key, four kept in the list, more on the heap, moved and freed; %s\n", test_failures ? "FAIL" : "ok");
+   printf("test_key_list: pointers by key, four kept in the list, more on the heap, replaced, moved and freed; %s\n", test_failures ? "FAIL" : "ok");
    return test_failures ? 1 : 0;
 }

@@ -6,11 +6,14 @@
 
 #include <util/asm.hpp>
 #include "util/logs.hpp"
+#include "util/key_list.h"
 
 namespace vk
 {
-	std::unordered_map<VkImageViewType, std::unique_ptr<viewable_image>> g_null_image_views;
-	std::unordered_map<u32, std::unique_ptr<image>> g_typeless_textures;
+	// By view type, the five there are (1D, 2D, 3D, cube, 2D array): an array, where it was an STL hash map
+	std::unique_ptr<viewable_image> g_null_image_views[VK_IMAGE_VIEW_TYPE_2D_ARRAY + 1];
+	// By format and class, the few in use: a short list (util/key_list.c), owned, where it was an STL hash map
+	key_list_t g_typeless_textures{};
 	VkSampler g_null_sampler = nullptr;
 
 	// Scratch memory handling. Use double-buffered resource to significantly cut down on GPU stalls
@@ -27,7 +30,10 @@ namespace vk
 		}
 	};
 
-	std::unordered_map<u32, scratch_buffer_pool_t> g_scratch_buffers_pool;
+	// By queue family, an index the device gives (a few): an array, where it was an STL hash map asked on each
+	// scratch use
+	constexpr u32 max_scratch_queue_families = 16;
+	scratch_buffer_pool_t g_scratch_buffers_pool[max_scratch_queue_families];
 
 	VkSampler null_sampler()
 	{
@@ -57,10 +63,9 @@ namespace vk
 
 	vk::image_view* null_image_view(const vk::command_buffer& cmd, VkImageViewType type)
 	{
-		if (auto found = g_null_image_views.find(type);
-			found != g_null_image_views.end())
+		if (static_cast<u32>(type) <= VK_IMAGE_VIEW_TYPE_2D_ARRAY && g_null_image_views[type])
 		{
-			return found->second->get_view(rsx::default_remap_vector.with_encoding(VK_REMAP_IDENTITY));
+			return g_null_image_views[type]->get_view(rsx::default_remap_vector.with_encoding(VK_REMAP_IDENTITY));
 		}
 
 		VkImageType image_type;
@@ -133,27 +138,40 @@ namespace vk
 				format_class);
 		};
 
-		const u32 key = (format_class << 24u) | format;
-		auto& ptr = g_typeless_textures[key];
+		const u64 key = (u64{format_class} << 32) | static_cast<u32>(format);
+		auto ptr = static_cast<vk::image*>(key_list_find(&g_typeless_textures, key));
 
-		if (!ptr || ptr->width() < requested_width || ptr->height() < requested_height)
+		if (ptr && ptr->width() >= requested_width && ptr->height() >= requested_height)
 		{
-			if (ptr)
-			{
-				requested_width = std::max(requested_width, ptr->width());
-				requested_height = std::max(requested_height, ptr->height());
-				get_resource_manager()->dispose(ptr);
-			}
-
-			ptr.reset(create_texture());
-			ptr->set_debug_name(fmt::format("Scratch: Format=0x%x", static_cast<u32>(format)));
+			return ptr;
 		}
 
-		return ptr.get();
+		if (ptr)
+		{
+			requested_width = std::max(requested_width, ptr->width());
+			requested_height = std::max(requested_height, ptr->height());
+		}
+
+		auto made = std::unique_ptr<vk::image>(create_texture());
+		made->set_debug_name(fmt::format("Scratch: Format=0x%x", static_cast<u32>(format)));
+
+		if (ptr)
+		{
+			// Grown: the new one in the old one's place, the old one to the GC
+			std::unique_ptr<vk::image> old(static_cast<vk::image*>(key_list_replace(&g_typeless_textures, key, made.get())));
+			get_resource_manager()->dispose(old);
+		}
+		else
+		{
+			ensure(key_list_add(&g_typeless_textures, key, made.get()));
+		}
+
+		return made.release();
 	}
 
 	std::pair<vk::buffer*, bool> get_scratch_buffer(u32 queue_family, u64 min_required_size)
 	{
+		ensure(queue_family < max_scratch_queue_families);
 		auto& scratch_buffer = g_scratch_buffers_pool[queue_family].get_buf();
 		bool is_new = false;
 
@@ -204,10 +222,22 @@ namespace vk
 
 	void clear_scratch_resources()
 	{
-		g_null_image_views.clear();
-		g_scratch_buffers_pool.clear();
+		for (auto& view : g_null_image_views)
+		{
+			view.reset();
+		}
 
-		g_typeless_textures.clear();
+		for (auto& pool : g_scratch_buffers_pool)
+		{
+			pool = {};
+		}
+
+		for (u32 i = 0; i < g_typeless_textures.count; i++)
+		{
+			delete static_cast<vk::image*>(key_list_at(&g_typeless_textures, i));
+		}
+
+		key_list_free(&g_typeless_textures);
 
 		if (g_null_sampler)
 		{

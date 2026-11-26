@@ -33,6 +33,10 @@ void *key_list_find(const key_list_t *l, uint64_t key);
  * out of memory, nothing changed */
 int key_list_add(key_list_t *l, uint64_t key, void *val);
 
+/* @key's pointer made @val: the one it had, or NULL (nothing added) where
+ * the key is not there */
+void *key_list_replace(key_list_t *l, uint64_t key, void *val);
+
 void *key_list_at(const key_list_t *l, uint32_t index);
 
 /* Its storage freed, the list empty (what it pointed to is the caller's) */

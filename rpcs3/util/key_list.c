@@ -61,6 +61,22 @@ int key_list_add(key_list_t *l, uint64_t key, void *val)
    return 1;
 }
 
+void *key_list_replace(key_list_t *l, uint64_t key, void *val)
+{
+   const uint64_t *k    = keys_of(l);
+   void          **vals = l->cap ? l->vals : l->ivals;
+   uint32_t        i;
+
+   for (i = 0; i < l->count; i++)
+      if (k[i] == key)
+      {
+         void *old = vals[i];
+         vals[i]   = val;
+         return old;
+      }
+   return NULL;
+}
+
 void *key_list_at(const key_list_t *l, uint32_t index)
 {
    return index < l->count ? vals_of(l)[index] : NULL;

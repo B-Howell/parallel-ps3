@@ -4,6 +4,16 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Vulkan: scratch resources in arrays and a short list, not three hash maps.** Not yet run on a game.
+  - **What changed:**
+    - **The scratch buffer** (`get_scratch_buffer`, asked for on every compute conversion and texture upload conversion) was found in an `std::unordered_map` by queue family. The device's queue families are small indices, so it is now an array of 16, checked.
+    - **The null textures** (`null_image_view`, bound where a texture is missing) were found by view type. There are five types, so it is now an array indexed by type.
+    - **The typeless helpers** (`get_typeless_helper`, the images format conversions copy through) were found by format and class. Only a few are in use, so they are now a short list (`util/key_list.c`, from 0616). One grown in size is swapped in place with the new `key_list_replace`, and the old one goes to the GC as before.
+    - `clear_scratch_resources` frees all three as the maps did.
+    - **Smaller code:** scratch.o 2.6 KB less.
+  - **Tests:** `test_key_list` now also covers `key_list_replace`: a key's pointer swapped with the old one given back, both inline and on the heap, and a key not there replaced as none with nothing added. The scratch resources themselves need a running renderer's device, which the tests do not have. The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **Vulkan: compute tasks and overlay passes are found in a slot of their own, not a hash map.** Not yet run on a game.
   - **What changed:**
     - `vk::get_compute_task<T>()` and `vk::get_overlay_pass<T>()` find the renderer's compute shaders and overlay passes by type. That happens on each use: format conversions, resolves, overlays and the like, at 26 sites. Each looked the type's index up in an `std::unordered_map`, hashed every time, and the maps had a few dozen entries made once each.
