@@ -22,7 +22,7 @@ namespace rsx
 	public:
 		// The surfaces starting in each block, in a short list (util/pair_list.c), where each was an STL
 		// hash map. A block holds a few: a look along them is quicker than a hash and its modulo.
-		// The value is made in the entry's pointer room and moves bitwise with it, as a unique_ptr can
+		// The value is made in its pair.s pointer room and moves bitwise with it, as a unique_ptr can
 		static_assert(sizeof(T) == sizeof(void*) && alignof(T) <= alignof(void*));
 
 		// An entry as the callers see it: its address and its value
@@ -38,9 +38,10 @@ namespace rsx
 			entry_ref* operator -> () { return &ref; }
 		};
 
-		static T& value_of(pair_list_entry_t& e)
+		// The value at @index of @block
+		static T& value_of(pair_list_t& block, u32 index)
 		{
-			return *std::launder(reinterpret_cast<T*>(e.room.bytes));
+			return *std::launder(reinterpret_cast<T*>(PAIR_LIST_ROOMS(&block)[index].bytes));
 		}
 
 		using inner_type = pair_list_t;
@@ -51,10 +52,6 @@ namespace rsx
 		outer_type m_data{};
 		metadata_array m_metadata;
 
-		static pair_list_entry_t* entries(inner_type& block)
-		{
-			return PAIR_LIST_ENTRIES(&block);
-		}
 
 		static inline u32 block_for(u32 address)
 		{
@@ -144,7 +141,7 @@ namespace rsx
 			// The last moves into the gap, so the same index is looked at next
 			void erase()
 			{
-				value_of(entries(*m_current)[m_index]).~T();
+				value_of(*m_current, m_index).~T();
 				pair_list_remove_at(m_current, m_index);
 
 				if (m_index < m_current->count)
@@ -169,15 +166,13 @@ namespace rsx
 			entry_arrow operator -> () const
 			{
 				ensure(m_current);
-				auto& e = entries(*m_current)[m_index];
-				return { { e.key, value_of(e) } };
+				return { { PAIR_LIST_KEYS(m_current)[m_index], value_of(*m_current, m_index) } };
 			}
 
 			entry_ref operator * () const
 			{
 				ensure(m_current);
-				auto& e = entries(*m_current)[m_index];
-				return { e.key, value_of(e) };
+				return { PAIR_LIST_KEYS(m_current)[m_index], value_of(*m_current, m_index) };
 			}
 
 			iterator& operator ++ ()
@@ -210,20 +205,20 @@ namespace rsx
 			broadcast_insert(range);
 			auto& block = m_data[block_for(range.start)];
 
-			if (const auto found = pair_list_find(&block, range.start))
+			if (const u32 found = pair_list_find(&block, range.start); found != PAIR_LIST_NONE)
 			{
-				value_of(*found) = std::move(value);
+				value_of(block, found) = std::move(value);
 				return;
 			}
 
-			const auto added = ensure(pair_list_add(&block, range.start));
-			new (added->room.bytes) T(std::move(value));
+			const u32 added = pair_list_add(&block, range.start);
+			ensure(added != PAIR_LIST_NONE);
+			new (PAIR_LIST_ROOMS(&block)[added].bytes) T(std::move(value));
 		}
 
 		usz count(const u32 key) const
 		{
-			auto& block = const_cast<inner_type&>(m_data[block_for(key)]);
-			return pair_list_find(&block, key) ? 1 : 0;
+			return pair_list_find(&m_data[block_for(key)], key) != PAIR_LIST_NONE ? 1 : 0;
 		}
 
 		iterator find(const u32 key)
@@ -231,9 +226,9 @@ namespace rsx
 			auto& block = m_data[block_for(key)];
 			iterator ret = { this };
 
-			if (const auto found = pair_list_find(&block, key))
+			if (const u32 found = pair_list_find(&block, key); found != PAIR_LIST_NONE)
 			{
-				ret.begin_range(key, static_cast<u32>(found - PAIR_LIST_ENTRIES(&block)));
+				ret.begin_range(key, found);
 			}
 
 			return ret;
@@ -249,11 +244,10 @@ namespace rsx
 		{
 			auto& block = m_data[block_for(address)];
 
-			if (const auto found = pair_list_find(&block, address))
+			if (const u32 found = pair_list_find(&block, address); found != PAIR_LIST_NONE)
 			{
-				const u32 index = static_cast<u32>(found - PAIR_LIST_ENTRIES(&block));
-				value_of(entries(block)[index]).~T();
-				pair_list_remove_at(&block, index);
+				value_of(block, found).~T();
+				pair_list_remove_at(&block, found);
 			}
 		}
 
@@ -276,7 +270,7 @@ namespace rsx
 			{
 				for (u32 i = 0; i < block.count; i++)
 				{
-					value_of(entries(block)[i]).~T();
+					value_of(block, i).~T();
 				}
 				pair_list_free(&block);
 			}

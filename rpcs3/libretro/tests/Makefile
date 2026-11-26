@@ -508,7 +508,7 @@ test_addr_map: test_addr_map.c test_common.h ../../util/addr_map.c ../../util/ad
 	$(CC) $(CFLAGS) $(TEST_STD) -pedantic $(SANITIZE) -o $@ test_addr_map.c ../../util/addr_map.c $(LDFLAGS) $(LDLIBS)
 
 test_pair_list: test_pair_list.c test_common.h ../../util/pair_list.c ../../util/pair_list.h
-	$(CC) $(CFLAGS) $(TEST_STD) -pedantic $(SANITIZE) -o $@ test_pair_list.c ../../util/pair_list.c $(LDFLAGS) $(LDLIBS)
+	$(CC) $(CFLAGS) $(TEST_STD) -pedantic $(SANITIZE) -I$(LRC)/include -o $@ test_pair_list.c ../../util/pair_list.c $(LDFLAGS) $(LDLIBS)
 
 # A short list of pointers by key: the module and the test as C89
 test_key_list: test_key_list.c test_common.h ../../util/key_list.c ../../util/key_list.h
@@ -1802,6 +1802,8 @@ check: all
 	@if grep -rq --include=*.cpp --include=*.h --include=*.hpp "std::copy_n\|std::fill_n" ../.. ../../../Utilities; then echo "std::copy_n or std::fill_n is used again"; exit 1; else echo "no std::copy_n or std::fill_n in the core"; fi
 	@# The render target store keeps each 4 MB block's surfaces in a C89 pair list, not a std::unordered_map per block
 	@if grep -q "unordered_map" ../../Emu/RSX/Common/ranged_map.hpp; then echo "the render target store's blocks are std::unordered_maps again"; exit 1; else echo "the render target store keeps each block's surfaces in a C89 pair list"; fi
+	@# The render target pair list keeps its keys apart and compares them four at a time, so a lookup has no branch on where the key is
+	@if grep -q "pair_list_entry_t" ../../util/pair_list.h ../../Emu/RSX/Common/ranged_map.hpp || ! grep -q "match4" ../../util/pair_list.c; then echo "the render target pair list looks along its pairs one at a time again"; exit 1; else echo "the render target pair list compares its keys four at a time"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

@@ -1,9 +1,12 @@
 /* A short list of {32-bit key, pointer's room} pairs (rpcs3/util/pair_list.c),
  * one per 4 MB block of the render target store (Emu/RSX/Common/
- * ranged_map.hpp): two kept in the list itself, more on the heap; each
- * room's bytes kept as entries move (growing, and the last moving into a
- * gap); and checked against a plain array after each of many random adds
- * and removes. C89. */
+ * ranged_map.hpp): two kept in the list itself, more on the heap, where the
+ * keys are compared four at a time (lists of every length up to 70, so each
+ * place in a group of four and past a 32-key pass is a match and a miss);
+ * each room's bytes kept as pairs move (growing, the last moving into a
+ * gap); a key left past count by a removal never found, at every length;
+ * a reused slot's room zeroed; and checked against a plain array after
+ * each of many random adds and removes. C89. */
 
 #include <stdio.h>
 #include <string.h>
@@ -11,24 +14,24 @@
 #include "../../util/pair_list.h"
 #include "test_common.h"
 
-#define N 64
+#define N 80
 
 static int in[N];
 
-static void put(pair_list_entry_t *e, int i) { void *p = &in[i]; memcpy(e->room.bytes, &p, sizeof(p)); }
-static void *got(const pair_list_entry_t *e) { void *p; memcpy(&p, e->room.bytes, sizeof(p)); return p; }
+static void put(pair_list_t *l, uint32_t at, int i) { void *p = &in[i]; memcpy(PAIR_LIST_ROOMS(l)[at].bytes, &p, sizeof(p)); }
+static void *got(const pair_list_t *l, uint32_t at) { void *p; memcpy(&p, PAIR_LIST_ROOMS(l)[at].bytes, sizeof(p)); return p; }
 
 static uint32_t key_of(int i) { return (uint32_t)i * 0x10000u + 0x40000000u; }
 
-static void check_all(pair_list_t *l)
+static void check_all(const pair_list_t *l)
 {
    int      i;
    uint32_t n = 0;
 
    for (i = 0; i < N; i++)
    {
-      pair_list_entry_t *e = pair_list_find(l, key_of(i));
-      TEST_CHECK(in[i] ? (e && e->key == key_of(i) && got(e) == &in[i]) : e == NULL);
+      const uint32_t at = pair_list_find(l, key_of(i));
+      TEST_CHECK(in[i] ? (at < l->count && PAIR_LIST_KEYS(l)[at] == key_of(i) && got(l, at) == &in[i]) : at == PAIR_LIST_NONE);
       n += in[i] != 0;
    }
    TEST_CHECK(n == l->count);
@@ -36,52 +39,70 @@ static void check_all(pair_list_t *l)
 
 int main(void)
 {
-   pair_list_t        l;
-   pair_list_entry_t *e;
-   uint32_t           seed = 99, idx;
-   int                i, step;
+   pair_list_t l;
+   uint32_t    seed = 99, at;
+   int         i, len, step;
 
    memset(&l, 0, sizeof(l));
-   TEST_CHECK(pair_list_find(&l, 0) == NULL && PAIR_LIST_ENTRIES(&l) == l.inline_e);
+   TEST_CHECK(pair_list_find(&l, 0) == PAIR_LIST_NONE && PAIR_LIST_KEYS(&l) == l.inline_keys);
 
-   /* Two inline, the room zeroed when added */
-   for (i = 0; i < 2; i++)
+   /* Every length up to 70: each key found where it is, the rest not */
+   for (len = 1; len <= 70; len++)
    {
-      e = pair_list_add(&l, key_of(i));
-      TEST_CHECK(e && got(e) == NULL);
-      put(e, i);
-      in[i] = 1;
+      at = pair_list_add(&l, key_of(len - 1));
+      TEST_CHECK(at == (uint32_t)(len - 1) && got(&l, at) == NULL);
+      put(&l, at, len - 1);
+      in[len - 1] = 1;
+      check_all(&l);
    }
-   TEST_CHECK(l.heap == NULL && l.count == 2);
-   check_all(&l);
+   TEST_CHECK(l.keys != NULL && l.cap == 128);
 
-   /* The third moves them to the heap, rooms with them */
-   put(pair_list_add(&l, key_of(2)), 2);
-   in[2] = 1;
-   TEST_CHECK(l.heap != NULL && l.cap == 4);
-   for (i = 3; i < 20; i++)
-   {
-      put(pair_list_add(&l, key_of(i)), i);
-      in[i] = 1;
-   }
-   TEST_CHECK(l.count == 20 && l.cap == 32);
-   check_all(&l);
+   /* A key past count (left by a removal) is not found */
+   pair_list_remove_at(&l, l.count - 1);
+   in[69] = 0;
+   TEST_CHECK(l.keys[l.count] == key_of(69) && pair_list_find(&l, key_of(69)) == PAIR_LIST_NONE);
 
    /* The first taken out: the last moves into its place */
    pair_list_remove_at(&l, 0);
    in[0] = 0;
-   TEST_CHECK(PAIR_LIST_ENTRIES(&l)[0].key == key_of(19) && got(&PAIR_LIST_ENTRIES(&l)[0]) == &in[19]);
-   /* The last taken out: nothing moves */
-   pair_list_remove_at(&l, l.count - 1);
-   in[18] = 0;
+   TEST_CHECK(PAIR_LIST_KEYS(&l)[0] == key_of(68) && got(&l, 0) == &in[68]);
    check_all(&l);
 
    /* Added again into the slot just left: its room zeroed, not the old bytes */
-   e = pair_list_add(&l, key_of(18));
-   TEST_CHECK(e && got(e) == NULL);
-   put(e, 18);
-   in[18] = 1;
+   at = pair_list_add(&l, key_of(69));
+   TEST_CHECK(at != PAIR_LIST_NONE && got(&l, at) == NULL);
+   put(&l, at, 69);
+   in[69] = 1;
    check_all(&l);
+
+   /* At every length to 40, a key just taken out from the end (still there
+    * past count) is not found, then the list grows back */
+   for (len = 40; len >= 1; len--)
+   {
+      while (l.count > (uint32_t)len)
+      {
+         pair_list_remove_at(&l, l.count - 1);
+         in[PAIR_LIST_KEYS(&l)[l.count] - key_of(0) >> 16] = 0;
+      }
+      if (l.count == (uint32_t)len && len > 1)
+      {
+         const uint32_t last = PAIR_LIST_KEYS(&l)[len - 1];
+         pair_list_remove_at(&l, (uint32_t)len - 1);
+         in[(last - key_of(0)) >> 16] = 0;
+         TEST_CHECK(PAIR_LIST_KEYS(&l)[len - 1] == last && pair_list_find(&l, last) == PAIR_LIST_NONE);
+         check_all(&l);
+      }
+   }
+
+   /* Inline: a key left past count is not found either */
+   pair_list_free(&l);
+   memset(in, 0, sizeof(in));
+   put(&l, pair_list_add(&l, key_of(1)), 1);
+   put(&l, pair_list_add(&l, key_of(2)), 2);
+   pair_list_remove_at(&l, 1);
+   TEST_CHECK(l.keys == NULL && pair_list_find(&l, key_of(2)) == PAIR_LIST_NONE && pair_list_find(&l, key_of(1)) == 0);
+   pair_list_remove_at(&l, 0);
+   TEST_CHECK(pair_list_find(&l, key_of(1)) == PAIR_LIST_NONE);
 
    /* Random adds and removes, each checked */
    for (step = 0; step < 20000; step++)
@@ -90,16 +111,14 @@ int main(void)
       i    = (int)((seed >> 8) % N);
       if (in[i])
       {
-         e   = pair_list_find(&l, key_of(i));
-         idx = (uint32_t)(e - PAIR_LIST_ENTRIES(&l));
-         pair_list_remove_at(&l, idx);
+         pair_list_remove_at(&l, pair_list_find(&l, key_of(i)));
          in[i] = 0;
       }
       else
       {
-         e = pair_list_add(&l, key_of(i));
-         TEST_CHECK(e != NULL);
-         put(e, i);
+         at = pair_list_add(&l, key_of(i));
+         TEST_CHECK(at != PAIR_LIST_NONE);
+         put(&l, at, i);
          in[i] = 1;
       }
       if (step % 53 == 0)
@@ -108,11 +127,8 @@ int main(void)
    check_all(&l);
 
    pair_list_free(&l);
-   TEST_CHECK(l.count == 0 && l.heap == NULL && pair_list_find(&l, key_of(1)) == NULL);
-   put(pair_list_add(&l, 7), 7);
-   TEST_CHECK(pair_list_find(&l, 7) && got(pair_list_find(&l, 7)) == &in[7] && l.heap == NULL);
-   pair_list_free(&l);
+   TEST_CHECK(l.count == 0 && l.keys == NULL && pair_list_find(&l, key_of(1)) == PAIR_LIST_NONE);
 
-   printf("test_pair_list: pairs by key, two inline then on the heap, rooms kept as entries move, %d random steps checked; %s\n", step, test_failures ? "FAIL" : "ok");
+   printf("test_pair_list: pairs by key, two inline then on the heap four at a time, every length to 70, rooms kept as pairs move, %d random steps checked; %s\n", step, test_failures ? "FAIL" : "ok");
    return test_failures ? 1 : 0;
 }

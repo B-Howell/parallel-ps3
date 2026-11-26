@@ -4,6 +4,27 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **RSX: render target lookups faster at every block size up to 8.** Not yet run on a game.
+  - **Why:** with 0624, a 4 MB block holding 6 or 8 render targets was slower to search than the old hash map: 6.8 and 8.1 ns, against 5.0 and 5.2 ns.
+  - **What changed** (`util/pair_list.c`):
+    - **The keys** are kept in an array of their own, with the surfaces in a second array in the same allocation.
+    - **The search** compares keys four at a time (SSE2 on x86, NEON on ARM, plain C elsewhere) into one bit mask. Bits past the count are masked off, then the first set bit gives the index.
+      - Up to 8 keys this takes two loads, up to 16 four, and nothing branches on where the key is. Longer lists go 16 keys at a time.
+      - The two kept inside the list itself are checked the same way.
+    - **The heap holds at least 8 keys**, then a multiple of 16, so every load stays inside its own allocation.
+  - **Speed (this machine, 1024 blocks, random hits and misses; earlier ones measured with keys that strayed into the next block, now fixed):**
+    - **1 to 8 per block:** 3.0–4.2 ns (once 5.7 ns, at 2), where the map took 5.7–13 ns.
+    - **6 per block:** 4.0 ns against 6.1 ns.
+    - **8 per block:** 4.1 ns against 5.7 ns.
+    - **One block searched over and over:** 2.7 ns against 4.5 ns at 4 to 8 per block, and 3.3 ns against 4.3–5.0 ns at 10 to 16.
+    - **10 to 16 per block, spread over all blocks:** 6.5 ns against 5.7 ns. Past 16 it is slower: 12 ns at 24 against 5.7 ns. A 4 MB block holds that many only with many small targets.
+  - **Tests:** `test_pair_list` now:
+    - grows a list one key at a time to 70, checking every key is found and every other is not;
+    - at every length to 40, checks that a key just taken off the end, still in memory past the count, is not found.
+    - A missing mask on the 8-key, 16-key or long path, a wrong shift, or a pass of the wrong length each fail it.
+    - It passed on ARM (NEON, under qemu) and on the plain C path, as well as SSE2. The full build, the suites and the Windows (MinGW) syntax checks pass.
+
+
 - **RSX: render targets found without a hash map per 4 MB block.** Not yet run on a game.
   - **What changed:**
     - **The render target and depth stores** (`Common/ranged_map.hpp`, used by `surface_store.h` on every draw) split guest memory into 1024 blocks of 4 MB. Each block kept the surfaces starting in it in its own `std::unordered_map`. Each is now a short C89 list (`util/pair_list.c`).
