@@ -95,6 +95,7 @@ target_sources(rpcs3_emu PRIVATE
     ../../Utilities/Config.cpp
     ../../Utilities/File.cpp
     ../../Utilities/JITASM.cpp
+    ../../Utilities/jit_bump.c
     ../../Utilities/JITLLVM.cpp
     ../../Utilities/LUrlParser.cpp
     ../../Utilities/lf_item_pool.c
@@ -182,6 +183,7 @@ target_sources(rpcs3_emu PRIVATE
     Cell/SPUCommonRecompiler.cpp
     Cell/SPULLVMRecompiler.cpp
     Cell/SPUThread.cpp
+    Cell/spu_pc_table.c
     Cell/lv2/lv2.cpp
     Cell/lv2/sys_bdemu.cpp
     Cell/lv2/sys_bluetooth.cpp
@@ -225,6 +227,7 @@ target_sources(rpcs3_emu PRIVATE
     Cell/lv2/sys_spu.cpp
     Cell/lv2/sys_sm.cpp
     Cell/lv2/eeprom_table.c
+    Cell/lv2/game_text_patch.c
     Cell/lv2/sys_ss.cpp
     Cell/lv2/sys_storage.cpp
     Cell/lv2/sys_time.cpp
@@ -495,6 +498,7 @@ target_sources(rpcs3_emu PRIVATE
 # Memory
 target_sources(rpcs3_emu PRIVATE
     Memory/vm.cpp
+    Memory/vm_range_locks.c
 )
 
 # RSX
@@ -686,6 +690,8 @@ if(TARGET 3rdparty_vulkan)
         RSX/VK/VKVertexProgram.cpp
         RSX/VK/VKTextureCache.cpp
         RSX/VK/VulkanAPI.cpp
+        RSX/VK/vk_interpreter_dynamic.c
+        RSX/VK/vk_interpreter_uploads.c
         RSX/VK/vk_loader.c
     )
     if(APPLE)

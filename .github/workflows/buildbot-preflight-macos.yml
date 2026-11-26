@@ -6,7 +6,7 @@ name: Buildbot preflight (macOS)
 # build (CMAKE_IGNORE_PREFIX_PATH) and the final check would catch.
 
 # Also on a change to what builds LLVM from the tree, or to the targets that
-# bring in Vulkan's and libretro-common's headers: LLVM's Makefile rules and
+# bring in Vulkan's and libretro-common's headers or list the core's sources: LLVM's Makefile rules and
 # their CMake wrapper met make 3.81, Apple's ar and a clang with no SDK of
 # its own only here, and only here are MoltenVK's headers looked for.
 on:
@@ -16,6 +16,7 @@ on:
       - '3rdparty/CMakeLists.txt'
       - '3rdparty/llvm/CMakeLists.txt'
       - 'rpcs3/libretro/libretro_common.cmake'
+      - 'rpcs3/Emu/CMakeLists.txt'
       - 'Makefile'
       - 'rpcs3/libretro/make/llvm/**'
       - '.github/workflows/buildbot-preflight-macos.yml'

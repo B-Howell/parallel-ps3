@@ -8,6 +8,7 @@ add_library(libretro_common STATIC
     ${LIBRETRO_COMMON_DIR}/audio/conversion/float_to_s16.c
     ${LIBRETRO_COMMON_DIR}/audio/conversion/float_to_ulaw.c
     ${LIBRETRO_COMMON_DIR}/audio/resampler/drivers/sinc_resampler.c
+    ${LIBRETRO_COMMON_DIR}/compat/compat_fnmatch.c
     ${LIBRETRO_COMMON_DIR}/compat/compat_posix_string.c
     ${LIBRETRO_COMMON_DIR}/compat/compat_strcasestr.c
     ${LIBRETRO_COMMON_DIR}/compat/compat_strl.c
@@ -22,6 +23,7 @@ add_library(libretro_common STATIC
     ${LIBRETRO_COMMON_DIR}/encodings/encoding_deflate.c
     ${LIBRETRO_COMMON_DIR}/encodings/encoding_rzstd.c
     ${LIBRETRO_COMMON_DIR}/encodings/encoding_utf.c
+    ${LIBRETRO_COMMON_DIR}/encodings/encoding_xxh3.c
     ${LIBRETRO_COMMON_DIR}/encodings/encoding_xxh64.c
     ${LIBRETRO_COMMON_DIR}/features/features_cpu.c
     ${LIBRETRO_COMMON_DIR}/file/file_path.c
