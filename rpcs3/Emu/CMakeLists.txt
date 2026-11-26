@@ -601,6 +601,7 @@ if(NOT ANDROID AND NOT APPLE)
         RSX/GL/GLDraw.cpp
         RSX/GL/GLFragmentProgram.cpp
         RSX/GL/GLGSRender.cpp
+        RSX/GL/gl_state_table.c
         RSX/GL/GLHelpers.cpp
         RSX/GL/GLOverlays.cpp
         RSX/GL/GLPipelineCompiler.cpp

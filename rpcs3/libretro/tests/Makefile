@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_DYLIB -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_cpu_guard test_cpu_guard_tsan test_build_word test_build_word_tsan test_vm_range_locks test_vm_range_locks_tsan test_spu_pc_table test_spu_pc_table_tsan test_jit_bump test_jit_bump_tsan test_rw_word test_rw_word_tsan test_yaml_value test_patch_db test_patch_options test_guest_atomic test_guest_atomic_tsan test_init_word test_init_word_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_jit_cores test_rpcn_signal test_rsx_wake test_rsx_wake_tsan test_rsx_hold test_rsx_hold_tsan test_rsx_timestamp test_rpcn_reply_slots test_rpcn_reply_slots_tsan test_osk_text test_osk_text_tsan test_game_text_patch test_net_wake test_vk_loader test_tsc_cpuid test_tsc_perf
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_cpu_guard test_cpu_guard_tsan test_build_word test_build_word_tsan test_gl_state_table test_vm_range_locks test_vm_range_locks_tsan test_spu_pc_table test_spu_pc_table_tsan test_jit_bump test_jit_bump_tsan test_rw_word test_rw_word_tsan test_yaml_value test_patch_db test_patch_options test_guest_atomic test_guest_atomic_tsan test_init_word test_init_word_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_jit_cores test_rpcn_signal test_rsx_wake test_rsx_wake_tsan test_rsx_hold test_rsx_hold_tsan test_rsx_timestamp test_rpcn_reply_slots test_rpcn_reply_slots_tsan test_osk_text test_osk_text_tsan test_game_text_patch test_net_wake test_vk_loader test_tsc_cpuid test_tsc_perf
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -496,6 +496,10 @@ test_cpu_slots_tsan: $(CPU_SLOTS_DEPS)
 	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/test_cpu_slots_tsan.o test_cpu_slots.c
 	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/cpu_slots_tsan.o ../../Emu/CPU/cpu_slots.c
 	$(CC) $(CFLAGS) -std=gnu99 -fsanitize=thread -o $@ obj/test_cpu_slots_tsan.o obj/cpu_slots_tsan.o $(LDFLAGS) $(LDLIBS) -lpthread
+
+# The OpenGL renderer's state tables: the module and the test as C89
+test_gl_state_table: test_gl_state_table.c test_common.h ../../Emu/RSX/GL/gl_state_table.c ../../Emu/RSX/GL/gl_state_table.h
+	$(CC) $(CFLAGS) $(TEST_STD) -pedantic $(SANITIZE) -o $@ test_gl_state_table.c ../../Emu/RSX/GL/gl_state_table.c $(LDFLAGS) $(LDLIBS)
 
 # Made by the first start, taken down by the last stop: the module and the test as C89
 BUILD_WORD_DEPS := test_build_word.c test_common.h ../../util/build_word.c ../../util/build_word.h
@@ -1103,6 +1107,7 @@ check: all
 	./test_jit_host_symbols_tsan
 	./test_cpu_slots
 	./test_cpu_slots_tsan
+	./test_gl_state_table
 	./test_build_word
 	./test_build_word_tsan
 	./test_cpu_guard
@@ -1748,6 +1753,8 @@ check: all
 	@if grep -rn --include=*.cpp --include=*.h --include=*.hpp "thread_ctrl::wait_for(\|this_thread::sleep_for(" ../../Emu ../../../Utilities | grep -v "void thread_ctrl::wait_for(" | grep -q .; then echo "a timed sleep (thread_ctrl::wait_for or std::this_thread::sleep_for) is back in the emulator"; exit 1; else echo "no timed sleep is left in the emulator"; fi
 	@# sys_io's config queue is made by the first start and taken down by the last stop through a lock-free build word (util/build_word.c), not behind a mutex
 	@if grep -q "shared_mutex\|lock_lv2_mutex_alike" ../../Emu/Cell/Modules/sys_io_.cpp || ! grep -q "build_word_start" ../../Emu/Cell/Modules/sys_io_.cpp; then echo "sys_io's config queue is made and taken down behind a mutex again"; exit 1; else echo "sys_io's config queue is made and taken down with no lock"; fi
+	@# The OpenGL renderer keeps what it last set of the driver's state in fixed C89 tables, not std::unordered_maps hashed and grown on each GL call
+	@if grep -q "unordered_map" ../../Emu/RSX/GL/glutils/state_tracker.hpp || ! grep -q "gl_state_test_and_set" ../../Emu/RSX/GL/glutils/state_tracker.hpp; then echo "the OpenGL state tracker keeps its state in std::unordered_maps again"; exit 1; else echo "the OpenGL state tracker keeps its state in fixed tables"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)

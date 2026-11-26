@@ -3,7 +3,7 @@
 #include "capabilities.h"
 
 #include "Utilities/geometry.h"
-#include <unordered_map>
+#include "Emu/RSX/GL/gl_state_table.h"
 
 namespace gl
 {
@@ -24,49 +24,28 @@ namespace gl
 			POLYGON_OFFSET = 0xFFFF000C,
 		};
 
-		std::unordered_map<GLenum, u64> properties = {};
-		std::unordered_map<GLenum, std::array<u64, 4>> indexed_properties = {};
+		// What was last set: fixed tables, no allocation per call (gl_state_table.c). It was STL hash maps, hashed
+		// and grown on each call
+		gl_state_table_t m_state{};
 
 		GLuint current_program = GL_NONE;
-		std::array<std::unordered_map<GLenum, GLuint>, 48> bound_textures{ {} };
 
 		bool test_and_set_property(GLenum property, u64 test)
 		{
-			auto found = properties.find(property);
-			if (found != properties.end() && found->second == test)
-				return true;
-
-			properties[property] = test;
-			return false;
+			return gl_state_test_and_set(&m_state, property, test) != 0;
 		}
 
 		bool test_and_set_property(GLenum property, u64 test, GLint index)
 		{
-			auto found = indexed_properties.find(property);
-			if (found != indexed_properties.end())
-			{
-				if (found->second[index] == test)
-				{
-					return true;
-				}
-
-				found->second[index] = test;
-				return false;
-			}
-
-			indexed_properties[property][index] = test;
-			return false;
+			return gl_state_test_and_set_indexed(&m_state, property, static_cast<unsigned>(index), test) != 0;
 		}
 
 	public:
 
 		bool enable(u32 test, GLenum cap)
 		{
-			auto found = properties.find(cap);
-			if (found != properties.end() && found->second == test)
+			if (test_and_set_property(cap, test))
 				return !!test;
-
-			properties[cap] = test;
 
 			if (test)
 				glEnable(cap);
@@ -78,21 +57,8 @@ namespace gl
 
 		bool enablei(u32 test, GLenum cap, u32 index)
 		{
-			auto found = indexed_properties.find(cap);
-			const bool exists = found != indexed_properties.end();
-
-			if (!exists)
-			{
-				indexed_properties[cap] = {};
-				indexed_properties[cap][index] = test;
-			}
-			else
-			{
-				if (found->second[index] == test)
-					return !!test;
-
-				found->second[index] = test;
-			}
+			if (test_and_set_property(cap, test, static_cast<GLint>(index)))
+				return !!test;
 
 			if (test)
 				glEnablei(cap, index);
@@ -399,18 +365,17 @@ namespace gl
 
 		GLuint get_bound_texture(GLuint layer, GLenum target)
 		{
-			return ::at32(bound_textures, layer)[target];
+			ensure(layer < GL_STATE_UNITS);
+			return gl_state_bound_texture(&m_state, layer, target);
 		}
 
 		void bind_texture(GLuint layer, GLenum target, GLuint name, GLboolean force = GL_FALSE)
 		{
-			auto& bound = ::at32(bound_textures, layer)[target];
-			if (bound != name || force)
+			ensure(layer < GL_STATE_UNITS);
+			if (!gl_state_bind_texture(&m_state, layer, target, name) || force)
 			{
 				glActiveTexture(GL_TEXTURE0 + layer);
 				glBindTexture(target, name);
-
-				bound = name;
 			}
 		}
 
@@ -419,21 +384,7 @@ namespace gl
 			// To be called with glDeleteTextures.
 			// OpenGL internally unbinds the texture on delete, but then reuses the same ID when GenTextures is called again!
 			// This can also be avoided using unique internal names, such as 64-bit handles, but that involves changing a lot of code for little benefit
-			for (auto& layer : bound_textures)
-			{
-				if (layer.empty())
-				{
-					continue;
-				}
-
-				if (auto found = layer.find(target);
-					found != layer.end() && found->second == name)
-				{
-					// Actually still bound!
-					found->second = GL_NONE;
-					return;
-				}
-			}
+			gl_state_unbind_texture(&m_state, target, name);
 		}
 	};
 

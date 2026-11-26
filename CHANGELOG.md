@@ -4,6 +4,16 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **OpenGL: the driver state tracker is C89, in fixed tables.** Not yet run on a game.
+  - **What changed:**
+    - `gl::driver_state` remembers what the renderer last set of the driver's state, so a GL call setting the same again is not made. That covers caps, depth, stencil and blend state, indexed caps, and the texture each unit has bound, behind every draw's state setup. It kept these in `std::unordered_map`s: two for properties, and one per texture unit (48 of them). Each call hashed into one, and grew it on a first key.
+    - They are now fixed tables in a new C89 module (`rpcs3/Emu/RSX/GL/gl_state_table.c`), made once with the renderer and never grown, so there is no allocation per call. Properties are open-addressed by their GLenum (128 slots), indexed properties likewise (32 slots, four values each), and each unit's bound textures are a short list by target (eight per unit).
+    - What it does is unchanged: a key first seen reads as changed and is kept, binding none first reads as set (the map's default), and unbinding a deleted texture clears the first unit found with it. A table full keeps no more, so the call is made each time, as one not cached. The renderer uses far fewer keys than the tables hold.
+    - **Measured:** `test_and_set`, on 40 keys as the renderer uses them, takes 2.8 to 2.9 ns a call, where the map took 5.8 to 7.5 ns.
+    - **Smaller code:** GLGSRender.o and GLDraw.o together 9.5 KB less; the module is 1.4 KB.
+  - **Tests:** `test_gl_state_table`: set, changed and first-seen values, keys that collide in the hash, an indexed property's other values, a full table reading new keys as changed every time while kept keys still read set, and texture units (unbinding clears only the first unit found). Mutants fail it: a probe stopping at the first empty slot, and an unbind clearing every unit. The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **sys_io: no lock.** The game's `sys_config_start` and `sys_config_stop` make and take down the config event queue and its handler thread with no lock, through a new C89 module (`rpcs3/util/build_word.c`). Not yet run on a game.
   - **What changed:**
     - The first start made the queue and the thread, and the last stop took them down. Both happened behind `mtx`, a `shared_mutex` the game's threads waited on one at a time (`lock_lv2_mutex_alike`, putting the PPU to sleep while another held it).
