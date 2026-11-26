@@ -5,10 +5,11 @@ name: Buildbot preflight (macOS)
 # Homebrew. The runner here has Homebrew, which the script keeps out of the
 # build (CMAKE_IGNORE_PREFIX_PATH) and the final check would catch.
 
-# Also on a change to what builds LLVM from the tree, or to the targets that
-# bring in Vulkan's and libretro-common's headers or list the core's sources: LLVM's Makefile rules and
-# their CMake wrapper met make 3.81, Apple's ar and a clang with no SDK of
-# its own only here, and only here are MoltenVK's headers looked for.
+# Also on a change to what builds LLVM from the tree, or to the CMake lists
+# that bring in Vulkan's and libretro-common's headers and the core's
+# sources: LLVM's Makefile rules and their CMake wrapper met make 3.81,
+# Apple's ar and a clang with no SDK of its own only here, MoltenVK's headers
+# are looked for only here, and the Makefile, not CMake, is what Linux builds.
 on:
   push:
     paths: &paths
