@@ -5,7 +5,7 @@
 #include <vector>
 #include "util/types.hpp"
 #include <retro_atomic.h>
-#include "util/auto_typemap.hpp"
+#include "util/addr_map.h"
 
 #include "util/to_endian.hpp"
 
@@ -151,7 +151,8 @@ namespace vm
 	// Object that handles memory allocations inside specific constant bounds ("location")
 	class block_t final
 	{
-		auto_typemap<block_t> m;
+		// Mapped regions by address (vm.cpp); changed by const alloc and dealloc under vm::writer_lock
+		mutable addr_map_t m_map{};
 
 		// Common mapped region for special cases
 		std::shared_ptr<utils::shm> m_common;

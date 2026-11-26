@@ -4,6 +4,23 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Guest memory: a block's allocations in a sorted C89 array, not an `std::map`.** Not yet run on a game.
+  - **What changed:**
+    - **A new C89 module** (`util/addr_map.c`) keeps ranges sorted by start address:
+      - The addresses are in an array of their own, searched by halving with no branch on the comparison.
+      - Room is kept at both ends, so adding or taking out a range moves whichever side of it is shorter.
+      - It allocates only when it grows, where the map allocated a node for every range.
+    - **Each guest memory block** (`vm::block_t`) kept its allocations, with their sizes and shared memory handles, in an `std::map` behind a type map. They are now in the new module.
+      - Each handle is kept in its entry and moved with it, so it needs no allocation of its own. A static check makes sure a handle is two pointers.
+      - **Finding an address** (`block_t::peek`) now uses the new search. It runs when an SPU reads its event status with a reservation in mapped memory, and in `sys_mmapper`.
+      - **Tearing down a block** used to count every handle into an `std::unordered_map`. It now counts only for a handle that is still shared, and only that handle.
+  - **Speed (this machine, 16, 128 and 1024 ranges):**
+    - **Finding an address:** 7, 11 and 16 ns, where the map took 28, 47 and 52 ns.
+    - **Adding and then removing a range:** 43 and 67 ns at 16 and 128 ranges, where the map took 57 and 73 ns. At 1024 ranges it is slower, 172 ns against 97 ns. A block rarely holds that many.
+  - **Size:** `vm.o` is 2.2 KB smaller, about what the new module adds (2.1 KB).
+  - **Tests:** `test_addr_map` adds out of order and refuses a second range at the same address. It finds ranges exactly and at or below an address, and takes them out at the front, middle and back. It then runs 20,000 random steps against a plain array, checking each range's data moved with it. Wrong shifts, a missed gap when growing, and an off-by-one search each fail it. The full build, the suites and the Windows (MinGW) syntax check pass.
+
+
 - **Vulkan and OpenGL: overlay programs, fonts and images, no hash maps.** Not yet run on a game.
   - **What changed:**
     - **A new C89 table** (`util/ptr_table.c`): pointers by a 64-bit key, open-addressed with linear probing, entries taken out by shifting the ones after back, grown to stay at most half full. Keys are mixed before use, so addresses a fixed stride apart do not bunch up.

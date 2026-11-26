@@ -82,6 +82,7 @@ target_sources(rpcs3_emu PRIVATE
     ../util/key_list.c
     ../util/slot_registry.c
     ../util/ptr_table.c
+    ../util/addr_map.c
     ../util/tsc_perf.c
     ../util/vm_native.cpp
     ../util/dyn_lib.cpp

@@ -691,7 +691,7 @@ namespace vm
 		thread_ctrl::emergency_exit("vm::reservation_escape");
 	}
 
-	static void _page_map(u32 addr, u8 flags, u32 size, utils::shm* shm, u64 bflags, std::pair<const u32, std::pair<u32, std::shared_ptr<utils::shm>>>* (*search_shm)(vm::block_t* block, utils::shm* shm))
+	static void _page_map(u32 addr, u8 flags, u32 size, utils::shm* shm, u64 bflags, bool (*search_shm)(vm::block_t* block, utils::shm* shm, u32& addr, u32& size))
 	{
 
 		if (!size || (size | addr) % 4096 || flags & page_allocated)
@@ -732,11 +732,9 @@ namespace vm
 				{
 					if (auto loc = ploc.get())
 					{
-						if (auto pp = search_shm(loc, shm))
+						if (u32 addr2, size2; search_shm(loc, shm, addr2, size2))
 						{
-							auto& [size2, ptr] = pp->second;
-
-							for (u32 i = pp->first / 65536; i < pp->first / 65536 + size2 / 65536; i++)
+							for (u32 i = addr2 / 65536; i < addr2 / 65536 + size2 / 65536; i++)
 							{
 								retro_atomic_store_release_64(&g_shmem[i], static_cast<s64>(shm_self));
 
@@ -1140,8 +1138,26 @@ namespace vm
 		}
 	}
 
-	// Mapped regions: addr -> shm handle
-	constexpr auto block_map = &auto_typemap<block_t>::get<std::map<u32, std::pair<u32, std::shared_ptr<utils::shm>>>>;
+	// Mapped regions by address (util/addr_map.c), each with its size and shm handle. The handle is made in the
+	// entry's room for two pointers and moved bitwise as entries move up and down: a shared_ptr is two pointers,
+	// neither into itself, in each standard library this builds with, so no allocation of its own is needed
+	using shm_handle = std::shared_ptr<utils::shm>;
+	static_assert(sizeof(shm_handle) == sizeof(addr_map_entry_t::data) && alignof(shm_handle) <= alignof(void*));
+
+	static shm_handle& shm_of(addr_map_entry_t& e)
+	{
+		return *std::launder(reinterpret_cast<shm_handle*>(e.data));
+	}
+
+	static const shm_handle& shm_of(const addr_map_entry_t& e)
+	{
+		return *std::launder(reinterpret_cast<const shm_handle*>(e.data));
+	}
+
+	static utils::shm* shm_get(const addr_map_entry_t& e)
+	{
+		return shm_of(e).get();
+	}
 
 	bool block_t::try_alloc(u32 addr, u64 bflags, u32 size, std::shared_ptr<utils::shm>&& shm) const
 	{
@@ -1216,28 +1232,28 @@ namespace vm
 		}
 
 		// Map "real" memory pages; provide a function to search for mirrors with private member access
-		_page_map(addr, flags, size, shm.get(), this->flags, [](vm::block_t* _this, utils::shm* shm)
+		_page_map(addr, flags, size, shm.get(), this->flags, [](vm::block_t* _this, utils::shm* shm, u32& found_addr, u32& found_size)
 		{
-			auto& map = (_this->m.*block_map)();
-
-			std::remove_reference_t<decltype(map)>::value_type* result = nullptr;
-
 			// Check eligibility
 			if (!_this || !(block_size_mask & _this->flags) || _this->addr < 0x20000000 || _this->addr >= 0xC0000000)
 			{
-				return result;
+				return false;
 			}
 
-			for (auto& pp : map)
+			const addr_map_t& map = _this->m_map;
+
+			for (u32 i = 0; i < map.count; i++)
 			{
-				if (pp.second.second.get() == shm)
+				if (shm_get(map.e[i]) == shm)
 				{
 					// Found match
-					return &pp;
+					found_addr = map.addrs[i];
+					found_size = map.e[i].size;
+					return true;
 				}
 			}
 
-			return result;
+			return false;
 		});
 
 		// Fill stack guards with STACKGRD
@@ -1255,8 +1271,10 @@ namespace vm
 			fill64(g_sudo_addr + enda, "UNDERFLO"_u64, 4096 / sizeof(u64));
 		}
 
-		// Add entry
-		(m.*block_map)()[addr] = std::make_pair(size, std::move(shm));
+		// Add entry (the pages were free, so the address is not there)
+		const u32 added = addr_map_insert(&m_map, addr, size);
+		ensure(added != ADDR_MAP_NONE);
+		new (m_map.e[added].data) shm_handle(std::move(shm));
 
 		return true;
 	}
@@ -1335,65 +1353,53 @@ namespace vm
 
 	bool block_t::unmap(std::vector<std::pair<u64, u64>>* unmapped)
 	{
-		auto& m_map = (m.*block_map)();
-
 		if (retro_atomic_exchange_64(&m_id, 0))
 		{
-			std::unordered_map<const utils::shm*, s64> mapping_refs;
-
 			// Deallocate all memory
-			for (auto it = m_map.begin(), end = m_map.end(); it != end;)
+			for (u32 i = 0; i < m_map.count; i++)
 			{
-				const auto next = std::next(it);
-				const auto size = it->second.first;
+				addr_map_entry_t& entry = m_map.e[i];
+				const auto size = entry.size;
 
 				std::vector<std::pair<u64, u64>> event_data;
-				ensure(size == _page_unmap(it->first, size, this->flags, it->second.second.get(), unmapped ? *unmapped : event_data, true));
+				ensure(size == _page_unmap(m_map.addrs[i], size, this->flags, shm_get(entry), unmapped ? *unmapped : event_data, true));
 
-				if (it->second.second && addr < 0xE0000000)
+				if (auto& shm = shm_of(entry); shm && addr < 0xE0000000)
 				{
-					if (it->second.second.use_count() != 1)
+					// Held anywhere but by the ranges still mapped (this block's, and the other blocks': vm::unmap
+					// removes this one from g_locations before calling us) is a use from outside. Counted for the
+					// one handle, where a hash map of all of them was filled; only a shared handle is counted
+					if (shm.use_count() != 1)
 					{
-						if (mapping_refs.empty())
+						const utils::shm* const target = shm.get();
+						s64 refs = 0;
+
+						const auto count_refs = [&refs, target](const addr_map_t& map)
 						{
-							const auto count_refs = [&mapping_refs](const auto& map)
+							for (u32 j = 0; j < map.count; j++)
 							{
-								for (const auto& entry : map)
-								{
-									if (entry.second.second)
-									{
-										mapping_refs[entry.second.second.get()]++;
-									}
-								}
-							};
+								refs += shm_get(map.e[j]) == target;
+							}
+						};
 
-							// count this block separately, vm::unmap removes it from g_locations before calling us
-							count_refs(m_map);
+						count_refs(m_map);
 
-							for (const auto& block : g_locations)
+						for (const auto& block : g_locations)
+						{
+							if (block && block.get() != this)
 							{
-								if (block && block.get() != this)
-								{
-									count_refs((block->m.*block_map)());
-								}
+								count_refs(block->m_map);
 							}
 						}
 
-						if (it->second.second.use_count() != mapping_refs.at(it->second.second.get()))
+						if (shm.use_count() != refs)
 						{
-							fmt::throw_exception("External memory usage at block 0x%x (addr=0x%x, size=0x%x)", this->addr, it->first, size);
+							fmt::throw_exception("External memory usage at block 0x%x (addr=0x%x, size=0x%x)", this->addr, m_map.addrs[i], size);
 						}
 					}
 
-					if (!mapping_refs.empty())
-					{
-						mapping_refs.at(it->second.second.get())--;
-					}
-
-					it->second.second.reset();
+					shm.reset();
 				}
-
-				it = next;
 			}
 
 			if (m_common)
@@ -1416,6 +1422,12 @@ namespace vm
 	{
 		ensure(!is_valid());
 		ensure(!m_common || m_common.use_count() == 1);
+
+		for (u32 i = 0; i < m_map.count; i++)
+		{
+			shm_of(m_map.e[i]).~shm_handle();
+		}
+		addr_map_free(&m_map);
 	}
 
 	u32 block_t::alloc(const u32 orig_size, const std::shared_ptr<utils::shm>* src, u32 align, u64 flags)
@@ -1553,7 +1565,6 @@ namespace vm
 
 	u32 block_t::dealloc(u32 addr, const std::shared_ptr<utils::shm>* src) const
 	{
-		auto& m_map = (m.*block_map)();
 		{
 			struct notify_t
 			{
@@ -1573,23 +1584,23 @@ namespace vm
 
 			vm::writer_lock lock;
 
-			const auto found = m_map.find(addr);
+			const u32 found = addr_map_find(&m_map, addr);
 
-			if (found == m_map.end())
+			if (found == ADDR_MAP_NONE)
 			{
 				return 0;
 			}
 
-			if (src && found->second.second.get() != src->get())
+			if (src && shm_get(m_map.e[found]) != src->get())
 			{
 				return 0;
 			}
 
 			// Get allocation size
-			const auto size = found->second.first;
+			const auto size = m_map.e[found].size;
 
 			// Unmap "real" memory pages
-			ensure(size == _page_unmap(addr, size, this->flags, found->second.second.get(), unmap_notification.event_data));
+			ensure(size == _page_unmap(addr, size, this->flags, shm_get(m_map.e[found]), unmap_notification.event_data));
 
 			// Clear stack guards
 			if (flags & stack_guarded)
@@ -1599,7 +1610,8 @@ namespace vm
 			}
 
 			// Remove entry
-			m_map.erase(found);
+			shm_of(m_map.e[found]).~shm_handle();
+			addr_map_erase(&m_map, found);
 
 			return size;
 		}
@@ -1612,21 +1624,19 @@ namespace vm
 			return {addr, nullptr};
 		}
 
-		auto& m_map = (m.*block_map)();
-
 		vm::writer_lock lock;
 
-		const auto upper = m_map.upper_bound(addr);
+		const u32 found = addr_map_floor(&m_map, addr);
 
-		if (upper == m_map.begin())
+		if (found == ADDR_MAP_NONE)
 		{
 			return {addr, nullptr};
 		}
 
-		const auto found = std::prev(upper);
+		const u32 found_addr = m_map.addrs[found];
 
 		// Exact address condition (size == 0)
-		if (size == 0 && found->first != addr)
+		if (size == 0 && found_addr != addr)
 		{
 			return {addr, nullptr};
 		}
@@ -1638,21 +1648,23 @@ namespace vm
 		}
 
 		// Range check
-		if (addr + u64{size} > found->first + u64{found->second.second->size()})
+		const auto& shm = shm_of(m_map.e[found]);
+
+		if (addr + u64{size} > found_addr + u64{shm->size()})
 		{
 			return {addr, nullptr};
 		}
 
-		return {found->first, found->second.second};
+		return {found_addr, shm};
 	}
 
 	u32 block_t::imp_used(const vm::writer_lock&) const
 	{
 		u32 result = 0;
 
-		for (auto& entry : (m.*block_map)())
+		for (u32 i = 0; i < m_map.count; i++)
 		{
-			result += entry.second.first;
+			result += m_map.e[i].size;
 		}
 
 		return result;
@@ -1667,30 +1679,26 @@ namespace vm
 
 	void block_t::get_shared_memory(std::vector<std::pair<utils::shm*, u32>>& shared)
 	{
-		auto& m_map = (m.*block_map)();
-
 		if (!(flags & preallocated))
 		{
-			shared.reserve(shared.size() + m_map.size());
+			shared.reserve(shared.size() + m_map.count);
 
-			for (const auto& [addr, shm] : m_map)
+			for (u32 i = 0; i < m_map.count; i++)
 			{
-				shared.emplace_back(shm.second.get(), addr);
+				shared.emplace_back(shm_get(m_map.e[i]), m_map.addrs[i]);
 			}
 		}
 	}
 
 	u32 block_t::get_shm_addr(const std::shared_ptr<utils::shm>& shared)
 	{
-		auto& m_map = (m.*block_map)();
-
 		if (!(flags & preallocated))
 		{
-			for (auto& [addr, pair] : m_map)
+			for (u32 i = 0; i < m_map.count; i++)
 			{
-				if (pair.second == shared)
+				if (shm_get(m_map.e[i]) == shared.get())
 				{
-					return addr;
+					return m_map.addrs[i];
 				}
 			}
 		}
@@ -1795,36 +1803,37 @@ namespace vm
 	{
 		USING_SERIALIZATION_VERSION(lv2_memory);
 
-		auto& m_map = (m.*block_map)();
-
 		ar(addr, size, flags);
 
-		for (const auto& [addr, shm] : m_map)
+		for (u32 i = 0; i < m_map.count; i++)
 		{
+			const u32 addr = m_map.addrs[i];
+			const u32 shm_size = m_map.e[i].size;
+
 			// Assume first page flags represent all the map
 			ar(static_cast<u8>(retro_atomic_load_acquire_8(&g_pages[addr / 4096])));
 
 			ar(addr);
-			ar(shm.first);
+			ar(shm_size);
 
 			if (flags & preallocated)
 			{
 				// Do not save memory which matches the memory found in the executable (we can use it instead)
-				if (is_memory_compatible_for_copy_from_executable_optimization(addr, shm.first))
+				if (is_memory_compatible_for_copy_from_executable_optimization(addr, shm_size))
 				{
 					// Revert changes
 					ar.trunc(sizeof(u32) * 2 + sizeof(memory_page));
-					vm_log.success("Removed memory block matching the memory of the executable from savestate. (addr=0x%x, size=0x%x)", addr, shm.first);
+					vm_log.success("Removed memory block matching the memory of the executable from savestate. (addr=0x%x, size=0x%x)", addr, shm_size);
 					continue;
 				}
 
 				// Save raw binary image
-				serialize_memory_bytes(ar, vm::get_super_ptr<u8>(addr), shm.first);
+				serialize_memory_bytes(ar, vm::get_super_ptr<u8>(addr), shm_size);
 			}
 			else
 			{
 				// Save index of shm
-				ar(shared[shm.second.get()]);
+				ar(shared[shm_get(m_map.e[i])]);
 			}
 		}
 
