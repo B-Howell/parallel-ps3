@@ -66,12 +66,19 @@ endif()
 # run time (rpcs3/Emu/RSX/VK/vk_loader.c), from the frontend's
 # vkGetInstanceProcAddr or the system's loader (vulkan-1.dll,
 # libvulkan.so.1, MoltenVK), so nothing is linked and nothing has to be
-# installed to build.
+# installed to build - on Apple systems but MoltenVK's own headers, for the
+# settings the instance hands it (vkutils/instance.cpp), found where
+# Vulkan_INCLUDE_DIR says. They come after the tree's, whose Vulkan headers
+# are the ones used.
 set(VULKAN_TARGET 3rdparty_dummy_lib)
 if(USE_VULKAN)
 	add_library(3rdparty_vulkan INTERFACE)
 	target_include_directories(3rdparty_vulkan SYSTEM INTERFACE Vulkan-Headers/include)
 	target_compile_definitions(3rdparty_vulkan INTERFACE -DHAVE_VULKAN VK_NO_PROTOTYPES)
+	if(APPLE)
+		find_path(MVK_INCLUDE_DIR MoltenVK/mvk_vulkan.h HINTS ${Vulkan_INCLUDE_DIR} REQUIRED)
+		target_include_directories(3rdparty_vulkan SYSTEM INTERFACE ${MVK_INCLUDE_DIR})
+	endif()
 	set(VULKAN_TARGET 3rdparty_vulkan)
 endif()
 

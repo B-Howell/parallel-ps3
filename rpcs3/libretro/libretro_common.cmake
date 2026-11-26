@@ -99,7 +99,10 @@ set_target_properties(libretro_common PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
-target_include_directories(libretro_common PUBLIC ${LIBRETRO_COMMON_DIR}/include)
+# Its headers come in as system headers: they are C, RetroArch's, and
+# RPCS3's -Werror=old-style-cast is not for them. GCC does not hold the C
+# casts inside their extern "C" to it; clang does.
+target_include_directories(libretro_common SYSTEM PUBLIC ${LIBRETRO_COMMON_DIR}/include)
 
 # net_http over libretro-common's own TLS client (net_socket_ssl_retro.c on
 # crypto/), for the clans server; the defines change only the library's

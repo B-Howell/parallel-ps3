@@ -22,12 +22,12 @@ extern "C" {
 
 static INLINE unsigned rw_value(retro_atomic_int_t *w)
 {
-   return (unsigned)retro_atomic_load_acquire_int(w);
+   return retro_atomic_load_acquire_int(w);
 }
 
 static INLINE int rw_cas(retro_atomic_int_t *w, unsigned old, unsigned value)
 {
-   return retro_atomic_cas_int(w, (int)old, (int)value);
+   return retro_atomic_cas_int(w, old, value);
 }
 
 /* The slow paths: 0 on a broken state (an underflow or overflow) */
@@ -55,7 +55,7 @@ static INLINE int rw_lock_shared(retro_atomic_int_t *w)
 static INLINE int rw_unlock_shared(retro_atomic_int_t *w)
 {
    /* Unconditional decrement (can result in a broken state) */
-   const unsigned v = (unsigned)retro_atomic_fetch_sub_int(w, 1);
+   const unsigned v = retro_atomic_fetch_sub_int(w, 1);
    if (v < RW_ONE)
       return 1;
    return rw_unlock_shared_slow(w, v);
@@ -75,7 +75,7 @@ static INLINE int rw_lock(retro_atomic_int_t *w)
 
 static INLINE int rw_unlock(retro_atomic_int_t *w)
 {
-   const unsigned v = (unsigned)retro_atomic_fetch_sub_int(w, (int)RW_ONE);
+   const unsigned v = retro_atomic_fetch_sub_int(w, RW_ONE);
    if (v == RW_ONE)
       return 1;
    return rw_unlock_slow(w, v);
@@ -96,7 +96,7 @@ static INLINE int rw_lock_upgrade(retro_atomic_int_t *w)
 /* The writer made a reader (can result in a broken state) */
 static INLINE void rw_lock_downgrade(retro_atomic_int_t *w)
 {
-   retro_atomic_fetch_sub_int(w, (int)(RW_ONE - 1));
+   retro_atomic_fetch_sub_int(w, RW_ONE - 1);
 }
 
 /* Waits until the lock could be taken, without keeping it */
