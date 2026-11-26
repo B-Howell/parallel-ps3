@@ -4,6 +4,14 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Vulkan: compute tasks and overlay passes are found in a slot of their own, not a hash map.** Not yet run on a game.
+  - **What changed:**
+    - `vk::get_compute_task<T>()` and `vk::get_overlay_pass<T>()` find the renderer's compute shaders and overlay passes by type. That happens on each use: format conversions, resolves, overlays and the like, at 26 sites. Each looked the type's index up in an `std::unordered_map`, hashed every time, and the maps had a few dozen entries made once each.
+    - Each type now has a static slot of its own, so finding one is a single load. The slots are kept in a new C89 module (`rpcs3/util/slot_registry.c`) so the renderer's reset and teardown can still go through them. Resetting frees each overlay pass's resources. Teardown deletes each task, and destroys then deletes each pass, then empties the slots, so a renderer made again makes them again.
+    - **Smaller code:** the ten Vulkan objects using them together 11.4 KB less.
+  - **Tests:** `test_slot_registry`: gone through in the order filled with an emptied slot skipped; cleared the last filled first, every slot emptied and the registry usable again; a full registry refusing more. Mutants fail it: clearing without emptying the slots, and taking one past full. The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **Vulkan: an image's views are a short C89 list, not a hash map.** Not yet run on a game.
   - **What changed:**
     - A texture's view is asked of its image on each bind (`viewable_image::get_view`), by its channel remap and aspect. An image view's per-format subviews (`image_view::as`) work the same way. Both were kept in `std::unordered_map`s of `unique_ptr`s, hashed on each look, with a node allocated per view. An image has only a few views.

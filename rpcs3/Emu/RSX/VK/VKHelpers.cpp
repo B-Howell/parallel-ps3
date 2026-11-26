@@ -11,14 +11,13 @@
 
 #include "vkutils/scratch.h"
 #include "vkutils/device.h"
-#include <unordered_map>
 
 namespace vk
 {
 	extern chip_class g_chip_class;
 
-	std::unordered_map<u32, std::unique_ptr<vk::compute_task>> g_compute_tasks;
-	std::unordered_map<u32, std::unique_ptr<vk::overlay_pass>> g_overlay_passes;
+	slot_registry_t g_compute_tasks{};
+	slot_registry_t g_overlay_passes{};
 
 	rsx::atomic_bitmask_t<runtime_state, u64> g_runtime_state;
 
@@ -37,10 +36,7 @@ namespace vk
 
 	void reset_overlay_passes()
 	{
-		for (const auto& p : g_overlay_passes)
-		{
-			p.second->free_resources();
-		}
+		slot_registry_each(&g_overlay_passes, [](void* p, void*) { static_cast<vk::overlay_pass*>(p)->free_resources(); }, nullptr);
 	}
 
 	void reset_global_resources()
@@ -63,13 +59,14 @@ namespace vk
 
 		vk::get_upload_heap()->destroy();
 
-		g_compute_tasks.clear();
+		slot_registry_clear(&g_compute_tasks, [](void* p, void*) { delete static_cast<vk::compute_task*>(p); }, nullptr);
 
-		for (const auto& p : g_overlay_passes)
+		slot_registry_clear(&g_overlay_passes, [](void* p, void*)
 		{
-			p.second->destroy();
-		}
-		g_overlay_passes.clear();
+			auto pass = static_cast<vk::overlay_pass*>(p);
+			pass->destroy();
+			delete pass;
+		}, nullptr);
 
 		// This must be the last item destroyed
 		vk::get_resource_manager()->destroy();

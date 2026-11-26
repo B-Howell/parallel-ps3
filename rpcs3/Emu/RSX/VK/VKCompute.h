@@ -1,4 +1,5 @@
 #pragma once
+#include "util/slot_registry.h"
 #include "VKProgramPipeline.h"
 #include "vkutils/descriptors.h"
 #include "vkutils/buffer_object.h"
@@ -10,7 +11,6 @@
 #include "util/asm.hpp"
 #include "util/logs.hpp"
 
-#include <unordered_map>
 
 namespace vk
 {
@@ -672,21 +672,24 @@ namespace vk
 	};
 
 	// TODO: Replace with a proper manager
-	extern std::unordered_map<u32, std::unique_ptr<vk::compute_task>> g_compute_tasks;
+	// Each made on first use into a slot of its own, one load to find, the slots kept for teardown
+	// (util/slot_registry.c). It was an STL hash map by type index, hashed on each use
+	extern slot_registry_t g_compute_tasks;
 
 	template<class T>
 	T* get_compute_task()
 	{
-		u32 index = stx::typeindex<id_manager::typeinfo, T>();
-		auto &e = g_compute_tasks[index];
+		static void* s_slot = nullptr;
 
-		if (!e)
+		if (!s_slot) [[unlikely]]
 		{
-			e = std::make_unique<T>();
-			e->create();
+			auto task = new T();
+			task->create();
+			s_slot = static_cast<vk::compute_task*>(task);
+			ensure(slot_registry_add(&g_compute_tasks, &s_slot));
 		}
 
-		return static_cast<T*>(e.get());
+		return static_cast<T*>(static_cast<vk::compute_task*>(s_slot));
 	}
 
 	void reset_compute_tasks();

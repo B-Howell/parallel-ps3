@@ -80,6 +80,7 @@ target_sources(rpcs3_emu PRIVATE
     ../util/tsc_cpuid.c
     ../util/build_word.c
     ../util/key_list.c
+    ../util/slot_registry.c
     ../util/tsc_perf.c
     ../util/vm_native.cpp
     ../util/dyn_lib.cpp

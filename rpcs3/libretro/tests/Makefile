@@ -18,7 +18,7 @@ LRC_DEFS := -DHAVE_DYLIB -DHAVE_SSL -DHAVE_RETROSSL -DHAVE_CRYPTO \
 	-DHAVE_RWAV -DHAVE_RFLAC -DHAVE_RVORBIS -DHAVE_ROPUS -DHAVE_RMP3 -DHAVE_RAAC \
 	-DHAVE_RMP4 -DHAVE_RAC3 -DHAVE_RWMA -DHAVE_RWEBM -DHAVE_RATRAC3 -DHAVE_RATRAC3P
 
-TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_cpu_guard test_cpu_guard_tsan test_build_word test_build_word_tsan test_gl_state_table test_vk_sampler_table test_key_list test_vm_range_locks test_vm_range_locks_tsan test_spu_pc_table test_spu_pc_table_tsan test_jit_bump test_jit_bump_tsan test_rw_word test_rw_word_tsan test_yaml_value test_patch_db test_patch_options test_guest_atomic test_guest_atomic_tsan test_init_word test_init_word_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_jit_cores test_rpcn_signal test_rsx_wake test_rsx_wake_tsan test_rsx_hold test_rsx_hold_tsan test_rsx_timestamp test_rpcn_reply_slots test_rpcn_reply_slots_tsan test_osk_text test_osk_text_tsan test_game_text_patch test_net_wake test_vk_loader test_tsc_cpuid test_tsc_perf
+TESTS := test_zstd test_deflate test_rxml test_png_rows test_images test_jpg_rows test_http test_bcn test_tls_duplex test_yaml test_font test_np2 test_rsx_scale test_vpost test_atracx test_vdec test_media test_record test_config_database test_vblank_list test_video_sink test_video_sink_tsan test_vk_images test_vk_images_tsan test_sw_frames test_sw_frames_tsan test_gl_frames test_gl_fallback test_pad_values test_input_poll test_audio_handover test_audio_ring test_audio_ring_tsan test_audio_mix test_object_pack test_object_pack_tsan test_eeprom_table test_eeprom_table_tsan test_lf_u64_map test_lf_u64_map_tsan test_lf_item_pool test_lf_item_pool_tsan test_lf_sig_table test_lf_sig_table_tsan test_jit_host_symbols test_jit_host_symbols_tsan test_cpu_slots test_cpu_slots_tsan test_cpu_guard test_cpu_guard_tsan test_build_word test_build_word_tsan test_gl_state_table test_vk_sampler_table test_key_list test_slot_registry test_vm_range_locks test_vm_range_locks_tsan test_spu_pc_table test_spu_pc_table_tsan test_jit_bump test_jit_bump_tsan test_rw_word test_rw_word_tsan test_yaml_value test_patch_db test_patch_options test_guest_atomic test_guest_atomic_tsan test_init_word test_init_word_tsan test_owner_calls test_owner_calls_tsan test_hle_service test_hle_service_tsan test_lf_hazard test_lf_hazard_tsan test_dma_views test_dma_views_tsan test_guest_page_locks test_guest_page_locks_tsan test_guest_faults test_guest_faults_tsan test_vk_interp_uploads test_vk_interp_dynamic test_crypto_hashes test_vk_heap test_vk_heap_tsan test_np_pool test_np_pool_tsan test_lf_post test_timer_ctrl test_lv2_waitset test_lv2_countq test_lv2_ownq test_lv2_flagq test_lv2_rwq test_lv2_lwq test_gcm_io_pages test_lv2_evq test_lv2_sched test_jit_cores test_rpcn_signal test_rsx_wake test_rsx_wake_tsan test_rsx_hold test_rsx_hold_tsan test_rsx_timestamp test_rpcn_reply_slots test_rpcn_reply_slots_tsan test_osk_text test_osk_text_tsan test_game_text_patch test_net_wake test_vk_loader test_tsc_cpuid test_tsc_perf
 
 test_zstd_LRC := \
 	$(LRC)/encodings/encoding_rzstd.c \
@@ -496,6 +496,10 @@ test_cpu_slots_tsan: $(CPU_SLOTS_DEPS)
 	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/test_cpu_slots_tsan.o test_cpu_slots.c
 	$(CC) $(CFLAGS) $(TEST_STD) -fsanitize=thread -c -o obj/cpu_slots_tsan.o ../../Emu/CPU/cpu_slots.c
 	$(CC) $(CFLAGS) -std=gnu99 -fsanitize=thread -o $@ obj/test_cpu_slots_tsan.o obj/cpu_slots_tsan.o $(LDFLAGS) $(LDLIBS) -lpthread
+
+# Pointers made once each into slots of their own: the module and the test as C89
+test_slot_registry: test_slot_registry.c test_common.h ../../util/slot_registry.c ../../util/slot_registry.h
+	$(CC) $(CFLAGS) $(TEST_STD) -pedantic $(SANITIZE) -o $@ test_slot_registry.c ../../util/slot_registry.c $(LDFLAGS) $(LDLIBS)
 
 # A short list of pointers by key: the module and the test as C89
 test_key_list: test_key_list.c test_common.h ../../util/key_list.c ../../util/key_list.h
@@ -1118,6 +1122,7 @@ check: all
 	./test_gl_state_table
 	./test_vk_sampler_table
 	./test_key_list
+	./test_slot_registry
 	./test_build_word
 	./test_build_word_tsan
 	./test_cpu_guard
@@ -1769,6 +1774,8 @@ check: all
 	@if grep -q "unordered_map" ../../Emu/RSX/VK/vkutils/sampler.h ../../Emu/RSX/VK/vkutils/sampler.cpp || ! grep -q "vk_sampler_table_find" ../../Emu/RSX/VK/vkutils/sampler.cpp; then echo "the Vulkan sampler pool keeps its samplers in std::unordered_maps again"; exit 1; else echo "the Vulkan sampler pool keeps its samplers in a fixed table"; fi
 	@# A Vulkan image's views are a short C89 list searched in turn, not an std::unordered_map hashed on each texture bind
 	@if grep -q "unordered_map" ../../Emu/RSX/VK/vkutils/image.h || ! grep -q "key_list_find" ../../Emu/RSX/VK/vkutils/image.h; then echo "a Vulkan image's views are kept in an std::unordered_map again"; exit 1; else echo "a Vulkan image's views are a short list"; fi
+	@# The Vulkan renderer's compute tasks and overlay passes are found in a slot of their own per type, not an std::unordered_map hashed on each use
+	@if grep -q "unique_ptr<vk::compute_task>>\|unique_ptr<vk::overlay_pass>>" ../../Emu/RSX/VK/VKCompute.h ../../Emu/RSX/VK/VKOverlays.h ../../Emu/RSX/VK/VKHelpers.cpp || ! grep -q "slot_registry_add" ../../Emu/RSX/VK/VKCompute.h; then echo "the Vulkan compute tasks or overlay passes are looked up in an std::unordered_map again"; exit 1; else echo "the Vulkan compute tasks and overlay passes are found in slots of their own"; fi
 	@# turn_calls is gone (a caller queued on a turn waits: a lock without a lock object); it does not come back
 	@if [ -e ../../Emu/CPU/turn_calls.h ] || [ -e ../../Emu/CPU/turn_calls.c ] || grep -rnE "turn_call\(|turn_calls\.h|turn_calls_t\b|turn_calls_cpp" --include=*.cpp --include=*.h --include=*.hpp --include=*.c ../../Emu ../../Input ../../Loader ../../Crypto ../../util ../*.cpp ../*.h ../../../Utilities; then echo "turn_calls: back in the core - it was taken out for good (AGENTS.md)"; exit 1; else echo "turn_calls: none in the core"; fi
 	@# The toy portals are the USB thread's alone (usb_handler_thread::on_thread)
