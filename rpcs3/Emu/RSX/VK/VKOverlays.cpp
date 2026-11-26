@@ -158,21 +158,15 @@ namespace vk
 
 		auto compiler = vk::get_pipe_compiler();
 		auto program = compiler->compile(info, vk::pipe_compiler::COMPILE_INLINE, {}, get_vertex_inputs(), get_fragment_inputs());
-		auto result = program.get();
-		m_program_cache[storage_key] = std::move(program);
-
-		return result;
+		return m_program_cache.add(storage_key, std::move(program));
 	}
 
 	vk::glsl::program* overlay_pass::load_program(vk::command_buffer& cmd, VkRenderPass pass, const std::vector<vk::image_view*>& src)
 	{
-		vk::glsl::program *program = nullptr;
 		const auto key = get_pipeline_key(pass);
 
-		auto found = m_program_cache.find(key);
-		if (found != m_program_cache.end())
-			program = found->second.get();
-		else
+		vk::glsl::program* program = m_program_cache.find(key);
+		if (!program)
 			program = build_pipeline(key, pass);
 
 		if (!m_sampler && !src.empty())
@@ -347,21 +341,19 @@ namespace vk
 
 		upload_simple_texture(tex.get(), cmd, upload_heap, w, h, layers, font, pixel_src);
 
-		auto view = std::make_unique<vk::image_view>(dev, tex.get());
+		auto entry = std::make_unique<texture>();
+		entry->view = std::make_unique<vk::image_view>(dev, tex.get());
+		entry->image = std::move(tex);
+		entry->owner_uid = owner_uid;
 
-		auto result = view.get();
-
-		if (!temp || font)
-			view_cache[key] = std::move(view);
-		else
-			temp_view_cache[key] = std::move(view);
+		const auto result = entry->view.get();
 
 		if (font)
-			font_cache[key] = std::move(tex);
-		else if (!temp)
-			resources.push_back(std::move(tex));
+			m_fonts.add(key, std::move(entry));
+		else if (temp)
+			m_temp_images.add(key, std::move(entry));
 		else
-			temp_image_cache[key] = std::make_pair(owner_uid, std::move(tex));
+			::at32(m_resources, key) = std::move(*entry);
 
 		return result;
 	}
@@ -384,38 +376,35 @@ namespace vk
 
 	void ui_overlay_renderer::destroy()
 	{
-		temp_image_cache.clear();
-		temp_view_cache.clear();
+		m_temp_images.clear();
 
-		resources.clear();
-		font_cache.clear();
-		view_cache.clear();
+		for (auto& res : m_resources)
+		{
+			res.view.reset();
+			res.image.reset();
+		}
+
+		m_fonts.clear();
 
 		overlay_pass::destroy();
 	}
 
 	void ui_overlay_renderer::remove_temp_resources(u32 key)
 	{
-		std::vector<u64> keys_to_remove;
-		for (const auto& temp_image : temp_image_cache)
+		// Taken out in place: the entries after shift back, so the slot is looked at again
+		for (u32 i = 0; i < m_temp_images.slots();)
 		{
-			if (temp_image.second.first == key)
+			const auto entry = m_temp_images.slot(i);
+			if (!entry || entry->owner_uid != key)
 			{
-				keys_to_remove.push_back(temp_image.first);
+				i++;
+				continue;
 			}
-		}
 
-		for (const auto& _key : keys_to_remove)
-		{
-			auto& img_data = temp_image_cache[_key];
-			auto& view_data = temp_view_cache[_key];
-
+			auto taken = m_temp_images.take_slot(i);
 			auto gc = vk::get_resource_manager();
-			gc->dispose(img_data.second);
-			gc->dispose(view_data);
-
-			temp_image_cache.erase(_key);
-			temp_view_cache.erase(_key);
+			gc->dispose(taken->image);
+			gc->dispose(taken->view);
 		}
 	}
 
@@ -424,20 +413,20 @@ namespace vk
 		const auto image_size = font->get_glyph_data_dimensions();
 
 		u64 key = reinterpret_cast<u64>(font);
-		auto found = view_cache.find(key);
-		if (found != view_cache.end())
+		if (const auto found = m_fonts.find(key))
 		{
-			if (const auto raw = found->second->image();
+			if (const auto raw = found->image.get();
 				image_size.width == raw->width() &&
 				image_size.height == raw->height() &&
 				image_size.depth == raw->layers())
 			{
-				return found->second.get();
+				return found->view.get();
 			}
 
+			auto entry = m_fonts.take(key);
 			auto gc = vk::get_resource_manager();
-			gc->dispose(font_cache[key]);
-			gc->dispose(view_cache[key]);
+			gc->dispose(entry->image);
+			gc->dispose(entry->view);
 		}
 
 		// Create font resource
@@ -452,10 +441,9 @@ namespace vk
 		const bool dirty = std::exchange(desc->dirty, false);
 		const u64 key = reinterpret_cast<u64>(desc);
 
-		auto cached = temp_view_cache.find(key);
-		if (cached != temp_view_cache.end())
+		if (const auto cached = m_temp_images.find(key))
 		{
-			vk::image_view* view = cached->second.get();
+			vk::image_view* view = cached->view.get();
 
 			if (dirty)
 			{
@@ -680,7 +668,7 @@ namespace vk
 				src = find_temp_image(static_cast<const rsx::overlays::image_info_base*>(command.config.external_data_ref), cmd, upload_heap, ui.uid);
 				break;
 			default:
-				src = view_cache[command.config.texture_ref].get();
+				src = m_resources[command.config.texture_ref].view.get();
 				break;
 			}
 

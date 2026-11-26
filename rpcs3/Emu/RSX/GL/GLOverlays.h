@@ -1,5 +1,6 @@
 #pragma once
 
+#include "util/ptr_table.hpp"
 #include "util/slot_registry.h"
 #include "Emu/system_config_types.h"
 #include "Emu/IdManager.h"
@@ -13,7 +14,6 @@
 #include "glutils/vao.hpp"
 
 #include <string>
-#include <unordered_map>
 
 namespace gl
 {
@@ -67,11 +67,20 @@ namespace gl
 	struct ui_overlay_renderer final : public overlay_pass
 	{
 		u32 num_elements = 0;
-		std::vector<std::unique_ptr<gl::texture>> resources;
-		std::unordered_map<u64, std::pair<u32, std::unique_ptr<gl::texture>>> temp_image_cache;
-		std::unordered_map<u64, std::unique_ptr<gl::texture_view>> temp_view_cache;
-		std::unordered_map<u64, std::unique_ptr<gl::texture>> font_cache;
-		std::unordered_map<u64, std::unique_ptr<gl::texture_view>> view_cache;
+		// A texture and its view; the view goes first
+		struct texture_entry
+		{
+			std::unique_ptr<gl::texture> image;
+			std::unique_ptr<gl::texture_view> view;
+			u32 owner_uid = 0;
+		};
+
+		// The resource images in the order loaded (resource id less one, rsx::overlays::image_resource_id),
+		// and the fonts and the images of an overlay (by owner, removed with it), by address
+		texture_entry m_resources[256];
+		u32 m_resource_count = 0;
+		owned_ptr_table<texture_entry> m_fonts;
+		owned_ptr_table<texture_entry> m_temp_images;
 		rsx::overlays::primitive_type m_current_primitive_type = rsx::overlays::primitive_type::quad_list;
 
 		ui_overlay_renderer();

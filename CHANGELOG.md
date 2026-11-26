@@ -4,6 +4,18 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
+- **Vulkan and OpenGL: overlay programs, fonts and images, no hash maps.** Not yet run on a game.
+  - **What changed:**
+    - **A new C89 table** (`util/ptr_table.c`): pointers by a 64-bit key, open-addressed with linear probing, entries taken out by shifting the ones after back, grown to stay at most half full. Keys are mixed before use, so addresses a fixed stride apart do not bunch up.
+    - **The overlay renderers** kept their resource images, fonts and the images an overlay draws (icons in a save list, for example) in five `std::unordered_map`s each, the image and its view apart. Each image and its view now sit together.
+      - The resource images are an array by resource id, found by an index, not a hash.
+      - The fonts and drawn images are in the new table. An overlay's images are taken out as they were, by owner, now without collecting keys into a vector first.
+    - **The Vulkan overlay passes' programs** (one a render pass) are in the table too.
+  - **Speed:** a lookup takes 2.7 to 2.9 ns at 2 to 64 entries, where the map took 5.7 to 5.9 ns. A short list (`util/key_list.c`) was tried first, but it lost to the map past about 8 entries.
+  - **Smaller code:** `VKOverlays.o` is 6.0 KB smaller and `GLOverlays.o` 5.2 KB, against 1.6 KB for the table.
+  - **Tests:** `test_ptr_table` adds past several growths and takes out by key and by slot. It checks that entries spread through the table and runs 20,000 random steps against a plain array. A wrong shift-back rule or a table that stops spreading as it grows fails it. The renderers themselves need a running GPU, which the tests do not have. The Windows (MinGW) syntax checks, the full build and suites pass.
+
+
 - **OpenGL: resolve helpers and overlay passes, no hash maps.** Not yet run on a game.
   - **What changed:**
     - **The colour resolve and unresolve helpers** were found by format in `std::unordered_map`s. Only a few formats are ever resolved, so they are now short lists (`util/key_list.c`).

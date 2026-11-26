@@ -1,5 +1,6 @@
 #pragma once
 
+#include "util/ptr_table.hpp"
 #include "util/slot_registry.h"
 #include "../Common/simple_array.hpp"
 #include "../Overlays/overlay_controls.h"
@@ -14,8 +15,6 @@
 #include "Emu/IdManager.h"
 
 #include "libretro/vk_fixed_shaders.h"
-
-#include <unordered_map>
 
 namespace rsx
 {
@@ -52,7 +51,7 @@ namespace vk
 		u32 m_num_input_attachments = 0;
 		u32 m_num_uniform_buffers = 1;
 
-		std::unordered_map<u64, std::unique_ptr<vk::glsl::program>> m_program_cache;
+		::owned_ptr_table<vk::glsl::program> m_program_cache;
 		std::unique_ptr<vk::sampler> m_sampler;
 		std::unique_ptr<vk::framebuffer> m_draw_fbo;
 		vk::data_heap m_vao;
@@ -138,11 +137,19 @@ namespace vk
 
 		rsx::overlays::compiled_resource::sdf_config_t m_sdf_config{};
 
-		std::vector<std::unique_ptr<vk::image>> resources;
-		std::unordered_map<u64, std::unique_ptr<vk::image>> font_cache;
-		std::unordered_map<u64, std::unique_ptr<vk::image_view>> view_cache;
-		std::unordered_map<u64, std::pair<u32, std::unique_ptr<vk::image>>> temp_image_cache;
-		std::unordered_map<u64, std::unique_ptr<vk::image_view>> temp_view_cache;
+		// An image and its view; the view goes first
+		struct texture
+		{
+			std::unique_ptr<vk::image> image;
+			std::unique_ptr<vk::image_view> view;
+			u32 owner_uid = 0;
+		};
+
+		// The resource images, by their id (1 to 251, rsx::overlays::image_resource_id), and the fonts and the
+		// images of an overlay (by owner, removed with it), by address
+		texture m_resources[256];
+		::owned_ptr_table<texture> m_fonts;
+		::owned_ptr_table<texture> m_temp_images;
 		rsx::overlays::primitive_type m_current_primitive_type = rsx::overlays::primitive_type::quad_list;
 
 		static constexpr u32 vertex_push_constants_size = 68;

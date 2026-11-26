@@ -258,19 +258,21 @@ namespace gl
 		tex->copy_from(desc->as_span(), gl::texture::format::rgba, gl::texture::type::uint_8_8_8_8, {});
 
 		const GLenum remap[] = { GL_RED, GL_ALPHA, GL_BLUE, GL_GREEN };
-		auto view = std::make_unique<gl::texture_view>(tex.get(), remap);
+		auto entry = std::make_unique<texture_entry>();
+		entry->view = std::make_unique<gl::texture_view>(tex.get(), remap);
+		entry->image = std::move(tex);
+		entry->owner_uid = owner_uid;
 
-		auto result = view.get();
+		const auto result = entry->view.get();
 		if (!temp_resource)
 		{
-			resources.push_back(std::move(tex));
-			view_cache[view_cache.size()] = std::move(view);
+			::at32(m_resources, m_resource_count) = std::move(*entry);
+			m_resource_count++;
 		}
 		else
 		{
 			const u64 key = reinterpret_cast<uintptr_t>(desc);
-			temp_image_cache[key] = std::make_pair(owner_uid, std::move(tex));
-			temp_view_cache[key] = std::move(view);
+			m_temp_images.add(key, std::move(entry));
 		}
 
 		LRGL_OVERLAY_NOTICE("load_simple_image exit result=%p", result);
@@ -294,29 +296,32 @@ namespace gl
 
 	void ui_overlay_renderer::destroy()
 	{
-		temp_image_cache.clear();
-		temp_view_cache.clear();
-		resources.clear();
-		font_cache.clear();
-		view_cache.clear();
+		m_temp_images.clear();
+
+		for (auto& res : m_resources)
+		{
+			res.view.reset();
+			res.image.reset();
+		}
+		m_resource_count = 0;
+
+		m_fonts.clear();
 		overlay_pass::destroy();
 	}
 
 	void ui_overlay_renderer::remove_temp_resources(u64 key)
 	{
-		std::vector<u64> keys_to_remove;
-		for (const auto& temp_image : temp_image_cache)
+		// Taken out in place: the entries after shift back, so the slot is looked at again
+		for (u32 i = 0; i < m_temp_images.slots();)
 		{
-			if (temp_image.second.first == key)
+			const auto entry = m_temp_images.slot(i);
+			if (!entry || entry->owner_uid != key)
 			{
-				keys_to_remove.push_back(temp_image.first);
+				i++;
+				continue;
 			}
-		}
 
-		for (const auto& _key : keys_to_remove)
-		{
-			temp_image_cache.erase(_key);
-			temp_view_cache.erase(_key);
+			m_temp_images.take_slot(i);
 		}
 	}
 
@@ -325,16 +330,17 @@ namespace gl
 		const auto font_size = font->get_glyph_data_dimensions();
 
 		u64 key = reinterpret_cast<u64>(font);
-		auto found = view_cache.find(key);
-		if (found != view_cache.end())
+		if (const auto found = m_fonts.find(key))
 		{
-			if (const auto this_size = found->second->image()->size3D();
+			if (const auto this_size = found->image->size3D();
 				font_size.width == this_size.width &&
 				font_size.height == this_size.height &&
 				font_size.depth == this_size.depth)
 			{
-				return found->second.get();
+				return found->view.get();
 			}
+
+			m_fonts.take(key);
 		}
 
 		// Create font file
@@ -344,13 +350,11 @@ namespace gl
 		tex->copy_from(std::span<const u8>(glyph_data), gl::texture::format::r, gl::texture::type::ubyte, {});
 
 		GLenum remap[] = { GL_RED, GL_RED, GL_RED, GL_RED };
-		auto view = std::make_unique<gl::texture_view>(tex.get(), remap);
+		auto entry = std::make_unique<texture_entry>();
+		entry->view = std::make_unique<gl::texture_view>(tex.get(), remap);
+		entry->image = std::move(tex);
 
-		auto result = view.get();
-		font_cache[key] = std::move(tex);
-		view_cache[key] = std::move(view);
-
-		return result;
+		return m_fonts.add(key, std::move(entry))->view.get();
 	}
 
 	gl::texture_view* ui_overlay_renderer::find_temp_image(const rsx::overlays::image_info_base* desc, u32 owner_uid)
@@ -358,10 +362,9 @@ namespace gl
 		const bool dirty = std::exchange(desc->dirty, false);
 		const u64 key = reinterpret_cast<u64>(desc);
 
-		auto cached = temp_view_cache.find(key);
-		if (cached != temp_view_cache.end())
+		if (const auto cached = m_temp_images.find(key))
 		{
-			gl::texture_view* view = cached->second.get();
+			gl::texture_view* view = cached->view.get();
 
 			if (dirty)
 			{
@@ -482,7 +485,7 @@ namespace gl
 			}
 			default:
 			{
-				cmd_->bind_texture(31, GL_TEXTURE_2D, view_cache[cmd.config.texture_ref - 1]->id());
+				cmd_->bind_texture(31, GL_TEXTURE_2D, m_resources[static_cast<u8>(cmd.config.texture_ref - 1)].view->id());
 				break;
 			}
 			}
