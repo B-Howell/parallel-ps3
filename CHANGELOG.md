@@ -4,7 +4,7 @@ What changed in the libretro core of this fork, newest first. Changes that come 
 
 ## Unreleased
 
-- **macOS: the core builds again.** Built on GitHub's macOS 15 runners for arm64 (natively and from an Intel Mac) and x86_64; not yet run on a game on a Mac.
+- **macOS: the core builds again.** Built with `.ci/build-macos-libretro.sh` on GitHub's Apple Silicon macOS 15 runners with Xcode 16.0, for arm64 and, as the buildbot cross-builds it, x86_64; each links only the system's libraries. Not yet run on a game on a Mac.
   - **What was wrong:** LLVM is built from the tree by the core's Makefile, and on macOS that failed twice over; then the core's own files did not compile with clang, nor link, and two libraries came out beside the core.
     - **TableGen's compiler had no SDK.** For a build that is not a cross build, the CMake wrapper (`3rdparty/llvm/CMakeLists.txt`) handed the Makefile the bare compiler as `HOST_CXX`. The clang the macOS script builds finds the C++ library only in the SDK it is pointed at, so `llvm-min-tblgen` stopped at `'type_traits' file not found`. It is now given the same target and sysroot flags as `CXX`, the same machine's.
     - **The archive's list was never written.** `libllvm.a` took its objects through a list made with `$(file)`, which GNU make 3.81, the one macOS comes with, does not have, so `ar` failed on `@libllvm.a.list`. The list is kept for Windows, whose command line is too short for the objects; elsewhere they go on `ar`'s command line.
