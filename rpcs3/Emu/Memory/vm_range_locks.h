@@ -41,9 +41,9 @@ typedef struct vm_range_lock_slot
 static INLINE void vm_range_lock_publish(retro_atomic_64_t *word, uint64_t value)
 {
 #ifdef VM_RANGE_RMW_IS_FENCE
-   (void)retro_atomic_exchange_64(word, (int64_t)value);
+   (void)retro_atomic_exchange_64(word, value);
 #else
-   retro_atomic_store_release_64(word, (int64_t)value);
+   retro_atomic_store_release_64(word, value);
    retro_atomic_thread_fence_seq_cst();
 #endif
 }

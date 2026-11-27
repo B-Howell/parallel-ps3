@@ -31,20 +31,22 @@ typedef struct block_bits
 
 static INLINE int block_bits_test(const block_bits_t *b, uint32_t i)
 {
-   return (int)(b->words[i / 64] >> (i & 63) & 1);
+   return (b->words[i / 64] >> (i & 63) & 1) != 0;
 }
 
 static INLINE void block_bits_set(block_bits_t *b, uint32_t i)
 {
-   b->words[i / 64] |= (uint64_t)1 << (i & 63);
-   b->summary       |= (uint64_t)1 << (i / 64);
+   const uint64_t one = 1;
+   b->words[i / 64] |= one << (i & 63);
+   b->summary       |= one << (i / 64);
 }
 
 static INLINE void block_bits_clear(block_bits_t *b, uint32_t i)
 {
-   b->words[i / 64] &= ~((uint64_t)1 << (i & 63));
+   const uint64_t one = 1;
+   b->words[i / 64] &= ~(one << (i & 63));
    if (!b->words[i / 64])
-      b->summary &= ~((uint64_t)1 << (i / 64));
+      b->summary &= ~(one << (i / 64));
 }
 
 static INLINE void block_bits_clear_all(block_bits_t *b)

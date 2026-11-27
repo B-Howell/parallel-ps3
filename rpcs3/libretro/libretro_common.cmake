@@ -8,6 +8,7 @@ add_library(libretro_common STATIC
     ${LIBRETRO_COMMON_DIR}/audio/conversion/float_to_s16.c
     ${LIBRETRO_COMMON_DIR}/audio/conversion/float_to_ulaw.c
     ${LIBRETRO_COMMON_DIR}/audio/resampler/drivers/sinc_resampler.c
+    ${LIBRETRO_COMMON_DIR}/compat/compat_fnmatch.c
     ${LIBRETRO_COMMON_DIR}/compat/compat_posix_string.c
     ${LIBRETRO_COMMON_DIR}/compat/compat_strcasestr.c
     ${LIBRETRO_COMMON_DIR}/compat/compat_strl.c
@@ -22,6 +23,7 @@ add_library(libretro_common STATIC
     ${LIBRETRO_COMMON_DIR}/encodings/encoding_deflate.c
     ${LIBRETRO_COMMON_DIR}/encodings/encoding_rzstd.c
     ${LIBRETRO_COMMON_DIR}/encodings/encoding_utf.c
+    ${LIBRETRO_COMMON_DIR}/encodings/encoding_xxh3.c
     ${LIBRETRO_COMMON_DIR}/encodings/encoding_xxh64.c
     ${LIBRETRO_COMMON_DIR}/features/features_cpu.c
     ${LIBRETRO_COMMON_DIR}/file/file_path.c
@@ -99,7 +101,10 @@ set_target_properties(libretro_common PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
-target_include_directories(libretro_common PUBLIC ${LIBRETRO_COMMON_DIR}/include)
+# Its headers come in as system headers: they are C, RetroArch's, and
+# RPCS3's -Werror=old-style-cast is not for them. GCC does not hold the C
+# casts inside their extern "C" to it; clang does.
+target_include_directories(libretro_common SYSTEM PUBLIC ${LIBRETRO_COMMON_DIR}/include)
 
 # net_http over libretro-common's own TLS client (net_socket_ssl_retro.c on
 # crypto/), for the clans server; the defines change only the library's

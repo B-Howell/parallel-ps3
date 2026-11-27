@@ -467,15 +467,21 @@ ifneq ($(LLVM_ARCHIVE),)
 llvm: $(LLVM_ARCHIVE) $(LLVM_TBLGEN_OUT)
 
 
-# Its objects through a list, too many for a command line on Windows
+# Its objects through a list on Windows, too many for a command line there;
+# on the command line elsewhere, as the make macOS comes with (3.81) has no
+# $(file), which came with GNU make 4.
 # Made again when the lists change too: a file taken out of them is taken
 # out of the archive
 $(LLVM_ARCHIVE): $(LLVM_OBJS) $(CORE_DIR)/rpcs3/libretro/make/llvm/llvm.mk
 	$(SAY) AR $@
 	$(Q)rm -f $@
+ifeq ($(HOST_OS),windows)
 	$(file >$@.list,$(filter %.o,$^))
 	$(Q)$(AR) rcs $@ @$@.list
 	$(Q)rm -f $@.list
+else
+	$(Q)$(AR) rcs $@ $(filter %.o,$^)
+endif
 
 $(LLVM_OBJ)/%.cpp.o: $(LLVM_SRC)/%.cpp | $(LLVM_TBLGEN_OUT)
 	@mkdir -p $(@D)

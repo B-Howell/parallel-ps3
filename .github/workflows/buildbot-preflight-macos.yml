@@ -5,14 +5,30 @@ name: Buildbot preflight (macOS)
 # Homebrew. The runner here has Homebrew, which the script keeps out of the
 # build (CMAKE_IGNORE_PREFIX_PATH) and the final check would catch.
 
+# Also on a change to what builds LLVM from the tree, or to the CMake lists
+# that bring in Vulkan's and libretro-common's headers and the core's
+# sources: LLVM's Makefile rules and their CMake wrapper met make 3.81,
+# Apple's ar and a clang with no SDK of its own only here, MoltenVK's headers
+# are looked for only here, and the Makefile, not CMake, is what Linux builds.
 on:
-  # By hand, when .ci/build-macos-libretro.sh changes
+  push:
+    paths: &paths
+      - '.ci/build-macos-libretro.sh'
+      - '3rdparty/CMakeLists.txt'
+      - '3rdparty/llvm/CMakeLists.txt'
+      - 'rpcs3/libretro/libretro_common.cmake'
+      - 'rpcs3/Emu/CMakeLists.txt'
+      - 'Makefile'
+      - 'rpcs3/libretro/make/llvm/**'
+      - '.github/workflows/buildbot-preflight-macos.yml'
+  pull_request:
+    paths: *paths
   workflow_dispatch:
 
 jobs:
   macos:
     name: macOS ${{ matrix.arch }} (buildbot preflight)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 300
     strategy:
       fail-fast: false
@@ -23,9 +39,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Xcode 16.1 (the buildbot has 16.0, which this image lacks; the same clang 16)
+      - name: Xcode 16.0, the buildbot's
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.1.app || { ls /Applications | grep Xcode; exit 1; }
+          sudo xcode-select -s /Applications/Xcode_16.0.app || { ls /Applications | grep Xcode; exit 1; }
           clang --version
 
       - name: Build
