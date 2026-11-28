@@ -5,6 +5,7 @@
 #include "util/cctype.hpp"
 
 #include <charconv>
+#include <system_error>
 
 LOG_CHANNEL(cfg_log, "CFG");
 

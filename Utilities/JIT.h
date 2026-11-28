@@ -3,6 +3,10 @@
 #include "util/types.hpp"
 #include <retro_atomic.h>
 
+#include <string>
+#include <string_view>
+#include <vector>
+
 // Include asmjit with warnings ignored
 #define ASMJIT_EMBED
 #ifndef ASMJIT_STATIC // as the CMake build passes it
