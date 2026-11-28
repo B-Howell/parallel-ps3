@@ -1,5 +1,6 @@
 #pragma once
 
+#include <iterator>
 #include <optional>
 #include <unordered_map>
 #include "rpcn_signal.h"
